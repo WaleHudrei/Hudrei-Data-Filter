@@ -725,6 +725,67 @@ app.post('/campaigns/:id/upload', requireAuth, upload.single('csvfile'), async (
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
+// Delete campaign upload + reverse memory
+app.post('/campaigns/:id/uploads/:uploadId/delete', requireAuth, async (req, res) => {
+  try {
+    await campaigns.initCampaignSchema();
+    const { query: dbQ } = require('./db');
+    const campId = req.params.id;
+    const uploadId = req.params.uploadId;
+
+    // Get the upload record first
+    const upRes = await dbQ('SELECT * FROM campaign_uploads WHERE id=$1 AND campaign_id=$2', [uploadId, campId]);
+    if (!upRes.rows.length) return res.redirect('/campaigns/' + campId);
+    const up = upRes.rows[0];
+
+    // Reverse the phone counts from Redis memory for this campaign
+    const memory = await loadMemory();
+    let reversed = 0;
+    Object.keys(memory).forEach(k => {
+      if (k.startsWith('campaign:' + campId + '||')) {
+        // Subtract the upload count contribution — set to 0 minimum
+        if (memory[k].count > 0) {
+          memory[k].count = Math.max(0, memory[k].count - 1);
+          reversed++;
+        }
+      }
+    });
+    await saveMemory(memory);
+
+    // Delete the upload record
+    await dbQ('DELETE FROM campaign_uploads WHERE id=$1', [uploadId]);
+
+    // Recalculate campaign totals from remaining uploads
+    const totals = await dbQ(`
+      SELECT
+        COALESCE(SUM(total_records),0) as total,
+        COALESCE(SUM(records_kept),0) as kept,
+        COALESCE(SUM(records_filtered),0) as filtered,
+        COALESCE(SUM(wrong_numbers),0) as wrong,
+        COALESCE(SUM(voicemails),0) as vm,
+        COALESCE(SUM(not_interested),0) as ni,
+        COALESCE(SUM(do_not_call),0) as dnc,
+        COALESCE(SUM(transfers),0) as transfer,
+        COALESCE(SUM(connected),0) as connected,
+        COUNT(*) as upload_count
+      FROM campaign_uploads WHERE campaign_id=$1`, [campId]);
+
+    const t = totals.rows[0];
+    await dbQ(`UPDATE campaigns SET
+      total_unique_numbers=$1, total_callable=$2, total_filtered=$3,
+      total_wrong_numbers=$4, total_voicemails=$5, total_not_interested=$6,
+      total_do_not_call=$7, total_transfers=$8, total_connected=$9,
+      upload_count=$10, updated_at=NOW()
+      WHERE id=$11`,
+      [t.total, t.kept, t.filtered, t.wrong, t.vm, t.ni, t.dnc, t.transfer, t.connected, t.upload_count, campId]);
+
+    res.redirect('/campaigns/' + campId);
+  } catch(e) {
+    console.error('Delete upload error:', e.message);
+    res.redirect('/campaigns/' + req.params.id);
+  }
+});
+
 // ── Campaign HTML Pages ───────────────────────────────────────────────────────
 
 const STATUS_COLORS = { active: '#1a7a4a', paused: '#9a6800', completed: '#888' };
@@ -836,6 +897,11 @@ function campaignDetailPage(c) {
       <td style="color:#c0392b">${u.records_filtered}</td>
       <td style="color:#888;font-size:11px">WN:${u.wrong_numbers} VM:${u.voicemails} NI:${u.not_interested} DNC:${u.do_not_call} Lead:${u.transfers}</td>
       <td style="color:#2471a3;font-size:11px">${u.caught_by_memory} by memory</td>
+      <td>
+        <form method="POST" action="/campaigns/${c.id}/uploads/${u.id}/delete" onsubmit="return confirm('Remove this upload from the campaign? This will reverse its counts from memory.')">
+          <button type="submit" style="background:none;border:none;color:#c0392b;font-size:11px;cursor:pointer;text-decoration:underline;font-family:inherit;padding:0">Remove</button>
+        </form>
+      </td>
     </tr>`).join('');
 
   const dispositionRows = (c.disposition_breakdown||[]).map(d => `
@@ -983,7 +1049,7 @@ function campaignDetailPage(c) {
     <div class="card" style="padding:0;overflow:hidden">
       <div style="padding:12px 16px;border-bottom:1px solid #f0efe9"><div class="sec-lbl" style="margin-bottom:0">Filtration history</div></div>
       <table class="data-table">
-        <thead><tr><th>Date</th><th>File / Source list</th><th>Channel</th><th>Total</th><th>Kept</th><th>Filtered</th><th>Breakdown</th><th>Memory catches</th></tr></thead>
+        <thead><tr><th>Date</th><th>File / Source list</th><th>Channel</th><th>Total</th><th>Kept</th><th>Filtered</th><th>Breakdown</th><th>Memory catches</th><th></th></tr></thead>
         <tbody>${uploadRows||'<tr><td colspan="8" style="color:#aaa;padding:16px;text-align:center">No uploads yet for this campaign</td></tr>'}</tbody>
       </table>
     </div>
