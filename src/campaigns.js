@@ -278,7 +278,7 @@ function detectPhoneColumns(headers) {
 }
 
 // Import original contact list CSV into campaign
-async function importContactList(campaignId, rows, headers) {
+async function importContactList(campaignId, rows, headers, customMapping) {
   if (!rows.length) return { total: 0 };
 
   const h = headers.map(x => x.toLowerCase().trim());
@@ -290,19 +290,33 @@ async function importContactList(campaignId, rows, headers) {
     return null;
   };
 
-  const COL = {
+  const autoDetect = {
     fname:    find(['first name', 'firstname']),
     lname:    find(['last name', 'lastname']),
-    maddr:    find(['mailing address', 'owner street']),
+    maddr:    find(['mailing address', 'mailing addr', 'owner street']),
     mcity:    find(['mailing city', 'owner city']),
     mstate:   find(['mailing state', 'owner state']),
-    mzip:     find(['mailing zip', 'owner zip']),
+    mzip:     find(['mailing zip', 'mailing zip5', 'owner zip']),
     mcounty:  find(['mailing county', 'county']),
-    paddr:    find(['property address', 'property street', 'address']),
-    pcity:    find(['property city', 'city']),
-    pstate:   find(['property state', 'state']),
-    pzip:     find(['property zip', 'property zip code', 'zip']),
+    paddr:    find(['property address', 'property street']),
+    pcity:    find(['property city']),
+    pstate:   find(['property state']),
+    pzip:     find(['property zip', 'property zip code']),
   };
+  // Use custom mapping if provided, fall back to auto-detected
+  const COL = customMapping ? {
+    fname:   customMapping.fname   || autoDetect.fname,
+    lname:   customMapping.lname   || autoDetect.lname,
+    maddr:   customMapping.maddr   || autoDetect.maddr,
+    mcity:   customMapping.mcity   || autoDetect.mcity,
+    mstate:  customMapping.mstate  || autoDetect.mstate,
+    mzip:    customMapping.mzip    || autoDetect.mzip,
+    mcounty: customMapping.mcounty || autoDetect.mcounty,
+    paddr:   customMapping.paddr   || autoDetect.paddr,
+    pcity:   customMapping.pcity   || autoDetect.pcity,
+    pstate:  customMapping.pstate  || autoDetect.pstate,
+    pzip:    customMapping.pzip    || autoDetect.pzip,
+  } : autoDetect;
 
   const phoneCols = detectPhoneColumns(headers);
 
