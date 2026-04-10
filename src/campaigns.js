@@ -556,7 +556,21 @@ async function getContactStats(campaignId) {
       AND cn.last_disposition_normalized = ANY($2::text[])`,
     [campaignId, LIVE_PICKUPS]);
 
-  return { ...res.rows[0], reached_contacts: parseInt(reached.rows[0]?.reached_contacts||0) };
+  // Count contacts where at least one phone converted to a lead (transfer)
+  const leads = await query(`
+    SELECT COUNT(DISTINCT cc.id) as lead_contacts
+    FROM campaign_contacts cc
+    JOIN campaign_contact_phones ccp ON ccp.contact_id = cc.id
+    JOIN campaign_numbers cn ON cn.phone_number = ccp.phone_number AND cn.campaign_id = cc.campaign_id
+    WHERE cc.campaign_id = $1
+      AND cn.last_disposition_normalized = 'transfer'`,
+    [campaignId]);
+
+  return {
+    ...res.rows[0],
+    reached_contacts: parseInt(reached.rows[0]?.reached_contacts||0),
+    lead_contacts: parseInt(leads.rows[0]?.lead_contacts||0)
+  };
 }
 
 // Get all custom list types (saved by users) merged with defaults
