@@ -1022,11 +1022,14 @@ function campaignDetailPage(c) {
   const callablePhones = totalPhones - parseInt(c.contact_counts?.wrong_phones||0) - parseInt(c.contact_counts?.filtered_phones||0);
   const health = totalPhones > 0 ? ((callablePhones / totalPhones) * 100).toFixed(1) : '0.0';
   const callable_pct = n > 0 ? Math.round((c.total_callable / n) * 100) : 0;
-  const cr    = rmCount > 0 && connected > 0 ? ((connected / rmCount) * 100).toFixed(2) : '0.00';
-  const wPct  = totalPhones > 0 ? (((c.total_wrong_numbers||0) / totalPhones) * 100).toFixed(2) : '0.00';
+  const totalContacts = parseInt(c.contact_counts?.total_contacts||0);
+  const leadContacts = parseInt(c.contact_counts?.lead_contacts||0);
+  const wrongNums = parseInt(c.total_wrong_numbers||0);
+  const cr    = totalPhones > 0 && connected > 0 ? ((connected / totalPhones) * 100).toFixed(2) : '0.00';
+  const wPct  = (connected + wrongNums) > 0 ? ((wrongNums / (connected + wrongNums)) * 100).toFixed(2) : '0.00';
   const niPct = connected > 0 ? (((c.total_not_interested||0) / connected) * 100).toFixed(2) : '0.00';
   const lgr   = connected > 0 ? (((c.total_transfers||0) / connected) * 100).toFixed(2) : '0.00';
-  const lcv   = rmCount > 0 ? (((c.total_transfers||0) / rmCount) * 100).toFixed(2) : '0.00';
+  const lcv   = totalContacts > 0 ? ((leadContacts / totalContacts) * 100).toFixed(2) : '0.00';
 
   const uploadRows = (c.uploads||[]).map(u => `
     <tr>
@@ -1094,12 +1097,12 @@ function campaignDetailPage(c) {
         <div style="text-align:center;padding:10px;background:#f5f4f0;border-radius:8px">
           <div style="font-size:22px;font-weight:500;color:#2471a3">${cr}%</div>
           <div style="font-size:11px;color:#888;margin-top:2px">CR</div>
-          <div style="font-size:10px;color:#aaa">Connected ÷ RM Count</div>
+          <div style="font-size:10px;color:#aaa">Connected ÷ Total phones</div>
         </div>
         <div style="text-align:center;padding:10px;background:#f5f4f0;border-radius:8px">
           <div style="font-size:22px;font-weight:500;color:#c0392b">${wPct}%</div>
           <div style="font-size:11px;color:#888;margin-top:2px">W#%</div>
-          <div style="font-size:10px;color:#aaa">Wrong ÷ Total phones</div>
+          <div style="font-size:10px;color:#aaa">Wrong ÷ Humans reached</div>
         </div>
         <div style="text-align:center;padding:10px;background:#f5f4f0;border-radius:8px">
           <div style="font-size:22px;font-weight:500;color:#9a6800">${niPct}%</div>
@@ -1114,7 +1117,7 @@ function campaignDetailPage(c) {
         <div style="text-align:center;padding:10px;background:#f5f4f0;border-radius:8px">
           <div style="font-size:22px;font-weight:500;color:#534AB7">${lcv}%</div>
           <div style="font-size:11px;color:#888;margin-top:2px">LCV</div>
-          <div style="font-size:10px;color:#aaa">Leads ÷ RM Count</div>
+          <div style="font-size:10px;color:#aaa">Lead contacts ÷ Total contacts</div>
         </div>
         <div style="text-align:center;padding:10px;background:#f5f4f0;border-radius:8px">
           <div style="font-size:22px;font-weight:500;color:${parseFloat(health)>50?'#1a7a4a':parseFloat(health)>25?'#9a6800':'#c0392b'}">${health}%</div>
