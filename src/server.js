@@ -388,6 +388,8 @@ app.post('/process',requireAuth,upload.single('csvfile'),async(req,res)=>{
       try{
         await campaigns.initCampaignSchema();
         await campaigns.recordUpload(campaignId, req.file.originalname||'upload.csv', Object.keys(result.listsSeen)[0]||'upload', 'cold_call', allRows);
+      // Apply filtration results to contact phone statuses
+      try { await campaigns.applyFiltrationToContacts(campaignId, result.filteredRows); } catch(e) { console.error('applyFiltration error:', e.message); }
       }catch(campErr){ console.error('Campaign record error:', campErr.message); }
     }
     const newMemSize=Object.keys(result.memory).length;
@@ -760,6 +762,65 @@ app.post('/campaigns/:id/upload', requireAuth, upload.single('csvfile'), async (
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
+
+// ── Contact List Routes ───────────────────────────────────────────────────────
+
+// Upload original contact list to campaign
+app.post('/campaigns/:id/contacts/upload', requireAuth, upload.single('contactfile'), async (req, res) => {
+  try {
+    if (!req.file) return res.status(400).json({ error: 'No file uploaded.' });
+    await campaigns.initCampaignSchema();
+    const parsed = Papa.parse(req.file.buffer.toString('utf8'), { header: true, skipEmptyLines: true });
+    const result = await campaigns.importContactList(req.params.id, parsed.data, parsed.meta.fields || []);
+
+    // Update manual counts if provided
+    if (req.body.readymode_count) {
+      const { query: dbQ } = require('./db');
+      await dbQ('UPDATE campaigns SET manual_count=$1, updated_at=NOW() WHERE id=$2',
+        [parseInt(req.body.readymode_count)||0, req.params.id]);
+    }
+
+    res.json({ success: true, total: result.total });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// Update Readymode accepted count
+app.post('/campaigns/:id/readymode-count', requireAuth, async (req, res) => {
+  try {
+    const { query: dbQ } = require('./db');
+    await dbQ('UPDATE campaigns SET manual_count=$1, updated_at=NOW() WHERE id=$2',
+      [parseInt(req.body.count)||0, req.params.id]);
+    res.redirect('/campaigns/' + req.params.id);
+  } catch(e) { res.redirect('/campaigns/' + req.params.id); }
+});
+
+// Download clean export (callable contacts only)
+app.get('/campaigns/:id/export/clean', requireAuth, async (req, res) => {
+  try {
+    await campaigns.initCampaignSchema();
+    const result = await campaigns.generateCleanExport(req.params.id);
+    if (!result.rows.length) return res.status(400).send('No callable contacts to export.');
+
+    const cols = Object.keys(result.rows[0]);
+    const csv = [cols.join(','), ...result.rows.map(r =>
+      cols.map(c => `"${(r[c]||'').toString().replace(/"/g,'""')}"`).join(',')
+    )].join('\n');
+
+    res.setHeader('Content-Type', 'text/csv');
+    res.setHeader('Content-Disposition', `attachment; filename="loki_clean_export_campaign_${req.params.id}.csv"`);
+    res.send(csv);
+  } catch(e) { res.status(500).send('Error: ' + e.message); }
+});
+
+// Get contact stats API
+app.get('/campaigns/:id/contacts/stats', requireAuth, async (req, res) => {
+  try {
+    await campaigns.initCampaignSchema();
+    const stats = await campaigns.getContactStats(req.params.id);
+    res.json(stats);
+  } catch(e) { res.json({}); }
+});
+
 // Delete campaign upload + reverse memory
 app.post('/campaigns/:id/uploads/:uploadId/delete', requireAuth, async (req, res) => {
   try {
@@ -1035,6 +1096,57 @@ function campaignDetailPage(c) {
         <span style="font-size:12px;color:#888">Enter the total record count from Readymode for this campaign</span>
       </form>
     </div>
+
+    <div class="card" style="padding:1rem 1.25rem;margin-bottom:1.25rem">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px;flex-wrap:wrap;gap:10px">
+        <div class="sec-lbl" style="margin-bottom:0">Contact list</div>
+        <div style="display:flex;gap:8px;flex-wrap:wrap">
+          <a href="/campaigns/${c.id}/export/clean" class="btn-primary" style="font-size:12px;padding:6px 14px">Download clean export (Readymode)</a>
+        </div>
+      </div>
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:10px;margin-bottom:14px">
+        <div class="stat-card"><div class="stat-lbl">Total properties</div><div class="stat-num">${Number(c.contact_counts?.total_contacts||0).toLocaleString()}</div><div style="font-size:11px;color:#888;margin-top:2px">Contacts uploaded</div></div>
+        <div class="stat-card"><div class="stat-lbl">Accepted by Readymode</div><div class="stat-num">${Number(c.manual_count||0).toLocaleString()} <button onclick="document.getElementById('rm-count-form').style.display=document.getElementById('rm-count-form').style.display==='none'?'block':'none'" style="font-size:11px;color:#888;background:none;border:none;cursor:pointer;text-decoration:underline">edit</button></div><div style="font-size:11px;color:#888;margin-top:2px">Manually entered</div></div>
+        <div class="stat-card"><div class="stat-lbl">Total phones</div><div class="stat-num">${Number(c.contact_counts?.total_phones||0).toLocaleString()}</div><div style="font-size:11px;color:#888;margin-top:2px">Across all contacts</div></div>
+        <div class="stat-card"><div class="stat-lbl">Wrong numbers</div><div class="stat-num red">${Number(c.contact_counts?.wrong_phones||0).toLocaleString()}</div><div style="font-size:11px;color:#888;margin-top:2px">Permanently excluded</div></div>
+        <div class="stat-card"><div class="stat-lbl">Confirmed correct</div><div class="stat-num green">${Number(c.contact_counts?.correct_phones||0).toLocaleString()}</div><div style="font-size:11px;color:#888;margin-top:2px">Live person confirmed</div></div>
+      </div>
+      <div id="rm-count-form" style="display:none;background:#f5f4f0;border-radius:8px;padding:12px;margin-bottom:10px">
+        <form method="POST" action="/campaigns/${c.id}/readymode-count" style="display:flex;align-items:center;gap:8px">
+          <input type="number" name="count" value="${c.manual_count||''}" placeholder="e.g. 4163" style="padding:7px 10px;border:1px solid #ddd;border-radius:7px;font-size:14px;width:150px;font-family:inherit">
+          <button type="submit" style="padding:7px 16px;background:#1a1a1a;color:#fff;border:none;border-radius:7px;font-size:13px;cursor:pointer;font-family:inherit">Save</button>
+          <span style="font-size:12px;color:#888">Total contacts Readymode accepted</span>
+        </form>
+      </div>
+      <div style="border-top:1px solid #f0efe9;padding-top:12px">
+        <div class="sec-lbl" style="margin-bottom:8px">Upload original contact list</div>
+        <form id="contact-upload-form" enctype="multipart/form-data">
+          <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+            <input type="file" id="contact-file" accept=".csv" style="font-size:13px;padding:6px;border:1px solid #ddd;border-radius:7px;background:#fff">
+            <button type="button" onclick="uploadContacts()" style="padding:7px 16px;background:#1a1a1a;color:#fff;border:none;border-radius:7px;font-size:13px;cursor:pointer;font-family:inherit">Upload contact list</button>
+            <span id="contact-upload-status" style="font-size:12px;color:#888"></span>
+          </div>
+          <p style="font-size:11px;color:#aaa;margin-top:6px">Upload once per campaign — this becomes the master list for clean exports. Re-upload to replace.</p>
+        </form>
+      </div>
+    </div>
+
+    <script>
+    async function uploadContacts(){
+      const file = document.getElementById('contact-file').files[0];
+      if(!file){alert('Select a CSV file first.');return;}
+      const status = document.getElementById('contact-upload-status');
+      status.textContent = 'Uploading…';
+      const form = new FormData();
+      form.append('contactfile', file);
+      try {
+        const res = await fetch('/campaigns/${c.id}/contacts/upload', {method:'POST', body:form});
+        const data = await res.json();
+        if(data.success){ status.textContent = data.total.toLocaleString() + ' contacts imported successfully'; setTimeout(()=>location.reload(),1500); }
+        else { status.textContent = 'Error: ' + (data.error||'Upload failed'); }
+      } catch(e){ status.textContent = 'Error: ' + e.message; }
+    }
+    </script>
 
     <div style="display:grid;grid-template-columns:1fr 280px;gap:1.25rem;margin-bottom:1.25rem">
       <div class="card" style="padding:1rem 1.25rem">
