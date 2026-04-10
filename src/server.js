@@ -980,7 +980,8 @@ function campaignDetailPage(c) {
 }
 
 // ── Shared shell ─────────────────────────────────────────────────────────────
-function shell(title, body) {
+function shell(title, body, activePage) {
+  activePage = activePage || 'filter';
   const isFilter = title==='List Filtration Bot';
   const isCampaign = !isFilter;
   return `<!DOCTYPE html><html><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${title} — HudREI</title>
