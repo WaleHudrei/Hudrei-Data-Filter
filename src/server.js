@@ -1139,6 +1139,7 @@ function campaignDetailPage(c) {
         <div class="stat-card"><div class="stat-lbl">Total phones</div><div class="stat-num">${Number(c.contact_counts?.total_phones||0).toLocaleString()}</div><div style="font-size:11px;color:#888;margin-top:2px">Across all contacts</div></div>
         <div class="stat-card"><div class="stat-lbl">Wrong numbers</div><div class="stat-num red">${Number(c.contact_counts?.wrong_phones||0).toLocaleString()}</div><div style="font-size:11px;color:#888;margin-top:2px">Permanently excluded</div></div>
         <div class="stat-card"><div class="stat-lbl">Confirmed correct</div><div class="stat-num green">${Number(c.contact_counts?.correct_phones||0).toLocaleString()}</div><div style="font-size:11px;color:#888;margin-top:2px">Live person confirmed</div></div>
+        <div class="stat-card"><div class="stat-lbl">Contacts reached</div><div class="stat-num" style="color:#185fa5">${Number(c.contact_counts?.reached_contacts||0).toLocaleString()} ${c.contact_counts?.total_contacts>0?`<span style="font-size:13px;color:#888">(${((c.contact_counts.reached_contacts/c.contact_counts.total_contacts)*100).toFixed(1)}%)</span>`:''}</div><div style="font-size:11px;color:#888;margin-top:2px">At least 1 live pickup</div></div>
       </div>
       <div id="rm-count-form" style="display:none;background:#f5f4f0;border-radius:8px;padding:12px;margin-bottom:10px">
         <form method="POST" action="/campaigns/${c.id}/readymode-count" style="display:flex;align-items:center;gap:8px">
