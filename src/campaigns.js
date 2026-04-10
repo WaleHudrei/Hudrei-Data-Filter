@@ -74,6 +74,47 @@ async function initCampaignSchema() {
     CREATE INDEX IF NOT EXISTS idx_campaign_numbers_campaign ON campaign_numbers(campaign_id);
     CREATE INDEX IF NOT EXISTS idx_campaign_numbers_phone ON campaign_numbers(phone_number);
     CREATE INDEX IF NOT EXISTS idx_campaign_numbers_status ON campaign_numbers(current_status);
+
+    CREATE TABLE IF NOT EXISTS campaign_contacts (
+      id SERIAL PRIMARY KEY,
+      campaign_id INTEGER NOT NULL REFERENCES campaigns(id) ON DELETE CASCADE,
+      first_name VARCHAR(100),
+      last_name VARCHAR(100),
+      mailing_address VARCHAR(255),
+      mailing_city VARCHAR(100),
+      mailing_state VARCHAR(10),
+      mailing_zip VARCHAR(20),
+      mailing_county VARCHAR(100),
+      property_address VARCHAR(255),
+      property_city VARCHAR(100),
+      property_state VARCHAR(10),
+      property_zip VARCHAR(20),
+      row_index INTEGER,
+      all_phones_dead BOOLEAN DEFAULT false,
+      created_at TIMESTAMPTZ DEFAULT NOW(),
+      UNIQUE(campaign_id, row_index)
+    );
+
+    CREATE TABLE IF NOT EXISTS campaign_contact_phones (
+      id SERIAL PRIMARY KEY,
+      campaign_id INTEGER NOT NULL REFERENCES campaigns(id) ON DELETE CASCADE,
+      contact_id INTEGER NOT NULL REFERENCES campaign_contacts(id) ON DELETE CASCADE,
+      phone_number VARCHAR(20) NOT NULL,
+      slot_index SMALLINT NOT NULL,
+      phone_status VARCHAR(20) DEFAULT 'unknown',
+      phone_tag TEXT,
+      wrong_number BOOLEAN DEFAULT false,
+      filtered BOOLEAN DEFAULT false,
+      cumulative_count INTEGER DEFAULT 0,
+      last_disposition VARCHAR(100),
+      updated_at TIMESTAMPTZ DEFAULT NOW(),
+      UNIQUE(contact_id, slot_index)
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_campaign_contacts_campaign ON campaign_contacts(campaign_id);
+    CREATE INDEX IF NOT EXISTS idx_campaign_phones_campaign ON campaign_contact_phones(campaign_id);
+    CREATE INDEX IF NOT EXISTS idx_campaign_phones_number ON campaign_contact_phones(phone_number);
+    CREATE INDEX IF NOT EXISTS idx_campaign_phones_status ON campaign_contact_phones(phone_status);
   `);
 
   // Safe migrations — add columns if they don't exist
@@ -213,3 +254,209 @@ async function recordUpload(campaignId, filename, sourceListName, channel, rows)
 }
 
 module.exports = { initCampaignSchema, getCampaigns, getCampaign, createCampaign, updateCampaignStatus, updateCampaignChannel, recordUpload, closeCampaign, cloneCampaign };
+
+// ── Contact list management ───────────────────────────────────────────────────
+
+// Detect phone columns from CSV headers
+function detectPhoneColumns(headers) {
+  const phones = [];
+  const h = headers.map(x => x.toLowerCase().trim());
+  // Look for Ph#1..Ph#10, Phone 1..10, Phone, Alt Phone etc.
+  const patterns = [
+    /^ph#?(\d+)$/i, /^phone\s*#?(\d+)$/i, /^phone$/i, /^alt\.?\s*phone$/i,
+    /^phone\s*(\d+)$/i
+  ];
+  headers.forEach((col, idx) => {
+    const lower = col.toLowerCase().trim();
+    for (const pat of patterns) {
+      if (pat.test(lower)) { phones.push({ col, idx }); break; }
+    }
+  });
+  return phones;
+}
+
+// Import original contact list CSV into campaign
+async function importContactList(campaignId, rows, headers) {
+  if (!rows.length) return { total: 0 };
+
+  const h = headers.map(x => x.toLowerCase().trim());
+  const find = (opts) => {
+    for (const o of opts) {
+      const i = h.findIndex(x => x.includes(o.toLowerCase()));
+      if (i > -1) return headers[i];
+    }
+    return null;
+  };
+
+  const COL = {
+    fname:    find(['first name', 'firstname']),
+    lname:    find(['last name', 'lastname']),
+    maddr:    find(['mailing address', 'owner street']),
+    mcity:    find(['mailing city', 'owner city']),
+    mstate:   find(['mailing state', 'owner state']),
+    mzip:     find(['mailing zip', 'owner zip']),
+    mcounty:  find(['mailing county', 'county']),
+    paddr:    find(['property address', 'property street', 'address']),
+    pcity:    find(['property city', 'city']),
+    pstate:   find(['property state', 'state']),
+    pzip:     find(['property zip', 'property zip code', 'zip']),
+  };
+
+  const phoneCols = detectPhoneColumns(headers);
+
+  // Clear existing contacts for this campaign
+  await query(`DELETE FROM campaign_contacts WHERE campaign_id=$1`, [campaignId]);
+
+  let imported = 0;
+  for (let i = 0; i < rows.length; i++) {
+    const r = rows[i];
+    try {
+      const cr = await query(
+        `INSERT INTO campaign_contacts
+         (campaign_id, first_name, last_name, mailing_address, mailing_city, mailing_state, mailing_zip, mailing_county, property_address, property_city, property_state, property_zip, row_index)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)
+         ON CONFLICT (campaign_id, row_index) DO UPDATE SET
+           first_name=EXCLUDED.first_name, last_name=EXCLUDED.last_name,
+           property_address=EXCLUDED.property_address, updated_at=NOW()
+         RETURNING id`,
+        [campaignId,
+         r[COL.fname]||'', r[COL.lname]||'',
+         r[COL.maddr]||'', r[COL.mcity]||'', r[COL.mstate]||'', r[COL.mzip]||'', r[COL.mcounty]||'',
+         r[COL.paddr]||'', r[COL.pcity]||'', r[COL.pstate]||'', r[COL.pzip]||'',
+         i]
+      );
+      const contactId = cr.rows[0].id;
+
+      // Insert phone numbers
+      for (let s = 0; s < phoneCols.length; s++) {
+        const phone = String(r[phoneCols[s].col]||'').replace(/\D/g,'');
+        if (!phone || phone === '0') continue;
+        await query(
+          `INSERT INTO campaign_contact_phones (campaign_id, contact_id, phone_number, slot_index)
+           VALUES ($1,$2,$3,$4)
+           ON CONFLICT (contact_id, slot_index) DO NOTHING`,
+          [campaignId, contactId, phone, s + 1]
+        );
+      }
+      imported++;
+    } catch (e) { console.error('Import row error:', e.message); }
+  }
+
+  // Update campaign total_properties count
+  await query(`UPDATE campaigns SET total_unique_numbers=$1, updated_at=NOW() WHERE id=$2`, [imported, campaignId]);
+
+  return { total: imported };
+}
+
+// Apply filtration results to contact phones
+async function applyFiltrationToContacts(campaignId, filteredRows) {
+  for (const row of filteredRows) {
+    const phone = String(row.Phone||'').replace(/\D/g,'');
+    if (!phone) continue;
+    const dispo = row._normDispo || '';
+    const isWrong = dispo === 'wrong_number';
+    const status = row['Phone Status'] || '';
+    const tag = row['Phone Tag'] || '';
+    const count = parseInt(row['Call Log Count']) || 1;
+
+    await query(
+      `UPDATE campaign_contact_phones SET
+         phone_status=$1, phone_tag=$2, wrong_number=$3,
+         filtered=$4, cumulative_count=$5, last_disposition=$6, updated_at=NOW()
+       WHERE campaign_id=$7 AND phone_number=$8`,
+      [status||'unknown', tag, isWrong, true, count, row.Disposition||'', campaignId, phone]
+    );
+  }
+
+  // Also update correct numbers from clean rows
+  // (these were kept so mark as correct if disposition confirms it)
+}
+
+// Generate clean export file — one row per contact, blanked wrong/filtered phones
+async function generateCleanExport(campaignId) {
+  const contacts = await query(
+    `SELECT cc.*, array_agg(
+       json_build_object(
+         'phone', ccp.phone_number,
+         'slot', ccp.slot_index,
+         'status', ccp.phone_status,
+         'wrong', ccp.wrong_number,
+         'filtered', ccp.filtered,
+         'tag', ccp.phone_tag
+       ) ORDER BY ccp.slot_index
+     ) as phones
+     FROM campaign_contacts cc
+     LEFT JOIN campaign_contact_phones ccp ON ccp.contact_id = cc.id
+     WHERE cc.campaign_id = $1
+     GROUP BY cc.id
+     ORDER BY cc.row_index`,
+    [campaignId]
+  );
+
+  const rows = [];
+  let callable = 0, dead = 0;
+
+  for (const c of contacts.rows) {
+    const phones = (c.phones||[]).filter(p => p && p.phone);
+    const callablePhones = phones.filter(p => !p.wrong && !p.filtered);
+    const wrongPhones = phones.filter(p => p.wrong);
+
+    if (callablePhones.length === 0) { dead++; continue; } // all phones dead — skip row
+    callable++;
+
+    const row = {
+      'First Name': c.first_name,
+      'Last Name': c.last_name,
+      'Mailing Address': c.mailing_address,
+      'Mailing City': c.mailing_city,
+      'Mailing State': c.mailing_state,
+      'Mailing Zip': c.mailing_zip,
+      'Mailing County': c.mailing_county,
+      'Property Address': c.property_address,
+      'Property City': c.property_city,
+      'Property State': c.property_state,
+      'Property Zip': c.property_zip,
+    };
+
+    // Fill phone slots — blank wrong/filtered, keep callable
+    const maxSlot = Math.max(...phones.map(p => p.slot));
+    for (let s = 1; s <= maxSlot; s++) {
+      const ph = phones.find(p => p.slot === s);
+      if (ph && !ph.wrong && !ph.filtered) {
+        row[`Ph#${s}`] = ph.phone;
+      } else {
+        row[`Ph#${s}`] = ''; // blank the slot
+      }
+    }
+
+    rows.push(row);
+  }
+
+  // Update campaign callable count
+  await query(
+    `UPDATE campaigns SET total_callable=$1, updated_at=NOW() WHERE id=$2`,
+    [callable, campaignId]
+  );
+
+  return { rows, callable, dead };
+}
+
+// Get contact list stats for campaign
+async function getContactStats(campaignId) {
+  const res = await query(`
+    SELECT
+      COUNT(DISTINCT cc.id) as total_contacts,
+      COUNT(DISTINCT CASE WHEN ccp.wrong_number = true THEN ccp.id END) as wrong_phones,
+      COUNT(DISTINCT CASE WHEN ccp.filtered = true AND ccp.wrong_number = false THEN ccp.id END) as filtered_phones,
+      COUNT(DISTINCT CASE WHEN ccp.phone_status = 'Correct' THEN ccp.id END) as correct_phones,
+      COUNT(DISTINCT ccp.id) as total_phones
+    FROM campaign_contacts cc
+    LEFT JOIN campaign_contact_phones ccp ON ccp.contact_id = cc.id
+    WHERE cc.campaign_id = $1`, [campaignId]);
+  return res.rows[0];
+}
+
+module.exports = Object.assign(module.exports, {
+  importContactList, applyFiltrationToContacts, generateCleanExport,
+  getContactStats, detectPhoneColumns
+});
