@@ -1,5 +1,6 @@
 const { query: dbQuery, initSchema } = require('./db');
 const campaigns = require('./campaigns');
+const uploadUI = require('./ui/upload');
 const express = require('express');
 const session = require('express-session');
 const multer = require('multer');
@@ -474,6 +475,96 @@ async function saveRunToDB(filename, stats, listsSeen, allRows) {
     return null;
   }
 }
+
+
+// ── Upload Flow Routes ────────────────────────────────────────────────────────
+
+app.get('/upload', requireAuth, (req, res) => res.send(uploadUI.uploadChoosePage()));
+app.get('/upload/filter', requireAuth, (req, res) => res.send(uploadUI.uploadFilterStep1Page()));
+app.get('/upload/filter/map', requireAuth, (req, res) => res.send(uploadUI.uploadFilterStep2Page()));
+app.get('/upload/filter/review', requireAuth, (req, res) => res.send(uploadUI.uploadFilterStep3Page()));
+app.get('/upload/property', requireAuth, (req, res) => res.send(uploadUI.uploadPropertyStep1Page()));
+app.get('/upload/property/map', requireAuth, (req, res) => res.send(uploadUI.uploadPropertyStep2Page()));
+app.get('/upload/property/review', requireAuth, (req, res) => res.send(uploadUI.uploadPropertyStep3Page()));
+
+// Parse CSV — return columns + first rows + auto-mapping (client-side session storage)
+app.post('/upload/filter/parse', requireAuth, upload.single('csvfile'), (req, res) => {
+  try {
+    if (!req.file) return res.status(400).json({ error: 'No file uploaded.' });
+    const Papa = require('papaparse');
+    const parsed = Papa.parse(req.file.buffer.toString('utf8'), { header: true, skipEmptyLines: true });
+    const columns = parsed.meta.fields || [];
+    const rows = parsed.data;
+    const autoMap = uploadUI.autoMap(columns, uploadUI.REISIFT_FILTER_FIELDS);
+    res.json({ columns, rows, autoMap, filename: req.file.originalname, total: rows.length });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.post('/upload/property/parse', requireAuth, upload.single('csvfile'), (req, res) => {
+  try {
+    if (!req.file) return res.status(400).json({ error: 'No file uploaded.' });
+    const Papa = require('papaparse');
+    const parsed = Papa.parse(req.file.buffer.toString('utf8'), { header: true, skipEmptyLines: true });
+    const columns = parsed.meta.fields || [];
+    const rows = parsed.data;
+    const autoMap = uploadUI.autoMap(columns, uploadUI.REISIFT_PROPERTY_FIELDS);
+    res.json({ columns, rows, autoMap, filename: req.file.originalname, total: rows.length });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// Process filter + apply mapping → return mapped filtered rows
+app.post('/upload/filter/process', requireAuth, async (req, res) => {
+  try {
+    const { rows, mapping, filename } = req.body;
+    if (!rows || !mapping) return res.status(400).json({ error: 'Missing data.' });
+
+    // Reconstruct CSV text from rows and run through processCSV
+    const Papa = require('papaparse');
+    const csvText = Papa.unparse(rows);
+    const memory = await loadMemory();
+    const result = processCSV(csvText, memory);
+    await saveMemory(result.memory);
+    req.session.lastResult = { cleanRows: result.cleanRows, filteredRows: result.filteredRows };
+
+    // Apply column mapping to filtered rows
+    const filteredMapped = result.filteredRows.map(r => {
+      const out = {};
+      // Internal field name → REISift field name mapping
+      const internalToReisift = {
+        'Call Log Date':     mapping['Call Log Date']     || 'Call Log Date',
+        'Phone':             mapping['Phone']             || 'Phone',
+        'Phone Tag':         mapping['Phone Tag']         || 'Phone Tag',
+        'Call Log Count':    mapping['Call Log Count']    || 'Call Log Count',
+        'Marketing Results': mapping['Marketing Result']  || 'Marketing Result',
+        'Phone Status':      mapping['Phone Status']      || 'Phone Status',
+        'Call Notes':        mapping['Call Notes']        || 'Call Notes',
+        'First Name':        mapping['First Name']        || 'First Name',
+        'Last Name':         mapping['Last Name']         || 'Last Name',
+        'City':              mapping['City']              || 'City',
+        'Address':           mapping['Address']           || 'Address',
+        'Zip Code':          mapping['Zip Code']          || 'Zip Code',
+        'State':             mapping['State']             || 'State',
+      };
+      Object.entries(internalToReisift).forEach(([internal, reisift]) => {
+        if (r[internal] !== undefined) out[reisift] = r[internal];
+      });
+      return out;
+    });
+
+    res.json({
+      filteredMapped,
+      cleanRows: result.cleanRows,
+      stats: {
+        total: result.totalRows,
+        kept: result.cleanRows.length,
+        filtered: result.filteredRows.length,
+        lists: Object.keys(result.listsSeen).length,
+        memCaught: result.memCaught,
+      },
+      listsSeen: result.listsSeen,
+    });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
 
 // ── Campaign Routes ───────────────────────────────────────────────────────────
 
