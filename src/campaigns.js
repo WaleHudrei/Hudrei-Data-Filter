@@ -92,6 +92,7 @@ async function initCampaignSchema() {
       row_index INTEGER,
       all_phones_dead BOOLEAN DEFAULT false,
       created_at TIMESTAMPTZ DEFAULT NOW(),
+      updated_at TIMESTAMPTZ DEFAULT NOW(),
       UNIQUE(campaign_id, row_index)
     );
 
@@ -120,6 +121,7 @@ async function initCampaignSchema() {
   // Safe migrations — add columns if they don't exist
   const migrations = [
     `ALTER TABLE campaigns ADD COLUMN IF NOT EXISTS start_date DATE DEFAULT CURRENT_DATE`,
+    `ALTER TABLE campaign_contacts ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ DEFAULT NOW()`,
     `ALTER TABLE campaigns ADD COLUMN IF NOT EXISTS end_date DATE`,
     `ALTER TABLE campaigns ADD COLUMN IF NOT EXISTS manual_count INTEGER DEFAULT 0`,
     `ALTER TABLE campaigns ADD COLUMN IF NOT EXISTS total_connected INTEGER DEFAULT 0`,
@@ -317,7 +319,7 @@ async function importContactList(campaignId, rows, headers) {
          VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)
          ON CONFLICT (campaign_id, row_index) DO UPDATE SET
            first_name=EXCLUDED.first_name, last_name=EXCLUDED.last_name,
-           property_address=EXCLUDED.property_address, updated_at=NOW()
+           property_address=EXCLUDED.property_address
          RETURNING id`,
         [campaignId,
          r[COL.fname]||'', r[COL.lname]||'',
