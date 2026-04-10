@@ -1021,10 +1021,14 @@ function campaignDetailPage(c) {
   const totalPhones = parseInt(c.contact_counts?.total_phones||0);
   const callablePhones = totalPhones - parseInt(c.contact_counts?.wrong_phones||0) - parseInt(c.contact_counts?.filtered_phones||0);
   const health = totalPhones > 0 ? ((callablePhones / totalPhones) * 100).toFixed(1) : '0.0';
-  const callable_pct = n > 0 ? Math.round((c.total_callable / n) * 100) : 0;
+  const callable_pct_old = n > 0 ? Math.round((c.total_callable / n) * 100) : 0;
   const totalContacts = parseInt(c.contact_counts?.total_contacts||0);
   const leadContacts = parseInt(c.contact_counts?.lead_contacts||0);
   const wrongNums = parseInt(c.total_wrong_numbers||0);
+  // Callable pool: master list phones minus any filtered-out phones from campaign activity
+  const filteredOutCount = parseInt(c.total_filtered||0) + wrongNums;
+  const masterCallable = Math.max(0, totalPhones - filteredOutCount);
+  const callable_pct = totalPhones > 0 ? Math.round((masterCallable / totalPhones) * 100) : 0;
   const cr    = totalPhones > 0 && connected > 0 ? ((connected / totalPhones) * 100).toFixed(2) : '0.00';
   const wPct  = (connected + wrongNums) > 0 ? ((wrongNums / (connected + wrongNums)) * 100).toFixed(2) : '0.00';
   const niPct = connected > 0 ? (((c.total_not_interested||0) / connected) * 100).toFixed(2) : '0.00';
@@ -1088,7 +1092,7 @@ function campaignDetailPage(c) {
       <div class="stat-card"><div class="stat-lbl">Wrong numbers</div><div class="stat-num red">${Number(c.total_wrong_numbers||0).toLocaleString()}</div><div style="font-size:11px;color:#888;margin-top:2px">Removed</div></div>
       <div class="stat-card"><div class="stat-lbl">Not interested</div><div class="stat-num" style="color:#9a6800">${Number(c.total_not_interested||0).toLocaleString()}</div><div style="font-size:11px;color:#888;margin-top:2px">Total NI</div></div>
       <div class="stat-card"><div class="stat-lbl">Leads generated</div><div class="stat-num green">${Number(c.total_transfers||0).toLocaleString()}</div><div style="font-size:11px;color:#888;margin-top:2px">Transfers</div></div>
-      <div class="stat-card"><div class="stat-lbl">Callable</div><div class="stat-num green">${Number(c.total_callable||0).toLocaleString()} <span style="font-size:12px;font-weight:400;color:#888">(${callable_pct}%)</span></div><div style="font-size:11px;color:#888;margin-top:2px">Active pool</div></div>
+      <div class="stat-card"><div class="stat-lbl">Callable</div><div class="stat-num green">${Number(masterCallable).toLocaleString()} <span style="font-size:12px;font-weight:400;color:#888">(${callable_pct}%)</span></div><div style="font-size:11px;color:#888;margin-top:2px">Active pool</div></div>
       <div class="stat-card"><div class="stat-lbl">Filtration runs</div><div class="stat-num">${c.upload_count||0}</div><div style="font-size:11px;color:#888;margin-top:2px">Uploads</div></div>
     </div>
     <div style="background:#fff;border:1px solid #e0dfd8;border-radius:12px;padding:14px 16px;margin-bottom:1.25rem">
