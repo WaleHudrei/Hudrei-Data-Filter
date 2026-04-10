@@ -714,6 +714,7 @@ app.get('/campaigns/:id', requireAuth, async (req, res) => {
   try {
     const c = await campaigns.getCampaign(req.params.id);
     if (!c) return res.redirect('/campaigns');
+    c.contact_counts = await campaigns.getContactStats(req.params.id);
     res.send(campaignDetailPage(c));
   } catch (e) { res.status(500).send('Error: ' + e.message); }
 });
