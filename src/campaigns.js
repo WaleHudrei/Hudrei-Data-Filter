@@ -384,27 +384,35 @@ async function importContactList(campaignId, rows, headers, customMapping) {
     }
 
     if (i === 0) {
-      // On first batch, log a sample so we can see what's happening
       const sampleRow = batch[0] || {};
       console.log('[importContactList] phoneCols:', phoneCols.map(p => p.col));
       console.log('[importContactList] sample row phone values:',
         phoneCols.map(p => ({ col: p.col, val: sampleRow[p.col] })));
       console.log('[importContactList] phones extracted in first batch:', phoneVals.length);
+      console.log('[importContactList] contactRes.rows sample:', contactRes.rows.slice(0, 3));
+      console.log('[importContactList] phoneParams first 12:', phoneParams.slice(0, 12));
     }
 
     if (phoneVals.length > 0) {
       try {
-        await query(
+        const phoneInsertRes = await query(
           `INSERT INTO campaign_contact_phones (campaign_id, contact_id, phone_number, slot_index)
            VALUES ${phoneVals.join(',')}
-           ON CONFLICT (contact_id, slot_index) DO NOTHING`,
+           ON CONFLICT (contact_id, slot_index) DO NOTHING
+           RETURNING id`,
           phoneParams
         );
+        if (i === 0) {
+          console.log('[importContactList] PHONE INSERT SUCCESS — rows returned:', phoneInsertRes.rows.length, 'of', phoneVals.length, 'attempted');
+        }
       } catch(phoneErr) {
-        console.error('Phone batch insert error:', phoneErr.message, 'vals:', phoneVals.length, 'params:', phoneParams.length);
+        console.error('[importContactList] PHONE INSERT ERROR:', phoneErr.message);
+        console.error('[importContactList] error code:', phoneErr.code, 'detail:', phoneErr.detail);
+        console.error('[importContactList] first phoneVals:', phoneVals.slice(0, 2), 'first phoneParams:', phoneParams.slice(0, 8));
+        throw phoneErr;
       }
     } else if (i === 0) {
-      console.error('[importContactList] NO PHONES extracted from first batch — check column detection above');
+      console.error('[importContactList] NO PHONES extracted from first batch');
     }
 
     imported += batch.length;
