@@ -544,7 +544,19 @@ async function getContactStats(campaignId) {
     FROM campaign_contacts cc
     LEFT JOIN campaign_contact_phones ccp ON ccp.contact_id = cc.id
     WHERE cc.campaign_id = $1`, [campaignId]);
-  return res.rows[0];
+
+  // Count contacts where at least one phone has a live-pickup disposition
+  const LIVE_PICKUPS = ['not_interested','transfer','callback','hung_up','spanish_speaker','do_not_call','completed','disqualified'];
+  const reached = await query(`
+    SELECT COUNT(DISTINCT cc.id) as reached_contacts
+    FROM campaign_contacts cc
+    JOIN campaign_contact_phones ccp ON ccp.contact_id = cc.id
+    JOIN campaign_numbers cn ON cn.phone_number = ccp.phone_number AND cn.campaign_id = cc.campaign_id
+    WHERE cc.campaign_id = $1
+      AND cn.last_disposition_normalized = ANY($2::text[])`,
+    [campaignId, LIVE_PICKUPS]);
+
+  return { ...res.rows[0], reached_contacts: parseInt(reached.rows[0]?.reached_contacts||0) };
 }
 
 // Get all custom list types (saved by users) merged with defaults
