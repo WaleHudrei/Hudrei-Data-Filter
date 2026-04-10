@@ -125,9 +125,12 @@ function stripTime(val) {
   const d=new Date(s);if(!isNaN(d)) return d.toISOString().split('T')[0];
   return s.split(' ')[0];
 }
-function memKey(list,phone){return list.toLowerCase().trim()+'||'+String(phone).replace(/\D/g,'');}
+function memKey(list,phone,campaignId){
+  const scope = campaignId ? 'campaign:'+campaignId : list.toLowerCase().trim();
+  return scope+'||'+String(phone).replace(/\D/g,'');
+}
 
-function processCSV(csvText, memory) {
+function processCSV(csvText, memory, campaignId) {
   const parsed=Papa.parse(csvText,{header:true,skipEmptyLines:true});
   const rows=parsed.data;
   if(!rows.length) throw new Error('File is empty or could not be parsed.');
@@ -138,7 +141,7 @@ function processCSV(csvText, memory) {
     const phone=String(r[COLS.phone]||'').replace(/\D/g,'');
     const list=(r[COLS.listname]||'Unknown List').trim();
     if(!phone||phone==='0') return;
-    const k=memKey(list,phone);
+    const k=memKey(list,phone,campaignId);
     fileCount[k]=(fileCount[k]||0)+1;
   });
   const cleanRows=[],filteredRows=[];
@@ -151,7 +154,7 @@ function processCSV(csvText, memory) {
     const dispo=normDispo(dispoRaw);
     const dateRaw=r[COLS.date]||'';
     if(!phone||phone==='0') return;
-    const mkey=memKey(list,phone);
+    const mkey=memKey(list,phone,campaignId);
     if(processedKeys[mkey]) return;
     processedKeys[mkey]=true;
     const countInFile=fileCount[mkey]||1;
@@ -210,6 +213,17 @@ app.get('/',requireAuth,async(req,res)=>{
     <div id="error-banner" style="display:none;background:#fff0f0;border:1px solid #f5c5c5;border-radius:8px;padding:10px 14px;font-size:13px;color:#c0392b;margin-bottom:1rem"></div>
     <div class="card">
       <div class="sec-lbl" style="margin-bottom:10px">Upload call log export</div>
+      <div style="display:flex;align-items:center;gap:10px;margin-bottom:12px;flex-wrap:wrap">
+        <div style="flex:1;min-width:200px">
+          <label style="font-size:12px;color:#888;display:block;margin-bottom:4px">Campaign (optional)</label>
+          <select id="campaign-select" style="width:100%;padding:8px 10px;border:1px solid #ddd;border-radius:8px;font-size:13px;background:#fff;font-family:inherit">
+            <option value="">— No campaign —</option>
+          </select>
+        </div>
+        <div style="padding-top:18px">
+          <a href="/campaigns/new" style="font-size:12px;color:#888;text-decoration:none">+ New campaign</a>
+        </div>
+      </div>
       <div class="drop-zone" id="drop-zone"><strong style="font-size:15px">Drop Readymode CSV here or click to browse</strong><p style="font-size:12px;color:#888;margin-top:5px">Phone · Log Type · Original lead file · Log Time · First/Last Name · Address · City · State · Zip Code</p></div>
       <input type="file" id="file-input" accept=".csv" style="display:none">
       <div id="upload-spinner" style="display:none;align-items:center;gap:8px;font-size:13px;color:#888;padding:10px 0"><div class="spinner"></div> Processing…</div>
@@ -262,9 +276,21 @@ app.get('/',requireAuth,async(req,res)=>{
     <script>
     const COLS=['List Name (REISift Campaign)','First Name','Last Name','Address','City','State','Zip Code','Phone','Disposition','Call Log Count','Action','Phone Tag','Phone Status','Marketing Results'];
     function showError(msg){const b=document.getElementById('error-banner');b.textContent=msg;b.style.display='block';setTimeout(()=>b.style.display='none',6000);}
+    // Load campaigns into dropdown
+    fetch('/api/campaigns').then(r=>r.json()).then(list=>{
+      const sel=document.getElementById('campaign-select');
+      list.forEach(c=>{
+        const opt=document.createElement('option');
+        opt.value=c.id;opt.textContent=c.name;
+        sel.appendChild(opt);
+      });
+    }).catch(()=>{});
+
     async function handleFile(file){
       if(!file.name.endsWith('.csv')){showError('Please upload a CSV file.');return;}
       const form=new FormData();form.append('csvfile',file);
+      const campaignId=document.getElementById('campaign-select').value;
+      if(campaignId) form.append('campaign_id',campaignId);
       document.getElementById('upload-spinner').style.display='flex';
       document.getElementById('drop-zone').style.opacity='0.6';
       try{
@@ -332,12 +358,20 @@ app.post('/process',requireAuth,upload.single('csvfile'),async(req,res)=>{
   try{
     if(!req.file) return res.status(400).json({error:'No file uploaded.'});
     const memory=await loadMemory();
-    const result=processCSV(req.file.buffer.toString('utf8'),memory);
+    const cId = req.body.campaign_id||null;
+    const result=processCSV(req.file.buffer.toString('utf8'),memory,cId);
     await saveMemory(result.memory);
     req.session.lastResult={cleanRows:result.cleanRows,filteredRows:result.filteredRows};
     const allRows=[...result.cleanRows,...result.filteredRows];
     const runId=await saveRunToDB(req.file.originalname||'upload.csv',{totalRows:result.totalRows,listsCount:Object.keys(result.listsSeen).length,kept:result.cleanRows.length,filtered:result.filteredRows.length,memCaught:result.memCaught},result.listsSeen,allRows);
     if(runId) console.log('Saved to DB, run ID:',runId);
+    const campaignId = req.body.campaign_id;
+    if(campaignId){
+      try{
+        await campaigns.initCampaignSchema();
+        await campaigns.recordUpload(campaignId, req.file.originalname||'upload.csv', Object.keys(result.listsSeen)[0]||'upload', 'cold_call', allRows);
+      }catch(campErr){ console.error('Campaign record error:', campErr.message); }
+    }
     const newMemSize=Object.keys(result.memory).length;
     const newListCount=new Set(Object.keys(result.memory).map(k=>k.split('||')[0])).size;
     res.json({success:true,stats:{totalRows:result.totalRows,listsCount:Object.keys(result.listsSeen).length,kept:result.cleanRows.length,filtered:result.filteredRows.length,memCaught:result.memCaught},listsSeen:result.listsSeen,memSize:newMemSize,listCount:newListCount,preview:{filtered:result.filteredRows.slice(0,50),clean:result.cleanRows.slice(0,50)}});
