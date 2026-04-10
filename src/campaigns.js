@@ -324,38 +324,62 @@ async function importContactList(campaignId, rows, headers, customMapping) {
   await query(`DELETE FROM campaign_contacts WHERE campaign_id=$1`, [campaignId]);
 
   let imported = 0;
-  for (let i = 0; i < rows.length; i++) {
-    const r = rows[i];
-    try {
-      const cr = await query(
-        `INSERT INTO campaign_contacts
-         (campaign_id, first_name, last_name, mailing_address, mailing_city, mailing_state, mailing_zip, mailing_county, property_address, property_city, property_state, property_zip, row_index)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)
-         ON CONFLICT (campaign_id, row_index) DO UPDATE SET
-           first_name=EXCLUDED.first_name, last_name=EXCLUDED.last_name,
-           property_address=EXCLUDED.property_address
-         RETURNING id`,
-        [campaignId,
-         r[COL.fname]||'', r[COL.lname]||'',
-         r[COL.maddr]||'', r[COL.mcity]||'', r[COL.mstate]||'', r[COL.mzip]||'', r[COL.mcounty]||'',
-         r[COL.paddr]||'', r[COL.pcity]||'', r[COL.pstate]||'', r[COL.pzip]||'',
-         i]
-      );
-      const contactId = cr.rows[0].id;
+  const BATCH = 100;
 
-      // Insert phone numbers
+  for (let i = 0; i < rows.length; i += BATCH) {
+    const batch = rows.slice(i, i + BATCH);
+    
+    // Build batch insert for contacts
+    const vals = [];
+    const params = [];
+    let p = 1;
+    for (let j = 0; j < batch.length; j++) {
+      const r = batch[j];
+      const idx = i + j;
+      vals.push(`($${p},$${p+1},$${p+2},$${p+3},$${p+4},$${p+5},$${p+6},$${p+7},$${p+8},$${p+9},$${p+10},$${p+11},$${p+12})`);
+      params.push(campaignId, r[COL.fname]||'', r[COL.lname]||'',
+        r[COL.maddr]||'', r[COL.mcity]||'', r[COL.mstate]||'', r[COL.mzip]||'', r[COL.mcounty]||'',
+        r[COL.paddr]||'', r[COL.pcity]||'', r[COL.pstate]||'', r[COL.pzip]||'', idx);
+      p += 13;
+    }
+
+    const contactRes = await query(
+      `INSERT INTO campaign_contacts
+       (campaign_id, first_name, last_name, mailing_address, mailing_city, mailing_state, mailing_zip, mailing_county, property_address, property_city, property_state, property_zip, row_index)
+       VALUES ${vals.join(',')}
+       ON CONFLICT (campaign_id, row_index) DO UPDATE SET
+         first_name=EXCLUDED.first_name, last_name=EXCLUDED.last_name,
+         property_address=EXCLUDED.property_address
+       RETURNING id, row_index`,
+      params
+    );
+
+    // Build batch insert for phones
+    const phoneVals = [];
+    const phoneParams = [];
+    let pp = 1;
+
+    for (const cRow of contactRes.rows) {
+      const r = batch[cRow.row_index - i];
       for (let s = 0; s < phoneCols.length; s++) {
         const phone = String(r[phoneCols[s].col]||'').replace(/\D/g,'');
-        if (!phone || phone === '0') continue;
-        await query(
-          `INSERT INTO campaign_contact_phones (campaign_id, contact_id, phone_number, slot_index)
-           VALUES ($1,$2,$3,$4)
-           ON CONFLICT (contact_id, slot_index) DO NOTHING`,
-          [campaignId, contactId, phone, s + 1]
-        );
+        if (!phone || phone === '0' || phone.length < 7) continue;
+        phoneVals.push(`($${pp},$${pp+1},$${pp+2},$${pp+3})`);
+        phoneParams.push(campaignId, cRow.id, phone, s + 1);
+        pp += 4;
       }
-      imported++;
-    } catch (e) { console.error('Import row error:', e.message); }
+    }
+
+    if (phoneVals.length > 0) {
+      await query(
+        `INSERT INTO campaign_contact_phones (campaign_id, contact_id, phone_number, slot_index)
+         VALUES ${phoneVals.join(',')}
+         ON CONFLICT (contact_id, slot_index) DO NOTHING`,
+        phoneParams
+      );
+    }
+
+    imported += batch.length;
   }
 
   // Update campaign total_properties count
