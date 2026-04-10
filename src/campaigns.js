@@ -14,6 +14,8 @@ async function initCampaignSchema() {
       sms_status VARCHAR(20) DEFAULT 'dormant',
       notes TEXT,
       created_by VARCHAR(100) DEFAULT 'team',
+      start_date DATE DEFAULT CURRENT_DATE,
+      end_date DATE,
       total_unique_numbers INTEGER DEFAULT 0,
       total_callable INTEGER DEFAULT 0,
       total_filtered INTEGER DEFAULT 0,
@@ -91,13 +93,32 @@ async function getCampaign(id) {
   return { ...c.rows[0], uploads: uploads.rows, disposition_breakdown: disposition_breakdown.rows };
 }
 
-async function createCampaign({ name, list_type, market_name, state_code, notes, created_by }) {
+async function createCampaign({ name, list_type, market_name, state_code, notes, created_by, start_date }) {
   const res = await query(
-    `INSERT INTO campaigns (name, list_type, market_name, state_code, notes, created_by)
-     VALUES ($1,$2,$3,$4,$5,$6) RETURNING *`,
-    [name, list_type, market_name, state_code?.toUpperCase(), notes||'', created_by||'team']
+    `INSERT INTO campaigns (name, list_type, market_name, state_code, notes, created_by, start_date)
+     VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING *`,
+    [name, list_type, market_name, state_code?.toUpperCase(), notes||'', created_by||'team', start_date||null]
   );
   return res.rows[0];
+}
+
+async function closeCampaign(id) {
+  await query(
+    `UPDATE campaigns SET status='completed', end_date=CURRENT_DATE, updated_at=NOW() WHERE id=$1`,
+    [id]
+  );
+}
+
+async function cloneCampaign(id) {
+  const res = await query(`SELECT * FROM campaigns WHERE id=$1`, [id]);
+  if (!res.rows.length) return null;
+  const c = res.rows[0];
+  const newCamp = await query(
+    `INSERT INTO campaigns (name, list_type, market_name, state_code, notes, created_by, active_channel, cold_call_status, sms_status, start_date)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,CURRENT_DATE) RETURNING *`,
+    [c.name, c.list_type, c.market_name, c.state_code, c.notes, c.created_by, c.active_channel, c.cold_call_status, c.sms_status]
+  );
+  return newCamp.rows[0];
 }
 
 async function updateCampaignStatus(id, status) {
@@ -179,4 +200,4 @@ async function recordUpload(campaignId, filename, sourceListName, channel, rows)
   return tally;
 }
 
-module.exports = { initCampaignSchema, getCampaigns, getCampaign, createCampaign, updateCampaignStatus, updateCampaignChannel, recordUpload };
+module.exports = { initCampaignSchema, getCampaigns, getCampaign, createCampaign, updateCampaignStatus, updateCampaignChannel, recordUpload, closeCampaign, cloneCampaign };
