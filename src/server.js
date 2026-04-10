@@ -61,6 +61,31 @@ function requireAuth(req, res, next) {
 
 const COL = { phone:'Phone', dispo:'Log Type', listname:'Original lead file', date:'Log Time', fname:'First Name', lname:'Last Name', addr:'Address', city:'City', state:'State', zip:'Zip Code', notes:'Call Notes' };
 
+// Auto-detect column names from file headers (handles both Readymode call log and list progress exports)
+function detectCols(headers) {
+  const h = headers.map(x => x.toLowerCase().trim());
+  const find = (options) => {
+    for (const opt of options) {
+      const idx = h.findIndex(x => x === opt.toLowerCase() || x.includes(opt.toLowerCase()));
+      if (idx > -1) return headers[idx];
+    }
+    return null;
+  };
+  return {
+    phone:    find(['phone']),
+    dispo:    find(['log type', 'logtype', 'last dispo', 'lastdispo', 'disposition', 'status']),
+    listname: find(['original lead file', 'lead file campaign', 'batch name', 'original file name', 'list name', 'campaign']),
+    date:     find(['log time', 'logtime', 'status (time)', 'upload date', 'date']),
+    fname:    find(['first name', 'firstname']),
+    lname:    find(['last name', 'lastname']),
+    addr:     find(['address']),
+    city:     find(['city']),
+    state:    find(['state']),
+    zip:      find(['zip code', 'zip']),
+    notes:    find(['call notes', 'notes']),
+  };
+}
+
 function normDispo(v) {
   const s = (v||'').toLowerCase().trim();
   if (s.includes('transfer')||s==='lead') return 'transfer';
@@ -106,10 +131,12 @@ function processCSV(csvText, memory) {
   const parsed=Papa.parse(csvText,{header:true,skipEmptyLines:true});
   const rows=parsed.data;
   if(!rows.length) throw new Error('File is empty or could not be parsed.');
+  const headers = parsed.meta.fields || [];
+  const COLS = detectCols(headers);
   const fileCount={};
   rows.forEach(r=>{
-    const phone=String(r[COL.phone]||'').replace(/\D/g,'');
-    const list=(r[COL.listname]||'Unknown List').trim();
+    const phone=String(r[COLS.phone]||'').replace(/\D/g,'');
+    const list=(r[COLS.listname]||'Unknown List').trim();
     if(!phone||phone==='0') return;
     const k=memKey(list,phone);
     fileCount[k]=(fileCount[k]||0)+1;
@@ -118,11 +145,11 @@ function processCSV(csvText, memory) {
   let memCaught=0;
   const listsSeen={},processedKeys={};
   rows.forEach(r=>{
-    const phone=String(r[COL.phone]||'').replace(/\D/g,'');
-    const list=(r[COL.listname]||'Unknown List').trim();
-    const dispoRaw=r[COL.dispo]||'';
+    const phone=String(r[COLS.phone]||'').replace(/\D/g,'');
+    const list=(r[COLS.listname]||'Unknown List').trim();
+    const dispoRaw=r[COLS.dispo]||'';
     const dispo=normDispo(dispoRaw);
-    const dateRaw=r[COL.date]||'';
+    const dateRaw=r[COLS.date]||'';
     if(!phone||phone==='0') return;
     const mkey=memKey(list,phone);
     if(processedKeys[mkey]) return;
