@@ -171,7 +171,8 @@ function processCSV(csvText, memory, campaignId) {
     let action='keep',byMem=false,caughtByMem=false;
     if(ALWAYS_REM.has(dispo)){action='remove';}
     else if(dispo==='not_interested'&&cumCount>=3){action='remove';if(prevCount<3)byMem=true;}
-    else if(['voicemail','hung_up','dead_call','not_available'].includes(dispo)&&cumCount>3){action='remove';if(prevCount<=3)byMem=true;}
+    else if(dispo==='hung_up'&&cumCount>=3){action='remove';if(prevCount<3)byMem=true;}
+    else if(['voicemail','dead_call','not_available'].includes(dispo)&&cumCount>3){action='remove';if(prevCount<=3)byMem=true;}
     if(byMem){memCaught++;caughtByMem=true;}
     if(action==='remove') listsSeen[list].rem++; else listsSeen[list].keep++;
     const enriched={'List Name (REISift Campaign)':list,'First Name':r[COL.fname]||'','Last Name':r[COL.lname]||'','Address':r[COL.addr]||'','City':r[COL.city]||'','State':r[COL.state]||'','Zip Code':r[COL.zip]||'','Phone':r[COL.phone]||'','Disposition':dispoRaw,'Call Log Count':cumCount,'Call Log Date':dateClean,'Phone Status':status,'Phone Tag':tag,'Marketing Results':mkt,'Cold Call Campaign Name':list,'Call Notes':r[COL.notes]||'','Action':action};
@@ -673,7 +674,7 @@ app.get('/campaigns', requireAuth, async (req, res) => {
   try {
     await campaigns.initCampaignSchema();
     const list = await campaigns.getCampaigns();
-    res.send(campaignsPage(list));
+    res.send(campaignsPage(list, req.query.tab||'active'));
   } catch (e) { res.status(500).send('Error: ' + e.message); }
 });
 
@@ -687,6 +688,23 @@ app.post('/campaigns/new', requireAuth, async (req, res) => {
     await campaigns.createCampaign({ ...req.body, created_by: 'team' });
     res.redirect('/campaigns');
   } catch (e) { res.redirect('/campaigns/new?error=' + encodeURIComponent(e.message)); }
+});
+
+// Close campaign
+app.post('/campaigns/:id/close', requireAuth, async (req, res) => {
+  try {
+    await campaigns.closeCampaign(req.params.id);
+    res.redirect('/campaigns/' + req.params.id);
+  } catch(e) { res.redirect('/campaigns/' + req.params.id); }
+});
+
+// Start new round (clone campaign with fresh memory)
+app.post('/campaigns/:id/new-round', requireAuth, async (req, res) => {
+  try {
+    await campaigns.closeCampaign(req.params.id);
+    const newCamp = await campaigns.cloneCampaign(req.params.id);
+    res.redirect('/campaigns/' + newCamp.id);
+  } catch(e) { res.redirect('/campaigns/' + req.params.id); }
 });
 
 // Campaign detail
@@ -808,17 +826,22 @@ app.post('/campaigns/:id/uploads/:uploadId/delete', requireAuth, async (req, res
 const STATUS_COLORS = { active: '#1a7a4a', paused: '#9a6800', completed: '#888' };
 const CHANNEL_LABELS = { cold_call: 'Cold Call', sms: 'SMS' };
 
-function campaignsPage(list) {
-  const rows = list.map(c => `
+function campaignsPage(list, tab) {
+  tab = tab || 'active';
+  const active = list.filter(c => c.status !== 'completed');
+  const completed = list.filter(c => c.status === 'completed');
+  const display = tab === 'completed' ? completed : active;
+  const rows = display.map(c => `
     <tr onclick="location.href='/campaigns/${c.id}'" style="cursor:pointer">
       <td><strong>${c.name}</strong><br><span style="font-size:11px;color:#888">${c.list_type} · ${c.market_name}</span></td>
       <td><span class="badge" style="background:${STATUS_COLORS[c.status]}20;color:${STATUS_COLORS[c.status]}">${c.status}</span></td>
       <td><span class="badge" style="background:#e6f1fb;color:#185fa5">${CHANNEL_LABELS[c.active_channel]||c.active_channel}</span></td>
+      <td style="font-size:12px">${c.start_date ? new Date(c.start_date).toLocaleDateString() : '—'}</td>
+      <td style="font-size:12px;color:#888">${c.end_date ? new Date(c.end_date).toLocaleDateString() : '—'}</td>
       <td>${Number(c.total_unique_numbers||0).toLocaleString()}</td>
       <td style="color:#1a7a4a">${Number(c.total_callable||0).toLocaleString()}</td>
       <td style="color:#c0392b">${Number(c.total_filtered||0).toLocaleString()}</td>
       <td>${c.upload_count||0}</td>
-      <td style="font-size:11px;color:#888">${c.last_filtered_at ? new Date(c.last_filtered_at).toLocaleDateString() : '—'}</td>
     </tr>`).join('');
 
   return shell('Campaigns', `
@@ -827,10 +850,14 @@ function campaignsPage(list) {
       <p style="font-size:13px;color:#888">Each campaign tracks all filtration activity for a list type in a market</p></div>
       <a href="/campaigns/new" class="btn-primary-link">+ New Campaign</a>
     </div>
-    ${list.length === 0 ? `<div class="empty-state">No campaigns yet. <a href="/campaigns/new">Create your first one.</a></div>` : `
+    <div style="display:flex;gap:2px;border-bottom:1px solid #e0dfd8;margin-bottom:1.25rem">
+      <a href="/campaigns?tab=active" style="padding:8px 16px;font-size:13px;text-decoration:none;border-bottom:2px solid ${tab==='active'?'#1a1a1a':'transparent'};color:${tab==='active'?'#1a1a1a':'#888'}">Active (${active.length})</a>
+      <a href="/campaigns?tab=completed" style="padding:8px 16px;font-size:13px;text-decoration:none;border-bottom:2px solid ${tab==='completed'?'#1a1a1a':'transparent'};color:${tab==='completed'?'#1a1a1a':'#888'}">Completed (${completed.length})</a>
+    </div>
+    ${display.length === 0 ? `<div class="empty-state">No ${tab} campaigns yet.</div>` : `
     <div class="card" style="padding:0;overflow:hidden">
       <table class="data-table">
-        <thead><tr><th>Campaign</th><th>Status</th><th>Active channel</th><th>Total numbers</th><th>Callable</th><th>Filtered</th><th>Uploads</th><th>Last filtered</th></tr></thead>
+        <thead><tr><th>Campaign</th><th>Status</th><th>Channel</th><th>Start date</th><th>End date</th><th>Total numbers</th><th>Callable</th><th>Filtered</th><th>Uploads</th></tr></thead>
         <tbody>${rows}</tbody>
       </table>
     </div>`}
@@ -872,6 +899,10 @@ function newCampaignPage(error) {
           <div class="form-field">
             <label>Market name</label>
             <input type="text" name="market_name" placeholder="e.g. Indianapolis Metro" required>
+          </div>
+          <div class="form-field">
+            <label>Start date</label>
+            <input type="date" name="start_date" value="${new Date().toISOString().split('T')[0]}">
           </div>
           <div class="form-field">
             <label>Active channel</label>
@@ -932,22 +963,22 @@ function campaignDetailPage(c) {
           <h2 style="font-size:20px;font-weight:500">${c.name}</h2>
           <span class="badge" style="background:${STATUS_COLORS[c.status]}20;color:${STATUS_COLORS[c.status]}">${c.status}</span>
         </div>
-        <p style="font-size:13px;color:#888">${c.list_type} · ${c.market_name} · ${c.state_code} · ${c.upload_count} filtration uploads</p>
+        <p style="font-size:13px;color:#888">${c.list_type} · ${c.market_name} · ${c.state_code} · Started ${c.start_date ? new Date(c.start_date).toLocaleDateString() : '—'} ${c.end_date ? '· Ended ' + new Date(c.end_date).toLocaleDateString() : ''} · ${c.upload_count} uploads</p>
       </div>
       <div style="display:flex;gap:8px;flex-wrap:wrap">
-        <form method="POST" action="/campaigns/${c.id}/status" style="display:inline">
-          <select name="status" onchange="this.form.submit()" class="inline-select">
-            <option ${c.status==='active'?'selected':''} value="active">Active</option>
-            <option ${c.status==='paused'?'selected':''} value="paused">Paused</option>
-            <option ${c.status==='completed'?'selected':''} value="completed">Completed</option>
-          </select>
-        </form>
         <form method="POST" action="/campaigns/${c.id}/channel" style="display:inline">
           <select name="channel" onchange="this.form.submit()" class="inline-select">
             <option ${c.active_channel==='cold_call'?'selected':''} value="cold_call">Cold Call active</option>
             <option ${c.active_channel==='sms'?'selected':''} value="sms">SMS active</option>
           </select>
         </form>
+        ${c.status !== 'completed' ? `
+        <form method="POST" action="/campaigns/${c.id}/close" onsubmit="return confirm('Close this campaign? It will be marked completed and no more uploads will be accepted.')" style="display:inline">
+          <button type="submit" style="padding:7px 14px;font-size:13px;border:1px solid #e0dfd8;border-radius:8px;background:#fff;color:#888;cursor:pointer;font-family:inherit">Close campaign</button>
+        </form>
+        <form method="POST" action="/campaigns/${c.id}/new-round" onsubmit="return confirm('Close this campaign and start a new round with the same settings and fresh memory?')" style="display:inline">
+          <button type="submit" style="padding:7px 14px;font-size:13px;border:none;border-radius:8px;background:#1a1a1a;color:#fff;cursor:pointer;font-family:inherit">Start new round</button>
+        </form>` : `<span style="font-size:13px;color:#888;padding:7px 0;display:inline-block">Completed ${c.end_date ? '· ' + new Date(c.end_date).toLocaleDateString() : ''}</span>`}
       </div>
     </div>
 
@@ -1034,6 +1065,10 @@ function campaignDetailPage(c) {
       </div>
     </div>
 
+    ${c.status === 'completed' ? `
+    <div class="card" style="padding:1rem 1.25rem;margin-bottom:1.25rem;background:#fafaf8">
+      <p style="font-size:13px;color:#888;text-align:center;padding:8px 0">This campaign is completed — no more uploads accepted. <a href="/campaigns" style="color:#1a1a1a">Start a new round</a> to continue.</p>
+    </div>` : `
     <div class="card" style="padding:1rem 1.25rem;margin-bottom:1.25rem">
       <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
         <div class="sec-lbl" style="margin-bottom:0">Upload filtration file to this campaign</div>
@@ -1048,7 +1083,7 @@ function campaignDetailPage(c) {
       </div>
       <input type="file" id="file-input" accept=".csv" style="display:none">
       <div id="upload-spinner" style="display:none;align-items:center;gap:8px;font-size:13px;color:#888;padding:8px 0"><div class="spinner"></div> Processing…</div>
-    </div>
+    </div>`}
 
     <div id="results" style="display:none">
       <div class="stats-grid-5" id="result-stats" style="margin-bottom:1.25rem"></div>
