@@ -116,6 +116,12 @@ async function initCampaignSchema() {
     CREATE INDEX IF NOT EXISTS idx_campaign_phones_campaign ON campaign_contact_phones(campaign_id);
     CREATE INDEX IF NOT EXISTS idx_campaign_phones_number ON campaign_contact_phones(phone_number);
     CREATE INDEX IF NOT EXISTS idx_campaign_phones_status ON campaign_contact_phones(phone_status);
+
+    CREATE TABLE IF NOT EXISTS custom_list_types (
+      id SERIAL PRIMARY KEY,
+      name VARCHAR(100) NOT NULL UNIQUE,
+      created_at TIMESTAMPTZ DEFAULT NOW()
+    );
   `);
 
   // Safe migrations — add columns if they don't exist
@@ -541,7 +547,47 @@ async function getContactStats(campaignId) {
   return res.rows[0];
 }
 
+// Get all custom list types (saved by users) merged with defaults
+const DEFAULT_LIST_TYPES = ['Vacant Property','Pre-Foreclosure','Active Liens','2+ Mortgages','Absentee Owner','Tax Delinquent','Probate','Code Violation','Pre-Probate','Other'];
+
+async function getListTypes() {
+  try {
+    const res = await query(`SELECT name FROM custom_list_types ORDER BY name ASC`);
+    const custom = res.rows.map(r => r.name);
+    // Merge: defaults first, then custom ones not already in defaults
+    const seen = new Set(DEFAULT_LIST_TYPES.map(t => t.toLowerCase()));
+    const merged = [...DEFAULT_LIST_TYPES];
+    for (const c of custom) {
+      if (!seen.has(c.toLowerCase())) {
+        merged.push(c);
+        seen.add(c.toLowerCase());
+      }
+    }
+    // Put 'Other' at the end if present
+    const other = merged.filter(t => t === 'Other');
+    const rest = merged.filter(t => t !== 'Other');
+    return [...rest, ...other];
+  } catch(e) {
+    console.error('getListTypes error:', e.message);
+    return DEFAULT_LIST_TYPES;
+  }
+}
+
+async function addListType(name) {
+  const clean = String(name || '').trim();
+  if (!clean || clean.length > 100) return false;
+  // Don't save defaults as custom
+  if (DEFAULT_LIST_TYPES.some(t => t.toLowerCase() === clean.toLowerCase())) return true;
+  try {
+    await query(`INSERT INTO custom_list_types (name) VALUES ($1) ON CONFLICT (name) DO NOTHING`, [clean]);
+    return true;
+  } catch(e) {
+    console.error('addListType error:', e.message);
+    return false;
+  }
+}
+
 module.exports = Object.assign(module.exports, {
   importContactList, applyFiltrationToContacts, generateCleanExport,
-  getContactStats, detectPhoneColumns
+  getContactStats, detectPhoneColumns, getListTypes, addListType
 });
