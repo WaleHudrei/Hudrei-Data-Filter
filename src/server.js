@@ -1159,20 +1159,20 @@ function campaignDetailPage(c) {
         </div>
 
         <script>
-        const CAMPAIGN_ID = '${c.id}';
-        const LOKI_CONTACT_FIELDS = [
-          {key:'fname', label:'First Name', required:false},
-          {key:'lname', label:'Last Name', required:false},
-          {key:'maddr', label:'Mailing Address', required:false},
-          {key:'mcity', label:'Mailing City', required:false},
-          {key:'mstate', label:'Mailing State', required:false},
-          {key:'mzip', label:'Mailing Zip', required:false},
-          {key:'mcounty', label:'Mailing County', required:false},
-          {key:'paddr', label:'Property Address', required:false},
-          {key:'pcity', label:'Property City', required:false},
-          {key:'pstate', label:'Property State', required:false},
-          {key:'pzip', label:'Property Zip', required:false},
-          {key:'phones', label:'Phone columns (auto-detected)', required:false},
+        var CAMPAIGN_ID = '${c.id}';
+        var LOKI_CONTACT_FIELDS = [
+          {key:'fname', label:'First Name'},
+          {key:'lname', label:'Last Name'},
+          {key:'maddr', label:'Mailing Address'},
+          {key:'mcity', label:'Mailing City'},
+          {key:'mstate', label:'Mailing State'},
+          {key:'mzip', label:'Mailing Zip'},
+          {key:'mcounty', label:'Mailing County'},
+          {key:'paddr', label:'Property Address'},
+          {key:'pcity', label:'Property City'},
+          {key:'pstate', label:'Property State'},
+          {key:'pzip', label:'Property Zip'},
+          {key:'phones', label:'Phone columns (auto-detected)'},
         ];
 
         let contactFileData = null;
@@ -1217,19 +1217,11 @@ function campaignDetailPage(c) {
           wrap.innerHTML = '';
           LOKI_CONTACT_FIELDS.forEach(f => {
             if(f.key === 'phones'){
-              wrap.innerHTML += \`<div style="display:grid;grid-template-columns:1fr 30px 1fr;align-items:center;gap:8px;padding:7px 0;border-bottom:1px solid #f0efe9">
-                <div style="font-size:12px;color:#888">Phone columns detected: <b style="color:#1a1a1a">\${phoneCols.join(', ')||'None found'}</b></div>
-                <div style="text-align:center;color:#aaa">→</div>
-                <div style="font-size:12px;color:#888">Auto-included as Ph#1, Ph#2…</div>
-              </div>\`;
+              wrap.innerHTML += '<div style="display:grid;grid-template-columns:1fr 30px 1fr;align-items:center;gap:8px;padding:7px 0;border-bottom:1px solid #f0efe9"><div style="font-size:12px;color:#888">Phone columns detected: <b style="color:#1a1a1a">' + (phoneCols.join(', ')||'None found') + '</b></div><div style="text-align:center;color:#aaa">&rarr;</div><div style="font-size:12px;color:#888">Auto-included as Ph#1, Ph#2</div></div>';
               return;
             }
-            const opts = ['<option value="">— skip —</option>', ...headers.map(col=>\`<option value="\${col}" \${autoMap[f.key]===col?'selected':''}>\${col}</option>\`)].join('');
-            wrap.innerHTML += \`<div style="display:grid;grid-template-columns:1fr 30px 1fr;align-items:center;gap:8px;padding:7px 0;border-bottom:1px solid #f0efe9">
-              <div><select data-field="\${f.key}" style="width:100%;padding:6px 8px;border:1px solid #ddd;border-radius:6px;font-size:12px;font-family:inherit">\${opts}</select></div>
-              <div style="text-align:center;color:#aaa;font-size:16px">→</div>
-              <div style="font-size:12px;color:#555;padding:6px 0">\${f.label}</div>
-            </div>\`;
+            var opts = ['<option value="">— skip —</option>'].concat(headers.map(function(col){ return '<option value="' + col + '" ' + (autoMap[f.key]===col?'selected':'') + '>' + col + '</option>'; })).join('');
+            wrap.innerHTML += '<div style="display:grid;grid-template-columns:1fr 30px 1fr;align-items:center;gap:8px;padding:7px 0;border-bottom:1px solid #f0efe9"><div><select data-field="' + f.key + '" style="width:100%;padding:6px 8px;border:1px solid #ddd;border-radius:6px;font-size:12px;font-family:inherit">' + opts + '</select></div><div style="text-align:center;color:#aaa;font-size:16px">&rarr;</div><div style="font-size:12px;color:#555;padding:6px 0">' + f.label + '</div></div>';
           });
 
           document.getElementById('contact-map-modal').style.display='block';
