@@ -768,14 +768,15 @@ app.post('/campaigns/:id/upload', requireAuth, upload.single('csvfile'), async (
 // Upload original contact list to campaign
 app.post('/campaigns/:id/contacts/upload', requireAuth, upload.single('contactfile'), async (req, res) => {
   try {
-    if (!req.file) return res.redirect('/campaigns/' + req.params.id);
+    if (!req.file) return res.status(400).json({ error: 'No file.' });
     await campaigns.initCampaignSchema();
     const parsed = Papa.parse(req.file.buffer.toString('utf8'), { header: true, skipEmptyLines: true });
-    await campaigns.importContactList(req.params.id, parsed.data, parsed.meta.fields || []);
-    res.redirect('/campaigns/' + req.params.id);
+    const customMapping = req.body.mapping ? JSON.parse(req.body.mapping) : null;
+    const result = await campaigns.importContactList(req.params.id, parsed.data, parsed.meta.fields || [], customMapping);
+    res.json({ success: true, total: result.total });
   } catch (e) {
     console.error('Contact upload error:', e.message);
-    res.redirect('/campaigns/' + req.params.id);
+    res.status(500).json({ error: e.message });
   }
 });
 
@@ -1125,18 +1126,152 @@ function campaignDetailPage(c) {
       <div style="border-top:1px solid #f0efe9;padding-top:12px">
         <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
           <div class="sec-lbl">Upload original contact list</div>
-          ${c.contact_counts?.total_contacts > 0 ? `
+          ${parseInt(c.total_unique_numbers||0) > 0 ? `
           <form method="POST" action="/campaigns/${c.id}/contacts/delete" onsubmit="return confirm('Delete the master contact list for this campaign? This cannot be undone.')">
             <button type="submit" style="background:none;border:none;color:#c0392b;font-size:12px;cursor:pointer;text-decoration:underline;font-family:inherit">Delete master list</button>
           </form>` : ''}
         </div>
-        <form method="POST" action="/campaigns/${c.id}/contacts/upload" enctype="multipart/form-data">
-          <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
-            <input type="file" name="contactfile" accept=".csv" required style="font-size:13px;padding:6px;border:1px solid #ddd;border-radius:7px;background:#fff">
-            <button type="submit" style="padding:7px 16px;background:#1a1a1a;color:#fff;border:none;border-radius:7px;font-size:13px;cursor:pointer;font-family:inherit">Upload contact list</button>
+        <div>
+          <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:8px">
+            <input type="file" id="contact-csv-input" accept=".csv" style="font-size:13px;padding:6px;border:1px solid #ddd;border-radius:7px;background:#fff">
+            <button onclick="previewContactFile()" style="padding:7px 16px;background:#1a1a1a;color:#fff;border:none;border-radius:7px;font-size:13px;cursor:pointer;font-family:inherit">Preview & map columns</button>
           </div>
-          <p style="font-size:11px;color:#aaa;margin-top:6px">Upload once per campaign — this becomes the master list for clean exports. Re-upload to replace.</p>
-        </form>
+          <p style="font-size:11px;color:#aaa;margin-top:4px">Upload once per campaign — this becomes the master list for clean exports. Re-upload to replace.</p>
+        </div>
+
+        <!-- Column mapping modal -->
+        <div id="contact-map-modal" style="display:none;margin-top:14px;border:1px solid #e0dfd8;border-radius:10px;padding:14px;background:#fafaf8">
+          <div style="font-size:13px;font-weight:500;margin-bottom:4px">Map your columns to Loki fields</div>
+          <div style="font-size:11px;color:#888;margin-bottom:12px">We auto-detected matches where possible. Correct any that are wrong.</div>
+          <div id="contact-map-rows" style="margin-bottom:14px"></div>
+          <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+            <button onclick="submitContactUpload()" style="padding:7px 16px;background:#1a1a1a;color:#fff;border:none;border-radius:7px;font-size:13px;cursor:pointer;font-family:inherit">Upload contact list</button>
+            <button onclick="document.getElementById('contact-map-modal').style.display='none'" style="padding:7px 14px;border:1px solid #ddd;background:#fff;color:#888;border-radius:7px;font-size:13px;cursor:pointer;font-family:inherit">Cancel</button>
+            <span id="contact-upload-msg" style="font-size:12px;color:#888"></span>
+          </div>
+          <!-- Progress bar -->
+          <div id="contact-progress-wrap" style="display:none;margin-top:10px">
+            <div style="height:6px;background:#e0dfd8;border-radius:3px;overflow:hidden">
+              <div id="contact-progress-bar" style="height:100%;background:#1a1a1a;width:0%;transition:width .3s"></div>
+            </div>
+            <div id="contact-progress-label" style="font-size:11px;color:#888;margin-top:4px">Uploading…</div>
+          </div>
+        </div>
+
+        <script>
+        const LOKI_CONTACT_FIELDS = [
+          {key:'fname', label:'First Name', required:false},
+          {key:'lname', label:'Last Name', required:false},
+          {key:'maddr', label:'Mailing Address', required:false},
+          {key:'mcity', label:'Mailing City', required:false},
+          {key:'mstate', label:'Mailing State', required:false},
+          {key:'mzip', label:'Mailing Zip', required:false},
+          {key:'mcounty', label:'Mailing County', required:false},
+          {key:'paddr', label:'Property Address', required:false},
+          {key:'pcity', label:'Property City', required:false},
+          {key:'pstate', label:'Property State', required:false},
+          {key:'pzip', label:'Property Zip', required:false},
+          {key:'phones', label:'Phone columns (auto-detected)', required:false},
+        ];
+
+        let contactFileData = null;
+
+        async function previewContactFile(){
+          const file = document.getElementById('contact-csv-input').files[0];
+          if(!file){alert('Select a CSV file first.');return;}
+          const text = await file.text();
+          const lines = text.split('\n');
+          const headers = lines[0].split(',').map(h => h.replace(/^"|"$/g,'').trim());
+
+          // Auto-map
+          const h = headers.map(x=>x.toLowerCase().trim());
+          const find = (opts) => {
+            for(const o of opts){
+              const i = h.findIndex(x=>x.includes(o.toLowerCase()));
+              if(i>-1) return headers[i];
+            }
+            return '';
+          };
+          const autoMap = {
+            fname: find(['first name','firstname']),
+            lname: find(['last name','lastname']),
+            maddr: find(['mailing address','mailing addr','owner street']),
+            mcity: find(['mailing city','owner city']),
+            mstate: find(['mailing state','owner state']),
+            mzip: find(['mailing zip','owner zip']),
+            mcounty: find(['mailing county','county']),
+            paddr: find(['property address','property street']),
+            pcity: find(['property city']),
+            pstate: find(['property state']),
+            pzip: find(['property zip']),
+          };
+
+          // Detect phone columns
+          const phoneCols = headers.filter(h2 => /ph#?\d+|phone\s*\d*|alt.*phone/i.test(h2));
+
+          contactFileData = { file, headers, autoMap, phoneCols };
+
+          // Build mapping UI
+          const wrap = document.getElementById('contact-map-rows');
+          wrap.innerHTML = '';
+          LOKI_CONTACT_FIELDS.forEach(f => {
+            if(f.key === 'phones'){
+              wrap.innerHTML += \`<div style="display:grid;grid-template-columns:1fr 30px 1fr;align-items:center;gap:8px;padding:7px 0;border-bottom:1px solid #f0efe9">
+                <div style="font-size:12px;color:#888">Phone columns detected: <b style="color:#1a1a1a">\${phoneCols.join(', ')||'None found'}</b></div>
+                <div style="text-align:center;color:#aaa">→</div>
+                <div style="font-size:12px;color:#888">Auto-included as Ph#1, Ph#2…</div>
+              </div>\`;
+              return;
+            }
+            const opts = ['<option value="">— skip —</option>', ...headers.map(col=>\`<option value="\${col}" \${autoMap[f.key]===col?'selected':''}>\${col}</option>\`)].join('');
+            wrap.innerHTML += \`<div style="display:grid;grid-template-columns:1fr 30px 1fr;align-items:center;gap:8px;padding:7px 0;border-bottom:1px solid #f0efe9">
+              <div><select data-field="\${f.key}" style="width:100%;padding:6px 8px;border:1px solid #ddd;border-radius:6px;font-size:12px;font-family:inherit">\${opts}</select></div>
+              <div style="text-align:center;color:#aaa;font-size:16px">→</div>
+              <div style="font-size:12px;color:#555;padding:6px 0">\${f.label}</div>
+            </div>\`;
+          });
+
+          document.getElementById('contact-map-modal').style.display='block';
+        }
+
+        async function submitContactUpload(){
+          if(!contactFileData){return;}
+          const mapping = {};
+          document.querySelectorAll('[data-field]').forEach(sel=>{if(sel.value) mapping[sel.dataset.field]=sel.value;});
+
+          const msg = document.getElementById('contact-upload-msg');
+          const progWrap = document.getElementById('contact-progress-wrap');
+          const progBar = document.getElementById('contact-progress-bar');
+          const progLabel = document.getElementById('contact-progress-label');
+
+          msg.textContent = '';
+          progWrap.style.display = 'block';
+          progBar.style.width = '10%';
+          progLabel.textContent = 'Reading file…';
+
+          const form = new FormData();
+          form.append('contactfile', contactFileData.file);
+          form.append('mapping', JSON.stringify(mapping));
+
+          progBar.style.width = '30%';
+          progLabel.textContent = 'Uploading to Loki…';
+
+          try {
+            const res = await fetch('/campaigns/${c.id}/contacts/upload', {method:'POST', body:form});
+            progBar.style.width = '70%';
+            progLabel.textContent = 'Processing contacts…';
+            if(res.redirected || res.ok){
+              progBar.style.width = '100%';
+              progLabel.textContent = 'Done! Reloading…';
+              setTimeout(()=>location.reload(), 1000);
+            } else {
+              progLabel.textContent = 'Upload failed.';
+            }
+          } catch(e){
+            progLabel.textContent = 'Error: ' + e.message;
+          }
+        }
+        </script>
       </div>
     </div>
 
