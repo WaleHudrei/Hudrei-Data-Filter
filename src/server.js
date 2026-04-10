@@ -1,5 +1,6 @@
 const { query: dbQuery, initSchema } = require('./db');
 const campaigns = require('./campaigns');
+const uploadRoutes = require('./routes/upload-routes');
 const uploadUI = require('./ui/upload');
 const express = require('express');
 const session = require('express-session');
@@ -42,6 +43,14 @@ async function clearMemory() {
 app.use(express.urlencoded({ extended: true }));
 app.use(express.json());
 app.use(session({ secret: SESSION_SECRET, resave: false, saveUninitialized: false, cookie: { secure: false, maxAge: 8 * 60 * 60 * 1000 } }));
+
+// expose helpers to upload router
+app.locals.processCSV = processCSV;
+app.locals.loadMemory = loadMemory;
+app.locals.saveMemory = saveMemory;
+
+// mount upload routes
+app.use('/upload', uploadRoutes);
 
 function requireAuth(req, res, next) {
   if (req.session && req.session.authenticated) return next();
