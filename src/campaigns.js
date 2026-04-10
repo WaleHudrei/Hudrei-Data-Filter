@@ -453,27 +453,28 @@ async function importContactList(campaignId, rows, headers, customMapping) {
 }
 
 // Apply filtration results to contact phones
-async function applyFiltrationToContacts(campaignId, filteredRows) {
-  for (const row of filteredRows) {
+async function applyFiltrationToContacts(campaignId, allRows) {
+  for (const row of allRows) {
     const phone = String(row.Phone||'').replace(/\D/g,'');
     if (!phone) continue;
     const dispo = row._normDispo || '';
     const isWrong = dispo === 'wrong_number';
+    const wasRemoved = row.Action === 'remove';
     const status = row['Phone Status'] || '';
     const tag = row['Phone Tag'] || '';
     const count = parseInt(row['Call Log Count']) || 1;
 
     await query(
       `UPDATE campaign_contact_phones SET
-         phone_status=$1, phone_tag=$2, wrong_number=$3,
-         filtered=$4, cumulative_count=$5, last_disposition=$6, updated_at=NOW()
+         phone_status = CASE WHEN phone_status = 'dead_number' THEN phone_status ELSE $1 END,
+         phone_tag=$2,
+         wrong_number = wrong_number OR $3,
+         filtered = filtered OR $4,
+         cumulative_count=$5, last_disposition=$6, updated_at=NOW()
        WHERE campaign_id=$7 AND phone_number=$8`,
-      [status||'unknown', tag, isWrong, true, count, row.Disposition||'', campaignId, phone]
+      [status||'unknown', tag, isWrong, wasRemoved, count, row.Disposition||'', campaignId, phone]
     );
   }
-
-  // Also update correct numbers from clean rows
-  // (these were kept so mark as correct if disposition confirms it)
 }
 
 // Generate clean export file — one row per contact, blanked wrong/filtered phones
