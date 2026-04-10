@@ -1359,25 +1359,24 @@ function campaignDetailPage(c) {
       finally{document.getElementById('upload-spinner').style.display='none';document.getElementById('drop-zone').style.opacity='1';}
     }
     function renderResults(data){
-      const s=data.stats;
-      const sg=document.getElementById('result-stats');
-      sg.innerHTML=\`
-        <div class="stat-card"><div class="stat-lbl">Uploaded</div><div class="stat-num">\${s.totalRows}</div></div>
-        <div class="stat-card"><div class="stat-lbl">Kept</div><div class="stat-num green">\${s.kept}</div></div>
-        <div class="stat-card"><div class="stat-lbl">Filtered</div><div class="stat-num red">\${s.filtered}</div></div>
-        <div class="stat-card"><div class="stat-lbl">Lists in file</div><div class="stat-num">\${s.listsCount}</div></div>
-        <div class="stat-card"><div class="stat-lbl">Caught by memory</div><div class="stat-num blue">\${s.memCaught}</div></div>\`;
+      var s=data.stats;
+      var sg=document.getElementById('result-stats');
+      sg.innerHTML='<div class="stat-card"><div class="stat-lbl">Uploaded</div><div class="stat-num">'+s.totalRows+'</div></div>'+
+        '<div class="stat-card"><div class="stat-lbl">Kept</div><div class="stat-num green">'+s.kept+'</div></div>'+
+        '<div class="stat-card"><div class="stat-lbl">Filtered</div><div class="stat-num red">'+s.filtered+'</div></div>'+
+        '<div class="stat-card"><div class="stat-lbl">Lists in file</div><div class="stat-num">'+s.listsCount+'</div></div>'+
+        '<div class="stat-card"><div class="stat-lbl">Caught by memory</div><div class="stat-num blue">'+s.memCaught+'</div></div>';
       renderTable('rem-head','rem-body',data.preview.filtered);
       renderTable('cln-head','cln-body',data.preview.clean);
       document.getElementById('results').style.display='block';
     }
     function renderTable(hId,bId,rows){
-      const cols=PREVIEW_COLS;
-      const thead=document.getElementById(hId),tbody=document.getElementById(bId);
+      var cols=PREVIEW_COLS;
+      var thead=document.getElementById(hId),tbody=document.getElementById(bId);
       thead.innerHTML='';tbody.innerHTML='';
-      if(!rows.length){tbody.innerHTML='<tr><td colspan="99" style="color:#aaa;padding:12px">No records</td></tr>';cols.forEach(c=>{const th=document.createElement('th');th.textContent=c;thead.appendChild(th);});return;}
-      cols.forEach(c=>{const th=document.createElement('th');th.textContent=c;thead.appendChild(th);});
-      rows.forEach(r=>{const tr=document.createElement('tr');cols.forEach(c=>{const td=document.createElement('td');const v=r[c]!==undefined?r[c]:'';if(c==='Action'){const cls=v==='remove'?'b-remove':'b-keep';td.innerHTML=\`<span class="badge \${cls}">\${v}</span>\`;}else td.textContent=v;tr.appendChild(td);});tbody.appendChild(tr);});
+      if(!rows.length){tbody.innerHTML='<tr><td colspan="99" style="color:#aaa;padding:12px">No records</td></tr>';cols.forEach(function(c){var th=document.createElement('th');th.textContent=c;thead.appendChild(th);});return;}
+      cols.forEach(function(c){var th=document.createElement('th');th.textContent=c;thead.appendChild(th);});
+      rows.forEach(function(r){var tr=document.createElement('tr');cols.forEach(function(c){var td=document.createElement('td');var v=r[c]!==undefined?r[c]:'';if(c==='Action'){var cls=v==='remove'?'b-remove':'b-keep';td.innerHTML='<span class="badge '+cls+'">'+v+'</span>';}else td.textContent=v;tr.appendChild(td);});tbody.appendChild(tr);});
     }
     document.getElementById('file-input').addEventListener('change',e=>{if(e.target.files[0])handleFile(e.target.files[0]);});
     const dz=document.getElementById('drop-zone');
