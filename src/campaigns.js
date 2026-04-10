@@ -122,6 +122,17 @@ async function initCampaignSchema() {
       name VARCHAR(100) NOT NULL UNIQUE,
       created_at TIMESTAMPTZ DEFAULT NOW()
     );
+
+    CREATE TABLE IF NOT EXISTS nis_numbers (
+      phone_number VARCHAR(20) PRIMARY KEY,
+      first_seen_nis DATE,
+      last_seen_nis DATE,
+      times_reported INTEGER DEFAULT 1,
+      created_at TIMESTAMPTZ DEFAULT NOW(),
+      updated_at TIMESTAMPTZ DEFAULT NOW()
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_nis_last_seen ON nis_numbers(last_seen_nis);
   `);
 
   // Safe migrations — add columns if they don't exist
@@ -132,6 +143,7 @@ async function initCampaignSchema() {
     `ALTER TABLE campaigns ADD COLUMN IF NOT EXISTS manual_count INTEGER DEFAULT 0`,
     `ALTER TABLE campaigns ADD COLUMN IF NOT EXISTS total_connected INTEGER DEFAULT 0`,
     `ALTER TABLE campaign_uploads ADD COLUMN IF NOT EXISTS connected INTEGER DEFAULT 0`,
+    `ALTER TABLE campaign_contact_phones ADD COLUMN IF NOT EXISTS nis_flagged_at TIMESTAMPTZ`,
   ];
   for (const m of migrations) {
     try { await query(m); } catch(e) { console.error('Migration error:', e.message); }
@@ -424,6 +436,16 @@ async function importContactList(campaignId, rows, headers, customMapping) {
     imported += batch.length;
   }
 
+  // Auto-flag any phones that are already in the NIS database
+  await query(
+    `UPDATE campaign_contact_phones
+     SET phone_status = 'dead_number', nis_flagged_at = NOW()
+     WHERE campaign_id = $1
+       AND phone_number IN (SELECT phone_number FROM nis_numbers)
+       AND (phone_status IS NULL OR phone_status != 'dead_number')`,
+    [campaignId]
+  );
+
   // Update campaign total_properties count
   await query(`UPDATE campaigns SET total_unique_numbers=$1, updated_at=NOW() WHERE id=$2`, [imported, campaignId]);
 
@@ -491,7 +513,7 @@ async function generateCleanExport(campaignId) {
 
   for (const c of contacts.rows) {
     const phones = (c.phones||[]).filter(p => p && p.phone);
-    const callablePhones = phones.filter(p => !p.wrong && !p.filtered);
+    const callablePhones = phones.filter(p => !p.wrong && !p.filtered && p.status !== 'dead_number');
 
     if (callablePhones.length === 0) { dead++; continue; } // all phones dead — skip row
     callable++;
@@ -513,7 +535,7 @@ async function generateCleanExport(campaignId) {
     // Fill every phone slot 1..globalMaxSlot for EVERY row — ensures consistent columns
     for (let s = 1; s <= globalMaxSlot; s++) {
       const ph = phones.find(p => p.slot === s);
-      if (ph && !ph.wrong && !ph.filtered) {
+      if (ph && !ph.wrong && !ph.filtered && ph.status !== 'dead_number') {
         row[`Ph#${s}`] = ph.phone;
       } else {
         row[`Ph#${s}`] = '';
@@ -538,6 +560,7 @@ async function getContactStats(campaignId) {
     SELECT
       COUNT(DISTINCT cc.id) as total_contacts,
       COUNT(DISTINCT CASE WHEN ccp.wrong_number = true THEN ccp.id END) as wrong_phones,
+      COUNT(DISTINCT CASE WHEN ccp.phone_status = 'dead_number' THEN ccp.id END) as nis_phones,
       COUNT(DISTINCT CASE WHEN ccp.filtered = true AND ccp.wrong_number = false THEN ccp.id END) as filtered_phones,
       COUNT(DISTINCT CASE WHEN ccp.phone_status = 'Correct' THEN ccp.id END) as correct_phones,
       COUNT(DISTINCT ccp.id) as total_phones
@@ -613,7 +636,96 @@ async function addListType(name) {
   }
 }
 
+// Normalize a phone number — strip all non-digits, strip leading 1 if length is 11
+function normalizePhone(raw) {
+  let p = String(raw || '').replace(/\D/g, '');
+  if (p.length === 11 && p.startsWith('1')) p = p.substring(1);
+  return p;
+}
+
+// Import NIS file (Readymode Detailed NIS export)
+async function importNisFile(rows) {
+  let inserted = 0, updated = 0, flagged = 0;
+  const BATCH = 500;
+
+  const phoneMap = new Map();
+  for (const r of rows) {
+    const phone = normalizePhone(r.dialed || r.Dialed || r.phone || '');
+    if (!phone || phone.length < 10) continue;
+    const dayRaw = r.day || r.Day || '';
+    let day = null;
+    if (dayRaw) {
+      const parsed = new Date(dayRaw);
+      if (!isNaN(parsed)) day = parsed.toISOString().split('T')[0];
+    }
+    if (!phoneMap.has(phone)) {
+      phoneMap.set(phone, { phone, first: day, last: day, count: 1 });
+    } else {
+      const e = phoneMap.get(phone);
+      e.count++;
+      if (day && (!e.first || day < e.first)) e.first = day;
+      if (day && (!e.last || day > e.last)) e.last = day;
+    }
+  }
+
+  const entries = Array.from(phoneMap.values());
+
+  for (let i = 0; i < entries.length; i += BATCH) {
+    const batch = entries.slice(i, i + BATCH);
+    const vals = [];
+    const params = [];
+    let p = 1;
+    for (const e of batch) {
+      vals.push(`($${p},$${p+1},$${p+2},$${p+3})`);
+      params.push(e.phone, e.first, e.last, e.count);
+      p += 4;
+    }
+    const res = await query(
+      `INSERT INTO nis_numbers (phone_number, first_seen_nis, last_seen_nis, times_reported)
+       VALUES ${vals.join(',')}
+       ON CONFLICT (phone_number) DO UPDATE SET
+         last_seen_nis = GREATEST(nis_numbers.last_seen_nis, EXCLUDED.last_seen_nis),
+         first_seen_nis = LEAST(nis_numbers.first_seen_nis, EXCLUDED.first_seen_nis),
+         times_reported = nis_numbers.times_reported + EXCLUDED.times_reported,
+         updated_at = NOW()
+       RETURNING (xmax = 0) AS inserted`,
+      params
+    );
+    for (const row of res.rows) {
+      if (row.inserted) inserted++; else updated++;
+    }
+  }
+
+  // Retroactively flag matching phones across all campaigns
+  const flagRes = await query(
+    `UPDATE campaign_contact_phones
+     SET phone_status = 'dead_number', nis_flagged_at = NOW()
+     WHERE phone_number IN (SELECT phone_number FROM nis_numbers)
+       AND (phone_status IS NULL OR phone_status != 'dead_number')`
+  );
+  flagged = flagRes.rowCount || 0;
+
+  return { totalRows: rows.length, uniqueNumbers: entries.length, inserted, updated, flagged };
+}
+
+async function getNisStats() {
+  try {
+    const total = await query(`SELECT COUNT(*) as c FROM nis_numbers`);
+    const lastUpload = await query(`SELECT MAX(updated_at) as t FROM nis_numbers`);
+    const flagged = await query(`SELECT COUNT(*) as c FROM campaign_contact_phones WHERE phone_status = 'dead_number'`);
+    return {
+      total_nis: parseInt(total.rows[0]?.c || 0),
+      last_upload: lastUpload.rows[0]?.t || null,
+      total_flagged: parseInt(flagged.rows[0]?.c || 0),
+    };
+  } catch(e) {
+    console.error('getNisStats error:', e.message);
+    return { total_nis: 0, last_upload: null, total_flagged: 0 };
+  }
+}
+
 module.exports = Object.assign(module.exports, {
   importContactList, applyFiltrationToContacts, generateCleanExport,
-  getContactStats, detectPhoneColumns, getListTypes, addListType
+  getContactStats, detectPhoneColumns, getListTypes, addListType,
+  importNisFile, getNisStats, normalizePhone
 });
