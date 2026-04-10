@@ -472,10 +472,20 @@ async function generateCleanExport(campaignId) {
   const rows = [];
   let callable = 0, dead = 0;
 
+  // Determine global max slot across ALL contacts so the header is consistent
+  let globalMaxSlot = 1;
+  for (const c of contacts.rows) {
+    const phones = (c.phones||[]).filter(p => p && p.phone);
+    for (const p of phones) {
+      if (p.slot > globalMaxSlot) globalMaxSlot = p.slot;
+    }
+  }
+  // Cap at 10 — Readymode only accepts Ph#1..Ph#10
+  if (globalMaxSlot > 10) globalMaxSlot = 10;
+
   for (const c of contacts.rows) {
     const phones = (c.phones||[]).filter(p => p && p.phone);
     const callablePhones = phones.filter(p => !p.wrong && !p.filtered);
-    const wrongPhones = phones.filter(p => p.wrong);
 
     if (callablePhones.length === 0) { dead++; continue; } // all phones dead — skip row
     callable++;
@@ -494,14 +504,13 @@ async function generateCleanExport(campaignId) {
       'Property Zip': c.property_zip,
     };
 
-    // Fill phone slots — blank wrong/filtered, keep callable
-    const maxSlot = Math.max(...phones.map(p => p.slot));
-    for (let s = 1; s <= maxSlot; s++) {
+    // Fill every phone slot 1..globalMaxSlot for EVERY row — ensures consistent columns
+    for (let s = 1; s <= globalMaxSlot; s++) {
       const ph = phones.find(p => p.slot === s);
       if (ph && !ph.wrong && !ph.filtered) {
         row[`Ph#${s}`] = ph.phone;
       } else {
-        row[`Ph#${s}`] = ''; // blank the slot
+        row[`Ph#${s}`] = '';
       }
     }
 
