@@ -175,7 +175,7 @@ function processCSV(csvText, memory, campaignId) {
     else if(['voicemail','dead_call','not_available'].includes(dispo)&&cumCount>3){action='remove';if(prevCount<=3)byMem=true;}
     if(byMem){memCaught++;caughtByMem=true;}
     if(action==='remove') listsSeen[list].rem++; else listsSeen[list].keep++;
-    const enriched={'List Name (REISift Campaign)':list,'First Name':r[COL.fname]||'','Last Name':r[COL.lname]||'','Address':r[COL.addr]||'','City':r[COL.city]||'','State':r[COL.state]||'','Zip Code':r[COL.zip]||'','Phone':r[COL.phone]||'','Disposition':dispoRaw,'Call Log Count':cumCount,'Call Log Date':dateClean,'Phone Status':status,'Phone Tag':tag,'Marketing Results':mkt,'Cold Call Campaign Name':list,'Call Notes':r[COL.notes]||'','Action':action};
+    const enriched={'List Name (REISift Campaign)':list,'First Name':r[COL.fname]||'','Last Name':r[COL.lname]||'','Address':r[COL.addr]||'','City':r[COL.city]||'','State':r[COL.state]||'','Zip Code':r[COL.zip]||'','Phone':r[COL.phone]||'','Disposition':dispoRaw,'Call Log Count':cumCount,'Call Log Date':dateClean,'Phone Status':status,'Phone Tag':tag,'Marketing Results':mkt,'Cold Call Campaign Name':list,'Call Notes':r[COL.notes]||'','Action':action,'_normDispo':dispo,'_caughtByMemory':byMem};
     if(action==='remove') filteredRows.push(enriched); else cleanRows.push(enriched);
   });
   return {cleanRows,filteredRows,listsSeen,memCaught,totalRows:rows.length,memory};
