@@ -768,20 +768,25 @@ app.post('/campaigns/:id/upload', requireAuth, upload.single('csvfile'), async (
 // Upload original contact list to campaign
 app.post('/campaigns/:id/contacts/upload', requireAuth, upload.single('contactfile'), async (req, res) => {
   try {
-    if (!req.file) return res.status(400).json({ error: 'No file uploaded.' });
+    if (!req.file) return res.redirect('/campaigns/' + req.params.id);
     await campaigns.initCampaignSchema();
     const parsed = Papa.parse(req.file.buffer.toString('utf8'), { header: true, skipEmptyLines: true });
-    const result = await campaigns.importContactList(req.params.id, parsed.data, parsed.meta.fields || []);
+    await campaigns.importContactList(req.params.id, parsed.data, parsed.meta.fields || []);
+    res.redirect('/campaigns/' + req.params.id);
+  } catch (e) {
+    console.error('Contact upload error:', e.message);
+    res.redirect('/campaigns/' + req.params.id);
+  }
+});
 
-    // Update manual counts if provided
-    if (req.body.readymode_count) {
-      const { query: dbQ } = require('./db');
-      await dbQ('UPDATE campaigns SET manual_count=$1, updated_at=NOW() WHERE id=$2',
-        [parseInt(req.body.readymode_count)||0, req.params.id]);
-    }
-
-    res.json({ success: true, total: result.total });
-  } catch (e) { res.status(500).json({ error: e.message }); }
+// Delete master contact list
+app.post('/campaigns/:id/contacts/delete', requireAuth, async (req, res) => {
+  try {
+    const { query: dbQ } = require('./db');
+    await dbQ('DELETE FROM campaign_contacts WHERE campaign_id=$1', [req.params.id]);
+    await dbQ('UPDATE campaigns SET total_unique_numbers=0, updated_at=NOW() WHERE id=$2', [req.params.id]);
+    res.redirect('/campaigns/' + req.params.id);
+  } catch(e) { res.redirect('/campaigns/' + req.params.id); }
 });
 
 // Update Readymode accepted count
@@ -986,15 +991,17 @@ function newCampaignPage(error) {
 function campaignDetailPage(c) {
   const n = c.total_unique_numbers || 0;
   const manualCount = parseInt(c.manual_count) || 0;
-  const count = manualCount > 0 ? manualCount : n;
+  const rmCount = manualCount > 0 ? manualCount : n;
   const connected = c.total_connected || 0;
+  const totalPhones = parseInt(c.contact_counts?.total_phones||0);
+  const callablePhones = totalPhones - parseInt(c.contact_counts?.wrong_phones||0) - parseInt(c.contact_counts?.filtered_phones||0);
+  const health = totalPhones > 0 ? ((callablePhones / totalPhones) * 100).toFixed(1) : '0.0';
   const callable_pct = n > 0 ? Math.round((c.total_callable / n) * 100) : 0;
-  const filtered_pct = n > 0 ? Math.round((c.total_filtered / n) * 100) : 0;
-  const cr   = count > 0 && connected > 0 ? ((connected / count) * 100).toFixed(2) : '0.00';
-  const wPct = connected > 0 ? (((c.total_wrong_numbers||0) / connected) * 100).toFixed(2) : '0.00';
-  const niPct= connected > 0 ? (((c.total_not_interested||0) / connected) * 100).toFixed(2) : '0.00';
-  const lgr  = connected > 0 ? (((c.total_transfers||0) / connected) * 100).toFixed(2) : '0.00';
-  const lcv  = count > 0 ? (((c.total_transfers||0) / count) * 100).toFixed(2) : '0.00';
+  const cr    = rmCount > 0 && connected > 0 ? ((connected / rmCount) * 100).toFixed(2) : '0.00';
+  const wPct  = totalPhones > 0 ? (((c.total_wrong_numbers||0) / totalPhones) * 100).toFixed(2) : '0.00';
+  const niPct = connected > 0 ? (((c.total_not_interested||0) / connected) * 100).toFixed(2) : '0.00';
+  const lgr   = connected > 0 ? (((c.total_transfers||0) / connected) * 100).toFixed(2) : '0.00';
+  const lcv   = rmCount > 0 ? (((c.total_transfers||0) / rmCount) * 100).toFixed(2) : '0.00';
 
   const uploadRows = (c.uploads||[]).map(u => `
     <tr>
@@ -1059,16 +1066,16 @@ function campaignDetailPage(c) {
     </div>
     <div style="background:#fff;border:1px solid #e0dfd8;border-radius:12px;padding:14px 16px;margin-bottom:1.25rem">
       <div style="font-size:11px;font-weight:600;color:#888;text-transform:uppercase;letter-spacing:.05em;margin-bottom:12px">Campaign KPIs</div>
-      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:10px">
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(110px,1fr));gap:10px">
         <div style="text-align:center;padding:10px;background:#f5f4f0;border-radius:8px">
           <div style="font-size:22px;font-weight:500;color:#2471a3">${cr}%</div>
           <div style="font-size:11px;color:#888;margin-top:2px">CR</div>
-          <div style="font-size:10px;color:#aaa">Connected ÷ Count</div>
+          <div style="font-size:10px;color:#aaa">Connected ÷ RM Count</div>
         </div>
         <div style="text-align:center;padding:10px;background:#f5f4f0;border-radius:8px">
           <div style="font-size:22px;font-weight:500;color:#c0392b">${wPct}%</div>
           <div style="font-size:11px;color:#888;margin-top:2px">W#%</div>
-          <div style="font-size:10px;color:#aaa">Wrong ÷ Connected</div>
+          <div style="font-size:10px;color:#aaa">Wrong ÷ Total phones</div>
         </div>
         <div style="text-align:center;padding:10px;background:#f5f4f0;border-radius:8px">
           <div style="font-size:22px;font-weight:500;color:#9a6800">${niPct}%</div>
@@ -1083,7 +1090,12 @@ function campaignDetailPage(c) {
         <div style="text-align:center;padding:10px;background:#f5f4f0;border-radius:8px">
           <div style="font-size:22px;font-weight:500;color:#534AB7">${lcv}%</div>
           <div style="font-size:11px;color:#888;margin-top:2px">LCV</div>
-          <div style="font-size:10px;color:#aaa">Leads ÷ Count</div>
+          <div style="font-size:10px;color:#aaa">Leads ÷ RM Count</div>
+        </div>
+        <div style="text-align:center;padding:10px;background:#f5f4f0;border-radius:8px">
+          <div style="font-size:22px;font-weight:500;color:${parseFloat(health)>50?'#1a7a4a':parseFloat(health)>25?'#9a6800':'#c0392b'}">${health}%</div>
+          <div style="font-size:11px;color:#888;margin-top:2px">Health</div>
+          <div style="font-size:10px;color:#aaa">Callable ÷ Total phones</div>
         </div>
       </div>
     </div>
@@ -1119,34 +1131,22 @@ function campaignDetailPage(c) {
         </form>
       </div>
       <div style="border-top:1px solid #f0efe9;padding-top:12px">
-        <div class="sec-lbl" style="margin-bottom:8px">Upload original contact list</div>
-        <form id="contact-upload-form" enctype="multipart/form-data">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
+          <div class="sec-lbl">Upload original contact list</div>
+          ${c.contact_counts?.total_contacts > 0 ? `
+          <form method="POST" action="/campaigns/${c.id}/contacts/delete" onsubmit="return confirm('Delete the master contact list for this campaign? This cannot be undone.')">
+            <button type="submit" style="background:none;border:none;color:#c0392b;font-size:12px;cursor:pointer;text-decoration:underline;font-family:inherit">Delete master list</button>
+          </form>` : ''}
+        </div>
+        <form method="POST" action="/campaigns/${c.id}/contacts/upload" enctype="multipart/form-data">
           <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
-            <input type="file" id="contact-file" accept=".csv" style="font-size:13px;padding:6px;border:1px solid #ddd;border-radius:7px;background:#fff">
-            <button type="button" onclick="uploadContacts()" style="padding:7px 16px;background:#1a1a1a;color:#fff;border:none;border-radius:7px;font-size:13px;cursor:pointer;font-family:inherit">Upload contact list</button>
-            <span id="contact-upload-status" style="font-size:12px;color:#888"></span>
+            <input type="file" name="contactfile" accept=".csv" required style="font-size:13px;padding:6px;border:1px solid #ddd;border-radius:7px;background:#fff">
+            <button type="submit" style="padding:7px 16px;background:#1a1a1a;color:#fff;border:none;border-radius:7px;font-size:13px;cursor:pointer;font-family:inherit">Upload contact list</button>
           </div>
           <p style="font-size:11px;color:#aaa;margin-top:6px">Upload once per campaign — this becomes the master list for clean exports. Re-upload to replace.</p>
         </form>
       </div>
     </div>
-
-    <script>
-    async function uploadContacts(){
-      const file = document.getElementById('contact-file').files[0];
-      if(!file){alert('Select a CSV file first.');return;}
-      const status = document.getElementById('contact-upload-status');
-      status.textContent = 'Uploading…';
-      const form = new FormData();
-      form.append('contactfile', file);
-      try {
-        const res = await fetch('/campaigns/${c.id}/contacts/upload', {method:'POST', body:form});
-        const data = await res.json();
-        if(data.success){ status.textContent = data.total.toLocaleString() + ' contacts imported successfully'; setTimeout(()=>location.reload(),1500); }
-        else { status.textContent = 'Error: ' + (data.error||'Upload failed'); }
-      } catch(e){ status.textContent = 'Error: ' + e.message; }
-    }
-    </script>
 
     <div style="display:grid;grid-template-columns:1fr 280px;gap:1.25rem;margin-bottom:1.25rem">
       <div class="card" style="padding:1rem 1.25rem">
