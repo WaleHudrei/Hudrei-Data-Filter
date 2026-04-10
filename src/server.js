@@ -1051,11 +1051,10 @@ function campaignDetailPage(c) {
     </div>
 
     <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:10px;margin-bottom:1.25rem">
-      <div class="stat-card" style="position:relative">
-        <div class="stat-lbl">Count <span style="font-size:10px;color:#aaa">(dialer total)</span></div>
-        <div class="stat-num">${Number(count).toLocaleString()}</div>
-        <div style="font-size:11px;color:#888;margin-top:2px">${manualCount>0?'Manual entry':'Auto from uploads'}</div>
-        <button onclick="document.getElementById('count-form').style.display=document.getElementById('count-form').style.display==='none'?'block':'none'" style="position:absolute;top:10px;right:10px;background:none;border:none;font-size:11px;color:#888;cursor:pointer;text-decoration:underline">edit</button>
+      <div class="stat-card">
+        <div class="stat-lbl">Total properties</div>
+        <div class="stat-num">${Number(n).toLocaleString()}</div>
+        <div style="font-size:11px;color:#888;margin-top:2px">Contacts uploaded</div>
       </div>
       <div class="stat-card"><div class="stat-lbl">Connected</div><div class="stat-num blue">${Number(connected).toLocaleString()}</div><div style="font-size:11px;color:#888;margin-top:2px">Live pickups</div></div>
       <div class="stat-card"><div class="stat-lbl">Wrong numbers</div><div class="stat-num red">${Number(c.total_wrong_numbers||0).toLocaleString()}</div><div style="font-size:11px;color:#888;margin-top:2px">Removed</div></div>
@@ -1100,14 +1099,7 @@ function campaignDetailPage(c) {
       </div>
     </div>
 
-    <div id="count-form" style="display:none;background:#fff;border:1px solid #e0dfd8;border-radius:10px;padding:14px 16px;margin-bottom:1rem">
-      <div style="font-size:13px;font-weight:500;margin-bottom:8px">Update dialer count</div>
-      <form method="POST" action="/campaigns/${c.id}/count" style="display:flex;align-items:center;gap:8px">
-        <input type="number" name="manual_count" value="${manualCount||''}" placeholder="e.g. 15420" style="padding:7px 10px;border:1px solid #ddd;border-radius:7px;font-size:14px;width:160px;font-family:inherit">
-        <button type="submit" style="padding:7px 16px;background:#1a1a1a;color:#fff;border:none;border-radius:7px;font-size:13px;cursor:pointer;font-family:inherit">Save</button>
-        <span style="font-size:12px;color:#888">Enter the total record count from Readymode for this campaign</span>
-      </form>
-    </div>
+
 
     <div class="card" style="padding:1rem 1.25rem;margin-bottom:1.25rem">
       <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px;flex-wrap:wrap;gap:10px">
