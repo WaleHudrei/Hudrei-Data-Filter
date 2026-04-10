@@ -330,7 +330,7 @@ async function importContactList(campaignId, rows, headers, customMapping) {
   await query(`DELETE FROM campaign_contacts WHERE campaign_id=$1`, [campaignId]);
 
   let imported = 0;
-  const BATCH = 100;
+  const BATCH = 20;
 
   for (let i = 0; i < rows.length; i += BATCH) {
     const batch = rows.slice(i, i + BATCH);
@@ -377,12 +377,16 @@ async function importContactList(campaignId, rows, headers, customMapping) {
     }
 
     if (phoneVals.length > 0) {
-      await query(
-        `INSERT INTO campaign_contact_phones (campaign_id, contact_id, phone_number, slot_index)
-         VALUES ${phoneVals.join(',')}
-         ON CONFLICT (contact_id, slot_index) DO NOTHING`,
-        phoneParams
-      );
+      try {
+        await query(
+          `INSERT INTO campaign_contact_phones (campaign_id, contact_id, phone_number, slot_index)
+           VALUES ${phoneVals.join(',')}
+           ON CONFLICT (contact_id, slot_index) DO NOTHING`,
+          phoneParams
+        );
+      } catch(phoneErr) {
+        console.error('Phone batch insert error:', phoneErr.message, 'vals:', phoneVals.length, 'params:', phoneParams.length);
+      }
     }
 
     imported += batch.length;
