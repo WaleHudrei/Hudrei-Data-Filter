@@ -1159,6 +1159,7 @@ function campaignDetailPage(c) {
         </div>
 
         <script>
+        const CAMPAIGN_ID = '${c.id}';
         const LOKI_CONTACT_FIELDS = [
           {key:'fname', label:'First Name', required:false},
           {key:'lname', label:'Last Name', required:false},
@@ -1257,7 +1258,7 @@ function campaignDetailPage(c) {
           progLabel.textContent = 'Uploading to Loki…';
 
           try {
-            const res = await fetch('/campaigns/${c.id}/contacts/upload', {method:'POST', body:form});
+            const res = await fetch('/campaigns/' + CAMPAIGN_ID + '/contacts/upload', {method:'POST', body:form});
             progBar.style.width = '70%';
             progLabel.textContent = 'Processing contacts…';
             if(res.redirected || res.ok){
