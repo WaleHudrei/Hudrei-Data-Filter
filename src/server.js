@@ -785,7 +785,7 @@ app.post('/campaigns/:id/contacts/delete', requireAuth, async (req, res) => {
   try {
     const { query: dbQ } = require('./db');
     await dbQ('DELETE FROM campaign_contacts WHERE campaign_id=$1', [req.params.id]);
-    await dbQ('UPDATE campaigns SET total_unique_numbers=0, updated_at=NOW() WHERE id=$2', [req.params.id]);
+    await dbQ('UPDATE campaigns SET total_unique_numbers=0, updated_at=NOW() WHERE id=$1', [req.params.id]);
     res.redirect('/campaigns/' + req.params.id);
   } catch(e) { res.redirect('/campaigns/' + req.params.id); }
 });
