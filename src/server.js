@@ -816,6 +816,11 @@ app.get('/nis', requireAuth, async (req, res) => {
   res.send(nisPage(stats, req.query.msg));
 });
 
+// Changelog page
+app.get('/changelog', requireAuth, (req, res) => {
+  res.send(changelogPage());
+});
+
 // NIS upload POST
 app.post('/nis/upload', requireAuth, upload.single('nisfile'), async (req, res) => {
   try {
@@ -1095,6 +1100,60 @@ function nisPage(stats, msg) {
       </div>
     </div>
   `, 'nis');
+}
+
+function changelogPage() {
+  const entries = [
+    {
+      date: 'April 10, 2026',
+      title: 'Major feature & bug fix release',
+      items: [
+        { tag: 'feature', text: 'NIS Numbers section added. Upload Readymode Detailed NIS exports to globally flag dead phone numbers across all campaigns. Flagged numbers are auto-excluded from clean exports.' },
+        { tag: 'feature', text: 'New "Contacts reached" card in Contact List section showing unique contacts (households) with at least one live pickup, plus reach percentage.' },
+        { tag: 'feature', text: 'Custom list types — "+ Add new list type" option in the New Campaign form. Custom types are saved to the database and reusable across future campaigns.' },
+        { tag: 'feature', text: 'Sync wrong numbers button on campaign page — one-click retroactive sync of historical wrong number dispositions to the master contact list.' },
+        { tag: 'fix', text: 'Master contact list upload — phone columns (Phone 1 through Phone 10) are now correctly detected across PropStream, BatchSkipTracing, DealMachine, and REISift export formats.' },
+        { tag: 'fix', text: 'Contact list stats display bug — the campaign dashboard was reading from an empty field. Stats now correctly hydrate from the database.' },
+        { tag: 'fix', text: 'Filtration pipeline → campaign tracking — normalized disposition values were being dropped between the filter step and campaign recording, so all dispositions showed as "unknown". Fixed, so Connected, Wrong, NI, Leads counters now populate correctly.' },
+        { tag: 'fix', text: 'Clean export phone column consistency — the exported CSV now has a fixed Ph#1 through Ph#N header row, so multi-phone contacts no longer lose data to header mismatch.' },
+        { tag: 'fix', text: 'Clean export now correctly scrubs NIS (dead number) phones and wrong numbers from the file.' },
+        { tag: 'fix', text: 'Wrong number flagging — now runs on every filtration row (not just removed rows), keeping the master list in sync with confirmed wrong numbers automatically.' },
+        { tag: 'improvement', text: 'KPI definitions re-aligned. CR = Connected ÷ Total phones. W#% = Wrong ÷ Humans reached. NI% = NI ÷ Connected. LGR = Leads ÷ Connected. LCV = Unique lead contacts ÷ Total contacts. Health = Callable ÷ Total phones.' },
+        { tag: 'improvement', text: 'Callable pool now reflects master list (Total phones − wrong − filtered − NIS) instead of only the phones touched by filtration uploads.' },
+        { tag: 'improvement', text: 'Added logging throughout the filtration and contact upload pipelines for faster debugging.' },
+      ],
+    },
+  ];
+
+  const tagColors = {
+    feature: { bg: '#eaf6ea', color: '#1a5f1a' },
+    fix: { bg: '#fdeaea', color: '#8b1f1f' },
+    improvement: { bg: '#eaf1fb', color: '#185fa5' },
+  };
+
+  const html = entries.map(e => `
+    <div class="card" style="margin-bottom:1.5rem">
+      <div style="border-bottom:1px solid #f0efe9;padding-bottom:10px;margin-bottom:14px">
+        <div style="font-size:12px;color:#888;text-transform:uppercase;letter-spacing:0.5px">${e.date}</div>
+        <div style="font-size:16px;font-weight:500;margin-top:2px">${e.title}</div>
+      </div>
+      ${e.items.map(i => {
+        const c = tagColors[i.tag] || { bg: '#f0efe9', color: '#888' };
+        return `<div style="display:flex;gap:10px;align-items:flex-start;padding:8px 0">
+          <span style="background:${c.bg};color:${c.color};font-size:10px;text-transform:uppercase;font-weight:500;padding:3px 8px;border-radius:4px;flex-shrink:0;margin-top:2px;min-width:70px;text-align:center">${i.tag}</span>
+          <span style="font-size:13px;line-height:1.5;color:#333">${i.text}</span>
+        </div>`;
+      }).join('')}
+    </div>
+  `).join('');
+
+  return shell('Changelog', `
+    <div style="max-width:760px">
+      <h2 style="font-size:20px;font-weight:500;margin-bottom:4px">Changelog</h2>
+      <p style="font-size:13px;color:#888;margin-bottom:1.5rem">Track what's new and what's been fixed in Loki.</p>
+      ${html}
+    </div>
+  `, 'changelog');
 }
 
 function campaignDetailPage(c) {
@@ -1475,6 +1534,10 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
     <a href="/nis" class="sidebar-link ${activePage==='nis'?'active':''}">
       <svg fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><line x1="4.93" y1="4.93" x2="19.07" y2="19.07"/></svg>
       NIS Numbers
+    </a>
+    <a href="/changelog" class="sidebar-link ${activePage==='changelog'?'active':''}">
+      <svg fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M12 8v4l3 3"/><circle cx="12" cy="12" r="10"/></svg>
+      Changelog
     </a>
   </div>
   <div class="sidebar-footer">
