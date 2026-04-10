@@ -186,7 +186,7 @@ async function updateCampaignChannel(id, channel) {
 
 async function recordUpload(campaignId, filename, sourceListName, channel, rows) {
   // Tally dispositions
-  const CONNECTED_DISPOS = new Set(['not_interested','transfer','callback','spanish_speaker','hung_up','completed_sale','disqualified']);
+  const CONNECTED_DISPOS = new Set(['not_interested','transfer','callback','spanish_speaker','hung_up','completed','disqualified','do_not_call']);
   const tally = { total:0, kept:0, filtered:0, wrong:0, vm:0, ni:0, dnc:0, transfer:0, mem:0, newNums:0, connected:0 };
   for (const row of rows) {
     tally.total++;
