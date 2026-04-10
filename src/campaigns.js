@@ -265,11 +265,17 @@ function detectPhoneColumns(headers) {
   const h = headers.map(x => x.toLowerCase().trim());
   // Look for Ph#1..Ph#10, Phone 1..10, Phone, Alt Phone etc.
   const patterns = [
-    /^ph#?(\d+)$/i, /^phone\s*#?(\d+)$/i, /^phone$/i, /^alt\.?\s*phone$/i,
-    /^phone\s*(\d+)$/i
+    /^ph#?(\d+)$/i,
+    /^phone\s*#?(\d+)$/i,
+    /^phone\s+(\d+)$/i,
+    /^phone$/i,
+    /^alt\.?\s*phone$/i,
   ];
+  // Also exclude non-phone columns that contain "phone" 
+  const excludePatterns = [/type/i, /status/i, /tag/i, /connected/i, /score/i, /representative/i];
   headers.forEach((col, idx) => {
     const lower = col.toLowerCase().trim();
+    if (excludePatterns.some(ep => ep.test(lower))) return;
     for (const pat of patterns) {
       if (pat.test(lower)) { phones.push({ col, idx }); break; }
     }
