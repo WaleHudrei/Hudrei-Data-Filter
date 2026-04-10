@@ -771,11 +771,15 @@ app.post('/campaigns/:id/contacts/upload', requireAuth, upload.single('contactfi
     if (!req.file) return res.redirect('/campaigns/' + req.params.id);
     await campaigns.initCampaignSchema();
     const parsed = Papa.parse(req.file.buffer.toString('utf8'), { header: true, skipEmptyLines: true });
+    console.log('[contacts/upload] file received:', req.file.originalname, 'rows:', parsed.data.length, 'headers:', (parsed.meta.fields||[]).length);
     await campaigns.importContactList(req.params.id, parsed.data, parsed.meta.fields || []);
+    console.log('[contacts/upload] import complete for campaign', req.params.id);
     res.redirect('/campaigns/' + req.params.id);
   } catch (e) {
-    console.error('Contact upload error:', e.message);
-    res.redirect('/campaigns/' + req.params.id);
+    console.error('[contacts/upload] ERROR:', e.message);
+    console.error('[contacts/upload] code:', e.code, 'detail:', e.detail);
+    console.error('[contacts/upload] stack:', e.stack);
+    res.status(500).send(`<h2>Upload failed</h2><p>${e.message}</p><pre>${e.code||''} ${e.detail||''}</pre><p><a href="/campaigns/${req.params.id}">Back to campaign</a></p>`);
   }
 });
 
