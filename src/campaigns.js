@@ -75,6 +75,18 @@ async function initCampaignSchema() {
     CREATE INDEX IF NOT EXISTS idx_campaign_numbers_phone ON campaign_numbers(phone_number);
     CREATE INDEX IF NOT EXISTS idx_campaign_numbers_status ON campaign_numbers(current_status);
   `);
+
+  // Safe migrations — add columns if they don't exist
+  const migrations = [
+    `ALTER TABLE campaigns ADD COLUMN IF NOT EXISTS start_date DATE DEFAULT CURRENT_DATE`,
+    `ALTER TABLE campaigns ADD COLUMN IF NOT EXISTS end_date DATE`,
+    `ALTER TABLE campaigns ADD COLUMN IF NOT EXISTS manual_count INTEGER DEFAULT 0`,
+    `ALTER TABLE campaigns ADD COLUMN IF NOT EXISTS total_connected INTEGER DEFAULT 0`,
+    `ALTER TABLE campaign_uploads ADD COLUMN IF NOT EXISTS connected INTEGER DEFAULT 0`,
+  ];
+  for (const m of migrations) {
+    try { await query(m); } catch(e) { console.error('Migration error:', e.message); }
+  }
 }
 
 async function getCampaigns() {
