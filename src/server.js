@@ -1458,10 +1458,10 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
 .sidebar-ver{font-size:10px;background:#2a2a2a;padding:1px 6px;border-radius:3px;color:#666;margin-top:6px;display:inline-block}
 .sidebar-nav{padding:12px 10px;flex:1}
 .sidebar-section{font-size:10px;font-weight:600;color:#444;text-transform:uppercase;letter-spacing:.06em;padding:8px 10px 4px}
-.sidebar-link{display:flex;align-items:center;gap:10px;padding:9px 10px;border-radius:8px;color:#888;font-size:13px;text-decoration:none;margin-bottom:2px;transition:all .15s}
+.sidebar-link{display:flex;align-items:center;gap:12px;padding:12px 12px;border-radius:8px;color:#888;font-size:14px;text-decoration:none;margin-bottom:6px;transition:all .15s}
 .sidebar-link:hover{background:#2a2a2a;color:#fff}
 .sidebar-link.active{background:#2a2a2a;color:#fff}
-.sidebar-link svg{width:16px;height:16px;flex-shrink:0;opacity:.7}
+.sidebar-link svg{width:18px;height:18px;flex-shrink:0;opacity:.7}
 .sidebar-link.active svg{opacity:1}
 .sidebar-footer{padding:14px 16px;border-top:1px solid #2a2a2a}
 .sidebar-footer a{font-size:12px;color:#666;text-decoration:none}
@@ -1509,9 +1509,8 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
 </style></head><body>
 <div class="sidebar">
   <div class="sidebar-logo">
-    <div class="sidebar-logo-title">HudREI LLC</div>
-    <div class="sidebar-logo-sub">Data Filter</div>
-    <span class="sidebar-ver">v2.0</span>
+    <div class="sidebar-logo-title">Loki</div>
+    <div class="sidebar-logo-sub">Developed by HudREI</div>
   </div>
   <div class="sidebar-nav">
     <div class="sidebar-section">Tools</div>
