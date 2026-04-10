@@ -809,6 +809,29 @@ app.post('/campaigns/:id/contacts/delete', requireAuth, async (req, res) => {
   } catch(e) { res.redirect('/campaigns/' + req.params.id); }
 });
 
+// NIS upload page
+app.get('/nis', requireAuth, async (req, res) => {
+  await campaigns.initCampaignSchema();
+  const stats = await campaigns.getNisStats();
+  res.send(nisPage(stats, req.query.msg));
+});
+
+// NIS upload POST
+app.post('/nis/upload', requireAuth, upload.single('nisfile'), async (req, res) => {
+  try {
+    if (!req.file) return res.redirect('/nis');
+    await campaigns.initCampaignSchema();
+    const csvText = req.file.buffer.toString('utf8').replace(/^\uFEFF/, '');
+    const parsed = Papa.parse(csvText, { header: true, skipEmptyLines: true });
+    const result = await campaigns.importNisFile(parsed.data);
+    const msg = `Processed ${result.totalRows} rows — ${result.uniqueNumbers} unique NIS numbers (${result.inserted} new, ${result.updated} updated). Flagged ${result.flagged} phones across all campaigns.`;
+    res.redirect('/nis?msg=' + encodeURIComponent(msg));
+  } catch(e) {
+    console.error('[nis/upload] error:', e.message, e.stack);
+    res.status(500).send(`<h2>NIS upload failed</h2><p>${e.message}</p><p><a href="/nis">Back</a></p>`);
+  }
+});
+
 // Update Readymode accepted count
 app.post('/campaigns/:id/readymode-count', requireAuth, async (req, res) => {
   try {
@@ -1013,21 +1036,60 @@ function newCampaignPage(error, listTypes) {
   `);
 }
 
+function nisPage(stats, msg) {
+  const lastUpload = stats.last_upload ? new Date(stats.last_upload).toLocaleString() : 'Never';
+  return shell('NIS Numbers', `
+    <div style="max-width:720px">
+      <h2 style="font-size:20px;font-weight:500;margin-bottom:4px">NIS Numbers</h2>
+      <p style="font-size:13px;color:#888;margin-bottom:1.5rem">Upload Readymode Detailed NIS exports to flag dead numbers across all campaigns. Flagged numbers are excluded from future clean exports.</p>
+
+      ${msg ? `<div style="background:#eaf6ea;border:1px solid #b8e0b8;color:#1a5f1a;padding:12px 16px;border-radius:8px;margin-bottom:1rem;font-size:13px">${msg}</div>` : ''}
+
+      <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin-bottom:1.5rem">
+        <div class="stat-card">
+          <div class="stat-lbl">Total NIS numbers</div>
+          <div class="stat-num">${Number(stats.total_nis||0).toLocaleString()}</div>
+          <div style="font-size:11px;color:#888;margin-top:2px">In database</div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-lbl">Flagged phones</div>
+          <div class="stat-num" style="color:#c0392b">${Number(stats.total_flagged||0).toLocaleString()}</div>
+          <div style="font-size:11px;color:#888;margin-top:2px">Across all campaigns</div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-lbl">Last upload</div>
+          <div class="stat-num" style="font-size:14px">${lastUpload}</div>
+        </div>
+      </div>
+
+      <div class="card">
+        <div style="font-size:14px;font-weight:500;margin-bottom:8px">Upload NIS file</div>
+        <p style="font-size:12px;color:#888;margin-bottom:12px">Drop a Readymode Detailed NIS CSV export. The file must have a "dialed" column with phone numbers and a "day" column with the NIS date.</p>
+        <form method="POST" action="/nis/upload" enctype="multipart/form-data">
+          <input type="file" name="nisfile" accept=".csv" required style="margin-bottom:12px;display:block;font-size:13px">
+          <button type="submit" class="btn-submit">Upload and flag</button>
+        </form>
+      </div>
+    </div>
+  `, 'nis');
+}
+
 function campaignDetailPage(c) {
   const n = c.total_unique_numbers || 0;
   const manualCount = parseInt(c.manual_count) || 0;
   const rmCount = manualCount > 0 ? manualCount : n;
   const connected = c.total_connected || 0;
   const totalPhones = parseInt(c.contact_counts?.total_phones||0);
-  const callablePhones = totalPhones - parseInt(c.contact_counts?.wrong_phones||0) - parseInt(c.contact_counts?.filtered_phones||0);
+  const callablePhones = totalPhones - parseInt(c.contact_counts?.wrong_phones||0) - parseInt(c.contact_counts?.filtered_phones||0) - parseInt(c.contact_counts?.nis_phones||0);
   const health = totalPhones > 0 ? ((callablePhones / totalPhones) * 100).toFixed(1) : '0.0';
   const callable_pct_old = n > 0 ? Math.round((c.total_callable / n) * 100) : 0;
   const totalContacts = parseInt(c.contact_counts?.total_contacts||0);
   const leadContacts = parseInt(c.contact_counts?.lead_contacts||0);
   const wrongNums = parseInt(c.total_wrong_numbers||0);
-  // Callable pool: master list phones minus any filtered-out phones from campaign activity
+  const nisPhones = parseInt(c.contact_counts?.nis_phones||0);
+  // Callable pool: master list phones minus filtered-out phones AND minus NIS phones
   const filteredOutCount = parseInt(c.total_filtered||0) + wrongNums;
-  const masterCallable = Math.max(0, totalPhones - filteredOutCount);
+  const masterCallable = Math.max(0, totalPhones - filteredOutCount - nisPhones);
   const callable_pct = totalPhones > 0 ? Math.round((masterCallable / totalPhones) * 100) : 0;
   const cr    = totalPhones > 0 && connected > 0 ? ((connected / totalPhones) * 100).toFixed(2) : '0.00';
   const wPct  = (connected + wrongNums) > 0 ? ((wrongNums / (connected + wrongNums)) * 100).toFixed(2) : '0.00';
@@ -1145,6 +1207,7 @@ function campaignDetailPage(c) {
         <div class="stat-card"><div class="stat-lbl">Accepted by Readymode</div><div class="stat-num">${Number(c.manual_count||0).toLocaleString()} <button onclick="document.getElementById('rm-count-form').style.display=document.getElementById('rm-count-form').style.display==='none'?'block':'none'" style="font-size:11px;color:#888;background:none;border:none;cursor:pointer;text-decoration:underline">edit</button></div><div style="font-size:11px;color:#888;margin-top:2px">Manually entered</div></div>
         <div class="stat-card"><div class="stat-lbl">Total phones</div><div class="stat-num">${Number(c.contact_counts?.total_phones||0).toLocaleString()}</div><div style="font-size:11px;color:#888;margin-top:2px">Across all contacts</div></div>
         <div class="stat-card"><div class="stat-lbl">Wrong numbers</div><div class="stat-num red">${Number(c.contact_counts?.wrong_phones||0).toLocaleString()}</div><div style="font-size:11px;color:#888;margin-top:2px">Permanently excluded</div></div>
+        <div class="stat-card"><div class="stat-lbl">NIS flagged</div><div class="stat-num" style="color:#c0392b">${Number(c.contact_counts?.nis_phones||0).toLocaleString()}</div><div style="font-size:11px;color:#888;margin-top:2px">Dead numbers</div></div>
         <div class="stat-card"><div class="stat-lbl">Confirmed correct</div><div class="stat-num green">${Number(c.contact_counts?.correct_phones||0).toLocaleString()}</div><div style="font-size:11px;color:#888;margin-top:2px">Live person confirmed</div></div>
         <div class="stat-card"><div class="stat-lbl">Contacts reached</div><div class="stat-num" style="color:#185fa5">${Number(c.contact_counts?.reached_contacts||0).toLocaleString()} ${c.contact_counts?.total_contacts>0?`<span style="font-size:13px;color:#888">(${((c.contact_counts.reached_contacts/c.contact_counts.total_contacts)*100).toFixed(1)}%)</span>`:''}</div><div style="font-size:11px;color:#888;margin-top:2px">At least 1 live pickup</div></div>
       </div>
@@ -1382,6 +1445,10 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
     <a href="/campaigns" class="sidebar-link ${isCampaign?'active':''}">
       <svg fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg>
       Campaigns
+    </a>
+    <a href="/nis" class="sidebar-link ${activePage==='nis'?'active':''}">
+      <svg fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><line x1="4.93" y1="4.93" x2="19.07" y2="19.07"/></svg>
+      NIS Numbers
     </a>
   </div>
   <div class="sidebar-footer">
