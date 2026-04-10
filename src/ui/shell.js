@@ -74,6 +74,7 @@ function shell(title, body, activePage) {
   const isFilter = activePage === 'filter';
   const isCampaign = activePage === 'campaigns';
   const isUpload = activePage === 'upload';
+  const isRecords = activePage === 'records';
 
   return `<!DOCTYPE html><html lang="en"><head>
 <meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
@@ -91,6 +92,10 @@ function shell(title, body, activePage) {
     <a href="/" class="sidebar-link ${isFilter?'active':''}">
       <svg fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M3 6h18M6 12h12M9 18h6"/></svg>
       List Filtration
+    </a>
+    <a href="/records" class="sidebar-link ${isRecords?'active':''}">
+      <svg fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M3 9l9-7 9 7v11a2 2 0 01-2 2H5a2 2 0 01-2-2z"/><polyline points="9 22 9 12 15 12 15 22"/></svg>
+      Records
     </a>
     <a href="/upload" class="sidebar-link ${isUpload?'active':''}">
       <svg fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
