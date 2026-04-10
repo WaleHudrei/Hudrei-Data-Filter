@@ -1,6 +1,7 @@
 const { query: dbQuery, initSchema } = require('./db');
 const campaigns = require('./campaigns');
 const uploadRoutes = require('./routes/upload-routes');
+const recordsRoutes = require('./routes/records-routes');
 const uploadUI = require('./ui/upload');
 const express = require('express');
 const session = require('express-session');
@@ -51,6 +52,7 @@ app.locals.saveMemory = saveMemory;
 
 // mount upload routes
 app.use('/upload', uploadRoutes);
+app.use('/records', recordsRoutes);
 
 function requireAuth(req, res, next) {
   if (req.session && req.session.authenticated) return next();
@@ -1052,6 +1054,10 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
     <a href="/" class="sidebar-link ${isFilter?'active':''}">
       <svg fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M3 4h18M3 8h18M3 12h12M3 16h8"/></svg>
       List Filtration
+    </a>
+    <a href="/records" class="sidebar-link ${activePage==='records'?'active':''}">
+      <svg fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M3 9l9-7 9 7v11a2 2 0 01-2 2H5a2 2 0 01-2-2z"/><polyline points="9 22 9 12 15 12 15 22"/></svg>
+      Records
     </a>
     <a href="/upload" class="sidebar-link ${activePage==='upload'?'active':''}">
       <svg fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
