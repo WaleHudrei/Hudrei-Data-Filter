@@ -681,13 +681,28 @@ app.get('/campaigns', requireAuth, async (req, res) => {
 });
 
 // New campaign form
-app.get('/campaigns/new', requireAuth, (req, res) => { res.send(newCampaignPage()); });
+app.get('/campaigns/new', requireAuth, async (req, res) => {
+  await campaigns.initCampaignSchema();
+  const listTypes = await campaigns.getListTypes();
+  res.send(newCampaignPage(null, listTypes));
+});
 
 // Create campaign
 app.post('/campaigns/new', requireAuth, async (req, res) => {
   try {
     await campaigns.initCampaignSchema();
-    await campaigns.createCampaign({ ...req.body, created_by: 'team' });
+    const customType = (req.body.custom_list_type || '').trim();
+    const body = { ...req.body, created_by: 'team' };
+    // If the user picked "+ Add new list type…" or typed a custom value, use and save it
+    if (body.list_type === '__new__' || customType) {
+      if (!customType) {
+        return res.redirect('/campaigns/new?error=' + encodeURIComponent('Enter a new list type or pick one from the dropdown'));
+      }
+      body.list_type = customType;
+      await campaigns.addListType(customType);
+    }
+    delete body.custom_list_type;
+    await campaigns.createCampaign(body);
     res.redirect('/campaigns');
   } catch (e) { res.redirect('/campaigns/new?error=' + encodeURIComponent(e.message)); }
 });
@@ -935,8 +950,8 @@ function campaignsPage(list, tab) {
   `);
 }
 
-function newCampaignPage(error) {
-  const LIST_TYPES = ['Vacant Property','Pre-Foreclosure','Active Liens','2+ Mortgages','Absentee Owner','Tax Delinquent','Probate','Code Violation','Pre-Probate','Other'];
+function newCampaignPage(error, listTypes) {
+  const LIST_TYPES = listTypes && listTypes.length ? listTypes : ['Vacant Property','Pre-Foreclosure','Active Liens','2+ Mortgages','Absentee Owner','Tax Delinquent','Probate','Code Violation','Pre-Probate','Other'];
   const STATES = ['IN','GA','TX','FL','OH','MI','IL','NC','TN','MO','AZ','CO','NV','PA','NY','Other'];
   return shell('New Campaign', `
     <div style="max-width:520px">
@@ -954,10 +969,15 @@ function newCampaignPage(error) {
           <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
             <div class="form-field">
               <label>List type</label>
-              <select name="list_type" required>
+              <select name="list_type" id="list_type_select" onchange="document.getElementById('custom_lt_wrap').style.display=this.value==='__new__'?'block':'none';document.getElementById('custom_lt_input').required=this.value==='__new__'">
                 <option value="">Select...</option>
                 ${LIST_TYPES.map(t=>`<option value="${t}">${t}</option>`).join('')}
+                <option value="__new__">+ Add new list type…</option>
               </select>
+              <div id="custom_lt_wrap" style="display:none;margin-top:8px">
+                <input type="text" id="custom_lt_input" name="custom_list_type" placeholder="Enter new list type" maxlength="100">
+                <span class="field-hint">Saved for future campaigns</span>
+              </div>
             </div>
             <div class="form-field">
               <label>State</label>
