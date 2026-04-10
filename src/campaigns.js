@@ -262,24 +262,31 @@ module.exports = { initCampaignSchema, getCampaigns, getCampaign, createCampaign
 // Detect phone columns from CSV headers
 function detectPhoneColumns(headers) {
   const phones = [];
-  const h = headers.map(x => x.toLowerCase().trim());
-  // Look for Ph#1..Ph#10, Phone 1..10, Phone, Alt Phone etc.
-  const patterns = [
-    /^ph#?(\d+)$/i,
-    /^phone\s*#?(\d+)$/i,
-    /^phone\s+(\d+)$/i,
-    /^phone$/i,
-    /^alt\.?\s*phone$/i,
+  // Exclude columns that CONTAIN phone-related words but aren't the number itself
+  const excludePatterns = [
+    /type/i, /status/i, /tag/i, /connected/i, /score/i, /representative/i,
+    /dnc/i, /do\s*not\s*call/i, /litigator/i, /carrier/i, /line\s*type/i,
+    /last\s*call/i, /call\s*count/i, /disposition/i
   ];
-  // Also exclude non-phone columns that contain "phone" 
-  const excludePatterns = [/type/i, /status/i, /tag/i, /connected/i, /score/i, /representative/i];
+  // Include: anything that looks like a phone number slot
+  // Matches: Phone, Phone1, Phone 1, Phone_1, Phone #1, Ph1, Ph#1,
+  //          Phone 1 Number, Phone Number 1, Wireless 1, Mobile 1,
+  //          Landline 1, Cell 1, Alt Phone, Owner Phone 1, etc.
+  const includePatterns = [
+    /^(owner\s+)?(alt\.?\s+)?ph(one)?[\s_#]*\d*(\s+number)?$/i,
+    /^phone\s+number\s*\d*$/i,
+    /^(wireless|mobile|cell|landline|home|work)[\s_#]*\d*(\s+phone)?$/i,
+    /^phone[\s_#]*\d+[\s_]*(number|#)?$/i,
+  ];
   headers.forEach((col, idx) => {
-    const lower = col.toLowerCase().trim();
+    const lower = String(col || '').toLowerCase().trim();
+    if (!lower) return;
     if (excludePatterns.some(ep => ep.test(lower))) return;
-    for (const pat of patterns) {
-      if (pat.test(lower)) { phones.push({ col, idx }); break; }
+    if (includePatterns.some(pat => pat.test(lower))) {
+      phones.push({ col, idx });
     }
   });
+  console.log('[detectPhoneColumns] headers:', headers.length, 'detected phone cols:', phones.map(p => p.col));
   return phones;
 }
 
@@ -376,6 +383,15 @@ async function importContactList(campaignId, rows, headers, customMapping) {
       }
     }
 
+    if (i === 0) {
+      // On first batch, log a sample so we can see what's happening
+      const sampleRow = batch[0] || {};
+      console.log('[importContactList] phoneCols:', phoneCols.map(p => p.col));
+      console.log('[importContactList] sample row phone values:',
+        phoneCols.map(p => ({ col: p.col, val: sampleRow[p.col] })));
+      console.log('[importContactList] phones extracted in first batch:', phoneVals.length);
+    }
+
     if (phoneVals.length > 0) {
       try {
         await query(
@@ -387,6 +403,8 @@ async function importContactList(campaignId, rows, headers, customMapping) {
       } catch(phoneErr) {
         console.error('Phone batch insert error:', phoneErr.message, 'vals:', phoneVals.length, 'params:', phoneParams.length);
       }
+    } else if (i === 0) {
+      console.error('[importContactList] NO PHONES extracted from first batch — check column detection above');
     }
 
     imported += batch.length;
