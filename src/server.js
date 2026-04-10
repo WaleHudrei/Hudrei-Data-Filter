@@ -389,7 +389,7 @@ app.post('/process',requireAuth,upload.single('csvfile'),async(req,res)=>{
         await campaigns.initCampaignSchema();
         await campaigns.recordUpload(campaignId, req.file.originalname||'upload.csv', Object.keys(result.listsSeen)[0]||'upload', 'cold_call', allRows);
       // Apply filtration results to contact phone statuses
-      try { await campaigns.applyFiltrationToContacts(campaignId, result.filteredRows); } catch(e) { console.error('applyFiltration error:', e.message); }
+      try { await campaigns.applyFiltrationToContacts(campaignId, allRows); } catch(e) { console.error('applyFiltration error:', e.message); }
       }catch(campErr){ console.error('Campaign record error:', campErr.message); }
     }
     const newMemSize=Object.keys(result.memory).length;
@@ -832,6 +832,29 @@ app.post('/nis/upload', requireAuth, upload.single('nisfile'), async (req, res) 
   }
 });
 
+// One-time sync: flag all historical wrong numbers in master contact list for this campaign
+app.post('/campaigns/:id/sync-wrong-numbers', requireAuth, async (req, res) => {
+  try {
+    const { query: dbQ } = require('./db');
+    const result = await dbQ(
+      `UPDATE campaign_contact_phones ccp
+       SET wrong_number = true, updated_at = NOW()
+       FROM campaign_numbers cn
+       WHERE cn.phone_number = ccp.phone_number
+         AND cn.campaign_id = ccp.campaign_id
+         AND cn.campaign_id = $1
+         AND cn.last_disposition_normalized = 'wrong_number'
+         AND ccp.wrong_number = false`,
+      [req.params.id]
+    );
+    console.log('[sync-wrong-numbers] flagged', result.rowCount, 'phones for campaign', req.params.id);
+    res.redirect('/campaigns/' + req.params.id);
+  } catch(e) {
+    console.error('[sync-wrong-numbers] error:', e.message);
+    res.redirect('/campaigns/' + req.params.id);
+  }
+});
+
 // Update Readymode accepted count
 app.post('/campaigns/:id/readymode-count', requireAuth, async (req, res) => {
   try {
@@ -1199,6 +1222,9 @@ function campaignDetailPage(c) {
       <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px;flex-wrap:wrap;gap:10px">
         <div class="sec-lbl" style="margin-bottom:0">Contact list</div>
         <div style="display:flex;gap:8px;flex-wrap:wrap">
+          <form method="POST" action="/campaigns/${c.id}/sync-wrong-numbers" style="display:inline" onsubmit="return confirm('Sync all historical wrong numbers to the master contact list? Safe to run anytime.')">
+            <button type="submit" style="font-size:12px;padding:6px 14px;background:#fff;border:1px solid #ddd;border-radius:8px;cursor:pointer;color:#1a1a1a;font-family:inherit">Sync wrong numbers</button>
+          </form>
           <a href="/campaigns/${c.id}/export/clean" class="btn-primary" style="font-size:12px;padding:6px 14px">Download clean export (Readymode)</a>
         </div>
       </div>
