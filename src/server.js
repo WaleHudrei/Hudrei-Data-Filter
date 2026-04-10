@@ -215,16 +215,16 @@ app.get('/',requireAuth,async(req,res)=>{
       <div class="sec-lbl" style="margin-bottom:10px">Upload call log export</div>
       <div style="display:flex;align-items:center;gap:10px;margin-bottom:12px;flex-wrap:wrap">
         <div style="flex:1;min-width:200px">
-          <label style="font-size:12px;color:#888;display:block;margin-bottom:4px">Campaign (optional)</label>
+          <label style="font-size:12px;color:#888;display:block;margin-bottom:4px">Campaign <span style="color:#c0392b">*</span> <span style="color:#aaa">(required)</span></label>
           <select id="campaign-select" style="width:100%;padding:8px 10px;border:1px solid #ddd;border-radius:8px;font-size:13px;background:#fff;font-family:inherit">
-            <option value="">— No campaign —</option>
+            <option value="">— Select a campaign first —</option>
           </select>
         </div>
         <div style="padding-top:18px">
           <a href="/campaigns/new" style="font-size:12px;color:#888;text-decoration:none">+ New campaign</a>
         </div>
       </div>
-      <div class="drop-zone" id="drop-zone"><strong style="font-size:15px">Drop Readymode CSV here or click to browse</strong><p style="font-size:12px;color:#888;margin-top:5px">Phone · Log Type · Original lead file · Log Time · First/Last Name · Address · City · State · Zip Code</p></div>
+      <div class="drop-zone" id="drop-zone" style="opacity:0.4;pointer-events:none;cursor:not-allowed"><strong style="font-size:15px">Drop Readymode CSV here or click to browse</strong><p style="font-size:12px;color:#888;margin-top:5px">Select a campaign above first</p></div>
       <input type="file" id="file-input" accept=".csv" style="display:none">
       <div id="upload-spinner" style="display:none;align-items:center;gap:8px;font-size:13px;color:#888;padding:10px 0"><div class="spinner"></div> Processing…</div>
       <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;padding-top:1rem;border-top:1px solid #f0efe9;margin-top:1rem">
@@ -286,11 +286,28 @@ app.get('/',requireAuth,async(req,res)=>{
       });
     }).catch(()=>{});
 
+    // Enable drop zone only when campaign selected
+    document.getElementById('campaign-select').addEventListener('change', function(){
+      const dz=document.getElementById('drop-zone');
+      if(this.value){
+        dz.style.opacity='1';
+        dz.style.pointerEvents='auto';
+        dz.style.cursor='pointer';
+        dz.querySelector('p').textContent='Phone · Log Type · Original lead file · Log Time · First/Last Name · Address · City · State · Zip Code';
+      } else {
+        dz.style.opacity='0.4';
+        dz.style.pointerEvents='none';
+        dz.style.cursor='not-allowed';
+        dz.querySelector('p').textContent='Select a campaign above first';
+      }
+    });
+
     async function handleFile(file){
       if(!file.name.endsWith('.csv')){showError('Please upload a CSV file.');return;}
-      const form=new FormData();form.append('csvfile',file);
       const campaignId=document.getElementById('campaign-select').value;
-      if(campaignId) form.append('campaign_id',campaignId);
+      if(!campaignId){showError('Please select a campaign before uploading.');return;}
+      const form=new FormData();form.append('csvfile',file);
+      form.append('campaign_id',campaignId);
       document.getElementById('upload-spinner').style.display='flex';
       document.getElementById('drop-zone').style.opacity='0.6';
       try{
