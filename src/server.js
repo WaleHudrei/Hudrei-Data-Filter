@@ -1240,7 +1240,9 @@ function campaignDetailPage(c) {
   const filteredOutCount = parseInt(c.total_filtered||0) + wrongNums;
   const masterCallable = Math.max(0, totalPhones - filteredOutCount - nisPhones);
   const callable_pct = totalPhones > 0 ? Math.round((masterCallable / totalPhones) * 100) : 0;
-  const cr    = totalPhones > 0 && connected > 0 ? ((connected / totalPhones) * 100).toFixed(2) : '0.00';
+  const callLogs = parseInt(n) || 0;
+  const cr    = callLogs > 0 && connected > 0 ? ((connected / callLogs) * 100).toFixed(2) : '0.00';
+  const clr   = totalPhones > 0 && callLogs > 0 ? ((callLogs / totalPhones) * 100).toFixed(2) : '0.00';
   const wPct  = (connected + wrongNums) > 0 ? ((wrongNums / (connected + wrongNums)) * 100).toFixed(2) : '0.00';
   const niPct = connected > 0 ? (((c.total_not_interested||0) / connected) * 100).toFixed(2) : '0.00';
   const lgr   = connected > 0 ? (((c.total_transfers||0) / connected) * 100).toFixed(2) : '0.00';
@@ -1294,6 +1296,7 @@ function campaignDetailPage(c) {
     </div>
 
     <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:10px;margin-bottom:1.25rem">
+      <div class="stat-card"><div class="stat-lbl">Call logs</div><div class="stat-num">${Number(n).toLocaleString()}</div><div style="font-size:11px;color:#888;margin-top:2px">Logged numbers</div></div>
       <div class="stat-card"><div class="stat-lbl">Connected</div><div class="stat-num blue">${Number(connected).toLocaleString()}</div><div style="font-size:11px;color:#888;margin-top:2px">Live pickups</div></div>
       <div class="stat-card"><div class="stat-lbl">Wrong numbers</div><div class="stat-num red">${Number(c.total_wrong_numbers||0).toLocaleString()}</div><div style="font-size:11px;color:#888;margin-top:2px">Removed</div></div>
       <div class="stat-card"><div class="stat-lbl">Not interested</div><div class="stat-num" style="color:#9a6800">${Number(c.total_not_interested||0).toLocaleString()}</div><div style="font-size:11px;color:#888;margin-top:2px">Total NI</div></div>
@@ -1305,9 +1308,14 @@ function campaignDetailPage(c) {
       <div style="font-size:11px;font-weight:600;color:#888;text-transform:uppercase;letter-spacing:.05em;margin-bottom:12px">Campaign KPIs</div>
       <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(110px,1fr));gap:10px">
         <div style="text-align:center;padding:10px;background:#f5f4f0;border-radius:8px">
+          <div style="font-size:22px;font-weight:500;color:#534AB7">${clr}%</div>
+          <div style="font-size:11px;color:#888;margin-top:2px">CLR</div>
+          <div style="font-size:10px;color:#aaa">Call logs ÷ Total phones</div>
+        </div>
+        <div style="text-align:center;padding:10px;background:#f5f4f0;border-radius:8px">
           <div style="font-size:22px;font-weight:500;color:#2471a3">${cr}%</div>
           <div style="font-size:11px;color:#888;margin-top:2px">CR</div>
-          <div style="font-size:10px;color:#aaa">Connected ÷ Total phones</div>
+          <div style="font-size:10px;color:#aaa">Connected ÷ Call logs</div>
         </div>
         <div style="text-align:center;padding:10px;background:#f5f4f0;border-radius:8px">
           <div style="font-size:22px;font-weight:500;color:#c0392b">${wPct}%</div>
@@ -1446,10 +1454,7 @@ function campaignDetailPage(c) {
     </div>
 
     <div class="card" style="padding:0;overflow:hidden">
-      <div style="padding:12px 16px;border-bottom:1px solid #f0efe9;display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px">
-        <div class="sec-lbl" style="margin-bottom:0">Filtration history</div>
-        <div style="font-size:12px;color:#888">Logged numbers: <strong style="color:#1a1a1a">${Number(n).toLocaleString()}</strong> <span style="color:#aaa">· unique phones with at least one call result</span></div>
-      </div>
+      <div style="padding:12px 16px;border-bottom:1px solid #f0efe9"><div class="sec-lbl" style="margin-bottom:0">Filtration history</div></div>
       <table class="data-table">
         <thead><tr><th>Date</th><th>File / Source list</th><th>Channel</th><th>Total</th><th>Kept</th><th>Filtered</th><th>Breakdown</th><th>Memory catches</th><th></th></tr></thead>
         <tbody>${uploadRows||'<tr><td colspan="8" style="color:#aaa;padding:16px;text-align:center">No uploads yet for this campaign</td></tr>'}</tbody>
