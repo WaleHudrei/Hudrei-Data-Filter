@@ -733,6 +733,11 @@ app.get('/campaigns', requireAuth, async (req, res) => {
   try {
     await campaigns.initCampaignSchema();
     const list = await campaigns.getCampaigns();
+    // Enrich each campaign with contact_counts so we can show Total Contacts, Callable Contacts, LGR
+    for (const c of list) {
+      try { c.contact_counts = await campaigns.getContactStats(c.id); }
+      catch(e) { c.contact_counts = { total_contacts: 0, total_phones: 0, wrong_phones: 0, nis_phones: 0, lead_contacts: 0 }; }
+    }
     res.send(campaignsPage(list, req.query.tab||'active'));
   } catch (e) { res.status(500).send('Error: ' + e.message); }
 });
@@ -1025,18 +1030,33 @@ function campaignsPage(list, tab) {
   const active = list.filter(c => c.status !== 'completed');
   const completed = list.filter(c => c.status === 'completed');
   const display = tab === 'completed' ? completed : active;
-  const rows = display.map(c => `
+  const rows = display.map(c => {
+    const totalContacts = parseInt(c.contact_counts?.total_contacts||0);
+    const totalPhones = parseInt(c.contact_counts?.total_phones||0);
+    const wrongPhones = parseInt(c.contact_counts?.wrong_phones||0);
+    const nisPhones = parseInt(c.contact_counts?.nis_phones||0);
+    const filteredPhones = parseInt(c.contact_counts?.filtered_phones||0);
+    // Approximate callable contacts: total contacts × (callable phones ÷ total phones)
+    const callablePhones = Math.max(0, totalPhones - wrongPhones - nisPhones - filteredPhones);
+    const callableContacts = totalPhones > 0
+      ? Math.round((callablePhones / totalPhones) * totalContacts)
+      : totalContacts;
+    const connected = parseInt(c.total_connected||0);
+    const transfers = parseInt(c.total_transfers||0);
+    const lgr = connected > 0 ? ((transfers / connected) * 100).toFixed(2) : '0.00';
+    return `
     <tr onclick="location.href='/campaigns/${c.id}'" style="cursor:pointer">
       <td><strong>${c.name}</strong><br><span style="font-size:11px;color:#888">${c.list_type} · ${c.market_name}</span></td>
       <td><span class="badge" style="background:${STATUS_COLORS[c.status]}20;color:${STATUS_COLORS[c.status]}">${c.status}</span></td>
       <td><span class="badge" style="background:#e6f1fb;color:#185fa5">${CHANNEL_LABELS[c.active_channel]||c.active_channel}</span></td>
       <td style="font-size:12px">${c.start_date ? new Date(c.start_date).toLocaleDateString() : '—'}</td>
       <td style="font-size:12px;color:#888">${c.end_date ? new Date(c.end_date).toLocaleDateString() : '—'}</td>
-      <td>${Number(c.total_unique_numbers||0).toLocaleString()}</td>
-      <td style="color:#1a7a4a">${Number(c.total_callable||0).toLocaleString()}</td>
-      <td style="color:#c0392b">${Number(c.total_filtered||0).toLocaleString()}</td>
+      <td>${Number(totalContacts).toLocaleString()}</td>
+      <td>${lgr}%</td>
+      <td style="color:#1a7a4a">${Number(callableContacts).toLocaleString()}</td>
       <td>${c.upload_count||0}</td>
-    </tr>`).join('');
+    </tr>`;
+  }).join('');
 
   return shell('Campaigns', `
     <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:1.5rem">
@@ -1051,11 +1071,11 @@ function campaignsPage(list, tab) {
     ${display.length === 0 ? `<div class="empty-state">No ${tab} campaigns yet.</div>` : `
     <div class="card" style="padding:0;overflow:hidden">
       <table class="data-table">
-        <thead><tr><th>Campaign</th><th>Status</th><th>Channel</th><th>Start date</th><th>End date</th><th>Total numbers</th><th>Callable</th><th>Filtered</th><th>Uploads</th></tr></thead>
+        <thead><tr><th>Campaign</th><th>Status</th><th>Channel</th><th>Start date</th><th>End date</th><th>Total Contacts</th><th>LGR</th><th>Callable Contacts</th><th>Uploads</th></tr></thead>
         <tbody>${rows}</tbody>
       </table>
     </div>`}
-  `);
+  `, 'campaigns');
 }
 
 function newCampaignPage(error, listTypes) {
@@ -1617,4 +1637,4 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
 <div class="main">${body}</div>
 </div>
 </body></html>`;
-      }
+  }
