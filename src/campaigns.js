@@ -1,4 +1,5 @@
 const { query } = require('./db');
+const filtration = require('./filtration');
 
 async function initCampaignSchema() {
   await query(`
@@ -144,6 +145,8 @@ async function initCampaignSchema() {
     `ALTER TABLE campaigns ADD COLUMN IF NOT EXISTS total_connected INTEGER DEFAULT 0`,
     `ALTER TABLE campaign_uploads ADD COLUMN IF NOT EXISTS connected INTEGER DEFAULT 0`,
     `ALTER TABLE campaign_contact_phones ADD COLUMN IF NOT EXISTS nis_flagged_at TIMESTAMPTZ`,
+    `ALTER TABLE campaign_contact_phones ADD COLUMN IF NOT EXISTS wrong_number_flagged_at TIMESTAMPTZ`,
+    `ALTER TABLE campaign_contact_phones ADD COLUMN IF NOT EXISTS correct_flagged_at TIMESTAMPTZ`,
   ];
   for (const m of migrations) {
     try { await query(m); } catch(e) { console.error('Migration error:', e.message); }
@@ -203,77 +206,6 @@ async function updateCampaignChannel(id, channel) {
   const sms  = channel==='sms'?'active':'dormant';
   await query(`UPDATE campaigns SET active_channel=$1, cold_call_status=$2, sms_status=$3, updated_at=NOW() WHERE id=$4`, [channel, cold, sms, id]);
 }
-
-async function recordUpload(campaignId, filename, sourceListName, channel, rows) {
-  // Tally dispositions
-  const CONNECTED_DISPOS = new Set(['not_interested','transfer','callback','spanish_speaker','hung_up','completed','disqualified','do_not_call']);
-  const tally = { total:0, kept:0, filtered:0, wrong:0, vm:0, ni:0, dnc:0, transfer:0, mem:0, newNums:0, connected:0 };
-  for (const row of rows) {
-    tally.total++;
-    if (row.Action==='remove') tally.filtered++; else tally.kept++;
-    const d = row._normDispo||'';
-    if (d==='wrong_number') tally.wrong++;
-    if (d==='voicemail') tally.vm++;
-    if (d==='not_interested') tally.ni++;
-    if (d==='do_not_call') tally.dnc++;
-    if (d==='transfer') tally.transfer++;
-    if (row._caughtByMemory) tally.mem++;
-    if (CONNECTED_DISPOS.has(d)) tally.connected++;
-
-    const phone = String(row.Phone||'').replace(/\D/g,'');
-    if (!phone) continue;
-    const existing = await query(`SELECT id,cumulative_count FROM campaign_numbers WHERE campaign_id=$1 AND phone_number=$2`, [campaignId, phone]);
-    const cumCount = parseInt(row['Call Log Count'])||1;
-    const status = row.Action==='remove'?'filtered':'callable';
-    if (!existing.rows.length) {
-      tally.newNums++;
-      await query(
-        `INSERT INTO campaign_numbers (campaign_id, phone_number, last_disposition, last_disposition_normalized, cumulative_count, current_status, phone_status, phone_tag, marketing_result, total_appearances)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,1)`,
-        [campaignId, phone, row.Disposition||'', d, cumCount, status, row['Phone Status']||'', row['Phone Tag']||'', row['Marketing Results']||'']
-      );
-    } else {
-      await query(
-        `UPDATE campaign_numbers SET last_disposition=$1, last_disposition_normalized=$2, cumulative_count=$3, current_status=$4, phone_status=$5, phone_tag=$6, marketing_result=$7, last_seen_at=NOW(), total_appearances=total_appearances+1
-         WHERE campaign_id=$8 AND phone_number=$9`,
-        [row.Disposition||'', d, cumCount, status, row['Phone Status']||'', row['Phone Tag']||'', row['Marketing Results']||'', campaignId, phone]
-      );
-    }
-  }
-
-  // Insert upload record
-  await query(
-    `INSERT INTO campaign_uploads (campaign_id, filename, source_list_name, channel, total_records, new_unique_numbers, records_kept, records_filtered, wrong_numbers, voicemails, not_interested, do_not_call, transfers, caught_by_memory, connected)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)`,
-    [campaignId, filename, sourceListName, channel, tally.total, tally.newNums, tally.kept, tally.filtered, tally.wrong, tally.vm, tally.ni, tally.dnc, tally.transfer, tally.mem, tally.connected]
-  );
-
-  // Update campaign totals
-  const totals = await query(`
-    SELECT COUNT(*) as unique_numbers,
-      SUM(CASE WHEN current_status='callable' THEN 1 ELSE 0 END) as callable,
-      SUM(CASE WHEN current_status='filtered' THEN 1 ELSE 0 END) as filtered
-    FROM campaign_numbers WHERE campaign_id=$1`, [campaignId]);
-  const t = totals.rows[0];
-  await query(
-    `UPDATE campaigns SET
-       total_unique_numbers=$1, total_callable=$2, total_filtered=$3,
-       total_wrong_numbers=total_wrong_numbers+$4,
-       total_voicemails=total_voicemails+$5,
-       total_not_interested=total_not_interested+$6,
-       total_do_not_call=total_do_not_call+$7,
-       total_transfers=total_transfers+$8,
-       total_connected=COALESCE(total_connected,0)+$9,
-       upload_count=upload_count+1,
-       last_filtered_at=NOW(), updated_at=NOW()
-     WHERE id=$10`,
-    [t.unique_numbers, t.callable, t.filtered, tally.wrong, tally.vm, tally.ni, tally.dnc, tally.transfer, tally.connected, campaignId]
-  );
-
-  return tally;
-}
-
-module.exports = { initCampaignSchema, getCampaigns, getCampaign, createCampaign, updateCampaignStatus, updateCampaignChannel, recordUpload, closeCampaign, cloneCampaign };
 
 // ── Contact list management ───────────────────────────────────────────────────
 
@@ -637,96 +569,17 @@ async function addListType(name) {
   }
 }
 
-// Normalize a phone number — strip all non-digits, strip leading 1 if length is 11
-function normalizePhone(raw) {
-  let p = String(raw || '').replace(/\D/g, '');
-  if (p.length === 11 && p.startsWith('1')) p = p.substring(1);
-  return p;
-}
-
-// Import NIS file (Readymode Detailed NIS export)
-async function importNisFile(rows) {
-  let inserted = 0, updated = 0, flagged = 0;
-  const BATCH = 500;
-
-  const phoneMap = new Map();
-  for (const r of rows) {
-    const phone = normalizePhone(r.dialed || r.Dialed || r.phone || '');
-    if (!phone || phone.length < 10) continue;
-    const dayRaw = r.day || r.Day || '';
-    let day = null;
-    if (dayRaw) {
-      const parsed = new Date(dayRaw);
-      if (!isNaN(parsed)) day = parsed.toISOString().split('T')[0];
-    }
-    if (!phoneMap.has(phone)) {
-      phoneMap.set(phone, { phone, first: day, last: day, count: 1 });
-    } else {
-      const e = phoneMap.get(phone);
-      e.count++;
-      if (day && (!e.first || day < e.first)) e.first = day;
-      if (day && (!e.last || day > e.last)) e.last = day;
-    }
-  }
-
-  const entries = Array.from(phoneMap.values());
-
-  for (let i = 0; i < entries.length; i += BATCH) {
-    const batch = entries.slice(i, i + BATCH);
-    const vals = [];
-    const params = [];
-    let p = 1;
-    for (const e of batch) {
-      vals.push(`($${p},$${p+1},$${p+2},$${p+3})`);
-      params.push(e.phone, e.first, e.last, e.count);
-      p += 4;
-    }
-    const res = await query(
-      `INSERT INTO nis_numbers (phone_number, first_seen_nis, last_seen_nis, times_reported)
-       VALUES ${vals.join(',')}
-       ON CONFLICT (phone_number) DO UPDATE SET
-         last_seen_nis = GREATEST(nis_numbers.last_seen_nis, EXCLUDED.last_seen_nis),
-         first_seen_nis = LEAST(nis_numbers.first_seen_nis, EXCLUDED.first_seen_nis),
-         times_reported = nis_numbers.times_reported + EXCLUDED.times_reported,
-         updated_at = NOW()
-       RETURNING (xmax = 0) AS inserted`,
-      params
-    );
-    for (const row of res.rows) {
-      if (row.inserted) inserted++; else updated++;
-    }
-  }
-
-  // Retroactively flag matching phones across all campaigns
-  const flagRes = await query(
-    `UPDATE campaign_contact_phones
-     SET phone_status = 'dead_number', nis_flagged_at = NOW()
-     WHERE phone_number IN (SELECT phone_number FROM nis_numbers)
-       AND (phone_status IS NULL OR phone_status != 'dead_number')`
-  );
-  flagged = flagRes.rowCount || 0;
-
-  return { totalRows: rows.length, uniqueNumbers: entries.length, inserted, updated, flagged };
-}
-
-async function getNisStats() {
-  try {
-    const total = await query(`SELECT COUNT(*) as c FROM nis_numbers`);
-    const lastUpload = await query(`SELECT MAX(updated_at) as t FROM nis_numbers`);
-    const flagged = await query(`SELECT COUNT(*) as c FROM campaign_contact_phones WHERE phone_status = 'dead_number'`);
-    return {
-      total_nis: parseInt(total.rows[0]?.c || 0),
-      last_upload: lastUpload.rows[0]?.t || null,
-      total_flagged: parseInt(flagged.rows[0]?.c || 0),
-    };
-  } catch(e) {
-    console.error('getNisStats error:', e.message);
-    return { total_nis: 0, last_upload: null, total_flagged: 0 };
-  }
-}
-
-module.exports = Object.assign(module.exports, {
-  importContactList, applyFiltrationToContacts, generateCleanExport,
-  getContactStats, detectPhoneColumns, getListTypes, addListType,
-  importNisFile, getNisStats, normalizePhone
-});
+module.exports = {
+  initCampaignSchema, getCampaigns, getCampaign, createCampaign,
+  updateCampaignStatus, updateCampaignChannel, closeCampaign, cloneCampaign,
+  importContactList, getListTypes, addListType,
+  // Re-exported from filtration.js
+  recordUpload:              filtration.recordUpload,
+  applyFiltrationToContacts: filtration.applyFiltrationToContacts,
+  generateCleanExport:       filtration.generateCleanExport,
+  getContactStats:           filtration.getContactStats,
+  detectPhoneColumns:        filtration.detectPhoneColumns,
+  importNisFile:             filtration.importNisFile,
+  getNisStats:               filtration.getNisStats,
+  normalizePhone:            filtration.normalizePhone,
+};
