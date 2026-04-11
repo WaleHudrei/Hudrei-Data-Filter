@@ -3,6 +3,20 @@
 
 const ENTRIES = [
   {
+    date: 'April 11, 2026 — Architecture Decision',
+    title: 'Phone Intelligence Architecture (locked in)',
+    items: [
+      { tag: 'improvement', text: 'DECISION: Loki phone state is now organized into three layers — global signals (with shelf life), permanent global signals, and per-campaign isolated dispositions. This balances cross-channel data quality with the need to re-pitch sellers across different list types.' },
+      { tag: 'improvement', text: 'Layer 1 — Time-decaying global flags with 6-month shelf life from last update: Wrong Number, NIS (dead number), Correct Number. These apply across all campaigns and both channels (cold call + SMS).' },
+      { tag: 'improvement', text: 'Layer 1 expiration rules: All three flags auto-expire after 6 months. Wrong Number and Correct also clear immediately when a new contact list arrives with a different owner name on the same phone (data provider signaling ownership change). Correct timer resets on every confirming touch. NIS is time-based only.' },
+      { tag: 'improvement', text: 'Layer 1.5 — Permanent global flag with NO expiry: Lead / Transfer. Once a phone is tagged as a lead, it is permanently excluded from all future marketing across every campaign and channel. Once they are in pipeline, they stay there.' },
+      { tag: 'improvement', text: 'Layer 2 — Per-campaign isolated dispositions: Not Interested, Disqualified, Hang Up, Voicemail, Dead Call, Not Available. Each campaign maintains its own count, even when campaigns run simultaneously. A seller saying NI on Pre-Foreclosure does not affect their dispositions on Vacant Property — they get a fresh 3-strike rule on each list.' },
+      { tag: 'improvement', text: 'Layer 3 — Records section: passive logging of every disposition across every campaign for the same contact. Available for manual analysis but never auto-blocks any campaign from dialing.' },
+      { tag: 'improvement', text: 'Why per-campaign isolation matters: A seller who is "not interested" on a Vacant Property pitch in April could be a motivated seller on a Pre-Foreclosure list in July. Cost of being too cautious (skipping them) is much higher than cost of being too aggressive (a few extra dials).' },
+      { tag: 'improvement', text: 'Build sequence: (1) Add flagged_at timestamps to wrong_number, dead_number, and Correct on campaign_contact_phones. (2) Daily cleanup job that expires 6-month-old flags. (3) Owner-mismatch detection on contact list uploads. (4) Lead permanent global flag. (5) Then SMS pipeline build.' },
+    ],
+  },
+  {
     date: 'April 11, 2026',
     title: 'Filter rule overhaul + dashboard refinements',
     items: [
