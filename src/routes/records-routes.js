@@ -100,9 +100,9 @@ router.get('/', requireAuth, async (req, res) => {
       const stage = r.pipeline_stage || 'prospect';
       const stageColor = {prospect:'#f5f4f0',lead:'#e8f5ee',contract:'#fff8e1',closed:'#e8f0ff'}[stage]||'#f5f4f0';
       const stageText = {prospect:'#555',lead:'#1a7a4a',contract:'#9a6800',closed:'#2c5cc5'}[stage]||'#555';
-      return `<tr data-id="${r.id}" data-street="${r.street}" data-city="${r.city}" data-state="${r.state_code}" data-zip="${r.zip_code}" data-owner="${owner}" data-type="${r.property_type||''}" data-stage="${stage}" data-phones="${r.phone_count||0}" data-lists="${r.list_count||0}" data-added="${r.created_at||''}" onclick="handleRowClick(event,this)">
-        <td onclick="event.stopPropagation()" style="width:36px;padding-left:14px"><input type="checkbox" class="row-check" data-id="${r.id}" style="cursor:pointer;width:15px;height:15px"></td>
-        <td><div style="font-weight:500">${r.street}</div><div style="font-size:12px;color:#888">${r.city}, ${r.state_code} ${r.zip_code}</div></td>
+      return `<tr data-id="${r.id}">
+        <td style="width:36px;padding-left:14px"><input type="checkbox" class="row-check" data-id="${r.id}" style="cursor:pointer;width:15px;height:15px"></td>
+        <td><a href="/records/${r.id}" style="text-decoration:none;color:inherit;display:block"><div style="font-weight:500">${r.street}</div><div style="font-size:12px;color:#888">${r.city}, ${r.state_code} ${r.zip_code}</div></a></td>
         <td>${owner}</td>
         <td>${fmt(r.property_type)}</td>
         <td>${r.phone_count || 0}</td>
@@ -328,109 +328,95 @@ router.get('/', requireAuth, async (req, res) => {
       ${pagination}
 
       <script>
-      (function() {
-        var selectedIds = {};
+      var selectedIds = {};
 
-        function updateToolbar() {
-          var count = Object.keys(selectedIds).length;
-          var toolbar = document.getElementById('export-toolbar');
-          var counter = document.getElementById('selected-count');
-          if (toolbar) toolbar.style.display = count > 0 ? 'flex' : 'none';
-          if (counter) counter.textContent = count.toLocaleString();
-        }
+      function updateToolbar() {
+        var count = Object.keys(selectedIds).length;
+        var toolbar = document.getElementById('export-toolbar');
+        var counter = document.getElementById('selected-count');
+        if (toolbar) toolbar.style.display = count > 0 ? 'flex' : 'none';
+        if (counter) counter.textContent = count.toLocaleString();
+      }
 
-        function selectRow(cb, checked) {
-          var id = cb.getAttribute('data-id');
-          if (!id) return;
-          cb.checked = checked;
-          var tr = cb.closest ? cb.closest('tr') : cb.parentNode.parentNode;
-          if (tr) tr.style.background = checked ? '#f0f7ff' : '';
-          if (checked) selectedIds[id] = true;
-          else delete selectedIds[id];
-          updateToolbar();
-        }
+      function selectRow(cb, checked) {
+        var id = cb.getAttribute('data-id');
+        if (!id) return;
+        cb.checked = checked;
+        var tr = cb.parentNode.parentNode;
+        if (tr) tr.style.background = checked ? '#f0f7ff' : '';
+        if (checked) selectedIds[id] = true;
+        else delete selectedIds[id];
+        updateToolbar();
+      }
 
-        // Select-all
-        var sa = document.getElementById('select-all');
-        if (sa) {
-          sa.addEventListener('change', function() {
-            var checks = document.querySelectorAll('.row-check');
-            for (var i = 0; i < checks.length; i++) {
-              selectRow(checks[i], this.checked);
-            }
-          });
-        }
-
-        // Individual checkboxes
-        var checks = document.querySelectorAll('.row-check');
-        for (var i = 0; i < checks.length; i++) {
-          (function(cb) {
-            cb.addEventListener('change', function() {
-              selectRow(cb, cb.checked);
-              // update select-all state
-              var all = document.querySelectorAll('.row-check');
-              var allChecked = true;
-              for (var j = 0; j < all.length; j++) { if (!all[j].checked) { allChecked = false; break; } }
-              var sa2 = document.getElementById('select-all');
-              if (sa2) sa2.checked = allChecked;
-            });
-          })(checks[i]);
-        }
-
-        // Clear selection
-        window.clearSelection = function() {
-          selectedIds = {};
-          var all = document.querySelectorAll('.row-check');
-          for (var i = 0; i < all.length; i++) {
-            all[i].checked = false;
-            var tr = all[i].closest ? all[i].closest('tr') : all[i].parentNode.parentNode;
-            if (tr) tr.style.background = '';
+      // Wire up select-all
+      var selectAllEl = document.getElementById('select-all');
+      if (selectAllEl) {
+        selectAllEl.addEventListener('change', function() {
+          var isChecked = this.checked;
+          var boxes = document.querySelectorAll('.row-check');
+          for (var i = 0; i < boxes.length; i++) {
+            selectRow(boxes[i], isChecked);
           }
-          var sa3 = document.getElementById('select-all');
-          if (sa3) sa3.checked = false;
-          updateToolbar();
-        };
+        });
+      }
 
-        // Open export modal
-        window.openExportModal = function() {
-          document.getElementById('export-modal').classList.add('open');
-        };
+      // Wire up individual checkboxes
+      var rowChecks = document.querySelectorAll('.row-check');
+      for (var i = 0; i < rowChecks.length; i++) {
+        rowChecks[i].addEventListener('change', function() {
+          selectRow(this, this.checked);
+        });
+      }
 
-        // Column check all/none
-        window.checkAll = function(val) {
-          var cols = document.querySelectorAll('.col-check');
-          for (var i = 0; i < cols.length; i++) cols[i].checked = val;
-        };
+      function clearSelection() {
+        selectedIds = {};
+        var boxes = document.querySelectorAll('.row-check');
+        for (var i = 0; i < boxes.length; i++) {
+          boxes[i].checked = false;
+          boxes[i].parentNode.parentNode.style.background = '';
+        }
+        var sa = document.getElementById('select-all');
+        if (sa) sa.checked = false;
+        updateToolbar();
+      }
 
-        // Do export
-        window.doExport = async function() {
-          var colEls = document.querySelectorAll('.col-check:checked');
-          var cols = [];
-          for (var i = 0; i < colEls.length; i++) cols.push(colEls[i].value);
-          if (!cols.length) { alert('Select at least one column.'); return; }
-          var ids = Object.keys(selectedIds);
-          if (!ids.length) { alert('No records selected.'); return; }
-          var btn = document.querySelector('[onclick="doExport()"]');
-          if (btn) { btn.textContent = 'Downloading…'; btn.disabled = true; }
-          try {
-            var res = await fetch('/records/export', {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ ids: ids, columns: cols })
-            });
-            if (!res.ok) { alert('Export failed.'); return; }
-            var blob = await res.blob();
-            var url = URL.createObjectURL(blob);
-            var a = document.createElement('a');
-            a.href = url;
-            a.download = 'loki_export_' + new Date().toISOString().split('T')[0] + '.csv';
-            a.click();
-            URL.revokeObjectURL(url);
-            document.getElementById('export-modal').classList.remove('open');
-          } catch(e) { alert('Export failed: ' + e.message); }
-          finally { if (btn) { btn.textContent = 'Download CSV'; btn.disabled = false; } }
-        };
-      })();
+      function openExportModal() {
+        document.getElementById('export-modal').classList.add('open');
+      }
+
+      function checkAll(val) {
+        var cols = document.querySelectorAll('.col-check');
+        for (var i = 0; i < cols.length; i++) cols[i].checked = val;
+      }
+
+      async function doExport() {
+        var colEls = document.querySelectorAll('.col-check:checked');
+        var cols = [];
+        for (var i = 0; i < colEls.length; i++) cols.push(colEls[i].value);
+        if (!cols.length) { alert('Select at least one column.'); return; }
+        var ids = Object.keys(selectedIds);
+        if (!ids.length) { alert('No records selected.'); return; }
+        var btn = document.querySelector('[onclick="doExport()"]');
+        if (btn) { btn.textContent = 'Downloading…'; btn.disabled = true; }
+        try {
+          var res = await fetch('/records/export', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ ids: ids, columns: cols })
+          });
+          if (!res.ok) { alert('Export failed.'); return; }
+          var blob = await res.blob();
+          var url = URL.createObjectURL(blob);
+          var a = document.createElement('a');
+          a.href = url;
+          a.download = 'loki_export_' + new Date().toISOString().split('T')[0] + '.csv';
+          a.click();
+          URL.revokeObjectURL(url);
+          document.getElementById('export-modal').classList.remove('open');
+        } catch(err) { alert('Export failed: ' + err.message); }
+        finally { if (btn) { btn.textContent = 'Download CSV'; btn.disabled = false; } }
+      }
       </script>
     `, 'records'));
   } catch (e) {
