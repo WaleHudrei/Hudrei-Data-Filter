@@ -64,6 +64,26 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
 .tbl-wrap{overflow-x:auto;max-height:360px;overflow-y:auto}
 .spinner{width:16px;height:16px;border:2px solid #ddd;border-top-color:#888;border-radius:50%;animation:spin .6s linear infinite;display:inline-block}
 @keyframes spin{to{transform:rotate(360deg)}}
+.list-row{background:#fff;border:1px solid #e0dfd8;border-radius:10px;padding:14px 18px;margin-bottom:8px;display:flex;align-items:center;gap:16px;transition:box-shadow .15s}
+.list-row:hover{box-shadow:0 2px 8px rgba(0,0,0,.06)}
+.list-name{font-size:14px;font-weight:600;flex:1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:500px}
+.list-count{font-size:13px;color:#888;white-space:nowrap;min-width:110px}
+.btn-show{padding:7px 14px;background:#f5f4f0;border:1px solid #e0dfd8;border-radius:7px;font-size:13px;font-weight:500;color:#1a1a1a;text-decoration:none;white-space:nowrap;transition:all .15s}
+.btn-show:hover{background:#1a1a1a;color:#fff;border-color:#1a1a1a}
+.dots-btn{background:none;border:none;cursor:pointer;padding:6px 8px;border-radius:6px;color:#888;font-size:18px;line-height:1;position:relative}
+.dots-btn:hover{background:#f5f4f0;color:#1a1a1a}
+.dropdown{display:none;position:absolute;right:0;top:100%;background:#fff;border:1px solid #e0dfd8;border-radius:8px;box-shadow:0 4px 16px rgba(0,0,0,.1);min-width:120px;z-index:100;overflow:hidden}
+.dropdown.open{display:block}
+.dropdown a,.dropdown button{display:block;width:100%;padding:10px 14px;font-size:13px;color:#1a1a1a;text-decoration:none;background:none;border:none;text-align:left;cursor:pointer;font-family:inherit}
+.dropdown a:hover,.dropdown button:hover{background:#f5f4f0}
+.dropdown .delete-btn{color:#c0392b}
+.dropdown .delete-btn:hover{background:#fdf0f0}
+.pagination{display:flex;align-items:center;justify-content:space-between;margin-top:1rem;font-size:13px;color:#888}
+.pagination a{padding:6px 12px;background:#fff;border:1px solid #ddd;border-radius:7px;color:#1a1a1a;text-decoration:none;font-size:13px}
+.pagination a:hover{background:#f5f4f0}
+.btn-row{display:flex;gap:8px}
+.btn-danger{background:#fff;color:#c0392b;border:1px solid #f5c5c5}.btn-danger:hover{background:#fff5f5}
+.sec-lbl{font-size:11px;font-weight:600;color:#888;text-transform:uppercase;letter-spacing:.05em;margin-bottom:12px}
 .modal-overlay{display:none;position:fixed;inset:0;background:rgba(0,0,0,.4);z-index:200;align-items:center;justify-content:center}
 .modal-overlay.open{display:flex}
 .modal{background:#fff;border-radius:14px;padding:1.5rem;width:100%;max-width:560px;max-height:90vh;overflow-y:auto;box-shadow:0 20px 60px rgba(0,0,0,.2)}
