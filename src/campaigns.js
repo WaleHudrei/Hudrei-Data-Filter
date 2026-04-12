@@ -147,6 +147,7 @@ async function initCampaignSchema() {
     `ALTER TABLE campaign_contact_phones ADD COLUMN IF NOT EXISTS nis_flagged_at TIMESTAMPTZ`,
     `ALTER TABLE campaign_contact_phones ADD COLUMN IF NOT EXISTS wrong_number_flagged_at TIMESTAMPTZ`,
     `ALTER TABLE campaign_contact_phones ADD COLUMN IF NOT EXISTS correct_flagged_at TIMESTAMPTZ`,
+    `ALTER TABLE campaign_contacts ADD COLUMN IF NOT EXISTS marketing_result VARCHAR(50)`,
   ];
   for (const m of migrations) {
     try { await query(m); } catch(e) { console.error('Migration error:', e.message); }
@@ -369,12 +370,20 @@ async function importContactList(campaignId, rows, headers, customMapping) {
   }
 
   // Auto-flag any phones that are already in the NIS database
+  // Rule: times_reported >= 3 overrides everything including Correct
+  //       times_reported < 3 only flags unknown/non-Correct phones
   await query(
     `UPDATE campaign_contact_phones
      SET phone_status = 'dead_number', nis_flagged_at = NOW()
      WHERE campaign_id = $1
-       AND phone_number IN (SELECT phone_number FROM nis_numbers)
-       AND (phone_status IS NULL OR phone_status != 'dead_number')`,
+       AND phone_status != 'dead_number'
+       AND (
+         phone_number IN (SELECT phone_number FROM nis_numbers WHERE times_reported >= 3)
+         OR (
+           phone_number IN (SELECT phone_number FROM nis_numbers WHERE times_reported < 3)
+           AND (phone_status IS NULL OR phone_status != 'Correct')
+         )
+       )`,
     [campaignId]
   );
 
