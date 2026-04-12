@@ -183,6 +183,40 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
 <div class="page-wrap">
 <div class="main">${body}</div>
 </div>
+<script>
+// Records page checkbox logic — runs at true bottom of DOM
+if (document.getElementById('select-all')) {
+  var _selIds = {};
+  function _upd() {
+    var c = Object.keys(_selIds).length;
+    var t = document.getElementById('export-toolbar');
+    var s = document.getElementById('selected-count');
+    if (t) t.style.display = c > 0 ? 'flex' : 'none';
+    if (s) s.textContent = c.toLocaleString();
+  }
+  function selectRow(cb, on) {
+    var id = cb.getAttribute('data-id'); if (!id) return;
+    cb.checked = on;
+    var tr = cb.closest ? cb.closest('tr') : cb.parentNode.parentNode;
+    if (tr) { if (on) tr.classList.add('row-selected'); else tr.classList.remove('row-selected'); }
+    if (on) _selIds[id] = 1; else delete _selIds[id];
+    _upd();
+  }
+  function clearSelection() {
+    _selIds = {};
+    document.querySelectorAll('.row-check').forEach(function(cb) { cb.checked = false; var tr = cb.closest ? cb.closest('tr') : cb.parentNode.parentNode; if (tr) tr.classList.remove('row-selected'); });
+    document.getElementById('select-all').checked = false;
+    _upd();
+  }
+  document.getElementById('select-all').addEventListener('change', function() {
+    var on = this.checked;
+    document.querySelectorAll('.row-check').forEach(function(cb) { selectRow(cb, on); });
+  });
+  document.querySelectorAll('.row-check').forEach(function(cb) {
+    cb.addEventListener('change', function() { selectRow(cb, cb.checked); });
+  });
+}
+</script>
 </body></html>`;
 }
 
