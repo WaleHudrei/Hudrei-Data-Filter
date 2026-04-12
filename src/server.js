@@ -61,8 +61,9 @@ function requireAuth(req, res, next) {
   res.redirect('/login');
 }
 
-// Phase 2: Records filing cabinet (slice 1 — Properties read-only)
+// Phase 2: Records + Setup routes
 const slice1Records = require('./records/records-routes');
+const setupRoutes = require('./records/setup-routes');
 
 const COL = { phone:'Phone', dispo:'Log Type', listname:'Original lead file', date:'Log Time', fname:'First Name', lname:'Last Name', addr:'Address', city:'City', state:'State', zip:'Zip Code', notes:'Call Notes' };
 
@@ -481,8 +482,9 @@ app.post('/memory/import',requireAuth,upload.single('memfile'),async(req,res)=>{
 
 app.post('/memory/clear',requireAuth,async(req,res)=>{await clearMemory();res.json({success:true});});
 
-// Register phase 2 slice 1 Records routes (Properties read-only)
-slice1Records.registerRecordsRoutes(app, requireAuth, shell);
+// Records + Setup routes
+app.use('/records', slice1Records);
+app.use('/setup', setupRoutes);
 
 app.listen(PORT,()=>{
   console.log(`HudREI Filtration Bot v2 running on port ${PORT}`);
@@ -1658,4 +1660,4 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
 <div class="main">${body}</div>
 </div>
 </body></html>`;
-}
+          }
