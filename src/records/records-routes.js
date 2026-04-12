@@ -100,7 +100,8 @@ router.get('/', requireAuth, async (req, res) => {
       const stage = r.pipeline_stage || 'prospect';
       const stageColor = {prospect:'#f5f4f0',lead:'#e8f5ee',contract:'#fff8e1',closed:'#e8f0ff'}[stage]||'#f5f4f0';
       const stageText = {prospect:'#555',lead:'#1a7a4a',contract:'#9a6800',closed:'#2c5cc5'}[stage]||'#555';
-      return `<tr onclick="window.location='/records/${r.id}'">
+      return `<tr data-id="${r.id}" data-street="${r.street}" data-city="${r.city}" data-state="${r.state_code}" data-zip="${r.zip_code}" data-owner="${owner}" data-type="${r.property_type||''}" data-stage="${stage}" data-phones="${r.phone_count||0}" data-lists="${r.list_count||0}" data-added="${r.created_at||''}" onclick="handleRowClick(event,this)">
+        <td onclick="event.stopPropagation()" style="width:36px;padding-left:14px"><input type="checkbox" class="row-check" data-id="${r.id}" style="cursor:pointer;width:15px;height:15px"></td>
         <td><div style="font-weight:500">${r.street}</div><div style="font-size:12px;color:#888">${r.city}, ${r.state_code} ${r.zip_code}</div></td>
         <td>${owner}</td>
         <td>${fmt(r.property_type)}</td>
@@ -267,9 +268,129 @@ router.get('/', requireAuth, async (req, res) => {
       }
       </script>
 
+      <!-- Export Modal -->
+      <div class="modal-overlay" id="export-modal">
+        <div class="modal" style="max-width:520px">
+          <div class="modal-header">
+            <div class="modal-title">Choose Export Columns</div>
+            <button class="modal-close" onclick="document.getElementById('export-modal').classList.remove('open')">×</button>
+          </div>
+          <div style="margin-bottom:12px;display:flex;gap:8px">
+            <button onclick="checkAll(true)" style="padding:5px 12px;font-size:12px;background:#f5f4f0;border:1px solid #ddd;border-radius:6px;cursor:pointer;font-family:inherit">Select All</button>
+            <button onclick="checkAll(false)" style="padding:5px 12px;font-size:12px;background:#f5f4f0;border:1px solid #ddd;border-radius:6px;cursor:pointer;font-family:inherit">Clear All</button>
+          </div>
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-bottom:1.25rem" id="col-checks">
+            ${[
+              ['street','Street Address'],['city','City'],['state_code','State'],['zip_code','ZIP'],['county','County'],
+              ['first_name','Owner First Name'],['last_name','Owner Last Name'],
+              ['mailing_address','Mailing Address'],['mailing_city','Mailing City'],['mailing_state','Mailing State'],['mailing_zip','Mailing ZIP'],
+              ['phones','All Phones'],
+              ['property_type','Property Type'],['year_built','Year Built'],['sqft','Sq Ft'],['bedrooms','Bedrooms'],['bathrooms','Bathrooms'],
+              ['assessed_value','Assessed Value'],['estimated_value','Est. Value'],['equity_percent','Equity %'],
+              ['property_status','Property Status'],['pipeline_stage','Pipeline Stage'],['condition','Condition'],
+              ['last_sale_date','Last Sale Date'],['last_sale_price','Last Sale Price'],
+              ['marketing_result','Marketing Result'],['source','Source'],
+              ['list_count','Lists Count'],['created_at','Date Added'],
+            ].map(([k,l]) => `<label style="display:flex;align-items:center;gap:8px;font-size:13px;cursor:pointer;padding:4px 0">
+              <input type="checkbox" value="${k}" class="col-check" checked style="width:14px;height:14px"> ${l}
+            </label>`).join('')}
+          </div>
+          <button onclick="doExport()" style="width:100%;padding:10px;background:#1a1a1a;color:#fff;border:none;border-radius:8px;font-size:14px;font-weight:500;cursor:pointer;font-family:inherit">Download CSV</button>
+        </div>
+      </div>
+
+      <script>
+      // ── Selection logic ────────────────────────────────────────────────────
+      const selectedIds = new Set();
+
+      function handleRowClick(e, row) {
+        if (e.target.type === 'checkbox') return;
+        const cb = row.querySelector('.row-check');
+        cb.checked = !cb.checked;
+        toggleSelect(cb);
+      }
+
+      function toggleSelect(cb) {
+        const id = cb.dataset.id;
+        if (cb.checked) selectedIds.add(id);
+        else selectedIds.delete(id);
+        updateToolbar();
+        cb.closest('tr').style.background = cb.checked ? '#f0f7ff' : '';
+      }
+
+      function updateToolbar() {
+        const toolbar = document.getElementById('export-toolbar');
+        const count = selectedIds.size;
+        document.getElementById('selected-count').textContent = count.toLocaleString();
+        toolbar.style.display = count > 0 ? 'flex' : 'none';
+      }
+
+      function clearSelection() {
+        selectedIds.clear();
+        document.querySelectorAll('.row-check').forEach(cb => {
+          cb.checked = false;
+          cb.closest('tr').style.background = '';
+        });
+        document.getElementById('select-all').checked = false;
+        updateToolbar();
+      }
+
+      document.getElementById('select-all').addEventListener('change', function() {
+        document.querySelectorAll('.row-check').forEach(cb => {
+          cb.checked = this.checked;
+          toggleSelect(cb);
+          cb.closest('tr').style.background = this.checked ? '#f0f7ff' : '';
+        });
+      });
+
+      document.querySelectorAll('.row-check').forEach(cb => {
+        cb.addEventListener('change', () => toggleSelect(cb));
+      });
+
+      // ── Export logic ───────────────────────────────────────────────────────
+      function openExportModal() {
+        document.getElementById('export-modal').classList.add('open');
+      }
+
+      function checkAll(val) {
+        document.querySelectorAll('.col-check').forEach(cb => cb.checked = val);
+      }
+
+      async function doExport() {
+        const cols = [...document.querySelectorAll('.col-check:checked')].map(cb => cb.value);
+        if (!cols.length) { alert('Select at least one column.'); return; }
+        const ids = [...selectedIds];
+        if (!ids.length) { alert('No records selected.'); return; }
+
+        // Fetch full data for selected IDs
+        const res = await fetch('/records/export', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ ids, columns: cols })
+        });
+        if (!res.ok) { alert('Export failed.'); return; }
+        const blob = await res.blob();
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url; a.download = 'loki_export_' + new Date().toISOString().split('T')[0] + '.csv';
+        a.click(); URL.revokeObjectURL(url);
+        document.getElementById('export-modal').classList.remove('open');
+      }
+      </script>
+
+      <!-- Export toolbar -->
+      <div id="export-toolbar" style="display:none;background:#1a1a1a;color:#fff;border-radius:10px;padding:10px 16px;margin-bottom:10px;display:none;align-items:center;justify-content:space-between;gap:12px">
+        <div style="font-size:13px"><span id="selected-count">0</span> records selected</div>
+        <div style="display:flex;gap:8px">
+          <button onclick="clearSelection()" style="padding:6px 12px;background:transparent;color:#aaa;border:1px solid #444;border-radius:7px;font-size:12px;cursor:pointer;font-family:inherit">Clear</button>
+          <button onclick="openExportModal()" style="padding:6px 14px;background:#fff;color:#1a1a1a;border:none;border-radius:7px;font-size:12px;font-weight:600;cursor:pointer;font-family:inherit">⬇ Export CSV</button>
+        </div>
+      </div>
+
       <div class="card" style="padding:0;overflow:hidden">
         <table class="data-table">
           <thead><tr>
+            <th style="width:36px;padding-left:14px"><input type="checkbox" id="select-all" style="cursor:pointer;width:15px;height:15px" title="Select all"></th>
             <th>Address</th>
             <th>Owner</th>
             <th>Type</th>
@@ -279,7 +400,7 @@ router.get('/', requireAuth, async (req, res) => {
             <th>Added</th>
           </tr></thead>
           <tbody>
-            ${tableRows || '<tr><td colspan="7" class="empty-state">No records found</td></tr>'}
+            ${tableRows || '<tr><td colspan="8" class="empty-state">No records found</td></tr>'}
           </tbody>
         </table>
       </div>
@@ -290,6 +411,96 @@ router.get('/', requireAuth, async (req, res) => {
     res.status(500).send('Server error: ' + e.message);
   }
 });
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// EXPORT — POST /records/export
+// ═══════════════════════════════════════════════════════════════════════════════
+router.post('/export', requireAuth, async (req, res) => {
+  try {
+    const { ids, columns } = req.body;
+    if (!ids || !ids.length) return res.status(400).json({ error: 'No IDs provided' });
+    if (!columns || !columns.length) return res.status(400).json({ error: 'No columns selected' });
+
+    // Fetch full property data for selected IDs
+    const placeholders = ids.map((_, i) => `$${i + 1}`).join(',');
+    const props = await query(`
+      SELECT
+        p.id, p.street, p.city, p.state_code, p.zip_code, p.county,
+        p.property_type, p.year_built, p.sqft, p.bedrooms, p.bathrooms,
+        p.assessed_value, p.estimated_value, p.equity_percent,
+        p.property_status, p.pipeline_stage, p.condition,
+        p.last_sale_date, p.last_sale_price, p.marketing_result,
+        p.source, p.created_at,
+        c.first_name, c.last_name,
+        c.mailing_address, c.mailing_city, c.mailing_state, c.mailing_zip,
+        (SELECT COUNT(*) FROM property_lists pl WHERE pl.property_id = p.id) AS list_count
+      FROM properties p
+      LEFT JOIN property_contacts pc ON pc.property_id = p.id AND pc.primary_contact = true
+      LEFT JOIN contacts ct ON ct.id = pc.contact_id
+      LEFT JOIN contacts c ON c.id = pc.contact_id
+      WHERE p.id IN (${placeholders})
+    `, ids);
+
+    // Fetch phones for each property
+    const phoneMap = {};
+    if (columns.includes('phones')) {
+      const phoneRes = await query(`
+        SELECT ph.phone_number, ph.phone_index, pc.property_id
+        FROM phones ph
+        JOIN property_contacts pc ON pc.contact_id = ph.contact_id
+        WHERE pc.property_id IN (${placeholders})
+        ORDER BY ph.phone_index ASC
+      `, ids);
+      phoneRes.rows.forEach(ph => {
+        if (!phoneMap[ph.property_id]) phoneMap[ph.property_id] = [];
+        phoneMap[ph.property_id].push(ph.phone_number);
+      });
+    }
+
+    // Column label map
+    const colLabels = {
+      street: 'Street Address', city: 'City', state_code: 'State', zip_code: 'ZIP', county: 'County',
+      first_name: 'Owner First Name', last_name: 'Owner Last Name',
+      mailing_address: 'Mailing Address', mailing_city: 'Mailing City',
+      mailing_state: 'Mailing State', mailing_zip: 'Mailing ZIP',
+      phones: 'Phones',
+      property_type: 'Property Type', year_built: 'Year Built', sqft: 'Sq Ft',
+      bedrooms: 'Bedrooms', bathrooms: 'Bathrooms',
+      assessed_value: 'Assessed Value', estimated_value: 'Est. Value', equity_percent: 'Equity %',
+      property_status: 'Property Status', pipeline_stage: 'Pipeline Stage', condition: 'Condition',
+      last_sale_date: 'Last Sale Date', last_sale_price: 'Last Sale Price',
+      marketing_result: 'Marketing Result', source: 'Source',
+      list_count: 'Lists Count', created_at: 'Date Added',
+    };
+
+    // Build CSV
+    const headers = columns.map(k => colLabels[k] || k);
+    const csvRows = props.rows.map(row => {
+      return columns.map(col => {
+        let val = '';
+        if (col === 'phones') {
+          val = (phoneMap[row.id] || []).join(' | ');
+        } else if (col === 'last_sale_date' || col === 'created_at') {
+          val = row[col] ? new Date(row[col]).toLocaleDateString('en-US') : '';
+        } else {
+          val = row[col] !== null && row[col] !== undefined ? String(row[col]) : '';
+        }
+        return `"${val.replace(/"/g, '""')}"`;
+      }).join(',');
+    });
+
+    const csv = [headers.map(h => `"${h}"`).join(','), ...csvRows].join('\n');
+
+    res.setHeader('Content-Type', 'text/csv');
+    res.setHeader('Content-Disposition', `attachment; filename="loki_export_${new Date().toISOString().split('T')[0]}.csv"`);
+    res.send(csv);
+
+  } catch (e) {
+    console.error('Export error:', e.message);
+    res.status(500).json({ error: e.message });
+  }
+});
+
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // PROPERTY DETAIL — GET /records/:id
@@ -647,3 +858,6 @@ router.post('/:id/edit', requireAuth, async (req, res) => {
 });
 
 module.exports = router;
+
+module.exports = router;
+module.exports.shellFn = shell;
