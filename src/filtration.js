@@ -145,7 +145,7 @@ async function applyFiltrationToContacts(campaignId, allRows) {
            WHEN $3 = true AND wrong_number_flagged_at IS NULL THEN NOW()
            ELSE wrong_number_flagged_at
          END,
-         -- correct_flagged_at: set only on first confirmation, refresh timer on each touch
+         -- correct_flagged_at: refresh timer on every live pickup confirmation
          correct_flagged_at = CASE
            WHEN $7 = true THEN NOW()
            ELSE correct_flagged_at
@@ -153,6 +153,20 @@ async function applyFiltrationToContacts(campaignId, allRows) {
        WHERE campaign_id = $8 AND phone_number = $9`,
       [status || 'unknown', tag, isWrong, wasRemoved, count, row.Disposition || '', isCorrect, campaignId, phone]
     );
+
+    // If Transfer — flag the contact as Lead (scoped to this campaign only)
+    if (dispo === 'transfer') {
+      await query(
+        `UPDATE campaign_contacts cc
+         SET marketing_result = 'Lead'
+         FROM campaign_contact_phones ccp
+         WHERE ccp.contact_id = cc.id
+           AND ccp.campaign_id = $1
+           AND ccp.phone_number = $2
+           AND cc.campaign_id = $1`,
+        [campaignId, phone]
+      );
+    }
   }
 }
 
@@ -172,6 +186,7 @@ async function generateCleanExport(campaignId) {
      FROM campaign_contacts cc
      LEFT JOIN campaign_contact_phones ccp ON ccp.contact_id = cc.id
      WHERE cc.campaign_id = $1
+       AND (cc.marketing_result IS NULL OR cc.marketing_result != 'Lead')
      GROUP BY cc.id
      ORDER BY cc.row_index`,
     [campaignId]
@@ -321,11 +336,19 @@ async function importNisFile(rows) {
   }
 
   // Retroactively flag matching phones across all campaigns
+  // Rule: times_reported >= 3 overrides everything including Correct
+  //       times_reported < 3 only flags unknown/non-Correct phones
   const flagRes = await query(
     `UPDATE campaign_contact_phones
      SET phone_status = 'dead_number', nis_flagged_at = NOW()
-     WHERE phone_number IN (SELECT phone_number FROM nis_numbers)
-       AND (phone_status IS NULL OR phone_status != 'dead_number')`
+     WHERE phone_status != 'dead_number'
+       AND (
+         phone_number IN (SELECT phone_number FROM nis_numbers WHERE times_reported >= 3)
+         OR (
+           phone_number IN (SELECT phone_number FROM nis_numbers WHERE times_reported < 3)
+           AND (phone_status IS NULL OR phone_status != 'Correct')
+         )
+       )`
   );
   flagged = flagRes.rowCount || 0;
 
