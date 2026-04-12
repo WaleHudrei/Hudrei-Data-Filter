@@ -252,7 +252,7 @@ app.get('/login',(req,res)=>{
 
 app.post('/login',(req,res)=>{
   const{username,password}=req.body;
-  if(username===APP_USERNAME&&password===APP_PASSWORD){req.session.authenticated=true;res.redirect('/');}
+  if(username===APP_USERNAME&&password===APP_PASSWORD){req.session.authenticated=true;res.redirect('/dashboard');}
   else res.redirect('/login?error=1');
 });
 
@@ -1274,6 +1274,25 @@ app.post('/campaigns/:id/uploads/:uploadId/delete', requireAuth, async (req, res
   }
 });
 
+
+// Delete campaign
+app.post('/campaigns/:id/delete', requireAuth, async (req, res) => {
+  try {
+    const { query: dbQ } = require('./db');
+    const id = req.params.id;
+    // Only allow deleting completed campaigns
+    const campRes = await dbQ('SELECT status FROM campaigns WHERE id=$1', [id]);
+    if (!campRes.rows.length) return res.redirect('/campaigns');
+    if (campRes.rows[0].status !== 'completed') return res.redirect('/campaigns/' + id);
+    // Cascade delete — uploads, numbers, contacts, phones all cascade via FK
+    await dbQ('DELETE FROM campaigns WHERE id=$1', [id]);
+    res.redirect('/campaigns');
+  } catch(e) {
+    console.error('Delete campaign error:', e.message);
+    res.redirect('/campaigns');
+  }
+});
+
 // ── Campaign HTML Pages ───────────────────────────────────────────────────────
 
 const STATUS_COLORS = { active: '#1a7a4a', paused: '#9a6800', completed: '#888' };
@@ -1506,7 +1525,10 @@ function campaignDetailPage(c) {
         </form>
         <form method="POST" action="/campaigns/${c.id}/new-round" onsubmit="return confirm('Close this campaign and start a new round with the same settings and fresh memory?')" style="display:inline">
           <button type="submit" style="padding:7px 14px;font-size:13px;border:none;border-radius:8px;background:#1a1a1a;color:#fff;cursor:pointer;font-family:inherit">Start new round</button>
-        </form>` : `<span style="font-size:13px;color:#888;padding:7px 0;display:inline-block">Completed ${c.end_date ? '· ' + new Date(c.end_date).toLocaleDateString() : ''}</span>`}
+        </form>` : `<span style="font-size:13px;color:#888;padding:7px 0;display:inline-block">Completed ${c.end_date ? '· ' + new Date(c.end_date).toLocaleDateString() : ''}</span>
+        <form method="POST" action="/campaigns/${c.id}/delete" onsubmit="return confirm('Permanently delete this campaign and all its data? This cannot be undone.')" style="display:inline">
+          <button type="submit" style="padding:7px 14px;font-size:13px;border:1px solid #f5c5c5;border-radius:8px;background:#fff;color:#c0392b;cursor:pointer;font-family:inherit">Delete campaign</button>
+        </form>`}
       </div>
     </div>
 
@@ -1645,6 +1667,7 @@ function campaignDetailPage(c) {
           </div>
           <p style="font-size:11px;color:#aaa;margin-top:6px">Loki will auto-detect all columns and phone numbers. Re-upload to replace.</p>
         </form>
+${c.sms_status === 'active' ? `
         <div style="margin-top:1rem;padding-top:1rem;border-top:1px solid #f0f0f0">
           <div class="sec-lbl" style="margin-bottom:8px">Upload SmarterContact SMS results</div>
           <form method="POST" action="/campaigns/${c.id}/sms/upload" enctype="multipart/form-data">
@@ -1654,7 +1677,7 @@ function campaignDetailPage(c) {
             </div>
             <p style="font-size:11px;color:#aaa;margin-top:6px">Required columns: Phone, Labels, First name, Last name, Property address, Property city, Property state, Property zip. One label per row only.</p>
           </form>
-        </div>
+        </div>` : ''}
       </div>
     </div>
 
@@ -1690,13 +1713,12 @@ function campaignDetailPage(c) {
     ${c.status === 'completed' ? `
     <div class="card" style="padding:1rem 1.25rem;margin-bottom:1.25rem;background:#fafaf8">
       <p style="font-size:13px;color:#888;text-align:center;padding:8px 0">This campaign is completed — no more uploads accepted. <a href="/campaigns" style="color:#1a1a1a">Start a new round</a> to continue.</p>
-    </div>` : `
+    </div>` : c.active_channel === 'cold_call' ? `
     <div class="card" style="padding:1rem 1.25rem;margin-bottom:1.25rem">
       <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
         <div class="sec-lbl" style="margin-bottom:0">Upload filtration file to this campaign</div>
         <select id="channel-select" class="inline-select">
-          <option value="cold_call" ${c.active_channel==='cold_call'?'selected':''}>Cold Call</option>
-          <option value="sms" ${c.active_channel==='sms'?'selected':''}>SMS</option>
+          <option value="cold_call" selected>Cold Call</option>
         </select>
       </div>
       <div class="drop-zone" id="drop-zone" style="padding:1.5rem">
@@ -1705,6 +1727,9 @@ function campaignDetailPage(c) {
       </div>
       <input type="file" id="file-input" accept=".csv" style="display:none">
       <div id="upload-spinner" style="display:none;align-items:center;gap:8px;font-size:13px;color:#888;padding:8px 0"><div class="spinner"></div> Processing…</div>
+    </div>` : `
+    <div class="card" style="padding:1rem 1.25rem;margin-bottom:1.25rem;background:#fafaf8">
+      <p style="font-size:13px;color:#888;text-align:center;padding:8px 0">This is an SMS campaign — upload SMS results in the Contact List section above.</p>
     </div>`}
 
     <div id="results" style="display:none">
