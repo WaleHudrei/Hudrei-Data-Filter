@@ -486,9 +486,11 @@ app.post('/memory/clear',requireAuth,async(req,res)=>{await clearMemory();res.js
 app.use('/records', slice1Records);
 app.use('/setup', setupRoutes);
 
-app.listen(PORT,()=>{
+app.listen(PORT, async ()=>{
   console.log(`HudREI Filtration Bot v2 running on port ${PORT}`);
   console.log(`Redis: ${redis?'connected':'not configured'}`);
+  try { await initSchema(); console.log('Schema ready'); }
+  catch(e) { console.error('Schema init error:', e.message); }
 });
 
 // ── DB Write: save filtration run + results + upsert properties/phones ───────
@@ -1660,4 +1662,4 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
 <div class="main">${body}</div>
 </div>
 </body></html>`;
-          }
+                         }
