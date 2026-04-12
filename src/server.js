@@ -486,11 +486,111 @@ app.post('/memory/clear',requireAuth,async(req,res)=>{await clearMemory();res.js
 app.use('/records', slice1Records);
 app.use('/setup', setupRoutes);
 
+
+// ── One-time migration route ─────────────────────────────────────────────────
+app.get('/admin/migrate', requireAuth, async (req, res) => {
+  const logs = [];
+  const log = (msg) => { logs.push(msg); console.log(msg); };
+  try {
+    log('Starting property migration...');
+    await initSchema();
+    log('Schema ready');
+
+    const before = await dbQuery(`SELECT
+      (SELECT COUNT(*) FROM properties) AS props,
+      (SELECT COUNT(*) FROM contacts) AS contacts,
+      (SELECT COUNT(*) FROM phones) AS phones,
+      (SELECT COUNT(*) FROM filtration_results) AS fr_count,
+      (SELECT COUNT(*) FROM call_logs) AS cl_count`);
+    const b = before.rows[0];
+    log('Before — Properties: ' + b.props + ', Contacts: ' + b.contacts + ', Phones: ' + b.phones);
+    log('Source — filtration_results: ' + b.fr_count + ', call_logs: ' + b.cl_count);
+
+    await dbQuery(`INSERT INTO markets (name, state_code, state_name) VALUES
+      ('Indianapolis Metro','IN','Indiana'),('Atlanta Metro','GA','Georgia')
+      ON CONFLICT (state_code) DO NOTHING`);
+
+    const frRows = await dbQuery(`SELECT DISTINCT phone_number, list_name, phone_status, phone_tag
+      FROM filtration_results WHERE phone_number IS NOT NULL AND phone_number != ''`);
+    log('Unique phones in filtration_results: ' + frRows.rows.length);
+
+    const listNames = [...new Set(frRows.rows.map(r => r.list_name).filter(Boolean))];
+    const listMap = {};
+    for (const name of listNames) {
+      const lr = await dbQuery(`INSERT INTO lists (list_name) VALUES ($1)
+        ON CONFLICT (list_name) DO UPDATE SET list_name=EXCLUDED.list_name RETURNING id`, [name]);
+      listMap[name] = lr.rows[0].id;
+    }
+    log('Lists ensured: ' + listNames.length);
+
+    let phoneUpdated = 0;
+    for (const row of frRows.rows) {
+      if (!row.phone_status) continue;
+      await dbQuery(`UPDATE phones SET phone_status=$1, phone_tag=COALESCE(NULLIF($2,''),phone_tag), updated_at=NOW() WHERE phone_number=$3`,
+        [row.phone_status, row.phone_tag || '', row.phone_number]);
+      phoneUpdated++;
+    }
+    log('Phone statuses updated: ' + phoneUpdated);
+
+    const clRows = await dbQuery(`SELECT DISTINCT cl.property_id, cl.phone_id, cl.list_id, ph.contact_id
+      FROM call_logs cl JOIN phones ph ON ph.id = cl.phone_id
+      WHERE cl.property_id IS NOT NULL AND ph.contact_id IS NOT NULL`);
+    log('call_logs with property refs: ' + clRows.rows.length);
+
+    let pcLinked = 0, plLinked = 0;
+    for (const row of clRows.rows) {
+      await dbQuery(`INSERT INTO property_contacts (property_id, contact_id, primary_contact)
+        VALUES ($1,$2,true) ON CONFLICT DO NOTHING`, [row.property_id, row.contact_id]);
+      pcLinked++;
+      if (row.list_id) {
+        await dbQuery(`INSERT INTO property_lists (property_id, list_id)
+          VALUES ($1,$2) ON CONFLICT DO NOTHING`, [row.property_id, row.list_id]);
+        plLinked++;
+      }
+    }
+    log('property_contacts linked: ' + pcLinked);
+    log('property_lists linked: ' + plLinked);
+
+    const unlogged = await dbQuery(`SELECT p.id FROM properties p
+      LEFT JOIN import_history ih ON ih.property_id = p.id WHERE ih.id IS NULL`);
+    for (const prop of unlogged.rows) {
+      await dbQuery(`INSERT INTO import_history (property_id, source, imported_by, fields_added, notes)
+        VALUES ($1,'Filtration Upload','migration','address, owner, phones','Migrated from filtration history')`, [prop.id]);
+    }
+    log('Import history logged: ' + unlogged.rows.length);
+
+    const after = await dbQuery(`SELECT
+      (SELECT COUNT(*) FROM properties) AS props,
+      (SELECT COUNT(*) FROM contacts) AS contacts,
+      (SELECT COUNT(*) FROM phones) AS phones,
+      (SELECT COUNT(*) FROM property_contacts) AS pc,
+      (SELECT COUNT(*) FROM property_lists) AS pl`);
+    const a = after.rows[0];
+    log('DONE — Properties: ' + a.props + ', Contacts: ' + a.contacts + ', Phones: ' + a.phones + ', PC links: ' + a.pc + ', PL links: ' + a.pl);
+
+    const html = '<!DOCTYPE html><html><head><meta charset="UTF-8"><title>Migration</title>'
+      + '<style>body{font-family:monospace;background:#0a0a0a;color:#00ff88;padding:2rem;line-height:1.8}'
+      + 'h2{color:#fff;margin-bottom:1rem}a{color:#00ff88}pre{white-space:pre-wrap}</style></head><body>'
+      + '<h2>Loki Migration Complete</h2>'
+      + '<pre>' + logs.join('\n') + '</pre>'
+      + '<div style="margin-top:1.5rem;font-size:18px;color:#fff">'
+      + '&#10003; Done &mdash; <a href="/records">Go to Records &rarr;</a></div>'
+      + '</body></html>';
+    res.send(html);
+
+  } catch(e) {
+    log('ERROR: ' + e.message);
+    const errHtml = '<pre style="color:red;font-family:monospace;padding:2rem">'
+      + logs.join('\n') + '\n\nERROR: ' + e.message + '</pre>';
+    res.status(500).send(errHtml);
+  }
+});
+
+
 app.listen(PORT, async ()=>{
   console.log(`HudREI Filtration Bot v2 running on port ${PORT}`);
   console.log(`Redis: ${redis?'connected':'not configured'}`);
-  try { await initSchema(); console.log('Schema ready'); }
-  catch(e) { console.error('Schema init error:', e.message); }
+  try { await initSchema(); console.log('Schema ready'); } catch(e) { console.error('Schema init error:', e.message); }
 });
 
 // ── DB Write: save filtration run + results + upsert properties/phones ───────
@@ -558,44 +658,24 @@ async function saveRunToDB(filename, stats, listsSeen, allRows) {
           }
         }
 
-        // Upsert contact — keyed by property address to avoid duplicates
+        // Upsert contact
         const firstName = row['First Name'] || '';
         const lastName  = row['Last Name']  || '';
         let contactId = null;
         if (firstName || lastName) {
-          // If property exists, reuse its existing primary contact
-          if (propertyId) {
-            const existingContact = await dbQuery(
-              `SELECT contact_id FROM property_contacts WHERE property_id = $1 AND primary_contact = true LIMIT 1`,
-              [propertyId]
+          const cr = await dbQuery(
+            `INSERT INTO contacts (first_name, last_name)
+             VALUES ($1,$2) RETURNING id`,
+            [firstName, lastName]
+          );
+          contactId = cr.rows[0].id;
+
+          if (propertyId && contactId) {
+            await dbQuery(
+              `INSERT INTO property_contacts (property_id, contact_id, primary_contact)
+               VALUES ($1,$2,true) ON CONFLICT DO NOTHING`,
+              [propertyId, contactId]
             );
-            if (existingContact.rows.length > 0) {
-              contactId = existingContact.rows[0].contact_id;
-              // Update name if we now have better data
-              await dbQuery(
-                `UPDATE contacts SET
-                  first_name = COALESCE(NULLIF($1,''), first_name),
-                  last_name  = COALESCE(NULLIF($2,''), last_name),
-                  updated_at = NOW()
-                WHERE id = $3`,
-                [firstName, lastName, contactId]
-              );
-            }
-          }
-          // No existing contact for this property — create one
-          if (!contactId) {
-            const cr = await dbQuery(
-              `INSERT INTO contacts (first_name, last_name) VALUES ($1,$2) RETURNING id`,
-              [firstName, lastName]
-            );
-            contactId = cr.rows[0].id;
-            if (propertyId) {
-              await dbQuery(
-                `INSERT INTO property_contacts (property_id, contact_id, primary_contact)
-                 VALUES ($1,$2,true) ON CONFLICT DO NOTHING`,
-                [propertyId, contactId]
-              );
-            }
           }
         }
 
@@ -1682,4 +1762,4 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
 <div class="main">${body}</div>
 </div>
 </body></html>`;
-  }
+}
