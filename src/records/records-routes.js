@@ -28,7 +28,7 @@ router.get('/', requireAuth, async (req, res) => {
       upload_from = '', upload_to = '',
       page = 1
     } = req.query;
-    const limit = 20;
+    const limit = 25;
     const offset = (parseInt(page) - 1) * limit;
 
     let conditions = [];
