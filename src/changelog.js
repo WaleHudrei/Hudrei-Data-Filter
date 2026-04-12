@@ -3,6 +3,31 @@
 
 const ENTRIES = [
   {
+    date: 'April 13, 2026',
+    title: 'Dashboard, Import Flow, Export, UI fixes & Loki branding',
+    items: [
+      { tag: 'feature', text: 'Dashboard — live stats page showing total properties, contacts, phones, lists, leads, contracts. Market split (Indiana vs Georgia) with progress bars. Phone health breakdown (correct, wrong, dead, unknown). Recent filtration runs table. Top lists by property count.' },
+      { tag: 'feature', text: 'Import Property List — 3-step CSV import flow. Upload any CSV from PropStream, DealMachine, BatchSkipTrace or any source. Step 2 maps your columns to Loki fields with auto-mapping for 30+ common column name patterns. Step 3 previews first 10 rows then imports in batches of 200 with live progress bar.' },
+      { tag: 'feature', text: 'Records export — checkbox selection on every row with Select All header checkbox. Black export toolbar appears when records are selected showing count. Export CSV modal with 29 column choices including all phones, financials, owner info, pipeline stage. Downloads instantly as CSV.' },
+      { tag: 'feature', text: 'Records filter system — full filter panel with 13 filters: State, City, ZIP, County, Type, Property Status, Pipeline Stage, Year Built range, Assessed Value range, Equity % range, Marketing Result, Upload Date range, List Stacking dropdown. Active filter count badge on Filters button. Panel stays open when filters are active.' },
+      { tag: 'feature', text: 'Stack list filter — dropdown of actual list names instead of requiring manual list ID entry.' },
+      { tag: 'feature', text: 'Property detail page — new fields displayed: Assessed Value, Equity %, Property Status, Marketing Result. All 4 fields editable in the edit modal and saved via POST.' },
+      { tag: 'feature', text: 'Delete completed campaign — Delete button appears only on completed campaigns. Requires confirmation. Permanently deletes campaign and all related data via cascade.' },
+      { tag: 'feature', text: 'Upload merged — single Upload page with two cards: Import Property List and Upload Call Log. Removes duplicate sidebar entry. Each card routes to its own flow.' },
+      { tag: 'fix', text: 'Campaign detail — SMS upload section now only shows when sms_status is active. Was incorrectly showing on all campaigns including Cold Call only campaigns.' },
+      { tag: 'fix', text: 'Campaign detail — Filtration upload drop zone now only shows on Cold Call campaigns. SMS campaigns show an info message directing to the SMS upload section. Completed campaigns show a locked message.' },
+      { tag: 'fix', text: 'All upload pages (filter step 1, 2, 3) now use shared-shell instead of the old ./shell module — full sidebar shows on every upload page including Dashboard, Lists, Setup.' },
+      { tag: 'fix', text: 'SQL filter conditions — all 20 conditions were missing the $ before ${idx}, producing invalid SQL like WHERE state_code = 1 instead of $1. Fixed across all filter conditions.' },
+      { tag: 'fix', text: 'Dashboard phone health — queries were case-sensitive (correct vs Correct). Fixed with LOWER() so all phone statuses match regardless of case. Dead number now catches both dead and dead_number values.' },
+      { tag: 'fix', text: 'Contact dedup — filtration upload was creating duplicate contacts instead of reusing the existing primary contact per property address. Fixed in saveRunToDB.' },
+      { tag: 'fix', text: 'Export route registered before /:id route — prevents Express from treating export as a property ID.' },
+      { tag: 'improvement', text: 'Login now redirects to Dashboard instead of List Filtration.' },
+      { tag: 'improvement', text: 'Sidebar updated — Dashboard added at top, Import List removed as separate entry (merged into Upload), Upload renamed from Upload Data.' },
+      { tag: 'improvement', text: 'DB migrations — 4 new columns added to properties table: assessed_value, property_status, equity_percent, marketing_result. All added via ADD COLUMN IF NOT EXISTS.' },
+      { tag: 'improvement', text: 'Loki logo designed — dark background, gold horned crown, green glowing eyes, Norse runes, gold LOKI wordmark with DATA INTELLIGENCE subtitle. SVG format for infinite scaling.' },
+    ],
+  },
+  {
     date: 'April 12, 2026 — Architecture Decisions',
     title: 'Phone intelligence model revised + SMS architecture locked in',
     items: [
