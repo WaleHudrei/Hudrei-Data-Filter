@@ -872,6 +872,33 @@ app.post('/campaigns/:id/contacts/delete', requireAuth, async (req, res) => {
   } catch(e) { res.redirect('/campaigns/' + req.params.id); }
 });
 
+// SMS SmarterContact upload
+app.post('/campaigns/:id/sms/upload', requireAuth, upload.single('smsfile'), async (req, res) => {
+  try {
+    if (!req.file) return res.redirect('/campaigns/' + req.params.id);
+    const parsed = Papa.parse(req.file.buffer.toString('utf8'), { header: true, skipEmptyLines: true });
+    const result = await campaigns.importSmarterContactFile(
+      req.params.id,
+      parsed.data,
+      parsed.meta.fields || []
+    );
+    if (!result.success) {
+      return res.status(400).send(`
+        <h2>SMS Upload Failed</h2>
+        <p style="color:red">${result.error}</p>
+        <p><a href="/campaigns/${req.params.id}">Back to campaign</a></p>
+      `);
+    }
+    const t = result.tally;
+    console.log(`[sms/upload] campaign ${req.params.id} — total:${t.total} wrong:${t.wrong} ni:${t.not_interested} leads:${t.leads} dq:${t.disqualified} no_action:${t.no_action} unmatched:${t.unmatched}`);
+    res.redirect('/campaigns/' + req.params.id);
+  } catch(e) {
+    console.error('[sms/upload] ERROR:', e.message);
+    console.error('[sms/upload] stack:', e.stack);
+    res.status(500).send(`<h2>SMS Upload Error</h2><p>${e.message}</p><p><a href="/campaigns/${req.params.id}">Back to campaign</a></p>`);
+  }
+});
+
 // NIS upload page
 app.get('/nis', requireAuth, async (req, res) => {
   await campaigns.initCampaignSchema();
@@ -1350,6 +1377,16 @@ function campaignDetailPage(c) {
           </div>
           <p style="font-size:11px;color:#aaa;margin-top:6px">Loki will auto-detect all columns and phone numbers. Re-upload to replace.</p>
         </form>
+        <div style="margin-top:1rem;padding-top:1rem;border-top:1px solid #f0f0f0">
+          <div class="sec-lbl" style="margin-bottom:8px">Upload SmarterContact SMS results</div>
+          <form method="POST" action="/campaigns/${c.id}/sms/upload" enctype="multipart/form-data">
+            <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+              <input type="file" name="smsfile" accept=".csv" required style="font-size:13px;padding:6px;border:1px solid #ddd;border-radius:7px;background:#fff">
+              <button type="submit" style="padding:7px 16px;background:#2563eb;color:#fff;border:none;border-radius:7px;font-size:13px;cursor:pointer;font-family:inherit">Upload SMS results</button>
+            </div>
+            <p style="font-size:11px;color:#aaa;margin-top:6px">Required columns: Phone, Labels, First name, Last name, Property address, Property city, Property state, Property zip. One label per row only.</p>
+          </form>
+        </div>
       </div>
     </div>
 
@@ -1579,4 +1616,4 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
 <div class="main">${body}</div>
 </div>
 </body></html>`;
-         }
+               }
