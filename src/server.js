@@ -827,7 +827,35 @@ async function saveRunToDB(filename, stats, listsSeen, allRows) {
 
 // ── Upload Flow Routes ────────────────────────────────────────────────────────
 
-app.get('/upload', requireAuth, (req, res) => res.send(uploadUI.uploadChoosePage()));
+app.get('/upload', requireAuth, (req, res) => {
+  const { shell } = require('./shared-shell');
+  res.send(shell('Upload', `
+    <div style="max-width:680px">
+      <div style="font-size:20px;font-weight:600;margin-bottom:4px">Upload</div>
+      <p style="font-size:13px;color:#888;margin-bottom:2rem">What are you uploading today?</p>
+
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px">
+
+        <a href="/import/property" style="text-decoration:none;display:block;background:#fff;border:1px solid #e0dfd8;border-radius:12px;padding:28px 24px;transition:all .15s;cursor:pointer" onmouseover="this.style.borderColor='#1a1a1a';this.style.boxShadow='0 4px 16px rgba(0,0,0,.08)'" onmouseout="this.style.borderColor='#e0dfd8';this.style.boxShadow='none'">
+          <div style="width:40px;height:40px;background:#f5f4f0;border-radius:8px;display:flex;align-items:center;justify-content:center;margin-bottom:14px">
+            <svg width="20" height="20" fill="none" stroke="#1a1a1a" stroke-width="2" viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+          </div>
+          <div style="font-size:15px;font-weight:600;color:#1a1a1a;margin-bottom:6px">Import Property List</div>
+          <div style="font-size:13px;color:#888;line-height:1.5">Upload a CSV from PropStream, DealMachine, BatchSkipTrace or any data source. Map columns and import into Records.</div>
+        </a>
+
+        <a href="/upload/filter" style="text-decoration:none;display:block;background:#fff;border:1px solid #e0dfd8;border-radius:12px;padding:28px 24px;transition:all .15s;cursor:pointer" onmouseover="this.style.borderColor='#1a1a1a';this.style.boxShadow='0 4px 16px rgba(0,0,0,.08)'" onmouseout="this.style.borderColor='#e0dfd8';this.style.boxShadow='none'">
+          <div style="width:40px;height:40px;background:#f5f4f0;border-radius:8px;display:flex;align-items:center;justify-content:center;margin-bottom:14px">
+            <svg width="20" height="20" fill="none" stroke="#1a1a1a" stroke-width="2" viewBox="0 0 24 24"><path d="M3 4h18M3 8h18M3 12h12M3 16h8"/></svg>
+          </div>
+          <div style="font-size:15px;font-weight:600;color:#1a1a1a;margin-bottom:6px">Upload Call Log</div>
+          <div style="font-size:13px;color:#888;line-height:1.5">Upload a Readymode call log export for filtration. Counts are calculated and output is ready for REISift import.</div>
+        </a>
+
+      </div>
+    </div>
+  `, 'upload'));
+});
 app.get('/upload/filter', requireAuth, (req, res) => res.send(uploadUI.uploadFilterStep1Page()));
 app.get('/upload/filter/map', requireAuth, (req, res) => res.send(uploadUI.uploadFilterStep2Page()));
 app.get('/upload/filter/review', requireAuth, (req, res) => res.send(uploadUI.uploadFilterStep3Page()));
