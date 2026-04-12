@@ -28,7 +28,7 @@ router.get('/', requireAuth, async (req, res) => {
       upload_from = '', upload_to = '',
       page = 1
     } = req.query;
-    const limit = 50;
+    const limit = 10;
     const offset = (parseInt(page) - 1) * limit;
 
     let conditions = [];
@@ -100,8 +100,8 @@ router.get('/', requireAuth, async (req, res) => {
       const stage = r.pipeline_stage || 'prospect';
       const stageColor = {prospect:'#f5f4f0',lead:'#e8f5ee',contract:'#fff8e1',closed:'#e8f0ff'}[stage]||'#f5f4f0';
       const stageText = {prospect:'#555',lead:'#1a7a4a',contract:'#9a6800',closed:'#2c5cc5'}[stage]||'#555';
-      return `<tr data-id="${r.id}" data-street="${r.street}" data-city="${r.city}" data-state="${r.state_code}" data-zip="${r.zip_code}" data-owner="${owner}" data-type="${r.property_type||''}" data-stage="${stage}" data-phones="${r.phone_count||0}" data-lists="${r.list_count||0}" data-added="${r.created_at||''}" onclick="handleRowClick(event,this)">
-        <td onclick="event.stopPropagation()" style="width:36px;padding-left:14px"><input type="checkbox" class="row-check" data-id="${r.id}" style="cursor:pointer;width:15px;height:15px"></td>
+      return `<tr data-id="${r.id}" style="cursor:pointer" onclick="window.location='/records/${r.id}'">
+        <td style="width:36px;padding-left:14px" onclick="event.stopPropagation()"><input type="checkbox" class="row-check" data-id="${r.id}" style="cursor:pointer;width:15px;height:15px"></td>
         <td><div style="font-weight:500">${r.street}</div><div style="font-size:12px;color:#888">${r.city}, ${r.state_code} ${r.zip_code}</div></td>
         <td>${owner}</td>
         <td>${fmt(r.property_type)}</td>
@@ -261,6 +261,10 @@ router.get('/', requireAuth, async (req, res) => {
         </div>
       </form>
 
+      <style>
+      tr.row-selected td { background: #f0f7ff !important; }
+      tr.row-selected:hover td { background: #e8f0ff !important; }
+      </style>
       <script>
       function toggleFilters() {
         const p = document.getElementById('filter-panel');
@@ -299,102 +303,6 @@ router.get('/', requireAuth, async (req, res) => {
         </div>
       </div>
 
-      <script>
-      // ── Selection logic ────────────────────────────────────────────────────
-      const selectedIds = new Set();
-
-      function handleRowClick(e, row) {
-        if (e.target.type === 'checkbox') return;
-        const cb = row.querySelector('.row-check');
-        cb.checked = !cb.checked;
-        onCheckChange(cb);
-      }
-
-      function onCheckChange(cb) {
-        const id = cb.dataset.id;
-        if (!id) return;
-        if (cb.checked) {
-          selectedIds.add(id);
-          cb.closest('tr').style.background = '#f0f7ff';
-        } else {
-          selectedIds.delete(id);
-          cb.closest('tr').style.background = '';
-        }
-        updateToolbar();
-      }
-
-      function updateToolbar() {
-        const toolbar = document.getElementById('export-toolbar');
-        const count = selectedIds.size;
-        document.getElementById('selected-count').textContent = count.toLocaleString();
-        toolbar.style.display = count > 0 ? 'flex' : 'none';
-      }
-
-      function clearSelection() {
-        selectedIds.clear();
-        document.querySelectorAll('.row-check').forEach(cb => {
-          cb.checked = false;
-          if (cb.closest('tr')) cb.closest('tr').style.background = '';
-        });
-        const sa = document.getElementById('select-all');
-        if (sa) sa.checked = false;
-        updateToolbar();
-      }
-
-      // Select-all checkbox
-      document.getElementById('select-all').addEventListener('change', function() {
-        const checked = this.checked;
-        document.querySelectorAll('.row-check').forEach(cb => {
-          cb.checked = checked;
-          const id = cb.dataset.id;
-          if (!id) return;
-          if (checked) {
-            selectedIds.add(id);
-            cb.closest('tr').style.background = '#f0f7ff';
-          } else {
-            selectedIds.delete(id);
-            cb.closest('tr').style.background = '';
-          }
-        });
-        updateToolbar();
-      });
-
-      // Individual row checkboxes
-      document.querySelectorAll('.row-check').forEach(cb => {
-        cb.addEventListener('change', () => onCheckChange(cb));
-      });
-
-      // ── Export logic ───────────────────────────────────────────────────────
-      function openExportModal() {
-        document.getElementById('export-modal').classList.add('open');
-      }
-
-      function checkAll(val) {
-        document.querySelectorAll('.col-check').forEach(cb => cb.checked = val);
-      }
-
-      async function doExport() {
-        const cols = [...document.querySelectorAll('.col-check:checked')].map(cb => cb.value);
-        if (!cols.length) { alert('Select at least one column.'); return; }
-        const ids = [...selectedIds];
-        if (!ids.length) { alert('No records selected.'); return; }
-
-        // Fetch full data for selected IDs
-        const res = await fetch('/records/export', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ ids, columns: cols })
-        });
-        if (!res.ok) { alert('Export failed.'); return; }
-        const blob = await res.blob();
-        const url = URL.createObjectURL(blob);
-        const a = document.createElement('a');
-        a.href = url; a.download = 'loki_export_' + new Date().toISOString().split('T')[0] + '.csv';
-        a.click(); URL.revokeObjectURL(url);
-        document.getElementById('export-modal').classList.remove('open');
-      }
-      </script>
-
       <!-- Export toolbar -->
       <div id="export-toolbar" style="display:none;background:#1a1a1a;color:#fff;border-radius:10px;padding:10px 16px;margin-bottom:10px;align-items:center;justify-content:space-between;gap:12px">
         <div style="font-size:13px"><span id="selected-count">0</span> records selected</div>
@@ -422,6 +330,83 @@ router.get('/', requireAuth, async (req, res) => {
         </table>
       </div>
       ${pagination}
+
+      <script>
+      var selectedIds = {};
+
+      function updateToolbar() {
+        var count = Object.keys(selectedIds).length;
+        var toolbar = document.getElementById('export-toolbar');
+        var counter = document.getElementById('selected-count');
+        if (toolbar) toolbar.style.display = count > 0 ? 'flex' : 'none';
+        if (counter) counter.textContent = count.toLocaleString();
+      }
+
+      function selectRow(cb, checked) {
+        var id = cb.getAttribute('data-id');
+        if (!id) return;
+        cb.checked = checked;
+        var tr = cb.parentNode.parentNode;
+        if (tr) {
+          if (checked) tr.classList.add('row-selected');
+          else tr.classList.remove('row-selected');
+        }
+        if (checked) selectedIds[id] = true;
+        else delete selectedIds[id];
+        updateToolbar();
+      }
+
+
+
+      function clearSelection() {
+        selectedIds = {};
+        var boxes = document.querySelectorAll('.row-check');
+        for (var i = 0; i < boxes.length; i++) {
+          boxes[i].checked = false;
+          boxes[i].parentNode.parentNode.classList.remove('row-selected');
+        }
+        var sa = document.getElementById('select-all');
+        if (sa) sa.checked = false;
+        updateToolbar();
+      }
+
+      function openExportModal() {
+        document.getElementById('export-modal').classList.add('open');
+      }
+
+      function checkAll(val) {
+        var cols = document.querySelectorAll('.col-check');
+        for (var i = 0; i < cols.length; i++) cols[i].checked = val;
+      }
+
+      async function doExport() {
+        var colEls = document.querySelectorAll('.col-check:checked');
+        var cols = [];
+        for (var i = 0; i < colEls.length; i++) cols.push(colEls[i].value);
+        if (!cols.length) { alert('Select at least one column.'); return; }
+        var ids = Object.keys(selectedIds);
+        if (!ids.length) { alert('No records selected.'); return; }
+        var btn = document.querySelector('[onclick="doExport()"]');
+        if (btn) { btn.textContent = 'Downloading…'; btn.disabled = true; }
+        try {
+          var res = await fetch('/records/export', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ ids: ids, columns: cols })
+          });
+          if (!res.ok) { alert('Export failed.'); return; }
+          var blob = await res.blob();
+          var url = URL.createObjectURL(blob);
+          var a = document.createElement('a');
+          a.href = url;
+          a.download = 'loki_export_' + new Date().toISOString().split('T')[0] + '.csv';
+          a.click();
+          URL.revokeObjectURL(url);
+          document.getElementById('export-modal').classList.remove('open');
+        } catch(err) { alert('Export failed: ' + err.message); }
+        finally { if (btn) { btn.textContent = 'Download CSV'; btn.disabled = false; } }
+      }
+      </script>
     `, 'records'));
   } catch (e) {
     console.error(e);
@@ -875,6 +860,3 @@ router.post('/:id/edit', requireAuth, async (req, res) => {
 });
 
 module.exports = router;
-
-module.exports = router;
-module.exports.shellFn = shell;
