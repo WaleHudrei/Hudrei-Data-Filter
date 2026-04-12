@@ -558,24 +558,44 @@ async function saveRunToDB(filename, stats, listsSeen, allRows) {
           }
         }
 
-        // Upsert contact
+        // Upsert contact — keyed by property address to avoid duplicates
         const firstName = row['First Name'] || '';
         const lastName  = row['Last Name']  || '';
         let contactId = null;
         if (firstName || lastName) {
-          const cr = await dbQuery(
-            `INSERT INTO contacts (first_name, last_name)
-             VALUES ($1,$2) RETURNING id`,
-            [firstName, lastName]
-          );
-          contactId = cr.rows[0].id;
-
-          if (propertyId && contactId) {
-            await dbQuery(
-              `INSERT INTO property_contacts (property_id, contact_id, primary_contact)
-               VALUES ($1,$2,true) ON CONFLICT DO NOTHING`,
-              [propertyId, contactId]
+          // If property exists, reuse its existing primary contact
+          if (propertyId) {
+            const existingContact = await dbQuery(
+              `SELECT contact_id FROM property_contacts WHERE property_id = $1 AND primary_contact = true LIMIT 1`,
+              [propertyId]
             );
+            if (existingContact.rows.length > 0) {
+              contactId = existingContact.rows[0].contact_id;
+              // Update name if we now have better data
+              await dbQuery(
+                `UPDATE contacts SET
+                  first_name = COALESCE(NULLIF($1,''), first_name),
+                  last_name  = COALESCE(NULLIF($2,''), last_name),
+                  updated_at = NOW()
+                WHERE id = $3`,
+                [firstName, lastName, contactId]
+              );
+            }
+          }
+          // No existing contact for this property — create one
+          if (!contactId) {
+            const cr = await dbQuery(
+              `INSERT INTO contacts (first_name, last_name) VALUES ($1,$2) RETURNING id`,
+              [firstName, lastName]
+            );
+            contactId = cr.rows[0].id;
+            if (propertyId) {
+              await dbQuery(
+                `INSERT INTO property_contacts (property_id, contact_id, primary_contact)
+                 VALUES ($1,$2,true) ON CONFLICT DO NOTHING`,
+                [propertyId, contactId]
+              );
+            }
           }
         }
 
@@ -1662,4 +1682,4 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
 <div class="main">${body}</div>
 </div>
 </body></html>`;
-                         }
+  }
