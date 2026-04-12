@@ -25,7 +25,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
 .sidebar-footer a{font-size:12px;color:#666;text-decoration:none}
 .sidebar-footer a:hover{color:#fff}
 .page-wrap{margin-left:220px;min-height:100vh;flex:1}
-.main{max-width:980px;margin:0 auto;padding:2rem 1.5rem}
+.main{max-width:1400px;margin:0 auto;padding:2rem 1.5rem}
 .card{background:#fff;border:1px solid #e0dfd8;border-radius:12px;padding:1.25rem 1.5rem;margin-bottom:1.25rem}
 .sec-lbl{font-size:11px;font-weight:600;color:#888;text-transform:uppercase;letter-spacing:.05em}
 .badge{display:inline-block;font-size:11px;padding:2px 8px;border-radius:4px;font-weight:500}
