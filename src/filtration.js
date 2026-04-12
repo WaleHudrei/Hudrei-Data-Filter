@@ -372,6 +372,185 @@ async function getNisStats() {
   }
 }
 
+// ── SMS: Import SmarterContact Labels export ──────────────────────────────────
+// Required columns: Phone, Labels, First name, Last name,
+//                   Property address, Property city, Property state, Property zip
+// Rules:
+//   - Missing required columns → reject entire upload
+//   - Any row with multiple labels (pipe-separated) → reject entire upload
+//   - One label per row, applied immediately (no cumulative counting)
+
+const SMS_REQUIRED_COLS = ['phone', 'labels', 'first name', 'last name', 'property address', 'property city', 'property state', 'property zip'];
+
+// Label → normalized disposition
+function normSmsLabel(label) {
+  const l = (label || '').toLowerCase().trim();
+  if (l === 'wrong number')   return 'wrong_number';
+  if (l === 'not interested') return 'not_interested';
+  if (l === 'lead')           return 'transfer';
+  if (l === 'appointment')    return 'transfer';
+  if (l === 'disqualified')   return 'disqualified';
+  // CRM Transferred, Potential Lead, No answer, New, Left voicemail → no action
+  return 'no_action';
+}
+
+async function importSmarterContactFile(campaignId, rows, headers) {
+  // ── Step 1: Validate required columns ──────────────────────────────────────
+  const headerLower = headers.map(h => String(h || '').toLowerCase().trim());
+  const missingCols = SMS_REQUIRED_COLS.filter(req => !headerLower.includes(req));
+  if (missingCols.length > 0) {
+    return {
+      success: false,
+      error: `Missing required columns: ${missingCols.map(c => c.charAt(0).toUpperCase() + c.slice(1)).join(', ')}. Please check your SmarterContact export before uploading.`,
+    };
+  }
+
+  // Map original header names (preserve case for row lookup)
+  const findHeader = (req) => headers.find(h => String(h || '').toLowerCase().trim() === req);
+  const COL = {
+    phone:    findHeader('phone'),
+    labels:   findHeader('labels'),
+    fname:    findHeader('first name'),
+    lname:    findHeader('last name'),
+    paddr:    findHeader('property address'),
+    pcity:    findHeader('property city'),
+    pstate:   findHeader('property state'),
+    pzip:     findHeader('property zip'),
+  };
+
+  // ── Step 2: Validate no multiple labels in any row ────────────────────────
+  const multiLabelRows = [];
+  for (let i = 0; i < rows.length; i++) {
+    const labelVal = String(rows[i][COL.labels] || '').trim();
+    if (labelVal.includes('|')) {
+      multiLabelRows.push({ row: i + 2, phone: rows[i][COL.phone] || 'unknown', labels: labelVal });
+    }
+  }
+  if (multiLabelRows.length > 0) {
+    const examples = multiLabelRows.slice(0, 5).map(r => `Row ${r.row} (${r.phone}): "${r.labels}"`).join(', ');
+    return {
+      success: false,
+      error: `Multiple labels detected on ${multiLabelRows.length} row(s). Each contact must have exactly one label. Fix these rows and re-upload. Examples: ${examples}`,
+    };
+  }
+
+  // ── Step 3: Process rows ──────────────────────────────────────────────────
+  const tally = { total: 0, wrong: 0, ni: 0, transfer: 0, disqualified: 0, no_action: 0, unmatched: 0 };
+
+  for (const row of rows) {
+    tally.total++;
+    const phone = normalizePhone(row[COL.phone] || '');
+    if (!phone) { tally.unmatched++; continue; }
+
+    const label    = String(row[COL.labels] || '').trim();
+    const dispo    = normSmsLabel(label);
+
+    // Find the contact-phone record in this campaign
+    const phoneRes = await query(
+      `SELECT ccp.id, ccp.contact_id, ccp.phone_status
+       FROM campaign_contact_phones ccp
+       WHERE ccp.campaign_id = $1 AND ccp.phone_number = $2
+       LIMIT 1`,
+      [campaignId, phone]
+    );
+
+    if (!phoneRes.rows.length) { tally.unmatched++; continue; }
+    const phoneRow = phoneRes.rows[0];
+
+    if (dispo === 'no_action') {
+      tally.no_action++;
+      continue;
+    }
+
+    if (dispo === 'wrong_number') {
+      tally.wrong++;
+      await query(
+        `UPDATE campaign_contact_phones SET
+           wrong_number = true,
+           phone_status = 'Wrong',
+           wrong_number_flagged_at = CASE WHEN wrong_number_flagged_at IS NULL THEN NOW() ELSE wrong_number_flagged_at END,
+           last_disposition = $1,
+           updated_at = NOW()
+         WHERE id = $2`,
+        [label, phoneRow.id]
+      );
+    }
+
+    if (dispo === 'not_interested') {
+      tally.ni++;
+      await query(
+        `UPDATE campaign_contact_phones SET
+           filtered = true,
+           last_disposition = $1,
+           updated_at = NOW()
+         WHERE id = $2`,
+        [label, phoneRow.id]
+      );
+    }
+
+    if (dispo === 'disqualified') {
+      tally.disqualified++;
+      await query(
+        `UPDATE campaign_contact_phones SET
+           filtered = true,
+           phone_status = 'Correct',
+           correct_flagged_at = NOW(),
+           last_disposition = $1,
+           updated_at = NOW()
+         WHERE id = $2`,
+        [label, phoneRow.id]
+      );
+    }
+
+    if (dispo === 'transfer') {
+      tally.transfer++;
+      // Mark phone as correct + filtered
+      await query(
+        `UPDATE campaign_contact_phones SET
+           filtered = true,
+           phone_status = 'Correct',
+           correct_flagged_at = NOW(),
+           last_disposition = $1,
+           updated_at = NOW()
+         WHERE id = $2`,
+        [label, phoneRow.id]
+      );
+      // Flag the contact as Lead for this campaign
+      await query(
+        `UPDATE campaign_contacts SET marketing_result = 'Lead'
+         WHERE id = $1`,
+        [phoneRow.contact_id]
+      );
+    }
+  }
+
+  // ── Step 4: Update campaign totals ────────────────────────────────────────
+  await query(
+    `UPDATE campaigns SET
+       total_wrong_numbers = total_wrong_numbers + $1,
+       total_not_interested = total_not_interested + $2,
+       total_transfers = total_transfers + $3,
+       upload_count = upload_count + 1,
+       last_filtered_at = NOW(),
+       updated_at = NOW()
+     WHERE id = $4`,
+    [tally.wrong, tally.ni, tally.transfer, campaignId]
+  );
+
+  return {
+    success: true,
+    tally: {
+      total:        tally.total,
+      wrong:        tally.wrong,
+      not_interested: tally.ni,
+      leads:        tally.transfer,
+      disqualified: tally.disqualified,
+      no_action:    tally.no_action,
+      unmatched:    tally.unmatched,
+    }
+  };
+}
+
 module.exports = {
   normalizePhone,
   detectPhoneColumns,
@@ -381,4 +560,6 @@ module.exports = {
   getContactStats,
   importNisFile,
   getNisStats,
+  importSmarterContactFile,
+  normSmsLabel,
 };
