@@ -148,7 +148,7 @@ function fmtMoney(val) { if (!val) return '—'; return '$' + Number(val).toLoca
 // ═══════════════════════════════════════════════════════════════════════════════
 router.get('/', requireAuth, async (req, res) => {
   try {
-    const { q = '', state = '', type = '', page = 1 } = req.query;
+    const { q = '', state = '', type = '', list_id = '', page = 1 } = req.query;
     const limit = 50;
     const offset = (parseInt(page) - 1) * limit;
 
@@ -169,7 +169,8 @@ router.get('/', requireAuth, async (req, res) => {
       idx++;
     }
     if (state) { conditions.push(`p.state_code = $${idx}`); params.push(state); idx++; }
-    if (type) { conditions.push(`p.property_type = $${idx}`); params.push(type); idx++; }
+    if (type) { conditions.push(`p.property_type = ${idx}`); params.push(type); idx++; }
+    if (list_id) { conditions.push(`EXISTS (SELECT 1 FROM property_lists pl2 WHERE pl2.property_id = p.id AND pl2.list_id = ${idx})`); params.push(list_id); idx++; }
 
     const where = conditions.length ? 'WHERE ' + conditions.join(' AND ') : '';
 
@@ -223,8 +224,8 @@ router.get('/', requireAuth, async (req, res) => {
       <div style="display:flex;align-items:center;justify-content:space-between;margin-top:1rem;font-size:13px;color:#888">
         <span>Showing ${offset+1}–${Math.min(offset+limit,total)} of ${total.toLocaleString()} records</span>
         <div style="display:flex;gap:6px">
-          ${parseInt(page) > 1 ? `<a href="/records?q=${encodeURIComponent(q)}&state=${state}&type=${type}&page=${parseInt(page)-1}" class="btn btn-ghost" style="padding:6px 12px">← Prev</a>` : ''}
-          ${parseInt(page) < totalPages ? `<a href="/records?q=${encodeURIComponent(q)}&state=${state}&type=${type}&page=${parseInt(page)+1}" class="btn btn-ghost" style="padding:6px 12px">Next →</a>` : ''}
+          ${parseInt(page) > 1 ? `<a href="/records?q=${encodeURIComponent(q)}&state=${state}&type=${type}&list_id=${list_id}&page=${parseInt(page)-1}" class="btn btn-ghost" style="padding:6px 12px">← Prev</a>` : ''}
+          ${parseInt(page) < totalPages ? `<a href="/records?q=${encodeURIComponent(q)}&state=${state}&type=${type}&list_id=${list_id}&page=${parseInt(page)+1}" class="btn btn-ghost" style="padding:6px 12px">Next →</a>` : ''}
         </div>
       </div>` : '';
 
@@ -232,11 +233,12 @@ router.get('/', requireAuth, async (req, res) => {
       <div class="page-header">
         <div>
           <div class="page-title">Records <span class="count-pill">${total.toLocaleString()}</span></div>
-          <div class="page-sub">All properties across Indiana &amp; Georgia</div>
+          <div class="page-sub">${list_id ? '<a href="/lists" style="color:#888;font-size:13px;text-decoration:none">← Back to Lists</a> &nbsp;·&nbsp; Filtered by list' : 'All properties across Indiana &amp; Georgia'}</div>
         </div>
       </div>
 
       <form method="GET" action="/records">
+        ${list_id ? '<input type="hidden" name="list_id" value="' + list_id + '">' : ''}
         <div class="search-bar">
           <input type="text" name="q" value="${q}" placeholder="Search address, owner name, phone number…" autocomplete="off">
           <select name="state">
@@ -252,7 +254,7 @@ router.get('/', requireAuth, async (req, res) => {
             <option value="Commercial" ${type==='Commercial'?'selected':''}>Commercial</option>
           </select>
           <button type="submit" class="btn btn-primary">Search</button>
-          ${q||state||type ? `<a href="/records" class="btn btn-ghost">Clear</a>` : ''}
+          ${q||state||type ? `<a href="/records${list_id?'?list_id='+list_id:''}" class="btn btn-ghost">Clear</a>` : ''}
         </div>
       </form>
 
