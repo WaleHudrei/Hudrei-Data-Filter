@@ -28,7 +28,7 @@ router.get('/', requireAuth, async (req, res) => {
       upload_from = '', upload_to = '',
       page = 1
     } = req.query;
-    const limit = 50;
+    const limit = 10;
     const offset = (parseInt(page) - 1) * limit;
 
     let conditions = [];
@@ -103,12 +103,12 @@ router.get('/', requireAuth, async (req, res) => {
       return `<tr data-id="${r.id}">
         <td style="width:36px;padding-left:14px"><input type="checkbox" class="row-check" data-id="${r.id}" style="cursor:pointer;width:15px;height:15px"></td>
         <td><a href="/records/${r.id}" style="text-decoration:none;color:inherit;display:block"><div style="font-weight:500">${r.street}</div><div style="font-size:12px;color:#888">${r.city}, ${r.state_code} ${r.zip_code}</div></a></td>
-        <td>${owner}</td>
-        <td>${fmt(r.property_type)}</td>
-        <td>${r.phone_count || 0}</td>
-        <td>${r.list_count || 0}</td>
-        <td><span style="background:${stageColor};color:${stageText};padding:2px 9px;border-radius:4px;font-size:11px;font-weight:600;text-transform:capitalize">${stage}</span></td>
-        <td>${fmtDate(r.created_at)}</td>
+        <td><a href="/records/${r.id}" style="text-decoration:none;color:inherit;display:block">${owner}</a></td>
+        <td><a href="/records/${r.id}" style="text-decoration:none;color:inherit;display:block">${fmt(r.property_type)}</a></td>
+        <td><a href="/records/${r.id}" style="text-decoration:none;color:inherit;display:block">${r.phone_count || 0}</a></td>
+        <td><a href="/records/${r.id}" style="text-decoration:none;color:inherit;display:block">${r.list_count || 0}</a></td>
+        <td><a href="/records/${r.id}" style="text-decoration:none;color:inherit;display:block"><span style="background:${stageColor};color:${stageText};padding:2px 9px;border-radius:4px;font-size:11px;font-weight:600;text-transform:capitalize">${stage}</span></a></td>
+        <td><a href="/records/${r.id}" style="text-decoration:none;color:inherit;display:block">${fmtDate(r.created_at)}</a></td>
       </tr>`;
     }).join('');
 
