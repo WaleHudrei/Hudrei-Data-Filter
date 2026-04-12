@@ -591,4 +591,6 @@ module.exports = {
   importNisFile:             filtration.importNisFile,
   getNisStats:               filtration.getNisStats,
   normalizePhone:            filtration.normalizePhone,
+  importSmarterContactFile:  filtration.importSmarterContactFile,
+  normSmsLabel:              filtration.normSmsLabel,
 };
