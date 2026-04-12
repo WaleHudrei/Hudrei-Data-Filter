@@ -49,6 +49,10 @@ async function initSchema() {
       first_name VARCHAR(100),
       last_name VARCHAR(100),
       email VARCHAR(255),
+      mailing_address VARCHAR(255),
+      mailing_city VARCHAR(100),
+      mailing_state CHAR(2),
+      mailing_zip VARCHAR(10),
       created_at TIMESTAMPTZ DEFAULT NOW(),
       updated_at TIMESTAMPTZ DEFAULT NOW()
     );
@@ -83,6 +87,7 @@ async function initSchema() {
       dialer_campaign_name VARCHAR(255),
       list_type VARCHAR(100),
       market_id INTEGER REFERENCES markets(id),
+      source VARCHAR(100),
       upload_date DATE,
       total_records INTEGER,
       active BOOLEAN DEFAULT true,
@@ -187,6 +192,17 @@ async function initSchema() {
       created_at TIMESTAMPTZ DEFAULT NOW()
     );
 
+    CREATE TABLE IF NOT EXISTS import_history (
+      id SERIAL PRIMARY KEY,
+      property_id INTEGER NOT NULL REFERENCES properties(id) ON DELETE CASCADE,
+      source VARCHAR(100),
+      imported_at TIMESTAMPTZ DEFAULT NOW(),
+      imported_by VARCHAR(100),
+      fields_added TEXT,
+      fields_updated TEXT,
+      notes TEXT
+    );
+
     CREATE INDEX IF NOT EXISTS idx_phones_number ON phones(phone_number);
     CREATE INDEX IF NOT EXISTS idx_phones_contact ON phones(contact_id);
     CREATE INDEX IF NOT EXISTS idx_call_logs_phone ON call_logs(phone_id);
@@ -200,7 +216,44 @@ async function initSchema() {
     CREATE INDEX IF NOT EXISTS idx_deals_stage ON deals(stage);
     CREATE INDEX IF NOT EXISTS idx_marketing_touches_property ON marketing_touches(property_id);
     CREATE INDEX IF NOT EXISTS idx_marketing_touches_channel ON marketing_touches(channel);
+    CREATE INDEX IF NOT EXISTS idx_import_history_property ON import_history(property_id);
   `);
+
+  // ── Migration: add new columns if they don't exist yet ──────────────────────
+  const migrations = [
+    // properties — detail fields
+    `ALTER TABLE properties ADD COLUMN IF NOT EXISTS source VARCHAR(100)`,
+    `ALTER TABLE properties ADD COLUMN IF NOT EXISTS bedrooms SMALLINT`,
+    `ALTER TABLE properties ADD COLUMN IF NOT EXISTS bathrooms NUMERIC(3,1)`,
+    `ALTER TABLE properties ADD COLUMN IF NOT EXISTS sqft INTEGER`,
+    `ALTER TABLE properties ADD COLUMN IF NOT EXISTS year_built SMALLINT`,
+    `ALTER TABLE properties ADD COLUMN IF NOT EXISTS lot_size INTEGER`,
+    `ALTER TABLE properties ADD COLUMN IF NOT EXISTS condition VARCHAR(50)`,
+    `ALTER TABLE properties ADD COLUMN IF NOT EXISTS estimated_value NUMERIC(12,2)`,
+    `ALTER TABLE properties ADD COLUMN IF NOT EXISTS last_sale_date DATE`,
+    `ALTER TABLE properties ADD COLUMN IF NOT EXISTS last_sale_price NUMERIC(12,2)`,
+    `ALTER TABLE properties ADD COLUMN IF NOT EXISTS first_seen_at TIMESTAMPTZ DEFAULT NOW()`,
+
+    // contacts — mailing address fields
+    `ALTER TABLE contacts ADD COLUMN IF NOT EXISTS mailing_address VARCHAR(255)`,
+    `ALTER TABLE contacts ADD COLUMN IF NOT EXISTS mailing_city VARCHAR(100)`,
+    `ALTER TABLE contacts ADD COLUMN IF NOT EXISTS mailing_state CHAR(2)`,
+    `ALTER TABLE contacts ADD COLUMN IF NOT EXISTS mailing_zip VARCHAR(10)`,
+
+    // lists — source field
+    `ALTER TABLE lists ADD COLUMN IF NOT EXISTS source VARCHAR(100)`,
+  ];
+
+  for (const sql of migrations) {
+    try {
+      await query(sql);
+    } catch (e) {
+      // Column may already exist on older Railway instances — safe to ignore
+      if (!e.message.includes('already exists')) {
+        console.error('Migration warning:', e.message);
+      }
+    }
+  }
 
   // Seed base markets
   await query(`
@@ -210,7 +263,7 @@ async function initSchema() {
     ON CONFLICT (state_code) DO NOTHING;
   `);
 
-  console.log('Database schema initialized');
+  console.log('Database schema initialized + migrations applied');
 }
 
 module.exports = { query, initSchema, pool };
