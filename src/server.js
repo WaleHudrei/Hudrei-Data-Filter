@@ -656,6 +656,73 @@ app.get('/admin/diagnose', requireAuth, async (req, res) => {
 });
 
 
+
+// ── Diagnose campaign tables ──────────────────────────────────────────────────
+app.get('/admin/diagnose2', requireAuth, async (req, res) => {
+  try {
+    const results = {};
+
+    // campaign_contacts columns
+    const ccCols = await dbQuery(`SELECT column_name FROM information_schema.columns WHERE table_name='campaign_contacts' ORDER BY ordinal_position`);
+    results.campaign_contacts_columns = ccCols.rows.map(r => r.column_name);
+
+    // campaign_contact_phones columns
+    const ccpCols = await dbQuery(`SELECT column_name FROM information_schema.columns WHERE table_name='campaign_contact_phones' ORDER BY ordinal_position`);
+    results.campaign_contact_phones_columns = ccpCols.rows.map(r => r.column_name);
+
+    // rec_properties columns
+    const rpCols = await dbQuery(`SELECT column_name FROM information_schema.columns WHERE table_name='rec_properties' ORDER BY ordinal_position`);
+    results.rec_properties_columns = rpCols.rows.map(r => r.column_name);
+
+    // rec_owners columns
+    const roCols = await dbQuery(`SELECT column_name FROM information_schema.columns WHERE table_name='rec_owners' ORDER BY ordinal_position`);
+    results.rec_owners_columns = roCols.rows.map(r => r.column_name);
+
+    // counts
+    const counts = await dbQuery(`SELECT
+      (SELECT COUNT(*) FROM campaign_contacts) AS campaign_contacts,
+      (SELECT COUNT(*) FROM campaign_contact_phones) AS campaign_contact_phones,
+      (SELECT COUNT(*) FROM rec_properties) AS rec_properties,
+      (SELECT COUNT(*) FROM rec_owners) AS rec_owners`);
+    results.counts = counts.rows[0];
+
+    // sample campaign_contacts
+    const cc = await dbQuery(`SELECT * FROM campaign_contacts LIMIT 3`);
+    results.sample_campaign_contacts = cc.rows;
+
+    // sample campaign_contact_phones
+    const ccp = await dbQuery(`SELECT * FROM campaign_contact_phones LIMIT 3`);
+    results.sample_campaign_contact_phones = ccp.rows;
+
+    // sample rec_properties
+    const rp = await dbQuery(`SELECT * FROM rec_properties LIMIT 3`);
+    results.sample_rec_properties = rp.rows;
+
+    // sample rec_owners
+    const ro = await dbQuery(`SELECT * FROM rec_owners LIMIT 3`);
+    results.sample_rec_owners = ro.rows;
+
+    res.send('<!DOCTYPE html><html><head><meta charset="UTF-8"><title>Diagnose2</title>'
+      + '<style>body{font-family:monospace;background:#0a0a0a;color:#00ff88;padding:2rem;line-height:1.6}'
+      + 'h2{color:#fff;margin:1.5rem 0 .5rem}pre{white-space:pre-wrap;word-break:break-all;font-size:12px}</style></head><body>'
+      + '<h2 style="color:#fff;font-size:20px">Campaign Tables Diagnose</h2>'
+      + '<h2>Counts</h2><pre>' + JSON.stringify(results.counts, null, 2) + '</pre>'
+      + '<h2>campaign_contacts columns</h2><pre>' + results.campaign_contacts_columns.join(', ') + '</pre>'
+      + '<h2>campaign_contact_phones columns</h2><pre>' + results.campaign_contact_phones_columns.join(', ') + '</pre>'
+      + '<h2>rec_properties columns</h2><pre>' + results.rec_properties_columns.join(', ') + '</pre>'
+      + '<h2>rec_owners columns</h2><pre>' + results.rec_owners_columns.join(', ') + '</pre>'
+      + '<h2>Sample campaign_contacts</h2><pre>' + JSON.stringify(results.sample_campaign_contacts, null, 2) + '</pre>'
+      + '<h2>Sample campaign_contact_phones</h2><pre>' + JSON.stringify(results.sample_campaign_contact_phones, null, 2) + '</pre>'
+      + '<h2>Sample rec_properties</h2><pre>' + JSON.stringify(results.sample_rec_properties, null, 2) + '</pre>'
+      + '<h2>Sample rec_owners</h2><pre>' + JSON.stringify(results.sample_rec_owners, null, 2) + '</pre>'
+      + '</body></html>');
+
+  } catch(e) {
+    res.status(500).send('<pre style="color:red;padding:2rem;font-family:monospace">ERROR: ' + e.message + '</pre>');
+  }
+});
+
+
 app.listen(PORT, async ()=>{
   console.log(`HudREI Filtration Bot v2 running on port ${PORT}`);
   console.log(`Redis: ${redis?'connected':'not configured'}`);
@@ -1831,4 +1898,4 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
 <div class="main">${body}</div>
 </div>
 </body></html>`;
-    }
+      }
