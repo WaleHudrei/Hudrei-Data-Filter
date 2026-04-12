@@ -356,25 +356,27 @@ router.get('/', requireAuth, async (req, res) => {
         updateToolbar();
       }
 
-      // Wire up select-all
-      var selectAllEl = document.getElementById('select-all');
-      if (selectAllEl) {
-        selectAllEl.addEventListener('change', function() {
-          var isChecked = this.checked;
-          var boxes = document.querySelectorAll('.row-check');
-          for (var i = 0; i < boxes.length; i++) {
-            selectRow(boxes[i], isChecked);
-          }
-        });
-      }
-
-      // Wire up individual checkboxes
-      var rowChecks = document.querySelectorAll('.row-check');
-      for (var i = 0; i < rowChecks.length; i++) {
-        rowChecks[i].addEventListener('change', function() {
-          selectRow(this, this.checked);
-        });
-      }
+      // Wire up after DOM fully painted
+      window.addEventListener('load', function() {
+        var selectAllEl = document.getElementById('select-all');
+        if (selectAllEl) {
+          selectAllEl.addEventListener('change', function() {
+            var isChecked = this.checked;
+            var boxes = document.querySelectorAll('.row-check');
+            for (var i = 0; i < boxes.length; i++) {
+              selectRow(boxes[i], isChecked);
+            }
+          });
+        }
+        var rowChecks = document.querySelectorAll('.row-check');
+        for (var i = 0; i < rowChecks.length; i++) {
+          (function(cb) {
+            cb.addEventListener('change', function() {
+              selectRow(cb, cb.checked);
+            });
+          })(rowChecks[i]);
+        }
+      });
 
       function clearSelection() {
         selectedIds = {};
