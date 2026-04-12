@@ -587,6 +587,75 @@ app.get('/admin/migrate', requireAuth, async (req, res) => {
 });
 
 
+
+// ── Diagnose route ────────────────────────────────────────────────────────────
+app.get('/admin/diagnose', requireAuth, async (req, res) => {
+  try {
+    const results = {};
+
+    // Sample contacts
+    const contacts = await dbQuery(`SELECT id, first_name, last_name, email, mailing_address, mailing_city, mailing_state FROM contacts LIMIT 10`);
+    results.sample_contacts = contacts.rows;
+
+    // Contact column check
+    const contactCols = await dbQuery(`SELECT column_name FROM information_schema.columns WHERE table_name='contacts' ORDER BY ordinal_position`);
+    results.contact_columns = contactCols.rows.map(r => r.column_name);
+
+    // Property column check
+    const propCols = await dbQuery(`SELECT column_name FROM information_schema.columns WHERE table_name='properties' ORDER BY ordinal_position`);
+    results.property_columns = propCols.rows.map(r => r.column_name);
+
+    // Filtration results sample
+    const fr = await dbQuery(`SELECT * FROM filtration_results LIMIT 5`);
+    results.sample_filtration_results = fr.rows;
+
+    // Filtration results columns
+    const frCols = await dbQuery(`SELECT column_name FROM information_schema.columns WHERE table_name='filtration_results' ORDER BY ordinal_position`);
+    results.filtration_results_columns = frCols.rows.map(r => r.column_name);
+
+    // Counts of everything
+    const counts = await dbQuery(`SELECT
+      (SELECT COUNT(*) FROM contacts) AS contacts,
+      (SELECT COUNT(*) FROM contacts WHERE mailing_address IS NOT NULL AND mailing_address != '') AS contacts_with_address,
+      (SELECT COUNT(*) FROM contacts WHERE first_name IS NOT NULL AND first_name != '') AS contacts_with_name,
+      (SELECT COUNT(*) FROM phones) AS phones,
+      (SELECT COUNT(*) FROM properties) AS properties,
+      (SELECT COUNT(*) FROM filtration_results) AS filtration_results,
+      (SELECT COUNT(*) FROM filtration_results WHERE phone_number IS NOT NULL AND phone_number != '') AS fr_with_phone,
+      (SELECT COUNT(*) FROM call_logs) AS call_logs,
+      (SELECT COUNT(*) FROM lists) AS lists`);
+    results.counts = counts.rows[0];
+
+    // Sample filtration_results with any data
+    const frSample = await dbQuery(`SELECT * FROM filtration_results WHERE phone_number IS NOT NULL LIMIT 5`);
+    results.fr_with_phones = frSample.rows;
+
+    // Check all tables
+    const tables = await dbQuery(`SELECT table_name, (SELECT COUNT(*) FROM information_schema.columns WHERE table_name=t.table_name) AS col_count FROM information_schema.tables t WHERE table_schema='public' ORDER BY table_name`);
+    results.tables = tables.rows;
+
+    res.send('<!DOCTYPE html><html><head><meta charset="UTF-8"><title>Diagnose</title>'
+      + '<style>body{font-family:monospace;background:#0a0a0a;color:#00ff88;padding:2rem;line-height:1.6}'
+      + 'h2{color:#fff;margin:1.5rem 0 .5rem}pre{white-space:pre-wrap;word-break:break-all;font-size:12px}'
+      + 'table{border-collapse:collapse;width:100%;margin-bottom:1rem}'
+      + 'td,th{border:1px solid #333;padding:6px 10px;text-align:left;font-size:12px}'
+      + 'th{color:#fff;background:#1a1a1a}</style></head><body>'
+      + '<h2 style="color:#fff;font-size:20px">Loki DB Diagnose</h2>'
+      + '<h2>Counts</h2><pre>' + JSON.stringify(results.counts, null, 2) + '</pre>'
+      + '<h2>Contact Columns</h2><pre>' + results.contact_columns.join(', ') + '</pre>'
+      + '<h2>Property Columns</h2><pre>' + results.property_columns.join(', ') + '</pre>'
+      + '<h2>Filtration Results Columns</h2><pre>' + results.filtration_results_columns.join(', ') + '</pre>'
+      + '<h2>Sample Contacts (first 10)</h2><pre>' + JSON.stringify(results.sample_contacts, null, 2) + '</pre>'
+      + '<h2>Sample Filtration Results (first 5)</h2><pre>' + JSON.stringify(results.sample_filtration_results, null, 2) + '</pre>'
+      + '<h2>All Tables</h2><pre>' + JSON.stringify(results.tables, null, 2) + '</pre>'
+      + '</body></html>');
+
+  } catch(e) {
+    res.status(500).send('<pre style="color:red;padding:2rem;font-family:monospace">ERROR: ' + e.message + '</pre>');
+  }
+});
+
+
 app.listen(PORT, async ()=>{
   console.log(`HudREI Filtration Bot v2 running on port ${PORT}`);
   console.log(`Redis: ${redis?'connected':'not configured'}`);
@@ -1762,4 +1831,4 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
 <div class="main">${body}</div>
 </div>
 </body></html>`;
-}
+    }
