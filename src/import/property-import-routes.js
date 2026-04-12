@@ -115,7 +115,7 @@ router.get('/', requireAuth, (req, res) => {
   res.send(shell('Import Properties', `
     <div style="max-width:700px">
       <div style="margin-bottom:1.5rem">
-        <a href="/upload" style="font-size:13px;color:#888;text-decoration:none">← Upload</a>
+        <a href="/upload" style="font-size:13px;color:#888;text-decoration:none">← Back</a>
       </div>
       <div style="font-size:20px;font-weight:600;margin-bottom:4px">Import Property List</div>
       <p style="font-size:13px;color:#888;margin-bottom:1.5rem">Upload a CSV from any data source. You'll map your columns to Loki fields on the next step.</p>
