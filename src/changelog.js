@@ -3,6 +3,38 @@
 
 const ENTRIES = [
   {
+    date: 'April 12, 2026 — Architecture Decisions',
+    title: 'Phone intelligence model revised + SMS architecture locked in',
+    items: [
+      { tag: 'improvement', text: 'DECISION: Wrong number is contact-scoped, not global. Larry\'s wrong number stays wrong for Larry only. Sally importing the same number starts as unknown and builds her own history independently. Phone status belongs to the contact-phone relationship, not the number globally.' },
+      { tag: 'improvement', text: 'DECISION: Wrong number and NIS flags are permanent — no time-based expiry. The only legitimate reason to clear a wrong/NIS flag is a fresh skip trace returning a new owner on that number. This replaces the previous 6-month expiry plan.' },
+      { tag: 'improvement', text: 'DECISION: Correct phone status stays Correct until a live disposition proves otherwise. No timer-based expiry needed. A confirmed correct number doesn\'t go stale just because time passed.' },
+      { tag: 'improvement', text: 'DECISION: Lead flag is campaign-scoped, not global. When a Transfer fires, the contact is flagged as Lead in that campaign only. Other campaigns manage their own Lead flags independently. The same owner appearing in a different campaign starts fresh.' },
+      { tag: 'improvement', text: 'DECISION: NIS 3x threshold — NIS reported 1–2 times only flags unknown phones, leaves Correct alone. NIS reported 3+ times overrides everything including Correct. Reasoning: one NIS report could be a glitch, three means the line is genuinely gone.' },
+      { tag: 'improvement', text: 'DECISION: Roadmap Item 2 (expiry cleanup job) closed without building. No timer-based expiry is needed under the revised architecture. Flags are permanent and only cleared by real data events.' },
+      { tag: 'improvement', text: 'SMS architecture locked in: SmarterContact Labels export (one row per contact) is the valid import format. Stats summary export (File 2) is not used. One label per row required — multiple labels cause entire upload rejection. CRM Transferred is ignored (no action).' },
+      { tag: 'improvement', text: 'SMS filter logic: no cumulative counting. One reply is definitive. Wrong number is contact-scoped. Lead is campaign-scoped. NIS remains global. All consistent with cold call architecture.' },
+    ],
+  },
+  {
+    date: 'April 12, 2026',
+    title: 'filtration.js extracted + Roadmap Items 1–4 + full SMS pipeline',
+    items: [
+      { tag: 'feature', text: 'filtration.js — new dedicated module combining all filtration logic and NIS logic, extracted from campaigns.js. Covers: recordUpload, applyFiltrationToContacts, generateCleanExport, getContactStats, importNisFile, getNisStats, normalizePhone, detectPhoneColumns, importSmarterContactFile.' },
+      { tag: 'feature', text: 'Roadmap Item 1 — flagged_at timestamps added to campaign_contact_phones: wrong_number_flagged_at (set once on first wrong confirmation, never overwritten) and correct_flagged_at (refreshed on every live pickup confirmation).' },
+      { tag: 'feature', text: 'Roadmap Item 3 — NIS 3x threshold implemented. NIS < 3 reports: only flags unknown phones, protects Correct. NIS 3+ reports: overrides everything including Correct. Applied on both contact list upload and retroactive NIS file import.' },
+      { tag: 'feature', text: 'Roadmap Item 4 — Lead permanent flag. When Transfer fires, campaign_contacts.marketing_result is set to \'Lead\' for that campaign. generateCleanExport() excludes all Lead contacts. marketing_result column added via auto-migration.' },
+      { tag: 'feature', text: 'SMS pipeline — importSmarterContactFile() in filtration.js. Validates required columns (Phone, Labels, First name, Last name, Property address, Property city, Property state, Property zip). Rejects entire upload if any column missing or any row has multiple pipe-separated labels.' },
+      { tag: 'feature', text: 'SMS label mapping: Wrong Number → wrong_number (contact-scoped). Not interested → not_interested (filtered). Lead / Appointment → transfer (Lead flag). disqualified → filtered. CRM Transferred / Potential Lead / No answer / New / Left voicemail → no action.' },
+      { tag: 'feature', text: 'SMS campaign type — createCampaign() now correctly saves active_channel from the New Campaign form. SMS campaigns set sms_status=active and cold_call_status=dormant. Previously active_channel was silently ignored and always defaulted to cold_call.' },
+      { tag: 'feature', text: 'SMS campaign dashboard — SMS campaigns now show a channel-specific view: SMS uploads, Wrong numbers, Not interested, Leads generated, Callable, plus SMS KPIs (W#%, NI%, LGR, LCV, Health). Cold call metrics (Call logs, Connected, CLR, CR) hidden on SMS campaigns.' },
+      { tag: 'feature', text: 'Campaign list page — SMS campaigns now show a purple SMS badge instead of the blue Cold Call badge for visual distinction.' },
+      { tag: 'feature', text: 'Upload SmarterContact SMS Results section added to campaign detail page — file picker with blue Upload SMS results button and required column instructions shown inline.' },
+      { tag: 'fix', text: 'createCampaign() was ignoring the active_channel parameter from the New Campaign form — all campaigns were saved as cold_call regardless of selection. Fixed by destructuring and saving active_channel with proper cold_call_status / sms_status derivation.' },
+      { tag: 'improvement', text: 'campaigns.js cleaned up — recordUpload, applyFiltrationToContacts, generateCleanExport, getContactStats, importNisFile, getNisStats, normalizePhone all moved to filtration.js. campaigns.js re-exports them for backward compatibility. server.js unchanged.' },
+    ],
+  },
+  {
     date: 'April 11, 2026 — Architecture Decision',
     title: 'Phone Intelligence Architecture (locked in)',
     items: [
@@ -69,7 +101,6 @@ const TAG_COLORS = {
   improvement: { bg: '#eaf1fb', color: '#185fa5' },
 };
 
-// Render the changelog page body. Caller wraps it in shell().
 function renderChangelog() {
   const html = ENTRIES.map(e => `
     <div class="card" style="margin-bottom:1.5rem">
