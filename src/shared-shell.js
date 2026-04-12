@@ -64,6 +64,52 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
 .tbl-wrap{overflow-x:auto;max-height:360px;overflow-y:auto}
 .spinner{width:16px;height:16px;border:2px solid #ddd;border-top-color:#888;border-radius:50%;animation:spin .6s linear infinite;display:inline-block}
 @keyframes spin{to{transform:rotate(360deg)}}
+.modal-overlay{display:none;position:fixed;inset:0;background:rgba(0,0,0,.4);z-index:200;align-items:center;justify-content:center}
+.modal-overlay.open{display:flex}
+.modal{background:#fff;border-radius:14px;padding:1.5rem;width:100%;max-width:560px;max-height:90vh;overflow-y:auto;box-shadow:0 20px 60px rgba(0,0,0,.2)}
+.modal-header{display:flex;align-items:center;justify-content:space-between;margin-bottom:1.25rem}
+.modal-title{font-size:16px;font-weight:600}
+.modal-close{background:none;border:none;font-size:20px;color:#888;cursor:pointer;line-height:1}
+.btn{display:inline-flex;align-items:center;gap:6px;padding:8px 16px;border-radius:8px;font-size:13px;font-weight:500;text-decoration:none;cursor:pointer;border:none;font-family:inherit;transition:all .15s}
+.btn-primary{background:#1a1a1a;color:#fff}.btn-primary:hover{background:#333}
+.btn-ghost{background:#fff;color:#1a1a1a;border:1px solid #ddd}.btn-ghost:hover{background:#f5f4f0}
+.page-header{display:flex;align-items:center;justify-content:space-between;margin-bottom:1.5rem;flex-wrap:wrap;gap:12px}
+.page-title{font-size:20px;font-weight:600}
+.page-sub{font-size:13px;color:#888;margin-top:2px}
+.count-pill{display:inline-block;background:#f0efe9;color:#555;font-size:11px;font-weight:600;padding:2px 8px;border-radius:12px;margin-left:6px}
+.search-bar{display:flex;gap:8px;margin-bottom:1.25rem;flex-wrap:wrap}
+.search-bar input{flex:1;min-width:200px;padding:9px 14px;border:1px solid #ddd;border-radius:8px;font-size:14px;font-family:inherit;background:#fff}
+.search-bar input:focus{outline:none;border-color:#888}
+.search-bar select{padding:9px 12px;border:1px solid #ddd;border-radius:8px;font-size:13px;font-family:inherit;background:#fff;color:#1a1a1a}
+.alert{padding:10px 14px;border-radius:8px;font-size:13px;margin-bottom:1rem}
+.alert-success{background:#e8f5ee;color:#1a7a4a;border:1px solid #c3e6cc}
+.alert-error{background:#fdf0f0;color:#c0392b;border:1px solid #f5c5c5}
+.kv-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(160px,1fr));gap:14px 20px}
+.kv{display:flex;flex-direction:column;gap:3px}
+.kv-label{font-size:11px;text-transform:uppercase;letter-spacing:.08em;color:#888;font-weight:600}
+.kv-val{font-size:14px;font-weight:500;color:#1a1a1a}
+.kv-val.highlight{color:#1a7a4a;font-weight:600}
+.phone-row{display:flex;align-items:center;justify-content:space-between;padding:10px 14px;background:#fafaf8;border-radius:8px;border:1px solid #f0efe9;margin-bottom:8px}
+.phone-num{font-family:monospace;font-size:14px;font-weight:500}
+.phone-status{font-size:11px;font-weight:600;letter-spacing:.06em;text-transform:uppercase;padding:3px 9px;border-radius:4px}
+.ps-unknown{background:#f5f4f0;color:#888}
+.ps-correct{background:#e8f5ee;color:#1a7a4a}
+.ps-wrong{background:#fff8e1;color:#9a6800}
+.ps-dead{background:#fdf0f0;color:#c0392b}
+.timeline-item{display:grid;grid-template-columns:130px 1fr;gap:16px;padding:13px 0;border-bottom:1px solid #f5f4f0}
+.timeline-item:last-child{border-bottom:none}
+.timeline-date{font-family:monospace;font-size:12px;color:#aaa;padding-top:2px}
+.timeline-source{font-size:13px;font-weight:600;margin-bottom:3px}
+.timeline-detail{font-size:12px;color:#888}
+.timeline-detail .added{color:#1a7a4a;font-weight:600}
+.timeline-detail .updated{color:#9a6800;font-weight:600}
+.chip{display:inline-block;padding:2px 8px;border-radius:4px;font-size:11px;font-weight:600}
+.chip-call{background:#e8f5ee;color:#1a7a4a}
+.chip-sms{background:#e8f0ff;color:#2c5cc5}
+.chip-email{background:#fff8e1;color:#9a6800}
+.tag{display:inline-block;padding:2px 8px;border-radius:4px;font-size:11px;background:#f5f4f0;color:#555;margin-right:4px}
+.grid-2{display:grid;grid-template-columns:1fr 1fr;gap:1.25rem}
+.grid-3{display:grid;grid-template-columns:1fr 1fr 1fr;gap:1.25rem}
 </style></head><body>
 <div class="sidebar">
   <div class="sidebar-logo">
