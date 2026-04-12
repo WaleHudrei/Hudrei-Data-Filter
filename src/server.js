@@ -61,9 +61,10 @@ function requireAuth(req, res, next) {
   res.redirect('/login');
 }
 
-// Phase 2: Records + Setup routes
+// Phase 2: Records + Setup + Lists routes
 const slice1Records = require('./records/records-routes');
 const setupRoutes = require('./records/setup-routes');
+const listsRoutes = require('./lists/lists-routes');
 
 const COL = { phone:'Phone', dispo:'Log Type', listname:'Original lead file', date:'Log Time', fname:'First Name', lname:'Last Name', addr:'Address', city:'City', state:'State', zip:'Zip Code', notes:'Call Notes' };
 
@@ -485,6 +486,7 @@ app.post('/memory/clear',requireAuth,async(req,res)=>{await clearMemory();res.js
 // Records + Setup routes
 app.use('/records', slice1Records);
 app.use('/setup', setupRoutes);
+app.use('/lists', listsRoutes);
 
 
 // ── One-time migration route ─────────────────────────────────────────────────
@@ -2120,4 +2122,4 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
 <div class="main">${body}</div>
 </div>
 </body></html>`;
-      }
+}
