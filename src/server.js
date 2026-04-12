@@ -1076,7 +1076,7 @@ function campaignsPage(list, tab) {
     <tr onclick="location.href='/campaigns/${c.id}'" style="cursor:pointer">
       <td><strong>${c.name}</strong><br><span style="font-size:11px;color:#888">${c.list_type} · ${c.market_name}</span></td>
       <td><span class="badge" style="background:${STATUS_COLORS[c.status]}20;color:${STATUS_COLORS[c.status]}">${c.status}</span></td>
-      <td><span class="badge" style="background:#e6f1fb;color:#185fa5">${CHANNEL_LABELS[c.active_channel]||c.active_channel}</span></td>
+      <td><span class="badge" style="background:${c.active_channel==='sms'?'#f0e6fb':'#e6f1fb'};color:${c.active_channel==='sms'?'#7b2fa5':'#185fa5'}">${CHANNEL_LABELS[c.active_channel]||c.active_channel}</span></td>
       <td style="font-size:12px">${c.start_date ? new Date(c.start_date).toLocaleDateString() : '—'}</td>
       <td style="font-size:12px;color:#888">${c.end_date ? new Date(c.end_date).toLocaleDateString() : '—'}</td>
       <td>${Number(totalContacts).toLocaleString()}</td>
@@ -1285,6 +1285,13 @@ function campaignDetailPage(c) {
     </div>
 
     <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:10px;margin-bottom:1.25rem">
+      ${c.active_channel === 'sms' ? `
+      <div class="stat-card"><div class="stat-lbl">SMS uploads</div><div class="stat-num">${c.upload_count||0}</div><div style="font-size:11px;color:#888;margin-top:2px">Uploads</div></div>
+      <div class="stat-card"><div class="stat-lbl">Wrong numbers</div><div class="stat-num red">${Number(c.total_wrong_numbers||0).toLocaleString()}</div><div style="font-size:11px;color:#888;margin-top:2px">Removed</div></div>
+      <div class="stat-card"><div class="stat-lbl">Not interested</div><div class="stat-num" style="color:#9a6800">${Number(c.total_not_interested||0).toLocaleString()}</div><div style="font-size:11px;color:#888;margin-top:2px">Total NI</div></div>
+      <div class="stat-card"><div class="stat-lbl">Leads generated</div><div class="stat-num green">${Number(c.total_transfers||0).toLocaleString()}</div><div style="font-size:11px;color:#888;margin-top:2px">Transfers</div></div>
+      <div class="stat-card"><div class="stat-lbl">Callable</div><div class="stat-num green">${Number(masterCallable).toLocaleString()} <span style="font-size:12px;font-weight:400;color:#888">(${callable_pct}%)</span></div><div style="font-size:11px;color:#888;margin-top:2px">Active pool</div></div>
+      ` : `
       <div class="stat-card"><div class="stat-lbl">Call logs</div><div class="stat-num">${Number(n).toLocaleString()}</div><div style="font-size:11px;color:#888;margin-top:2px">Logged numbers</div></div>
       <div class="stat-card"><div class="stat-lbl">Connected</div><div class="stat-num blue">${Number(connected).toLocaleString()}</div><div style="font-size:11px;color:#888;margin-top:2px">Live pickups</div></div>
       <div class="stat-card"><div class="stat-lbl">Wrong numbers</div><div class="stat-num red">${Number(c.total_wrong_numbers||0).toLocaleString()}</div><div style="font-size:11px;color:#888;margin-top:2px">Removed</div></div>
@@ -1292,7 +1299,41 @@ function campaignDetailPage(c) {
       <div class="stat-card"><div class="stat-lbl">Leads generated</div><div class="stat-num green">${Number(c.total_transfers||0).toLocaleString()}</div><div style="font-size:11px;color:#888;margin-top:2px">Transfers</div></div>
       <div class="stat-card"><div class="stat-lbl">Callable</div><div class="stat-num green">${Number(masterCallable).toLocaleString()} <span style="font-size:12px;font-weight:400;color:#888">(${callable_pct}%)</span></div><div style="font-size:11px;color:#888;margin-top:2px">Active pool</div></div>
       <div class="stat-card"><div class="stat-lbl">Filtration runs</div><div class="stat-num">${c.upload_count||0}</div><div style="font-size:11px;color:#888;margin-top:2px">Uploads</div></div>
+      `}
     </div>
+
+    ${c.active_channel === 'sms' ? `
+    <div style="background:#fff;border:1px solid #e0dfd8;border-radius:12px;padding:14px 16px;margin-bottom:1.25rem">
+      <div style="font-size:11px;font-weight:600;color:#888;text-transform:uppercase;letter-spacing:.05em;margin-bottom:12px">SMS Campaign KPIs</div>
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(110px,1fr));gap:10px">
+        <div style="text-align:center;padding:10px;background:#f5f4f0;border-radius:8px">
+          <div style="font-size:22px;font-weight:500;color:#c0392b">${wPct}%</div>
+          <div style="font-size:11px;color:#888;margin-top:2px">W#%</div>
+          <div style="font-size:10px;color:#aaa">Wrong ÷ Total contacts</div>
+        </div>
+        <div style="text-align:center;padding:10px;background:#f5f4f0;border-radius:8px">
+          <div style="font-size:22px;font-weight:500;color:#9a6800">${niPct}%</div>
+          <div style="font-size:11px;color:#888;margin-top:2px">NI%</div>
+          <div style="font-size:10px;color:#aaa">NI ÷ Total contacts</div>
+        </div>
+        <div style="text-align:center;padding:10px;background:#f5f4f0;border-radius:8px">
+          <div style="font-size:22px;font-weight:500;color:#1a7a4a">${lgr}%</div>
+          <div style="font-size:11px;color:#888;margin-top:2px">LGR</div>
+          <div style="font-size:10px;color:#aaa">Leads ÷ Total contacts</div>
+        </div>
+        <div style="text-align:center;padding:10px;background:#f5f4f0;border-radius:8px">
+          <div style="font-size:22px;font-weight:500;color:#534AB7">${lcv}%</div>
+          <div style="font-size:11px;color:#888;margin-top:2px">LCV</div>
+          <div style="font-size:10px;color:#aaa">Lead contacts ÷ Total contacts</div>
+        </div>
+        <div style="text-align:center;padding:10px;background:#f5f4f0;border-radius:8px">
+          <div style="font-size:22px;font-weight:500;color:${parseFloat(health)>50?'#1a7a4a':parseFloat(health)>25?'#9a6800':'#c0392b'}">${health}%</div>
+          <div style="font-size:11px;color:#888;margin-top:2px">Health</div>
+          <div style="font-size:10px;color:#aaa">Callable ÷ Total phones</div>
+        </div>
+      </div>
+    </div>
+    ` : `
     <div style="background:#fff;border:1px solid #e0dfd8;border-radius:12px;padding:14px 16px;margin-bottom:1.25rem">
       <div style="font-size:11px;font-weight:600;color:#888;text-transform:uppercase;letter-spacing:.05em;margin-bottom:12px">Campaign KPIs</div>
       <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(110px,1fr));gap:10px">
@@ -1333,6 +1374,7 @@ function campaignDetailPage(c) {
         </div>
       </div>
     </div>
+    `}
 
 
 
@@ -1616,4 +1658,4 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
 <div class="main">${body}</div>
 </div>
 </body></html>`;
-               }
+}
