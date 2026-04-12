@@ -221,6 +221,12 @@ async function initSchema() {
 
   // ── Migration: add new columns if they don't exist yet ──────────────────────
   const migrations = [
+
+    // properties — filter fields
+    `ALTER TABLE properties ADD COLUMN IF NOT EXISTS assessed_value NUMERIC(12,2)`,
+    `ALTER TABLE properties ADD COLUMN IF NOT EXISTS property_status VARCHAR(50)`,
+    `ALTER TABLE properties ADD COLUMN IF NOT EXISTS equity_percent NUMERIC(5,2)`,
+    `ALTER TABLE properties ADD COLUMN IF NOT EXISTS marketing_result VARCHAR(100)`,
     // properties — detail fields
     `ALTER TABLE properties ADD COLUMN IF NOT EXISTS source VARCHAR(100)`,
     `ALTER TABLE properties ADD COLUMN IF NOT EXISTS bedrooms SMALLINT`,
