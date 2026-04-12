@@ -723,6 +723,228 @@ app.get('/admin/diagnose2', requireAuth, async (req, res) => {
 });
 
 
+
+// ── Migration v2 — from campaign tables ──────────────────────────────────────
+app.get('/admin/migrate2', requireAuth, async (req, res) => {
+  const logs = [];
+  const log = (msg) => { logs.push(msg); console.log(msg); };
+
+  // Stream response so browser shows progress live
+  res.setHeader('Content-Type', 'text/html; charset=utf-8');
+  res.setHeader('Transfer-Encoding', 'chunked');
+  res.write('<!DOCTYPE html><html><head><meta charset="UTF-8"><title>Migration v2</title>'
+    + '<style>body{font-family:monospace;background:#0a0a0a;color:#00ff88;padding:2rem;line-height:1.7}'
+    + 'h2{color:#fff;margin-bottom:1rem}.done{color:#fff;font-size:18px;margin-top:1.5rem}'
+    + '.err{color:#ff4f5e}a{color:#00ff88}</style></head><body>'
+    + '<h2>Loki Migration v2 — Campaign Data</h2><pre id="log">');
+
+  const send = (msg) => { log(msg); res.write(msg + '\n'); };
+
+  try {
+    send('Starting migration from campaign tables...');
+    await initSchema();
+    send('Schema ready');
+
+    // Ensure markets
+    await dbQuery(`INSERT INTO markets (name, state_code, state_name) VALUES
+      ('Indianapolis Metro','IN','Indiana'),('Atlanta Metro','GA','Georgia')
+      ON CONFLICT (state_code) DO NOTHING`);
+    const mktRes = await dbQuery(`SELECT id, state_code FROM markets`);
+    const mktMap = {};
+    mktRes.rows.forEach(m => { mktMap[m.state_code] = m.id; });
+    send('Markets ready: ' + Object.keys(mktMap).join(', '));
+
+    // ── Step 1: Migrate campaign_contacts → properties + contacts ─────────────
+    send('\n[Step 1] Migrating campaign_contacts → properties + contacts...');
+    const BATCH = 500;
+    let offset = 0;
+    let propCreated = 0, propSkipped = 0, contactCreated = 0;
+
+    const totalCC = await dbQuery(`SELECT COUNT(*) FROM campaign_contacts WHERE property_address IS NOT NULL AND property_address != ''`);
+    const total = parseInt(totalCC.rows[0].count);
+    send('Total campaign_contacts with address: ' + total);
+
+    while (offset < total) {
+      const batch = await dbQuery(`
+        SELECT id, first_name, last_name,
+          mailing_address, mailing_city, mailing_state, mailing_zip,
+          property_address, property_city, property_state, property_zip,
+          created_at
+        FROM campaign_contacts
+        WHERE property_address IS NOT NULL AND property_address != ''
+        ORDER BY id
+        LIMIT $1 OFFSET $2
+      `, [BATCH, offset]);
+
+      for (const cc of batch.rows) {
+        try {
+          const street = (cc.property_address || '').trim();
+          const city   = (cc.property_city || '').trim();
+          const state  = (cc.property_state || '').trim().toUpperCase();
+          const zip    = (cc.property_zip || '').trim();
+          if (!street || !city || !state) continue;
+
+          const marketId = mktMap[state] || null;
+
+          // Upsert property
+          const pr = await dbQuery(`
+            INSERT INTO properties (street, city, state_code, zip_code, market_id, first_seen_at)
+            VALUES ($1,$2,$3,$4,$5,$6)
+            ON CONFLICT (street, city, state_code, zip_code)
+            DO UPDATE SET updated_at = NOW()
+            RETURNING id, xmax
+          `, [street, city, state, zip, marketId, cc.created_at || new Date()]);
+
+          const propertyId = pr.rows[0].id;
+          const wasInsert = pr.rows[0].xmax === '0';
+          if (wasInsert) propCreated++; else propSkipped++;
+
+          // Check if property already has a contact
+          const existingPC = await dbQuery(`
+            SELECT contact_id FROM property_contacts WHERE property_id = $1 AND primary_contact = true LIMIT 1
+          `, [propertyId]);
+
+          if (existingPC.rows.length === 0) {
+            // Create contact
+            const firstName = (cc.first_name || '').trim();
+            const lastName  = (cc.last_name || '').trim();
+            const mailingAddr = (cc.mailing_address || '').trim();
+            const mailingCity = (cc.mailing_city || '').trim();
+            const mailingState = (cc.mailing_state || '').trim();
+            const mailingZip  = (cc.mailing_zip || '').trim();
+
+            const cr = await dbQuery(`
+              INSERT INTO contacts (first_name, last_name, mailing_address, mailing_city, mailing_state, mailing_zip)
+              VALUES ($1,$2,$3,$4,$5,$6) RETURNING id
+            `, [firstName, lastName, mailingAddr, mailingCity, mailingState, mailingZip]);
+
+            const contactId = cr.rows[0].id;
+            contactCreated++;
+
+            await dbQuery(`
+              INSERT INTO property_contacts (property_id, contact_id, primary_contact)
+              VALUES ($1,$2,true) ON CONFLICT DO NOTHING
+            `, [propertyId, contactId]);
+          }
+
+        } catch(rowErr) {
+          // skip bad rows silently
+        }
+      }
+
+      offset += BATCH;
+      if (offset % 2000 === 0 || offset >= total) {
+        send('  Processed ' + Math.min(offset, total) + ' / ' + total + ' — props created: ' + propCreated + ', skipped: ' + propSkipped + ', contacts: ' + contactCreated);
+      }
+    }
+    send('Step 1 done — properties: ' + propCreated + ' created, ' + propSkipped + ' updated, contacts: ' + contactCreated);
+
+    // ── Step 2: Migrate campaign_contact_phones → phones ──────────────────────
+    send('\n[Step 2] Migrating campaign_contact_phones → phones...');
+    let phoneOffset = 0;
+    let phoneCreated = 0, phoneUpdated = 0;
+
+    const totalPhones = await dbQuery(`SELECT COUNT(*) FROM campaign_contact_phones WHERE phone_number IS NOT NULL AND phone_number != ''`);
+    const totalP = parseInt(totalPhones.rows[0].count);
+    send('Total phones to migrate: ' + totalP);
+
+    while (phoneOffset < totalP) {
+      const phoneBatch = await dbQuery(`
+        SELECT ccp.phone_number, ccp.slot_index, ccp.phone_status, ccp.phone_tag,
+          ccp.wrong_number, ccp.last_disposition,
+          cc.property_address, cc.property_city, cc.property_state, cc.property_zip
+        FROM campaign_contact_phones ccp
+        JOIN campaign_contacts cc ON cc.id = ccp.contact_id
+        WHERE ccp.phone_number IS NOT NULL AND ccp.phone_number != ''
+        ORDER BY ccp.id
+        LIMIT $1 OFFSET $2
+      `, [BATCH, phoneOffset]);
+
+      for (const ph of phoneBatch.rows) {
+        try {
+          const street = (ph.property_address || '').trim();
+          const city   = (ph.property_city || '').trim();
+          const state  = (ph.property_state || '').trim().toUpperCase();
+          const zip    = (ph.property_zip || '').trim();
+          if (!street || !city || !state) continue;
+
+          // Find property
+          const propRes = await dbQuery(`
+            SELECT p.id FROM properties p WHERE street=$1 AND city=$2 AND state_code=$3 LIMIT 1
+          `, [street, city, state]);
+          if (!propRes.rows.length) continue;
+          const propertyId = propRes.rows[0].id;
+
+          // Find contact linked to property
+          const pcRes = await dbQuery(`
+            SELECT contact_id FROM property_contacts WHERE property_id=$1 AND primary_contact=true LIMIT 1
+          `, [propertyId]);
+          if (!pcRes.rows.length) continue;
+          const contactId = pcRes.rows[0].contact_id;
+
+          const phoneStatus = ph.wrong_number ? 'wrong' : (ph.phone_status || 'unknown');
+
+          const result = await dbQuery(`
+            INSERT INTO phones (contact_id, phone_number, phone_index, phone_status, phone_tag)
+            VALUES ($1,$2,$3,$4,$5)
+            ON CONFLICT (contact_id, phone_number)
+            DO UPDATE SET phone_status=$4, phone_tag=COALESCE(NULLIF($5,''),phones.phone_tag), updated_at=NOW()
+            RETURNING xmax
+          `, [contactId, ph.phone_number, ph.slot_index || 1, phoneStatus, ph.phone_tag || '']);
+
+          if (result.rows[0].xmax === '0') phoneCreated++; else phoneUpdated++;
+
+        } catch(rowErr) { /* skip */ }
+      }
+
+      phoneOffset += BATCH;
+      if (phoneOffset % 5000 === 0 || phoneOffset >= totalP) {
+        send('  Processed ' + Math.min(phoneOffset, totalP) + ' / ' + totalP + ' — created: ' + phoneCreated + ', updated: ' + phoneUpdated);
+      }
+    }
+    send('Step 2 done — phones created: ' + phoneCreated + ', updated: ' + phoneUpdated);
+
+    // ── Step 3: Log import history ─────────────────────────────────────────────
+    send('\n[Step 3] Logging import history...');
+    const unlogged = await dbQuery(`
+      SELECT p.id FROM properties p
+      LEFT JOIN import_history ih ON ih.property_id = p.id
+      WHERE ih.id IS NULL`);
+    for (const prop of unlogged.rows) {
+      await dbQuery(`INSERT INTO import_history (property_id, source, imported_by, fields_added, notes)
+        VALUES ($1,'Campaign Import','migrate2','address, owner, phones','Migrated from campaign_contacts on ${new Date().toISOString().split('T')[0]}')
+      `, [prop.id]);
+    }
+    send('Import history logged: ' + unlogged.rows.length);
+
+    // ── Final summary ──────────────────────────────────────────────────────────
+    const after = await dbQuery(`SELECT
+      (SELECT COUNT(*) FROM properties) AS props,
+      (SELECT COUNT(*) FROM contacts) AS contacts,
+      (SELECT COUNT(*) FROM phones) AS phones,
+      (SELECT COUNT(*) FROM property_contacts) AS pc,
+      (SELECT COUNT(*) FROM property_lists) AS pl`);
+    const a = after.rows[0];
+    send('\n════════════════════════════════');
+    send('MIGRATION COMPLETE');
+    send('Properties:  ' + a.props);
+    send('Contacts:    ' + a.contacts);
+    send('Phones:      ' + a.phones);
+    send('PC links:    ' + a.pc);
+    send('PL links:    ' + a.pl);
+    send('════════════════════════════════');
+
+    res.write('</pre><div class="done">&#10003; Done &mdash; <a href="/records">Go to Records &rarr;</a></div></body></html>');
+    res.end();
+
+  } catch(e) {
+    send('ERROR: ' + e.message);
+    res.write('</pre><div class="err">Migration failed: ' + e.message + '</div></body></html>');
+    res.end();
+  }
+});
+
+
 app.listen(PORT, async ()=>{
   console.log(`HudREI Filtration Bot v2 running on port ${PORT}`);
   console.log(`Redis: ${redis?'connected':'not configured'}`);
