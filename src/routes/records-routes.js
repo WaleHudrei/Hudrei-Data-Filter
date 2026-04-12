@@ -261,6 +261,10 @@ router.get('/', requireAuth, async (req, res) => {
         </div>
       </form>
 
+      <style>
+      tr.row-selected td { background: #f0f7ff !important; }
+      tr.row-selected:hover td { background: #e8f0ff !important; }
+      </style>
       <script>
       function toggleFilters() {
         const p = document.getElementById('filter-panel');
@@ -343,7 +347,10 @@ router.get('/', requireAuth, async (req, res) => {
         if (!id) return;
         cb.checked = checked;
         var tr = cb.parentNode.parentNode;
-        if (tr) tr.style.background = checked ? '#f0f7ff' : '';
+        if (tr) {
+          if (checked) tr.classList.add('row-selected');
+          else tr.classList.remove('row-selected');
+        }
         if (checked) selectedIds[id] = true;
         else delete selectedIds[id];
         updateToolbar();
@@ -374,7 +381,7 @@ router.get('/', requireAuth, async (req, res) => {
         var boxes = document.querySelectorAll('.row-check');
         for (var i = 0; i < boxes.length; i++) {
           boxes[i].checked = false;
-          boxes[i].parentNode.parentNode.style.background = '';
+          boxes[i].parentNode.parentNode.classList.remove('row-selected');
         }
         var sa = document.getElementById('select-all');
         if (sa) sa.checked = false;
@@ -871,6 +878,3 @@ router.post('/:id/edit', requireAuth, async (req, res) => {
 });
 
 module.exports = router;
-
-module.exports = router;
-module.exports.shellFn = shell;
