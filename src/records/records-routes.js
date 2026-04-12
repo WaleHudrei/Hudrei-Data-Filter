@@ -28,7 +28,7 @@ router.get('/', requireAuth, async (req, res) => {
       upload_from = '', upload_to = '',
       page = 1
     } = req.query;
-    const limit = 10;
+    const limit = 20;
     const offset = (parseInt(page) - 1) * limit;
 
     let conditions = [];
@@ -100,20 +100,20 @@ router.get('/', requireAuth, async (req, res) => {
       const stage = r.pipeline_stage || 'prospect';
       const stageColor = {prospect:'#f5f4f0',lead:'#e8f5ee',contract:'#fff8e1',closed:'#e8f0ff'}[stage]||'#f5f4f0';
       const stageText = {prospect:'#555',lead:'#1a7a4a',contract:'#9a6800',closed:'#2c5cc5'}[stage]||'#555';
-      return `<tr data-id="${r.id}" style="cursor:pointer" onclick="window.location='/records/${r.id}'">
-        <td style="width:36px;padding-left:14px" onclick="event.stopPropagation()"><input type="checkbox" class="row-check" data-id="${r.id}" style="cursor:pointer;width:15px;height:15px"></td>
-        <td><div style="font-weight:500">${r.street}</div><div style="font-size:12px;color:#888">${r.city}, ${r.state_code} ${r.zip_code}</div></td>
-        <td>${owner}</td>
-        <td>${fmt(r.property_type)}</td>
-        <td>${r.phone_count || 0}</td>
-        <td>${r.list_count || 0}</td>
-        <td><span style="background:${stageColor};color:${stageText};padding:2px 9px;border-radius:4px;font-size:11px;font-weight:600;text-transform:capitalize">${stage}</span></td>
-        <td>${fmtDate(r.created_at)}</td>
+      return `<tr data-id="${r.id}" style="cursor:pointer;border-bottom:1px solid #f0efe9" onclick="window.location='/records/${r.id}'" onmouseover="if(!this.classList.contains('row-selected'))this.style.background='#fafaf8'" onmouseout="if(!this.classList.contains('row-selected'))this.style.background=''">
+        <td style="width:40px;padding:12px 0 12px 16px" onclick="event.stopPropagation()"><input type="checkbox" class="row-check" data-id="${r.id}" style="cursor:pointer;width:15px;height:15px"></td>
+        <td style="padding:12px"><div style="font-weight:500;font-size:13px">${r.street}</div><div style="font-size:12px;color:#888;margin-top:2px">${r.city}, ${r.state_code} ${r.zip_code}</div></td>
+        <td style="padding:12px;font-size:13px;color:#555">${owner}</td>
+        <td style="padding:12px;font-size:13px;color:#555">${fmt(r.property_type)}</td>
+        <td style="padding:12px;font-size:13px;text-align:center">${r.phone_count || 0}</td>
+        <td style="padding:12px;font-size:13px;text-align:center">${r.list_count || 0}</td>
+        <td style="padding:12px"><span style="background:${stageColor};color:${stageText};padding:3px 10px;border-radius:5px;font-size:11px;font-weight:600;text-transform:capitalize">${stage}</span></td>
+        <td style="padding:12px;font-size:12px;color:#888;white-space:nowrap">${fmtDate(r.created_at)}</td>
       </tr>`;
     }).join('');
 
     const pagination = totalPages > 1 ? `
-      <div style="display:flex;align-items:center;justify-content:space-between;margin-top:1rem;font-size:13px;color:#888">
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-top:1rem;font-size:13px;color:#555;padding:4px 0">
         <span>Showing ${offset+1}–${Math.min(offset+limit,total)} of ${total.toLocaleString()} records</span>
         <div style="display:flex;gap:6px">
           ${parseInt(page) > 1 ? `<a href="/records?q=${encodeURIComponent(q)}&state=${state}&type=${type}&list_id=${list_id}&page=${parseInt(page)-1}" class="btn btn-ghost" style="padding:6px 12px">← Prev</a>` : ''}
@@ -312,20 +312,20 @@ router.get('/', requireAuth, async (req, res) => {
         </div>
       </div>
 
-      <div class="card" style="padding:0;overflow:hidden">
-        <table class="data-table">
-          <thead><tr>
-            <th style="width:36px;padding-left:14px"><input type="checkbox" id="select-all" style="cursor:pointer;width:15px;height:15px" title="Select all"></th>
-            <th>Address</th>
-            <th>Owner</th>
-            <th>Type</th>
-            <th>Phones</th>
-            <th>Lists</th>
-            <th>Stage</th>
-            <th>Added</th>
+      <div style="background:#fff;border-radius:10px;border:1px solid #e0dfd8;overflow:hidden">
+        <table style="width:100%;font-size:13px;border-collapse:collapse">
+          <thead><tr style="border-bottom:1px solid #e0dfd8">
+            <th style="width:40px;padding:10px 0 10px 16px"><input type="checkbox" id="select-all" style="cursor:pointer;width:15px;height:15px" title="Select all"></th>
+            <th style="padding:10px 12px;font-size:11px;font-weight:600;color:#888;text-transform:uppercase;letter-spacing:.05em">Address</th>
+            <th style="padding:10px 12px;font-size:11px;font-weight:600;color:#888;text-transform:uppercase;letter-spacing:.05em">Owner</th>
+            <th style="padding:10px 12px;font-size:11px;font-weight:600;color:#888;text-transform:uppercase;letter-spacing:.05em">Type</th>
+            <th style="padding:10px 12px;font-size:11px;font-weight:600;color:#888;text-transform:uppercase;letter-spacing:.05em">Phones</th>
+            <th style="padding:10px 12px;font-size:11px;font-weight:600;color:#888;text-transform:uppercase;letter-spacing:.05em">Lists</th>
+            <th style="padding:10px 12px;font-size:11px;font-weight:600;color:#888;text-transform:uppercase;letter-spacing:.05em">Stage</th>
+            <th style="padding:10px 12px;font-size:11px;font-weight:600;color:#888;text-transform:uppercase;letter-spacing:.05em">Added</th>
           </tr></thead>
           <tbody>
-            ${tableRows || '<tr><td colspan="8" class="empty-state">No records found</td></tr>'}
+            ${tableRows || '<tr><td colspan="8" style="text-align:center;padding:40px;color:#aaa;font-size:13px">No records found</td></tr>'}
           </tbody>
         </table>
       </div>
