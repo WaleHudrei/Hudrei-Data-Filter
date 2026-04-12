@@ -307,15 +307,20 @@ router.get('/', requireAuth, async (req, res) => {
         if (e.target.type === 'checkbox') return;
         const cb = row.querySelector('.row-check');
         cb.checked = !cb.checked;
-        toggleSelect(cb);
+        onCheckChange(cb);
       }
 
-      function toggleSelect(cb) {
+      function onCheckChange(cb) {
         const id = cb.dataset.id;
-        if (cb.checked) selectedIds.add(id);
-        else selectedIds.delete(id);
+        if (!id) return;
+        if (cb.checked) {
+          selectedIds.add(id);
+          cb.closest('tr').style.background = '#f0f7ff';
+        } else {
+          selectedIds.delete(id);
+          cb.closest('tr').style.background = '';
+        }
         updateToolbar();
-        cb.closest('tr').style.background = cb.checked ? '#f0f7ff' : '';
       }
 
       function updateToolbar() {
@@ -329,22 +334,34 @@ router.get('/', requireAuth, async (req, res) => {
         selectedIds.clear();
         document.querySelectorAll('.row-check').forEach(cb => {
           cb.checked = false;
-          cb.closest('tr').style.background = '';
+          if (cb.closest('tr')) cb.closest('tr').style.background = '';
         });
-        document.getElementById('select-all').checked = false;
+        const sa = document.getElementById('select-all');
+        if (sa) sa.checked = false;
         updateToolbar();
       }
 
+      // Select-all checkbox
       document.getElementById('select-all').addEventListener('change', function() {
+        const checked = this.checked;
         document.querySelectorAll('.row-check').forEach(cb => {
-          cb.checked = this.checked;
-          toggleSelect(cb);
-          cb.closest('tr').style.background = this.checked ? '#f0f7ff' : '';
+          cb.checked = checked;
+          const id = cb.dataset.id;
+          if (!id) return;
+          if (checked) {
+            selectedIds.add(id);
+            cb.closest('tr').style.background = '#f0f7ff';
+          } else {
+            selectedIds.delete(id);
+            cb.closest('tr').style.background = '';
+          }
         });
+        updateToolbar();
       });
 
+      // Individual row checkboxes
       document.querySelectorAll('.row-check').forEach(cb => {
-        cb.addEventListener('change', () => toggleSelect(cb));
+        cb.addEventListener('change', () => onCheckChange(cb));
       });
 
       // ── Export logic ───────────────────────────────────────────────────────
@@ -379,7 +396,7 @@ router.get('/', requireAuth, async (req, res) => {
       </script>
 
       <!-- Export toolbar -->
-      <div id="export-toolbar" style="display:none;background:#1a1a1a;color:#fff;border-radius:10px;padding:10px 16px;margin-bottom:10px;display:none;align-items:center;justify-content:space-between;gap:12px">
+      <div id="export-toolbar" style="display:none;background:#1a1a1a;color:#fff;border-radius:10px;padding:10px 16px;margin-bottom:10px;align-items:center;justify-content:space-between;gap:12px">
         <div style="font-size:13px"><span id="selected-count">0</span> records selected</div>
         <div style="display:flex;gap:8px">
           <button onclick="clearSelection()" style="padding:6px 12px;background:transparent;color:#aaa;border:1px solid #444;border-radius:7px;font-size:12px;cursor:pointer;font-family:inherit">Clear</button>
