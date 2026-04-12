@@ -18,7 +18,16 @@ function fmtMoney(val) { if (!val) return '—'; return '$' + Number(val).toLoca
 // ═══════════════════════════════════════════════════════════════════════════════
 router.get('/', requireAuth, async (req, res) => {
   try {
-    const { q = '', state = '', type = '', list_id = '', page = 1 } = req.query;
+    const {
+      q = '', state = '', city = '', zip = '', county = '',
+      type = '', list_id = '', stack_list = '', min_stack = '',
+      pipeline = '', mkt_result = '', prop_status = '',
+      min_assessed = '', max_assessed = '',
+      min_equity = '', max_equity = '',
+      min_year = '', max_year = '',
+      upload_from = '', upload_to = '',
+      page = 1
+    } = req.query;
     const limit = 50;
     const offset = (parseInt(page) - 1) * limit;
 
@@ -27,20 +36,28 @@ router.get('/', requireAuth, async (req, res) => {
     let idx = 1;
 
     if (q) {
-      conditions.push(`(
-        p.street ILIKE $${idx} OR
-        p.city ILIKE $${idx} OR
-        p.zip_code ILIKE $${idx} OR
-        c.first_name ILIKE $${idx} OR
-        c.last_name ILIKE $${idx} OR
-        ph.phone_number ILIKE $${idx}
-      )`);
-      params.push(`%${q}%`);
-      idx++;
+      conditions.push(`(p.street ILIKE $${idx} OR p.city ILIKE $${idx} OR p.zip_code ILIKE $${idx} OR c.first_name ILIKE $${idx} OR c.last_name ILIKE $${idx} OR ph.phone_number ILIKE $${idx})`);
+      params.push(`%${q}%`); idx++;
     }
-    if (state) { conditions.push(`p.state_code = $${idx}`); params.push(state); idx++; }
-    if (type) { conditions.push(`p.property_type = ${idx}`); params.push(type); idx++; }
-    if (list_id) { conditions.push(`EXISTS (SELECT 1 FROM property_lists pl2 WHERE pl2.property_id = p.id AND pl2.list_id = ${idx})`); params.push(list_id); idx++; }
+    if (state)        { conditions.push(`p.state_code = $${idx}`);       params.push(state); idx++; }
+    if (city)         { conditions.push(`p.city ILIKE $${idx}`);          params.push(`%${city}%`); idx++; }
+    if (zip)          { conditions.push(`p.zip_code ILIKE $${idx}`);      params.push(`%${zip}%`); idx++; }
+    if (county)       { conditions.push(`p.county ILIKE $${idx}`);        params.push(`%${county}%`); idx++; }
+    if (type)         { conditions.push(`p.property_type = $${idx}`);     params.push(type); idx++; }
+    if (pipeline)     { conditions.push(`p.pipeline_stage = $${idx}`);    params.push(pipeline); idx++; }
+    if (prop_status)  { conditions.push(`p.property_status = $${idx}`);   params.push(prop_status); idx++; }
+    if (mkt_result)   { conditions.push(`p.marketing_result = $${idx}`);  params.push(mkt_result); idx++; }
+    if (min_assessed) { conditions.push(`p.assessed_value >= $${idx}`);   params.push(min_assessed); idx++; }
+    if (max_assessed) { conditions.push(`p.assessed_value <= $${idx}`);   params.push(max_assessed); idx++; }
+    if (min_equity)   { conditions.push(`p.equity_percent >= $${idx}`);   params.push(min_equity); idx++; }
+    if (max_equity)   { conditions.push(`p.equity_percent <= $${idx}`);   params.push(max_equity); idx++; }
+    if (min_year)     { conditions.push(`p.year_built >= $${idx}`);       params.push(min_year); idx++; }
+    if (max_year)     { conditions.push(`p.year_built <= $${idx}`);       params.push(max_year); idx++; }
+    if (upload_from)  { conditions.push(`p.created_at >= $${idx}`);       params.push(upload_from); idx++; }
+    if (upload_to)    { conditions.push(`p.created_at <= $${idx}`);       params.push(upload_to + ' 23:59:59'); idx++; }
+    if (list_id)      { conditions.push(`EXISTS (SELECT 1 FROM property_lists pl2 WHERE pl2.property_id = p.id AND pl2.list_id = $${idx})`); params.push(list_id); idx++; }
+    if (stack_list)   { conditions.push(`EXISTS (SELECT 1 FROM property_lists pl3 WHERE pl3.property_id = p.id AND pl3.list_id = $${idx})`); params.push(stack_list); idx++; }
+    if (min_stack)    { conditions.push(`(SELECT COUNT(*) FROM property_lists plc WHERE plc.property_id = p.id) >= $${idx}`); params.push(parseInt(min_stack)); idx++; }
 
     const where = conditions.length ? 'WHERE ' + conditions.join(' AND ') : '';
 
@@ -52,6 +69,10 @@ router.get('/', requireAuth, async (req, res) => {
       ${where}
     `, params);
     const total = parseInt(countRes.rows[0].count);
+
+    // Fetch all lists for stack filter dropdown
+    const allListsRes = await query(`SELECT id, list_name FROM lists ORDER BY list_name ASC`);
+    const allLists = allListsRes.rows;
 
     const rows = await query(`
       SELECT DISTINCT ON (p.id)
@@ -107,26 +128,144 @@ router.get('/', requireAuth, async (req, res) => {
         </div>
       </div>
 
-      <form method="GET" action="/records">
+      <form method="GET" action="/records" id="filter-form">
         ${list_id ? '<input type="hidden" name="list_id" value="' + list_id + '">' : ''}
-        <div class="search-bar">
-          <input type="text" name="q" value="${q}" placeholder="Search address, owner name, phone number…" autocomplete="off">
-          <select name="state">
-            <option value="">All States</option>
-            <option value="IN" ${state==='IN'?'selected':''}>Indiana</option>
-            <option value="GA" ${state==='GA'?'selected':''}>Georgia</option>
-          </select>
-          <select name="type">
-            <option value="">All Types</option>
-            <option value="SFR" ${type==='SFR'?'selected':''}>SFR</option>
-            <option value="MFR" ${type==='MFR'?'selected':''}>MFR</option>
-            <option value="Land" ${type==='Land'?'selected':''}>Land</option>
-            <option value="Commercial" ${type==='Commercial'?'selected':''}>Commercial</option>
-          </select>
+
+        <!-- Search bar + filter toggle -->
+        <div style="display:flex;gap:8px;margin-bottom:12px;flex-wrap:wrap">
+          <input type="text" name="q" value="${q}" placeholder="Search address, owner name, phone…" autocomplete="off"
+            style="flex:1;min-width:200px;padding:9px 14px;border:1px solid #ddd;border-radius:8px;font-size:14px;font-family:inherit;background:#fff">
           <button type="submit" class="btn btn-primary">Search</button>
-          ${q||state||type ? `<a href="/records${list_id?'?list_id='+list_id:''}" class="btn btn-ghost">Clear</a>` : ''}
+          <button type="button" class="btn btn-ghost" onclick="toggleFilters()" id="filter-toggle">
+            ⚙ Filters${[state,city,zip,county,type,pipeline,prop_status,mkt_result,min_assessed,max_assessed,min_equity,max_equity,min_year,max_year,upload_from,upload_to,stack_list,min_stack].filter(Boolean).length > 0 ? ' <span style="background:#1a1a1a;color:#fff;border-radius:10px;padding:1px 7px;font-size:11px;margin-left:4px">'+[state,city,zip,county,type,pipeline,prop_status,mkt_result,min_assessed,max_assessed,min_equity,max_equity,min_year,max_year,upload_from,upload_to,stack_list,min_stack].filter(Boolean).length+'</span>' : ''}
+          </button>
+          ${[q,state,city,zip,county,type,pipeline,prop_status,mkt_result,min_assessed,max_assessed,min_equity,max_equity,min_year,max_year,upload_from,upload_to,stack_list,min_stack].filter(Boolean).length > 0
+            ? '<a href="/records' + (list_id?'?list_id='+list_id:'') + '" class="btn btn-ghost" style="color:#c0392b;border-color:#f5c5c5">✕ Clear</a>' : ''}
+        </div>
+
+        <!-- Expandable filter panel -->
+        <div id="filter-panel" style="display:${[state,city,zip,county,type,pipeline,prop_status,mkt_result,min_assessed,max_assessed,min_equity,max_equity,min_year,max_year,upload_from,upload_to,stack_list,min_stack].filter(Boolean).length>0?'block':'none'};background:#fff;border:1px solid #e0dfd8;border-radius:10px;padding:16px 18px;margin-bottom:14px">
+
+          <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(180px,1fr));gap:12px">
+
+            <!-- Location -->
+            <div style="grid-column:1/-1;font-size:10px;font-weight:700;color:#aaa;text-transform:uppercase;letter-spacing:.1em;margin-bottom:2px">Location</div>
+            <div>
+              <label style="font-size:11px;color:#888;display:block;margin-bottom:3px">State</label>
+              <select name="state" style="width:100%;padding:7px 10px;border:1px solid #ddd;border-radius:7px;font-size:13px;font-family:inherit;background:#fff">
+                <option value="">All States</option>
+                <option value="IN" ${state==='IN'?'selected':''}>Indiana</option>
+                <option value="GA" ${state==='GA'?'selected':''}>Georgia</option>
+              </select>
+            </div>
+            <div>
+              <label style="font-size:11px;color:#888;display:block;margin-bottom:3px">City</label>
+              <input type="text" name="city" value="${city}" placeholder="e.g. Indianapolis" style="width:100%;padding:7px 10px;border:1px solid #ddd;border-radius:7px;font-size:13px;font-family:inherit">
+            </div>
+            <div>
+              <label style="font-size:11px;color:#888;display:block;margin-bottom:3px">ZIP Code</label>
+              <input type="text" name="zip" value="${zip}" placeholder="e.g. 46218" style="width:100%;padding:7px 10px;border:1px solid #ddd;border-radius:7px;font-size:13px;font-family:inherit">
+            </div>
+            <div>
+              <label style="font-size:11px;color:#888;display:block;margin-bottom:3px">County</label>
+              <input type="text" name="county" value="${county}" placeholder="e.g. Marion" style="width:100%;padding:7px 10px;border:1px solid #ddd;border-radius:7px;font-size:13px;font-family:inherit">
+            </div>
+
+            <!-- Property -->
+            <div style="grid-column:1/-1;font-size:10px;font-weight:700;color:#aaa;text-transform:uppercase;letter-spacing:.1em;margin:6px 0 2px">Property</div>
+            <div>
+              <label style="font-size:11px;color:#888;display:block;margin-bottom:3px">Type</label>
+              <select name="type" style="width:100%;padding:7px 10px;border:1px solid #ddd;border-radius:7px;font-size:13px;font-family:inherit;background:#fff">
+                <option value="">All Types</option>
+                ${['SFR','MFR','Land','Commercial'].map(t=>`<option value="${t}" ${type===t?'selected':''}>${t}</option>`).join('')}
+              </select>
+            </div>
+            <div>
+              <label style="font-size:11px;color:#888;display:block;margin-bottom:3px">Property Status</label>
+              <select name="prop_status" style="width:100%;padding:7px 10px;border:1px solid #ddd;border-radius:7px;font-size:13px;font-family:inherit;background:#fff">
+                <option value="">Any</option>
+                ${['Off Market','Pending','Sold'].map(s=>`<option value="${s}" ${prop_status===s?'selected':''}>${s}</option>`).join('')}
+              </select>
+            </div>
+            <div>
+              <label style="font-size:11px;color:#888;display:block;margin-bottom:3px">Pipeline Stage</label>
+              <select name="pipeline" style="width:100%;padding:7px 10px;border:1px solid #ddd;border-radius:7px;font-size:13px;font-family:inherit;background:#fff">
+                <option value="">Any</option>
+                ${['prospect','lead','contract','closed'].map(s=>`<option value="${s}" ${pipeline===s?'selected':''}>${s.charAt(0).toUpperCase()+s.slice(1)}</option>`).join('')}
+              </select>
+            </div>
+            <div>
+              <label style="font-size:11px;color:#888;display:block;margin-bottom:3px">Year Built</label>
+              <div style="display:flex;gap:6px;align-items:center">
+                <input type="number" name="min_year" value="${min_year}" placeholder="From" style="width:100%;padding:7px 8px;border:1px solid #ddd;border-radius:7px;font-size:13px;font-family:inherit">
+                <span style="color:#aaa;font-size:12px">–</span>
+                <input type="number" name="max_year" value="${max_year}" placeholder="To" style="width:100%;padding:7px 8px;border:1px solid #ddd;border-radius:7px;font-size:13px;font-family:inherit">
+              </div>
+            </div>
+            <div>
+              <label style="font-size:11px;color:#888;display:block;margin-bottom:3px">Assessed Value ($)</label>
+              <div style="display:flex;gap:6px;align-items:center">
+                <input type="number" name="min_assessed" value="${min_assessed}" placeholder="Min" style="width:100%;padding:7px 8px;border:1px solid #ddd;border-radius:7px;font-size:13px;font-family:inherit">
+                <span style="color:#aaa;font-size:12px">–</span>
+                <input type="number" name="max_assessed" value="${max_assessed}" placeholder="Max" style="width:100%;padding:7px 8px;border:1px solid #ddd;border-radius:7px;font-size:13px;font-family:inherit">
+              </div>
+            </div>
+            <div>
+              <label style="font-size:11px;color:#888;display:block;margin-bottom:3px">Equity (%)</label>
+              <div style="display:flex;gap:6px;align-items:center">
+                <input type="number" name="min_equity" value="${min_equity}" placeholder="Min" style="width:100%;padding:7px 8px;border:1px solid #ddd;border-radius:7px;font-size:13px;font-family:inherit">
+                <span style="color:#aaa;font-size:12px">–</span>
+                <input type="number" name="max_equity" value="${max_equity}" placeholder="Max" style="width:100%;padding:7px 8px;border:1px solid #ddd;border-radius:7px;font-size:13px;font-family:inherit">
+              </div>
+            </div>
+
+            <!-- Marketing -->
+            <div style="grid-column:1/-1;font-size:10px;font-weight:700;color:#aaa;text-transform:uppercase;letter-spacing:.1em;margin:6px 0 2px">Marketing</div>
+            <div>
+              <label style="font-size:11px;color:#888;display:block;margin-bottom:3px">Marketing Result</label>
+              <select name="mkt_result" style="width:100%;padding:7px 10px;border:1px solid #ddd;border-radius:7px;font-size:13px;font-family:inherit;background:#fff">
+                <option value="">Any</option>
+                ${['Lead','Not Interested','Do Not Call','Wrong Number','Spanish Speaker','Callback','Voicemail'].map(s=>`<option value="${s}" ${mkt_result===s?'selected':''}>${s}</option>`).join('')}
+              </select>
+            </div>
+            <div>
+              <label style="font-size:11px;color:#888;display:block;margin-bottom:3px">Upload Date From</label>
+              <input type="date" name="upload_from" value="${upload_from}" style="width:100%;padding:7px 10px;border:1px solid #ddd;border-radius:7px;font-size:13px;font-family:inherit">
+            </div>
+            <div>
+              <label style="font-size:11px;color:#888;display:block;margin-bottom:3px">Upload Date To</label>
+              <input type="date" name="upload_to" value="${upload_to}" style="width:100%;padding:7px 10px;border:1px solid #ddd;border-radius:7px;font-size:13px;font-family:inherit">
+            </div>
+
+            <!-- List Stacking -->
+            <div style="grid-column:1/-1;font-size:10px;font-weight:700;color:#aaa;text-transform:uppercase;letter-spacing:.1em;margin:6px 0 2px">List Stacking</div>
+            <div style="grid-column:1/-1">
+              <label style="font-size:11px;color:#888;display:block;margin-bottom:3px">Also appears on list</label>
+              <select name="stack_list" style="width:100%;padding:7px 10px;border:1px solid #ddd;border-radius:7px;font-size:13px;font-family:inherit;background:#fff">
+                <option value="">— Any list —</option>
+                ${allLists.map(l=>`<option value="${l.id}" ${stack_list==l.id?'selected':''}}>${l.list_name}</option>`).join('')}
+              </select>
+            </div>
+            <div>
+              <label style="font-size:11px;color:#888;display:block;margin-bottom:3px">Min list stack count</label>
+              <input type="number" name="min_stack" value="${min_stack}" placeholder="e.g. 2" min="1" style="width:100%;padding:7px 10px;border:1px solid #ddd;border-radius:7px;font-size:13px;font-family:inherit">
+            </div>
+
+          </div>
+
+          <div style="margin-top:14px;display:flex;gap:8px">
+            <button type="submit" class="btn btn-primary">Apply Filters</button>
+            <a href="/records${list_id?'?list_id='+list_id:''}" class="btn btn-ghost">Reset</a>
+          </div>
         </div>
       </form>
+
+      <script>
+      function toggleFilters() {
+        const p = document.getElementById('filter-panel');
+        p.style.display = p.style.display === 'none' ? 'block' : 'none';
+      }
+      </script>
 
       <div class="card" style="padding:0;overflow:hidden">
         <table class="data-table">
@@ -331,6 +470,10 @@ router.get('/:id', requireAuth, async (req, res) => {
             <div class="kv"><div class="kv-label">Year Built</div><div class="kv-val">${fmt(p.year_built)}</div></div>
             <div class="kv"><div class="kv-label">Lot Size</div><div class="kv-val">${p.lot_size ? Number(p.lot_size).toLocaleString() + ' sf' : '—'}</div></div>
             <div class="kv"><div class="kv-label">Condition</div><div class="kv-val" style="${p.condition==='Fair'?'color:#9a6800':p.condition==='Poor'?'color:#c0392b':''}">${fmt(p.condition)}</div></div>
+            <div class="kv"><div class="kv-label">Property Status</div><div class="kv-val" style="${p.property_status==='Sold'?'color:#c0392b':p.property_status==='Pending'?'color:#9a6800':''}">${fmt(p.property_status)}</div></div>
+            <div class="kv"><div class="kv-label">Assessed Value</div><div class="kv-val">${fmtMoney(p.assessed_value)}</div></div>
+            <div class="kv"><div class="kv-label">Equity %</div><div class="kv-val highlight">${p.equity_percent ? p.equity_percent + '%' : '—'}</div></div>
+            <div class="kv"><div class="kv-label">Marketing Result</div><div class="kv-val">${fmt(p.marketing_result)}</div></div>
           </div>
           <div class="sec-lbl">Sale History</div>
           <div class="kv-grid">
@@ -395,6 +538,20 @@ router.get('/:id', requireAuth, async (req, res) => {
               <div class="form-field" style="margin:0"><label>Last Sale Date</label><input type="date" name="last_sale_date" value="${p.last_sale_date ? String(p.last_sale_date).split('T')[0] : ''}"></div>
               <div class="form-field" style="margin:0"><label>Last Sale Price ($)</label><input type="number" name="last_sale_price" value="${p.last_sale_price||''}"></div>
               <div class="form-field" style="margin:0;grid-column:1/-1"><label>Source</label><input type="text" name="source" value="${p.source||''}" placeholder="DealMachine, PropStream, etc."></div>
+              <div class="form-field" style="margin:0"><label>Property Status</label>
+                <select name="property_status">
+                  <option value="">—</option>
+                  ${['Off Market','Pending','Sold'].map(t=>`<option value="${t}" ${p.property_status===t?'selected':''}>${t}</option>`).join('')}
+                </select>
+              </div>
+              <div class="form-field" style="margin:0"><label>Assessed Value ($)</label><input type="number" name="assessed_value" value="${p.assessed_value||''}"></div>
+              <div class="form-field" style="margin:0"><label>Equity (%)</label><input type="number" step="0.01" name="equity_percent" value="${p.equity_percent||''}"></div>
+              <div class="form-field" style="margin:0"><label>Marketing Result</label>
+                <select name="marketing_result">
+                  <option value="">—</option>
+                  ${['Lead','Not Interested','Do Not Call','Wrong Number','Callback','Voicemail'].map(t=>`<option value="${t}" ${p.marketing_result===t?'selected':''}>${t}</option>`).join('')}
+                </select>
+              </div>
             </div>
             ${primaryContact ? `
             <div style="font-size:12px;font-weight:600;color:#888;text-transform:uppercase;letter-spacing:.06em;margin:14px 0 10px">Owner</div>
@@ -430,6 +587,7 @@ router.post('/:id/edit', requireAuth, async (req, res) => {
     const {
       property_type, condition, bedrooms, bathrooms, sqft, year_built,
       estimated_value, vacant, last_sale_date, last_sale_price, source,
+      property_status, assessed_value, equity_percent, marketing_result,
       contact_id, first_name, last_name, mailing_address, mailing_city,
       mailing_state, edit_notes
     } = req.body;
@@ -449,10 +607,15 @@ router.post('/:id/edit', requireAuth, async (req, res) => {
         last_sale_date = CASE WHEN $9 = '' THEN last_sale_date ELSE $9::date END,
         last_sale_price = CASE WHEN $10 = '' THEN last_sale_price ELSE $10::numeric END,
         source = COALESCE(NULLIF($11,''), source),
+        property_status = COALESCE(NULLIF($12,''), property_status),
+        assessed_value = CASE WHEN $13 = '' THEN assessed_value ELSE $13::numeric END,
+        equity_percent = CASE WHEN $14 = '' THEN equity_percent ELSE $14::numeric END,
+        marketing_result = COALESCE(NULLIF($15,''), marketing_result),
         updated_at = NOW()
-      WHERE id = $12
+      WHERE id = $16
     `, [property_type, condition, bedrooms||'', bathrooms||'', sqft||'', year_built||'',
-        estimated_value||'', vacant||'', last_sale_date||'', last_sale_price||'', source, id]);
+        estimated_value||'', vacant||'', last_sale_date||'', last_sale_price||'', source,
+        property_status||'', assessed_value||'', equity_percent||'', marketing_result||'', id]);
 
     updated.push('property fields');
 
