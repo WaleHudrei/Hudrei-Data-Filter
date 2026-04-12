@@ -7,75 +7,7 @@ function requireAuth(req, res, next) {
   res.redirect('/login');
 }
 
-function shell(title, body, activePage) {
-  return `<!DOCTYPE html><html><head>
-<meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>${title} — Loki</title>
-<style>
-*{box-sizing:border-box;margin:0;padding:0}
-body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;background:#f5f4f0;color:#1a1a1a;min-height:100vh;display:flex}
-.sidebar{width:220px;min-height:100vh;background:#1a1a1a;display:flex;flex-direction:column;position:fixed;top:0;left:0;bottom:0;z-index:20}
-.sidebar-logo{padding:20px 20px 16px;border-bottom:1px solid #2a2a2a}
-.sidebar-logo-title{font-size:15px;font-weight:600;color:#fff}
-.sidebar-logo-sub{font-size:11px;color:#666;margin-top:2px}
-.sidebar-nav{padding:12px 10px;flex:1}
-.sidebar-section{font-size:10px;font-weight:600;color:#444;text-transform:uppercase;letter-spacing:.06em;padding:8px 10px 4px}
-.sidebar-link{display:flex;align-items:center;gap:12px;padding:12px 12px;border-radius:8px;color:#888;font-size:14px;text-decoration:none;margin-bottom:6px;transition:all .15s}
-.sidebar-link:hover{background:#2a2a2a;color:#fff}
-.sidebar-link.active{background:#2a2a2a;color:#fff}
-.sidebar-link svg{width:18px;height:18px;flex-shrink:0;opacity:.7}
-.sidebar-link.active svg{opacity:1}
-.sidebar-footer{padding:14px 16px;border-top:1px solid #2a2a2a}
-.sidebar-footer a{font-size:12px;color:#666;text-decoration:none}
-.sidebar-footer a:hover{color:#fff}
-.page-wrap{margin-left:220px;min-height:100vh;flex:1}
-.main{max-width:1100px;margin:0 auto;padding:2rem 1.5rem}
-.data-table{width:100%;font-size:13px;border-collapse:collapse}
-.data-table th{text-align:left;padding:9px 14px;font-weight:500;color:#888;border-bottom:1px solid #f0efe9;font-size:11px;white-space:nowrap;background:#fff;text-transform:uppercase;letter-spacing:.04em}
-.data-table td{padding:11px 14px;border-bottom:1px solid #f8f7f4;vertical-align:middle}
-</style></head><body>
-<div class="sidebar">
-  <div class="sidebar-logo">
-    <div class="sidebar-logo-title">Loki</div>
-    <div class="sidebar-logo-sub">Developed by HudREI</div>
-  </div>
-  <div class="sidebar-nav">
-    <div class="sidebar-section">Tools</div>
-    <a href="/" class="sidebar-link ${activePage==='filter'?'active':''}">
-      <svg fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M3 4h18M3 8h18M3 12h12M3 16h8"/></svg>
-      List Filtration
-    </a>
-    <a href="/records" class="sidebar-link ${activePage==='records'?'active':''}">
-      <svg fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M3 9l9-7 9 7v11a2 2 0 01-2 2H5a2 2 0 01-2-2z"/><polyline points="9 22 9 12 15 12 15 22"/></svg>
-      Records
-    </a>
-    <a href="/upload" class="sidebar-link ${activePage==='upload'?'active':''}">
-      <svg fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
-      Upload Data
-    </a>
-    <a href="/campaigns" class="sidebar-link ${activePage==='campaigns'?'active':''}">
-      <svg fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg>
-      Campaigns
-    </a>
-    <a href="/nis" class="sidebar-link ${activePage==='nis'?'active':''}">
-      <svg fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><line x1="4.93" y1="4.93" x2="19.07" y2="19.07"/></svg>
-      NIS Numbers
-    </a>
-    <a href="/changelog" class="sidebar-link ${activePage==='changelog'?'active':''}">
-      <svg fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M12 8v4l3 3"/><circle cx="12" cy="12" r="10"/></svg>
-      Changelog
-    </a>
-    <div class="sidebar-section" style="margin-top:8px">System</div>
-    <a href="/setup" class="sidebar-link ${activePage==='setup'?'active':''}">
-      <svg fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.07 4.93a10 10 0 010 14.14M4.93 4.93a10 10 0 000 14.14"/></svg>
-      Setup
-    </a>
-  </div>
-  <div class="sidebar-footer"><a href="/logout">Sign out</a></div>
-</div>
-<div class="page-wrap"><div class="main">${body}</div></div>
-</body></html>`;
-}
+const { shell } = require('../shared-shell');
 
 function fmtDate(val) { if (!val) return '—'; return new Date(val).toLocaleDateString('en-US', { month:'short', day:'numeric', year:'numeric' }); }
 
