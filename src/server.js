@@ -61,10 +61,11 @@ function requireAuth(req, res, next) {
   res.redirect('/login');
 }
 
-// Phase 2: Records + Setup + Lists routes
+// Phase 2: Records + Setup + Lists + Import routes
 const slice1Records = require('./records/records-routes');
 const setupRoutes = require('./records/setup-routes');
 const listsRoutes = require('./lists/lists-routes');
+const importRoutes = require('./import/property-import-routes');
 
 const COL = { phone:'Phone', dispo:'Log Type', listname:'Original lead file', date:'Log Time', fname:'First Name', lname:'Last Name', addr:'Address', city:'City', state:'State', zip:'Zip Code', notes:'Call Notes' };
 
@@ -487,10 +488,179 @@ app.post('/memory/clear',requireAuth,async(req,res)=>{await clearMemory();res.js
 app.use('/records', slice1Records);
 app.use('/setup', setupRoutes);
 app.use('/lists', listsRoutes);
+app.use('/import/property', importRoutes);
 
 
 
 
+
+
+
+// ── Dashboard ─────────────────────────────────────────────────────────────────
+app.get('/dashboard', requireAuth, async (req, res) => {
+  try {
+    const { shell } = require('./shared-shell');
+
+    const stats = await dbQuery(`SELECT
+      (SELECT COUNT(*) FROM properties) AS total_properties,
+      (SELECT COUNT(*) FROM properties WHERE created_at >= NOW() - INTERVAL '30 days') AS new_this_month,
+      (SELECT COUNT(*) FROM contacts) AS total_contacts,
+      (SELECT COUNT(*) FROM phones) AS total_phones,
+      (SELECT COUNT(*) FROM phones WHERE phone_status = 'correct') AS correct_phones,
+      (SELECT COUNT(*) FROM phones WHERE phone_status = 'wrong' OR wrong_number = true) AS wrong_phones,
+      (SELECT COUNT(*) FROM phones WHERE phone_status = 'dead') AS dead_phones,
+      (SELECT COUNT(*) FROM lists) AS total_lists,
+      (SELECT COUNT(*) FROM properties WHERE pipeline_stage = 'lead') AS leads,
+      (SELECT COUNT(*) FROM properties WHERE pipeline_stage = 'contract') AS contracts,
+      (SELECT COUNT(*) FROM properties WHERE pipeline_stage = 'closed') AS closed,
+      (SELECT COUNT(*) FROM properties WHERE state_code = 'IN') AS indiana_props,
+      (SELECT COUNT(*) FROM properties WHERE state_code = 'GA') AS georgia_props,
+      (SELECT COUNT(*) FROM filtration_runs) AS total_filtration_runs,
+      (SELECT COUNT(*) FROM filtration_runs WHERE run_at >= NOW() - INTERVAL '30 days') AS filtration_runs_month
+    `);
+    const s = stats.rows[0];
+
+    // Recent filtration runs
+    const recentRuns = await dbQuery(`
+      SELECT filename, run_at, total_records, records_kept, records_filtered, caught_by_memory
+      FROM filtration_runs ORDER BY run_at DESC LIMIT 5
+    `);
+
+    // Recent imports
+    const recentImports = await dbQuery(`
+      SELECT source, imported_at, COUNT(*) AS count
+      FROM import_history
+      WHERE imported_at >= NOW() - INTERVAL '30 days'
+      GROUP BY source, imported_at
+      ORDER BY imported_at DESC LIMIT 5
+    `);
+
+    // Top lists by property count
+    const topLists = await dbQuery(`
+      SELECT l.list_name, COUNT(pl.property_id) AS prop_count
+      FROM lists l
+      LEFT JOIN property_lists pl ON pl.list_id = l.id
+      GROUP BY l.id, l.list_name
+      ORDER BY prop_count DESC LIMIT 5
+    `);
+
+    const fmtNum = n => Number(n||0).toLocaleString();
+    const fmtDate = v => v ? new Date(v).toLocaleDateString('en-US',{month:'short',day:'numeric',year:'numeric'}) : '—';
+
+    const statCard = (label, value, sub, color) => `
+      <div style="background:#fff;border:1px solid #e0dfd8;border-radius:10px;padding:14px 16px">
+        <div style="font-size:11px;color:#888;margin-bottom:4px;text-transform:uppercase;letter-spacing:.05em">${label}</div>
+        <div style="font-size:24px;font-weight:600;color:${color||'#1a1a1a'}">${value}</div>
+        ${sub ? `<div style="font-size:11px;color:#aaa;margin-top:2px">${sub}</div>` : ''}
+      </div>`;
+
+    const runRows = recentRuns.rows.map(r => `<tr>
+      <td style="font-weight:500;max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${r.filename||'—'}</td>
+      <td style="color:#888;font-size:12px">${fmtDate(r.run_at)}</td>
+      <td>${fmtNum(r.total_records)}</td>
+      <td style="color:#1a7a4a;font-weight:500">${fmtNum(r.records_kept)}</td>
+      <td style="color:#c0392b">${fmtNum(r.records_filtered)}</td>
+      <td style="color:#2471a3">${fmtNum(r.caught_by_memory)}</td>
+    </tr>`).join('') || '<tr><td colspan="6" style="text-align:center;color:#aaa;padding:16px">No filtration runs yet</td></tr>';
+
+    const listRows = topLists.rows.map(l => `
+      <div style="display:flex;align-items:center;justify-content:space-between;padding:10px 0;border-bottom:1px solid #f5f4f0">
+        <div style="font-size:13px;font-weight:500;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;margin-right:12px">${l.list_name}</div>
+        <div style="font-size:13px;color:#888;white-space:nowrap">${fmtNum(l.prop_count)} properties</div>
+      </div>`).join('') || '<div style="color:#aaa;font-size:13px;padding:10px 0">No lists yet</div>';
+
+    res.send(shell('Dashboard', `
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:1.5rem;flex-wrap:wrap;gap:12px">
+        <div>
+          <div style="font-size:20px;font-weight:600">Dashboard</div>
+          <div style="font-size:13px;color:#888;margin-top:2px">HudREI · Indiana &amp; Georgia</div>
+        </div>
+        <div style="display:flex;gap:8px">
+          <a href="/import/property" class="btn-primary-link" style="font-size:13px">+ Import List</a>
+        </div>
+      </div>
+
+      <!-- Stats grid -->
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:12px;margin-bottom:1.5rem">
+        ${statCard('Properties', fmtNum(s.total_properties), '+'+fmtNum(s.new_this_month)+' this month')}
+        ${statCard('Contacts', fmtNum(s.total_contacts))}
+        ${statCard('Phones', fmtNum(s.total_phones), fmtNum(s.correct_phones)+' correct')}
+        ${statCard('Lists', fmtNum(s.total_lists))}
+        ${statCard('Leads', fmtNum(s.leads), 'pipeline stage', '#1a7a4a')}
+        ${statCard('Contracts', fmtNum(s.contracts), 'pipeline stage', '#9a6800')}
+      </div>
+
+      <!-- Market split + Phone health -->
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:1.25rem;margin-bottom:1.25rem">
+        <div class="card">
+          <div class="sec-lbl">Markets</div>
+          <div style="display:flex;flex-direction:column;gap:10px;margin-top:8px">
+            <div style="display:flex;align-items:center;justify-content:space-between">
+              <div style="font-size:13px;font-weight:500">Indiana</div>
+              <div style="font-size:13px;color:#888">${fmtNum(s.indiana_props)} properties</div>
+            </div>
+            <div style="background:#f0efe9;border-radius:4px;height:6px">
+              <div style="background:#1a1a1a;height:6px;border-radius:4px;width:${s.total_properties > 0 ? Math.round(s.indiana_props/s.total_properties*100) : 0}%"></div>
+            </div>
+            <div style="display:flex;align-items:center;justify-content:space-between">
+              <div style="font-size:13px;font-weight:500">Georgia</div>
+              <div style="font-size:13px;color:#888">${fmtNum(s.georgia_props)} properties</div>
+            </div>
+            <div style="background:#f0efe9;border-radius:4px;height:6px">
+              <div style="background:#1a1a1a;height:6px;border-radius:4px;width:${s.total_properties > 0 ? Math.round(s.georgia_props/s.total_properties*100) : 0}%"></div>
+            </div>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="sec-lbl">Phone Health</div>
+          <div style="display:flex;flex-direction:column;gap:8px;margin-top:8px">
+            ${[
+              ['Correct', s.correct_phones, '#1a7a4a', '#e8f5ee'],
+              ['Wrong', s.wrong_phones, '#9a6800', '#fff8e1'],
+              ['Dead', s.dead_phones, '#c0392b', '#fdf0f0'],
+              ['Unknown', Math.max(0, s.total_phones - s.correct_phones - s.wrong_phones - s.dead_phones), '#888', '#f5f4f0'],
+            ].map(([label, count, color, bg]) => `
+              <div style="display:flex;align-items:center;justify-content:space-between">
+                <div style="display:flex;align-items:center;gap:6px">
+                  <div style="width:8px;height:8px;border-radius:50%;background:${color}"></div>
+                  <div style="font-size:13px">${label}</div>
+                </div>
+                <div style="font-size:13px;font-weight:500;background:${bg};color:${color};padding:2px 9px;border-radius:4px">${fmtNum(count)}</div>
+              </div>`).join('')}
+          </div>
+        </div>
+      </div>
+
+      <!-- Recent filtration runs + Top lists -->
+      <div style="display:grid;grid-template-columns:2fr 1fr;gap:1.25rem;margin-bottom:1.25rem">
+        <div class="card" style="padding:0;overflow:hidden">
+          <div style="padding:14px 16px;border-bottom:1px solid #f0efe9;display:flex;align-items:center;justify-content:space-between">
+            <div class="sec-lbl" style="margin:0">Recent Filtration Runs</div>
+            <a href="/" style="font-size:12px;color:#888;text-decoration:none">View all →</a>
+          </div>
+          <div style="overflow-x:auto">
+            <table class="data-table">
+              <thead><tr>
+                <th>File</th><th>Date</th><th>Total</th><th>Kept</th><th>Filtered</th><th>Memory</th>
+              </tr></thead>
+              <tbody>${runRows}</tbody>
+            </table>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="sec-lbl" style="margin-bottom:0">Top Lists</div>
+          <div style="margin-top:10px">${listRows}</div>
+          <a href="/lists" style="font-size:12px;color:#888;text-decoration:none;display:block;margin-top:10px">View all lists →</a>
+        </div>
+      </div>
+    `, 'dashboard'));
+  } catch(e) {
+    console.error(e);
+    res.status(500).send('Dashboard error: ' + e.message);
+  }
+});
 
 
 app.listen(PORT, async ()=>{
