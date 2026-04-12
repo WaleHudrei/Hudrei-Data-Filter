@@ -170,11 +170,14 @@ async function getCampaign(id) {
   return { ...c.rows[0], uploads: uploads.rows, disposition_breakdown: disposition_breakdown.rows };
 }
 
-async function createCampaign({ name, list_type, market_name, state_code, notes, created_by, start_date }) {
+async function createCampaign({ name, list_type, market_name, state_code, notes, created_by, start_date, active_channel }) {
+  const channel = active_channel === 'sms' ? 'sms' : 'cold_call';
+  const cold_call_status = channel === 'cold_call' ? 'active' : 'dormant';
+  const sms_status = channel === 'sms' ? 'active' : 'dormant';
   const res = await query(
-    `INSERT INTO campaigns (name, list_type, market_name, state_code, notes, created_by, start_date)
-     VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING *`,
-    [name, list_type, market_name, state_code?.toUpperCase(), notes||'', created_by||'team', start_date||null]
+    `INSERT INTO campaigns (name, list_type, market_name, state_code, notes, created_by, start_date, active_channel, cold_call_status, sms_status)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) RETURNING *`,
+    [name, list_type, market_name, state_code?.toUpperCase(), notes||'', created_by||'team', start_date||null, channel, cold_call_status, sms_status]
   );
   return res.rows[0];
 }
