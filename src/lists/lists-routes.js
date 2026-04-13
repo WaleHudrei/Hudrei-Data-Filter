@@ -36,7 +36,7 @@ router.get('/', requireAuth, async (req, res) => {
 
     const lists = await query(`
       SELECT
-        l.id, l.list_name, l.list_type, l.active, l.upload_date, l.created_at,
+        l.id, l.list_name, l.list_type, l.source, l.active, l.upload_date, l.created_at,
         COUNT(pl.property_id) AS property_count
       FROM lists l
       LEFT JOIN property_lists pl ON pl.list_id = l.id
@@ -48,19 +48,52 @@ router.get('/', requireAuth, async (req, res) => {
 
     const totalPages = Math.ceil(total / limit);
 
-    const listRows = lists.rows.map(l => `
-      <div class="list-row">
-        <div class="list-name" title="${l.list_name}">${l.list_name}</div>
-        <div class="list-count">${Number(l.property_count).toLocaleString()} properties</div>
-        <a href="/records?list_id=${l.id}" class="btn-show">Show Properties</a>
-        <div style="position:relative">
-          <button class="dots-btn" onclick="toggleMenu(event,'menu-${l.id}')">⋯</button>
-          <div class="dropdown" id="menu-${l.id}">
-            <button onclick="openEdit(${l.id},'${l.list_name.replace(/'/g,"\\'")}','${l.list_type||''}')">Edit</button>
-            <button class="delete-btn" onclick="confirmDelete(${l.id},'${l.list_name.replace(/'/g,"\\'")}')">Delete</button>
-          </div>
-        </div>
-      </div>`).join('');
+    const typeColors = {
+      'Cold Call':  {bg:'#e8f0ff',tx:'#2c5cc5'},
+      'SMS':        {bg:'#e8f5ee',tx:'#1a7a4a'},
+      'Direct Mail':{bg:'#fff8e1',tx:'#9a6800'},
+      'PPL':        {bg:'#fdf0f0',tx:'#c0392b'},
+      'Referral':   {bg:'#f0f0ff',tx:'#5b4cc5'},
+      'Driving for Dollars':{bg:'#fff0f8',tx:'#c54c8a'},
+    };
+
+    const listRows = lists.rows.length ? `
+      <div style="background:#fff;border-radius:12px;border:1px solid #e0dfd8;overflow:hidden">
+        <table style="width:100%;border-collapse:collapse;font-size:13px">
+          <thead>
+            <tr style="border-bottom:1px solid #e0dfd8">
+              <th style="padding:10px 16px;text-align:left;font-size:11px;font-weight:600;color:#888;text-transform:uppercase;letter-spacing:.05em">List Name</th>
+              <th style="padding:10px 16px;text-align:left;font-size:11px;font-weight:600;color:#888;text-transform:uppercase;letter-spacing:.05em">Type</th>
+              <th style="padding:10px 16px;text-align:left;font-size:11px;font-weight:600;color:#888;text-transform:uppercase;letter-spacing:.05em">Source</th>
+              <th style="padding:10px 16px;text-align:center;font-size:11px;font-weight:600;color:#888;text-transform:uppercase;letter-spacing:.05em">Properties</th>
+              <th style="padding:10px 16px;text-align:left;font-size:11px;font-weight:600;color:#888;text-transform:uppercase;letter-spacing:.05em">Created</th>
+              <th style="padding:10px 16px;text-align:right;font-size:11px;font-weight:600;color:#888;text-transform:uppercase;letter-spacing:.05em">Actions</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${lists.rows.map(l => {
+              const tc = typeColors[l.list_type] || {bg:'#f5f4f0',tx:'#555'};
+              const sn = (l.list_name||'').replace(/'/g,"\\'");
+              const st = (l.list_type||'').replace(/'/g,"\\'");
+              const ss = (l.source||'').replace(/'/g,"\\'");
+              return `<tr style="border-bottom:1px solid #f5f4f0" onmouseover="this.style.background='#fafaf8'" onmouseout="this.style.background=''">
+                <td style="padding:13px 16px;font-weight:500;cursor:pointer" onclick="window.location='/records?list_id=${l.id}'">${l.list_name}</td>
+                <td style="padding:13px 16px">${l.list_type?`<span style="background:${tc.bg};color:${tc.tx};padding:2px 9px;border-radius:5px;font-size:11px;font-weight:600">${l.list_type}</span>`:'<span style="color:#bbb;font-size:12px">—</span>'}</td>
+                <td style="padding:13px 16px;color:#888;font-size:12px">${l.source||'—'}</td>
+                <td style="padding:13px 16px;text-align:center;font-weight:600">${Number(l.property_count).toLocaleString()}</td>
+                <td style="padding:13px 16px;color:#888;font-size:12px;white-space:nowrap">${fmtDate(l.created_at)}</td>
+                <td style="padding:13px 16px;text-align:right">
+                  <div style="display:inline-flex;gap:6px">
+                    <a href="/records?list_id=${l.id}" style="padding:5px 12px;background:#f5f4f0;border:1px solid #e0dfd8;border-radius:6px;font-size:12px;color:#1a1a1a;text-decoration:none">View</a>
+                    <button onclick="openEdit(${l.id},'${sn}','${st}','${ss}')" style="padding:5px 12px;background:#f5f4f0;border:1px solid #e0dfd8;border-radius:6px;font-size:12px;color:#1a1a1a;cursor:pointer;font-family:inherit">Edit</button>
+                    <button onclick="confirmDelete(${l.id},'${sn}')" style="padding:5px 12px;background:#fff0f0;border:1px solid #f5c5c5;border-radius:6px;font-size:12px;color:#c0392b;cursor:pointer;font-family:inherit">Delete</button>
+                  </div>
+                </td>
+              </tr>`;
+            }).join('')}
+          </tbody>
+        </table>
+      </div>` : '<div class="empty-state">No lists yet — import a property list to get started</div>';
 
     const pagination = totalPages > 1 ? `
       <div class="pagination">
@@ -111,6 +144,13 @@ router.get('/', requireAuth, async (req, res) => {
                 ${['Absentee','Vacant','Pre-Foreclosure','High Equity','Tax Delinquent','Probate','Pre-FC','SFR','MFR','Other'].map(t=>`<option value="${t}">${t}</option>`).join('')}
               </select>
             </div>
+            <div class="form-field">
+              <label>Source</label>
+              <select name="source" id="edit-source">
+                <option value="">— None —</option>
+                <option value="PropStream">PropStream</option><option value="DealMachine">DealMachine</option><option value="BatchSkipTracing">BatchSkipTracing</option><option value="REISift">REISift</option><option value="DataSift">DataSift</option><option value="Listsource">Listsource</option><option value="Manual">Manual</option>
+              </select>
+            </div>
             <div class="btn-row">
               <button type="submit" class="btn-primary">Save</button>
               <button type="button" class="btn-ghost" onclick="closeEdit()">Cancel</button>
@@ -149,13 +189,14 @@ router.get('/', requireAuth, async (req, res) => {
         document.querySelectorAll('.dropdown').forEach(d => { if(d.id!==id) d.classList.remove('open'); });
         document.getElementById(id).classList.toggle('open');
       }
-      function openEdit(id, name, type) {
+      function openEdit(id, name, type, source) {
         document.getElementById('edit-id').value = id;
         document.getElementById('edit-name').value = name;
         const sel = document.getElementById('edit-type');
-        for (let i=0; i<sel.options.length; i++) { if(sel.options[i].value===type) { sel.selectedIndex=i; break; } }
+        for (let i=0;i<sel.options.length;i++) { if(sel.options[i].value===type){sel.selectedIndex=i;break;} }
+        const srcEl = document.getElementById('edit-source');
+        if (srcEl) { for (let i=0;i<srcEl.options.length;i++) { if(srcEl.options[i].value===source){srcEl.selectedIndex=i;break;} } }
         document.getElementById('edit-modal').classList.add('open');
-        document.querySelectorAll('.dropdown').forEach(d=>d.classList.remove('open'));
       }
       function closeEdit() { document.getElementById('edit-modal').classList.remove('open'); }
       function confirmDelete(id, name) {
