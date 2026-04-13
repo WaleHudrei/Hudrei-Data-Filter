@@ -173,6 +173,10 @@ router.post('/parse', requireAuth, upload.single('csvfile'), (req, res) => {
     const columns = parsed.meta.fields || [];
     const rows = parsed.data;
     if (!rows.length) return res.status(400).json({ error: 'File is empty.' });
+    const MAX_ROWS = 20000;
+    if (rows.length > MAX_ROWS) {
+      return res.status(400).json({ error: `File has ${rows.length.toLocaleString()} rows. Maximum import size is ${MAX_ROWS.toLocaleString()} rows. Please split into batches.` });
+    }
     const mapping = autoMap(columns);
     res.json({ columns, rows: rows.slice(0, 500), totalRows: rows.length, mapping, filename: req.file.originalname });
   } catch(e) { res.status(500).json({ error: e.message }); }
