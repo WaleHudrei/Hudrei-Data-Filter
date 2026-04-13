@@ -66,6 +66,7 @@ const slice1Records = require('./records/records-routes');
 const setupRoutes = require('./records/setup-routes');
 const listsRoutes = require('./lists/lists-routes');
 const importRoutes = require('./import/property-import-routes');
+const bulkImportRoutes = require('./import/bulk-import-routes');
 
 const COL = { phone:'Phone', dispo:'Log Type', listname:'Original lead file', date:'Log Time', fname:'First Name', lname:'Last Name', addr:'Address', city:'City', state:'State', zip:'Zip Code', notes:'Call Notes' };
 
@@ -137,6 +138,13 @@ function memKey(list,phone,campaignId){
   const scope = campaignId ? 'campaign:'+campaignId : list.toLowerCase().trim();
   return scope+'||'+String(phone).replace(/\D/g,'');
 }
+// Global keys — shared across ALL campaigns (wrong numbers, DNC stay permanent)
+function globalKey(dispo,phone){
+  const p = String(phone).replace(/\D/g,'');
+  if(dispo==='wrong_number') return 'wn:'+p;
+  if(dispo==='do_not_call')  return 'dnc:'+p;
+  return null;
+}
 
 function processCSV(csvText, memory, campaignId) {
   const parsed=Papa.parse(csvText,{header:true,skipEmptyLines:true});
@@ -149,7 +157,10 @@ function processCSV(csvText, memory, campaignId) {
     const phone=String(r[COLS.phone]||'').replace(/\D/g,'');
     const list=(r[COLS.listname]||'Unknown List').trim();
     if(!phone||phone==='0') return;
-    const k=memKey(list,phone,campaignId);
+    const dRaw=normDispo(r[COLS.dispo]||'');
+    // Use global key for WN/DNC so they don't inflate per-campaign counts
+    const gk=globalKey(dRaw,phone);
+    const k=gk||memKey(list,phone,campaignId);
     fileCount[k]=(fileCount[k]||0)+1;
   });
   const cleanRows=[],filteredRows=[];
@@ -162,8 +173,11 @@ function processCSV(csvText, memory, campaignId) {
     const dispo=normDispo(dispoRaw);
     const dateRaw=r[COLS.date]||'';
     if(!phone||phone==='0') return;
-    const mkey=memKey(list,phone,campaignId);
-    if(processedKeys[mkey]) return;
+    // Use global key for wrong_number and DNC — campaign-scoped for everything else
+    const gk=globalKey(dispo,phone);
+    const mkey=gk||memKey(list,phone,campaignId);
+    // Transfers NEVER get deduplicated — always record every transfer
+    if(dispo!=='transfer'&&processedKeys[mkey]) return;
     processedKeys[mkey]=true;
     const countInFile=fileCount[mkey]||1;
     const prevMem=memory[mkey]||{count:0,lastDispo:'',dispoCounts:{}};
@@ -489,6 +503,7 @@ app.use('/records', slice1Records);
 app.use('/setup', setupRoutes);
 app.use('/lists', listsRoutes);
 app.use('/import/property', importRoutes);
+app.use('/import/bulk', bulkImportRoutes);
 
 
 
@@ -795,6 +810,24 @@ async function saveRunToDB(filename, stats, listsSeen, allRows) {
             );
           }
 
+          // Transfer → flag specific property as lead + confirm phone as correct
+          const rowDispo = normDispo(row['Disposition']||'');
+          if (rowDispo === 'transfer' && propertyId) {
+            // Only flag THIS specific property as lead — not all of owner's properties
+            await dbQuery(
+              `UPDATE properties SET pipeline_stage='lead', updated_at=NOW() WHERE id=$1 AND pipeline_stage NOT IN ('contract','closed')`,
+              [propertyId]
+            );
+            // Mark this phone as confirmed correct across all properties (contact-level)
+            if (phoneId) {
+              await dbQuery(
+                `UPDATE phones SET phone_status='correct', updated_at=NOW() WHERE id=$1`,
+                [phoneId]
+              );
+            }
+            console.log('[saveRunToDB] Transfer flagged: property', propertyId, 'as lead, phone', phoneId, 'as correct');
+          }
+
           // Marketing touch
           if (propertyId) {
             await dbQuery(
@@ -834,7 +867,7 @@ app.get('/upload', requireAuth, (req, res) => {
       <div style="font-size:20px;font-weight:600;margin-bottom:4px">Upload</div>
       <p style="font-size:13px;color:#888;margin-bottom:2rem">What are you uploading today?</p>
 
-      <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px">
+      <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:16px">
 
         <a href="/import/property" style="text-decoration:none;display:block;background:#fff;border:1px solid #e0dfd8;border-radius:12px;padding:28px 24px;transition:all .15s;cursor:pointer" onmouseover="this.style.borderColor='#1a1a1a';this.style.boxShadow='0 4px 16px rgba(0,0,0,.08)'" onmouseout="this.style.borderColor='#e0dfd8';this.style.boxShadow='none'">
           <div style="width:40px;height:40px;background:#f5f4f0;border-radius:8px;display:flex;align-items:center;justify-content:center;margin-bottom:14px">
@@ -850,6 +883,14 @@ app.get('/upload', requireAuth, (req, res) => {
           </div>
           <div style="font-size:15px;font-weight:600;color:#1a1a1a;margin-bottom:6px">Upload Call Log</div>
           <div style="font-size:13px;color:#888;line-height:1.5">Upload a Readymode call log export for filtration. Counts are calculated and output is ready for REISift import.</div>
+        </a>
+
+        <a href="/import/bulk" style="text-decoration:none;display:block;background:#fff;border:1px solid #e0dfd8;border-radius:12px;padding:28px 24px;transition:all .15s;cursor:pointer" onmouseover="this.style.borderColor='#1a1a1a';this.style.boxShadow='0 4px 16px rgba(0,0,0,.08)'" onmouseout="this.style.borderColor='#e0dfd8';this.style.boxShadow='none'">
+          <div style="width:40px;height:40px;background:#f5f4f0;border-radius:8px;display:flex;align-items:center;justify-content:center;margin-bottom:14px">
+            <svg width="20" height="20" fill="none" stroke="#1a1a1a" stroke-width="2" viewBox="0 0 24 24"><path d="M3 17l-6-6 6-6M21 17l-6-6 6-6"/><line x1="9" y1="12" x2="21" y2="12"/></svg>
+          </div>
+          <div style="font-size:15px;font-weight:600;color:#1a1a1a;margin-bottom:6px">Bulk Import <span style="font-size:11px;background:#e8f5ee;color:#1a7a4a;padding:2px 7px;border-radius:4px;margin-left:6px">REISift</span></div>
+          <div style="font-size:13px;color:#888;line-height:1.5">Import your full REISift export. No row limit — server handles 700k+ records with live progress tracking.</div>
         </a>
 
       </div>
@@ -1049,7 +1090,7 @@ app.post('/campaigns/:id/upload', requireAuth, upload.single('csvfile'), async (
   try {
     if (!req.file) return res.status(400).json({ error: 'No file.' });
     const memory = await loadMemory();
-    const result = processCSV(req.file.buffer.toString('utf8'), memory);
+    const result = processCSV(req.file.buffer.toString('utf8'), memory, req.params.id);
     await saveMemory(result.memory);
     req.session.lastResult = { cleanRows: result.cleanRows, filteredRows: result.filteredRows };
     const allRows = [...result.cleanRows, ...result.filteredRows];
@@ -1274,6 +1315,41 @@ app.post('/campaigns/:id/uploads/:uploadId/delete', requireAuth, async (req, res
   }
 });
 
+
+// Reset campaign stats — clears numbers, uploads, and campaign-scoped Redis keys
+app.post('/campaigns/:id/reset', requireAuth, async (req, res) => {
+  try {
+    const { query: dbQ } = require('./db');
+    const campId = req.params.id;
+
+    // Clear campaign numbers and uploads from DB
+    await dbQ('DELETE FROM campaign_numbers WHERE campaign_id=$1', [campId]);
+    await dbQ('DELETE FROM campaign_uploads WHERE campaign_id=$1', [campId]);
+
+    // Reset all campaign totals to zero
+    await dbQ(`UPDATE campaigns SET
+      total_unique_numbers=0, total_callable=0, total_filtered=0,
+      total_wrong_numbers=0, total_voicemails=0, total_not_interested=0,
+      total_do_not_call=0, total_transfers=0, total_connected=0,
+      upload_count=0, updated_at=NOW()
+      WHERE id=$1`, [campId]);
+
+    // Clear campaign-scoped Redis memory keys
+    const memory = await loadMemory();
+    const prefix = 'campaign:' + campId + '||';
+    let cleared = 0;
+    Object.keys(memory).forEach(k => {
+      if (k.startsWith(prefix)) { delete memory[k]; cleared++; }
+    });
+    await saveMemory(memory);
+    console.log('[reset] Campaign', campId, '— cleared', cleared, 'Redis keys');
+
+    res.redirect('/campaigns/' + campId);
+  } catch(e) {
+    console.error('Reset campaign error:', e.message);
+    res.redirect('/campaigns/' + req.params.id);
+  }
+});
 
 // Delete campaign
 app.post('/campaigns/:id/delete', requireAuth, async (req, res) => {
@@ -1522,6 +1598,9 @@ function campaignDetailPage(c) {
         ${c.status !== 'completed' ? `
         <form method="POST" action="/campaigns/${c.id}/close" onsubmit="return confirm('Close this campaign? It will be marked completed and no more uploads will be accepted.')" style="display:inline">
           <button type="submit" style="padding:7px 14px;font-size:13px;border:1px solid #e0dfd8;border-radius:8px;background:#fff;color:#888;cursor:pointer;font-family:inherit">Close campaign</button>
+        </form>
+        <form method="POST" action="/campaigns/${c.id}/reset" onsubmit="return confirm('Reset all campaign stats and memory? This clears all upload history and counts for this campaign. Cannot be undone.')" style="display:inline">
+          <button type="submit" style="padding:7px 14px;font-size:13px;border:1px solid #f5c5c5;border-radius:8px;background:#fff;color:#c0392b;cursor:pointer;font-family:inherit">Reset stats</button>
         </form>
         <form method="POST" action="/campaigns/${c.id}/new-round" onsubmit="return confirm('Close this campaign and start a new round with the same settings and fresh memory?')" style="display:inline">
           <button type="submit" style="padding:7px 14px;font-size:13px;border:none;border-radius:8px;background:#1a1a1a;color:#fff;cursor:pointer;font-family:inherit">Start new round</button>
