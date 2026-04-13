@@ -73,6 +73,7 @@ async function initSchema() {
       phone_number VARCHAR(20) NOT NULL,
       phone_index SMALLINT DEFAULT 1,
       phone_status VARCHAR(50) DEFAULT 'unknown',
+      phone_type VARCHAR(50) DEFAULT 'unknown',
       phone_tag TEXT,
       do_not_call BOOLEAN DEFAULT false,
       wrong_number BOOLEAN DEFAULT false,
@@ -219,6 +220,21 @@ async function initSchema() {
     CREATE INDEX IF NOT EXISTS idx_import_history_property ON import_history(property_id);
   `);
 
+  await query(`CREATE TABLE IF NOT EXISTS bulk_import_jobs (
+    id SERIAL PRIMARY KEY,
+    status VARCHAR(20) DEFAULT 'pending',
+    filename TEXT,
+    total_rows INTEGER DEFAULT 0,
+    processed_rows INTEGER DEFAULT 0,
+    inserted INTEGER DEFAULT 0,
+    updated INTEGER DEFAULT 0,
+    skipped INTEGER DEFAULT 0,
+    errors INTEGER DEFAULT 0,
+    error_log TEXT,
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    updated_at TIMESTAMPTZ DEFAULT NOW()
+  )`);
+
   // ── Migration: add new columns if they don't exist yet ──────────────────────
   const migrations = [
 
@@ -250,6 +266,9 @@ async function initSchema() {
 
     // lists — source field
     `ALTER TABLE lists ADD COLUMN IF NOT EXISTS source VARCHAR(100)`,
+
+    // phones — type field
+    `ALTER TABLE phones ADD COLUMN IF NOT EXISTS phone_type VARCHAR(50) DEFAULT 'unknown'`,
   ];
 
   for (const sql of migrations) {
