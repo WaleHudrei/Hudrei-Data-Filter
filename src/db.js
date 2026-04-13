@@ -242,6 +242,8 @@ async function initSchema() {
 
     // contacts — mailing address fields
     `ALTER TABLE contacts ADD COLUMN IF NOT EXISTS mailing_address VARCHAR(255)`,
+    `ALTER TABLE contacts ADD COLUMN IF NOT EXISTS email_1 VARCHAR(255)`,
+    `ALTER TABLE contacts ADD COLUMN IF NOT EXISTS email_2 VARCHAR(255)`,
     `ALTER TABLE contacts ADD COLUMN IF NOT EXISTS mailing_city VARCHAR(100)`,
     `ALTER TABLE contacts ADD COLUMN IF NOT EXISTS mailing_state CHAR(2)`,
     `ALTER TABLE contacts ADD COLUMN IF NOT EXISTS mailing_zip VARCHAR(10)`,
