@@ -155,7 +155,12 @@ function autoMap(csvColumns) {
 }
 
 // ── STEP 1: Upload CSV ────────────────────────────────────────────────────────
-router.get('/', requireAuth, (req, res) => {
+router.get('/', requireAuth, async (req, res) => {
+  const existingLists = await query(`SELECT id, list_name, list_type FROM lists ORDER BY list_name ASC`);
+  const listOptions = existingLists.rows.map(l =>
+    `<option value="${l.id}" data-name="${l.list_name}">${l.list_name}${l.list_type ? ' ('+l.list_type+')' : ''}</option>`
+  ).join('');
+
   res.send(shell('Import Properties', `
     <div style="max-width:700px">
       <div style="margin-bottom:1.5rem">
@@ -165,6 +170,58 @@ router.get('/', requireAuth, (req, res) => {
       <p style="font-size:13px;color:#888;margin-bottom:1.5rem">Upload a CSV from any data source. You'll map your columns to Loki fields on the next step.</p>
 
       <div class="card">
+
+        <!-- List Assignment -->
+        <div style="margin-bottom:1.25rem">
+          <div style="font-size:12px;font-weight:600;color:#888;text-transform:uppercase;letter-spacing:.06em;margin-bottom:10px">Assign to List</div>
+          <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+            <div style="flex:1;min-width:200px">
+              <label style="font-size:12px;color:#888;display:block;margin-bottom:4px">New list name</label>
+              <input type="text" id="new-list-name" placeholder="e.g. Code Violation IN — April 2026"
+                style="width:100%;padding:9px 12px;border:1px solid #ddd;border-radius:8px;font-size:13px;font-family:inherit">
+            </div>
+            <div style="display:flex;align-items:center;font-size:12px;color:#aaa;padding-top:20px">or</div>
+            <div style="flex:1;min-width:200px">
+              <label style="font-size:12px;color:#888;display:block;margin-bottom:4px">Add to existing list</label>
+              <select id="existing-list-id" style="width:100%;padding:9px 12px;border:1px solid #ddd;border-radius:8px;font-size:13px;font-family:inherit;background:#fff">
+                <option value="">— Select existing list —</option>
+                ${listOptions}
+              </select>
+            </div>
+          </div>
+          <div style="font-size:11px;color:#aaa;margin-top:6px">If you enter a new name and pick an existing list, the new name takes priority.</div>
+          <div style="margin-top:10px;display:flex;gap:8px;flex-wrap:wrap">
+            <div style="flex:1;min-width:150px">
+              <label style="font-size:12px;color:#888;display:block;margin-bottom:4px">List Type</label>
+              <select id="list-type" style="width:100%;padding:9px 12px;border:1px solid #ddd;border-radius:8px;font-size:13px;font-family:inherit;background:#fff">
+                <option value="">— Type (optional) —</option>
+                <option value="Cold Call">Cold Call</option>
+                <option value="SMS">SMS</option>
+                <option value="Direct Mail">Direct Mail</option>
+                <option value="PPL">PPL</option>
+                <option value="Referral">Referral</option>
+                <option value="Driving for Dollars">Driving for Dollars</option>
+              </select>
+            </div>
+            <div style="flex:1;min-width:150px">
+              <label style="font-size:12px;color:#888;display:block;margin-bottom:4px">Source</label>
+              <select id="list-source" style="width:100%;padding:9px 12px;border:1px solid #ddd;border-radius:8px;font-size:13px;font-family:inherit;background:#fff">
+                <option value="">— Source (optional) —</option>
+                <option value="PropStream">PropStream</option>
+                <option value="DealMachine">DealMachine</option>
+                <option value="BatchSkipTracing">BatchSkipTracing</option>
+                <option value="REISift">REISift</option>
+                <option value="DataSift">DataSift</option>
+                <option value="Listsource">Listsource</option>
+                <option value="Manual">Manual</option>
+              </select>
+            </div>
+          </div>
+        </div>
+
+        <div style="border-top:1px solid #f0efe9;margin-bottom:1.25rem"></div>
+
+        <!-- Drop zone -->
         <div class="drop-zone" id="drop-zone">
           <strong style="font-size:15px">Drop CSV here or click to browse</strong>
           <p style="font-size:12px;color:#888;margin-top:6px">PropStream, DealMachine, BatchSkipTrace, or any CSV export</p>
@@ -186,8 +243,21 @@ router.get('/', requireAuth, (req, res) => {
     dz.addEventListener('drop', e => { e.preventDefault(); dz.style.borderColor=''; if(e.dataTransfer.files[0]) handleFile(e.dataTransfer.files[0]); });
     fi.addEventListener('change', e => { if(e.target.files[0]) handleFile(e.target.files[0]); });
 
+    // Mutual exclusivity: typing new name clears existing list selection
+    document.getElementById('new-list-name').addEventListener('input', function() {
+      if (this.value.trim()) document.getElementById('existing-list-id').value = '';
+    });
+    document.getElementById('existing-list-id').addEventListener('change', function() {
+      if (this.value) document.getElementById('new-list-name').value = '';
+    });
+
     async function handleFile(file) {
       if (!file.name.endsWith('.csv')) { showError('CSV files only.'); return; }
+      const newName = document.getElementById('new-list-name').value.trim();
+      const existingId = document.getElementById('existing-list-id').value;
+      const listType = document.getElementById('list-type').value;
+      const listSource = document.getElementById('list-source').value;
+      if (!newName && !existingId) { showError('Please enter a list name or select an existing list before uploading.'); return; }
       document.getElementById('upload-spinner').style.display = 'flex';
       dz.style.opacity = '0.5';
       const form = new FormData();
@@ -196,6 +266,10 @@ router.get('/', requireAuth, (req, res) => {
         const res = await fetch('/import/property/parse', { method: 'POST', body: form });
         const data = await res.json();
         if (!res.ok || data.error) { showError(data.error || 'Failed to parse.'); return; }
+        data.listName    = newName || document.getElementById('existing-list-id').options[document.getElementById('existing-list-id').selectedIndex]?.dataset?.name || '';
+        data.listId      = existingId || null;
+        data.listType    = listType;
+        data.listSource  = listSource;
         sessionStorage.setItem('loki_import', JSON.stringify(data));
         window.location.href = '/import/property/map';
       } catch(e) { showError(e.message); }
@@ -274,6 +348,7 @@ router.get('/map', requireAuth, (req, res) => {
         <div>
           <div style="font-size:20px;font-weight:600;margin-bottom:4px">Map Columns</div>
           <div style="font-size:13px;color:#888" id="file-info">Loading…</div>
+          <div id="list-badge" style="display:none;margin-top:6px;display:inline-flex;align-items:center;gap:6px;background:#e8f5ee;color:#1a7a4a;border-radius:6px;padding:4px 10px;font-size:12px;font-weight:600"></div>
         </div>
         <button onclick="proceed()" class="btn-submit" style="width:auto;padding:9px 24px">Preview Import →</button>
       </div>
@@ -292,6 +367,11 @@ router.get('/map', requireAuth, (req, res) => {
 
     document.getElementById('file-info').textContent =
       (importData.filename || 'Unknown file') + ' — ' + (importData.totalRows || 0).toLocaleString() + ' rows';
+    if (importData.listName) {
+      const badge = document.getElementById('list-badge');
+      badge.textContent = '📋 ' + importData.listName;
+      badge.style.display = 'inline-flex';
+    }
 
     // Populate all dropdowns with CSV columns
     document.querySelectorAll('select[data-loki]').forEach(sel => {
@@ -327,12 +407,13 @@ router.get('/map', requireAuth, (req, res) => {
 // ── STEP 3: Preview ───────────────────────────────────────────────────────────
 router.get('/preview', requireAuth, (req, res) => {
   res.send(shell('Preview Import', `
-    <div style="max-width:900px">
+    <div style="max-width:100%">
       <div style="margin-bottom:1.5rem"><a href="/import/property/map" style="font-size:13px;color:#888;text-decoration:none">← Back to mapping</a></div>
       <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:1.5rem;flex-wrap:wrap;gap:12px">
         <div>
           <div style="font-size:20px;font-weight:600;margin-bottom:4px">Preview Import</div>
           <div style="font-size:13px;color:#888" id="preview-info">Loading…</div>
+          <div id="list-badge" style="display:none;margin-top:6px;display:inline-flex;align-items:center;gap:6px;background:#e8f5ee;color:#1a7a4a;border-radius:6px;padding:4px 10px;font-size:12px;font-weight:600"></div>
         </div>
         <div style="display:flex;gap:8px">
           <button onclick="startImport()" class="btn-submit" style="width:auto;padding:9px 24px" id="import-btn">Import Records</button>
@@ -349,7 +430,7 @@ router.get('/preview', requireAuth, (req, res) => {
       <div id="import-result" style="display:none;margin-bottom:1rem"></div>
 
       <div class="card" style="padding:0;overflow:hidden">
-        <div style="overflow-x:auto;max-height:400px;overflow-y:auto">
+        <div style="overflow-x:auto;max-height:500px;overflow-y:auto">
           <table class="data-table" id="preview-table">
             <thead><tr id="preview-head"></tr></thead>
             <tbody id="preview-body"></tbody>
@@ -366,6 +447,11 @@ router.get('/preview', requireAuth, (req, res) => {
 
     document.getElementById('preview-info').textContent =
       (importData.filename||'') + ' — ' + totalRows.toLocaleString() + ' rows · Showing first ' + Math.min(rows.length, 10);
+    if (importData.listName) {
+      const badge = document.getElementById('list-badge');
+      badge.textContent = '📋 ' + importData.listName;
+      badge.style.display = 'inline-flex';
+    }
 
     // Build preview table
     const lokiKeys = Object.keys(mapping);
@@ -397,7 +483,7 @@ router.get('/preview', requireAuth, (req, res) => {
           const res = await fetch('/import/property/commit', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ rows: batch, mapping, filename: importData.filename, totalRows })
+            body: JSON.stringify({ rows: batch, mapping, filename: importData.filename, totalRows, listName: offset===0?(importData.listName||null):null, listId: offset===0?(importData.listId||null):null, listType: importData.listType||null, listSource: importData.listSource||null })
           });
           const data = await res.json();
           if (data.error) throw new Error(data.error);
@@ -435,10 +521,29 @@ router.get('/preview', requireAuth, (req, res) => {
 // ── COMMIT: Save batch to DB ──────────────────────────────────────────────────
 router.post('/commit', requireAuth, async (req, res) => {
   try {
-    const { rows, mapping, filename } = req.body;
+    const { rows, mapping, filename, listName, listId, listType, listSource } = req.body;
     if (!rows || !mapping) return res.status(400).json({ error: 'Missing data.' });
 
     let created = 0, updated = 0, errors = 0;
+
+    // ── Resolve list: create new or use existing ──────────────────────────────
+    let resolvedListId = null;
+    if (listName && listName.trim()) {
+      // Create new list (or get existing by same name)
+      const existingList = await query(`SELECT id FROM lists WHERE LOWER(list_name) = LOWER($1)`, [listName.trim()]);
+      if (existingList.rows.length) {
+        resolvedListId = existingList.rows[0].id;
+      } else {
+        const newList = await query(
+          `INSERT INTO lists (list_name, list_type, source, upload_date, active)
+            VALUES ($1, $2, $3, NOW(), true) RETURNING id`,
+          [listName.trim(), listType || null, listSource || null]
+        );
+        resolvedListId = newList.rows[0].id;
+      }
+    } else if (listId) {
+      resolvedListId = parseInt(listId);
+    }
 
     // Ensure markets
     await query(`INSERT INTO markets (name, state_code, state_name) VALUES
@@ -567,6 +672,16 @@ router.post('/commit', requireAuth, async (req, res) => {
                 phone_status = CASE WHEN EXCLUDED.phone_status != 'unknown' THEN EXCLUDED.phone_status ELSE phones.phone_status END`,
               [contactId, phoneRaw, i, pType, pStatus]);
           }
+        }
+
+        // Tag to list
+        if (resolvedListId) {
+          await query(
+            `INSERT INTO property_lists (property_id, list_id, added_at)
+              VALUES ($1, $2, NOW())
+              ON CONFLICT (property_id, list_id) DO NOTHING`,
+            [propertyId, resolvedListId]
+          );
         }
 
         // Log import history
