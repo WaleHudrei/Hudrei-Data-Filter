@@ -304,12 +304,17 @@ router.get('/', requireAuth, async (req, res) => {
       </div>
 
       <!-- Export toolbar -->
-      <div id="export-toolbar" style="display:none;background:#1a1a1a;color:#fff;border-radius:10px;padding:10px 16px;margin-bottom:10px;align-items:center;justify-content:space-between;gap:12px">
+      <div id="export-toolbar" style="display:none;background:#1a1a1a;color:#fff;border-radius:10px;padding:10px 16px;margin-bottom:8px;align-items:center;justify-content:space-between;gap:12px">
         <div style="font-size:13px"><span id="selected-count">0</span> records selected</div>
         <div style="display:flex;gap:8px">
           <button onclick="clearSelection()" style="padding:6px 12px;background:transparent;color:#aaa;border:1px solid #444;border-radius:7px;font-size:12px;cursor:pointer;font-family:inherit">Clear</button>
           <button onclick="openExportModal()" style="padding:6px 14px;background:#fff;color:#1a1a1a;border:none;border-radius:7px;font-size:12px;font-weight:600;cursor:pointer;font-family:inherit">⬇ Export CSV</button>
         </div>
+      </div>
+
+      <div id="select-all-banner" data-total="${total}" style="display:none;background:#e8f0ff;border:1px solid #c5d5f5;border-radius:8px;padding:10px 16px;margin-bottom:8px;font-size:13px;color:#1a4a9a;align-items:center;justify-content:space-between;gap:12px">
+        <span>All <strong>${total.toLocaleString()}</strong> records on this page selected. Select all records?</span>
+        <button onclick="selectAllRecords()" style="padding:5px 14px;background:#1a4a9a;color:#fff;border:none;border-radius:6px;font-size:12px;font-weight:600;cursor:pointer;font-family:inherit">Select all ${total.toLocaleString()} records</button>
       </div>
 
       <div style="background:#fff;border-radius:10px;border:1px solid #e0dfd8;overflow:hidden">
@@ -392,7 +397,7 @@ router.get('/', requireAuth, async (req, res) => {
           var res = await fetch('/records/export', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ ids: ids, columns: cols })
+            body: JSON.stringify({ ids: _allSelected ? [] : ids, columns: cols, selectAll: _allSelected, filterParams: window.location.search })
           });
           if (!res.ok) { alert('Export failed.'); return; }
           var blob = await res.blob();
@@ -419,47 +424,80 @@ router.get('/', requireAuth, async (req, res) => {
 // ═══════════════════════════════════════════════════════════════════════════════
 router.post('/export', requireAuth, async (req, res) => {
   try {
-    const { ids, columns } = req.body;
-    if (!ids || !ids.length) return res.status(400).json({ error: 'No IDs provided' });
+    const { ids, columns, selectAll, filterParams } = req.body;
     if (!columns || !columns.length) return res.status(400).json({ error: 'No columns selected' });
 
-    // Fetch full property data for selected IDs
-    const placeholders = ids.map((_, i) => `$${i + 1}`).join(',');
-    const props = await query(`
-      SELECT
-        p.id, p.street, p.city, p.state_code, p.zip_code, p.county,
-        p.property_type, p.year_built, p.sqft, p.bedrooms, p.bathrooms,
-        p.assessed_value, p.estimated_value, p.equity_percent,
-        p.property_status, p.pipeline_stage, p.condition,
-        p.last_sale_date, p.last_sale_price, p.marketing_result,
-        p.source, p.created_at,
-        c.first_name, c.last_name,
-        c.mailing_address, c.mailing_city, c.mailing_state, c.mailing_zip,
-        (SELECT COUNT(*) FROM property_lists pl WHERE pl.property_id = p.id) AS list_count
-      FROM properties p
-      LEFT JOIN property_contacts pc ON pc.property_id = p.id AND pc.primary_contact = true
-      LEFT JOIN contacts ct ON ct.id = pc.contact_id
-      LEFT JOIN contacts c ON c.id = pc.contact_id
-      WHERE p.id IN (${placeholders})
-    `, ids);
+    let props;
+    if (selectAll) {
+      const qs = new URLSearchParams(filterParams || '');
+      let conditions = [], params = [], idx = 1;
+      const qv = (k) => qs.get(k) || '';
+      if (qv('q'))           { conditions.push(`(p.street ILIKE ${idx} OR p.city ILIKE ${idx} OR c.first_name ILIKE ${idx} OR c.last_name ILIKE ${idx})`); params.push(`%${qv('q')}%`); idx++; }
+      if (qv('state'))       { conditions.push(`p.state_code = ${idx}`);       params.push(qv('state')); idx++; }
+      if (qv('city'))        { conditions.push(`p.city ILIKE ${idx}`);          params.push(`%${qv('city')}%`); idx++; }
+      if (qv('zip'))         { conditions.push(`p.zip_code ILIKE ${idx}`);      params.push(`%${qv('zip')}%`); idx++; }
+      if (qv('type'))        { conditions.push(`p.property_type = ${idx}`);     params.push(qv('type')); idx++; }
+      if (qv('pipeline'))    { conditions.push(`p.pipeline_stage = ${idx}`);    params.push(qv('pipeline')); idx++; }
+      if (qv('prop_status')) { conditions.push(`p.property_status = ${idx}`);   params.push(qv('prop_status')); idx++; }
+      if (qv('mkt_result'))  { conditions.push(`p.marketing_result = ${idx}`);  params.push(qv('mkt_result')); idx++; }
+      if (qv('list_id'))     { conditions.push(`EXISTS (SELECT 1 FROM property_lists pl2 WHERE pl2.property_id = p.id AND pl2.list_id = ${idx})`); params.push(qv('list_id')); idx++; }
+      const where = conditions.length ? 'WHERE ' + conditions.join(' AND ') : '';
+      props = await query(`
+        SELECT DISTINCT ON (p.id)
+          p.id, p.street, p.city, p.state_code, p.zip_code, p.county,
+          p.property_type, p.year_built, p.sqft, p.bedrooms, p.bathrooms,
+          p.assessed_value, p.estimated_value, p.equity_percent,
+          p.property_status, p.pipeline_stage, p.condition,
+          p.last_sale_date, p.last_sale_price, p.marketing_result,
+          p.source, p.created_at,
+          c.first_name, c.last_name,
+          c.mailing_address, c.mailing_city, c.mailing_state, c.mailing_zip,
+          (SELECT COUNT(*) FROM property_lists pl WHERE pl.property_id = p.id) AS list_count
+        FROM properties p
+        LEFT JOIN property_contacts pc ON pc.property_id = p.id AND pc.primary_contact = true
+        LEFT JOIN contacts c ON c.id = pc.contact_id
+        ${where}
+        ORDER BY p.id DESC
+      `, params);
+    } else {
+      if (!ids || !ids.length) return res.status(400).json({ error: 'No IDs provided' });
+      const placeholders = ids.map((_, i) => `${i + 1}`).join(',');
+      props = await query(`
+        SELECT
+          p.id, p.street, p.city, p.state_code, p.zip_code, p.county,
+          p.property_type, p.year_built, p.sqft, p.bedrooms, p.bathrooms,
+          p.assessed_value, p.estimated_value, p.equity_percent,
+          p.property_status, p.pipeline_stage, p.condition,
+          p.last_sale_date, p.last_sale_price, p.marketing_result,
+          p.source, p.created_at,
+          c.first_name, c.last_name,
+          c.mailing_address, c.mailing_city, c.mailing_state, c.mailing_zip,
+          (SELECT COUNT(*) FROM property_lists pl WHERE pl.property_id = p.id) AS list_count
+        FROM properties p
+        LEFT JOIN property_contacts pc ON pc.property_id = p.id AND pc.primary_contact = true
+        LEFT JOIN contacts c ON c.id = pc.contact_id
+        WHERE p.id IN (${placeholders})
+      `, ids);
+    }
 
-    // Fetch phones for each property
+    // Fetch phones
+    const allIds = props.rows.map(r => r.id);
     const phoneMap = {};
-    if (columns.includes('phones')) {
+    if (columns.includes('phones') && allIds.length) {
+      const phonePlaceholders = allIds.map((_, i) => `${i + 1}`).join(',');
       const phoneRes = await query(`
         SELECT ph.phone_number, ph.phone_index, pc.property_id
         FROM phones ph
         JOIN property_contacts pc ON pc.contact_id = ph.contact_id
-        WHERE pc.property_id IN (${placeholders})
+        WHERE pc.property_id IN (${phonePlaceholders})
         ORDER BY ph.phone_index ASC
-      `, ids);
+      `, allIds);
       phoneRes.rows.forEach(ph => {
         if (!phoneMap[ph.property_id]) phoneMap[ph.property_id] = [];
         phoneMap[ph.property_id].push(ph.phone_number);
       });
     }
 
-    // Column label map
     const colLabels = {
       street: 'Street Address', city: 'City', state_code: 'State', zip_code: 'ZIP', county: 'County',
       first_name: 'Owner First Name', last_name: 'Owner Last Name',
@@ -475,7 +513,6 @@ router.post('/export', requireAuth, async (req, res) => {
       list_count: 'Lists Count', created_at: 'Date Added',
     };
 
-    // Build CSV
     const headers = columns.map(k => colLabels[k] || k);
     const csvRows = props.rows.map(row => {
       return columns.map(col => {
@@ -492,7 +529,6 @@ router.post('/export', requireAuth, async (req, res) => {
     });
 
     const csv = [headers.map(h => `"${h}"`).join(','), ...csvRows].join('\n');
-
     res.setHeader('Content-Type', 'text/csv');
     res.setHeader('Content-Disposition', `attachment; filename="loki_export_${new Date().toISOString().split('T')[0]}.csv"`);
     res.send(csv);
@@ -502,7 +538,6 @@ router.post('/export', requireAuth, async (req, res) => {
     res.status(500).json({ error: e.message });
   }
 });
-
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // PROPERTY DETAIL — GET /records/:id
