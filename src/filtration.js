@@ -40,7 +40,7 @@ function detectPhoneColumns(headers) {
 }
 
 // ── Record a filtration upload — write to campaign_numbers + campaign totals ──
-async function recordUpload(campaignId, filename, sourceListName, channel, rows) {
+async function recordUpload(campaignId, filename, sourceListName, channel, rows, rawTotal) {
   const CONNECTED_DISPOS = new Set(['not_interested','transfer','callback','spanish_speaker','hung_up','completed','disqualified','do_not_call']);
   const tally = { total:0, kept:0, filtered:0, wrong:0, vm:0, ni:0, dnc:0, transfer:0, mem:0, newNums:0, connected:0 };
 
@@ -86,7 +86,7 @@ async function recordUpload(campaignId, filename, sourceListName, channel, rows)
   await query(
     `INSERT INTO campaign_uploads (campaign_id, filename, source_list_name, channel, total_records, new_unique_numbers, records_kept, records_filtered, wrong_numbers, voicemails, not_interested, do_not_call, transfers, caught_by_memory, connected)
      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)`,
-    [campaignId, filename, sourceListName, channel, tally.total, tally.newNums, tally.kept, tally.filtered, tally.wrong, tally.vm, tally.ni, tally.dnc, tally.transfer, tally.mem, tally.connected]
+    [campaignId, filename, sourceListName, channel, rawTotal||tally.total, tally.newNums, tally.kept, tally.filtered, tally.wrong, tally.vm, tally.ni, tally.dnc, tally.transfer, tally.mem, tally.connected]
   );
 
   // Update campaign totals
