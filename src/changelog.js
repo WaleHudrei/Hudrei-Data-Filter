@@ -3,6 +3,50 @@
 
 const ENTRIES = [
   {
+    date: 'April 13, 2026 — Session 2',
+    title: 'Records overhaul, Import engine rebuild, Activity page, Lists redesign & 50-state expansion',
+    items: [
+      // ── Records ──
+      { tag: 'feature', text: 'Records page — full-width table layout, 25 rows per page, uppercase column headers, responsive to screen width up to 1400px.' },
+      { tag: 'feature', text: 'Select-all with bulk banner — clicking select-all selects current page. Blue banner appears offering to select all N records across all pages. Selecting all sends selectAll flag to export route which rebuilds filter conditions server-side and exports entire matching dataset.' },
+      { tag: 'feature', text: 'Row click navigation — clicking any row opens property detail. Checkbox cell has stopPropagation so selecting does not navigate. Selected rows highlighted with CSS class.' },
+      { tag: 'fix', text: 'Select-all checkbox was returning null addEventListener error — fixed by moving wiring script to absolute bottom of HTML page in shared-shell after all DOM elements exist.' },
+      { tag: 'fix', text: 'Export route registered before /:id wildcard route — prevents Express treating /export as a property ID.' },
+      { tag: 'fix', text: 'Duplicate module.exports removed from records-routes.js.' },
+
+      // ── Import engine ──
+      { tag: 'feature', text: 'List assignment on import — Step 1 now has an Assign to List panel. Type a new list name or pick an existing list from a live dropdown. Set List Type and Source. List is created in DB on first batch and all imported properties are tagged to it automatically.' },
+      { tag: 'feature', text: 'Background job import — clicking Import Records now fires a server-side background job immediately. Browser is freed instantly. Job runs entirely on server using setImmediate batching. You can navigate away, upload another list, do anything — import keeps running.' },
+      { tag: 'feature', text: 'Bulk UNNEST property insert — properties are now inserted in one SQL UNNEST query per batch instead of one query per row. 500 rows = 1 DB round trip instead of 500. Import time cut from 3-6 minutes to 15-25 seconds for 6,600 rows.' },
+      { tag: 'feature', text: 'Phone type and phone status import — Phone Type 1 through Phone Type 10 and Phone Status 1 through Phone Status 10 columns auto-mapped and saved to phones table. Conflict logic: only overwrites unknown with known value, never overwrites known data with unknown.' },
+      { tag: 'feature', text: 'Email fields — email_1 and email_2 added to contacts table. Auto-mapped on import from Email 1 / Email 2 columns. Displayed and editable on property detail page.' },
+      { tag: 'feature', text: 'Import list badge — list name shown as green badge on Map Columns and Preview Import pages so you always know which list you are importing into.' },
+      { tag: 'fix', text: 'sessionStorage quota exceeded — was storing all 6,617 CSV rows in browser storage hitting the 5MB limit. Fixed: rows now stored in Express server session. Browser only receives 10 preview rows. Background job reads from server session.' },
+      { tag: 'fix', text: 'PayloadTooLargeError — Express default body limit of 100kb was rejecting batch commit requests. Fixed: body limit increased to 50mb.' },
+      { tag: 'fix', text: 'Progress bar stuck at Starting — was dividing by rows.length which was 0 after sessionStorage change. Fixed to use totalRows from server response.' },
+      { tag: 'fix', text: 'View Records button on import completion now redirects to /records?list_id=X filtered to the imported list instead of doing nothing.' },
+
+      // ── Activity page ──
+      { tag: 'feature', text: 'Activity page — new page in sidebar showing all import jobs. Columns: File, List, Status (⏳/🔄/✅/❌), Progress bar, Results (new + updated + errors), Started. Auto-refreshes every 2 seconds when any job is running. Stops polling when all jobs complete.' },
+      { tag: 'feature', text: 'Job status API — GET /activity/job/:id returns live progress for any job. Used by import preview page to poll real-time progress after firing background job.' },
+
+      // ── Lists page ──
+      { tag: 'improvement', text: 'Lists page redesigned — replaced card layout with clean table. Columns: List Name, Type (color-coded badge), Source, Properties count, Created date, Actions. Row click navigates to records filtered by list.' },
+      { tag: 'improvement', text: 'List type color badges — Cold Call (blue), SMS (green), Direct Mail (yellow), PPL (red), Referral (purple), Driving for Dollars (pink).' },
+      { tag: 'improvement', text: 'Lists edit modal — Source field added (PropStream, DealMachine, REISift etc). Source saved on edit. List types updated to match import options.' },
+
+      // ── 50 states ──
+      { tag: 'feature', text: '50-state expansion — all 50 US states seeded into markets table on every boot using abbreviations (IN, GA, TX, FL etc). Replaces hardcoded Indianapolis Metro / Atlanta Metro.' },
+      { tag: 'feature', text: 'State auto-normalization on import — if CSV has full state name (Indiana, indiana, INDIANA) it is automatically converted to abbreviation (IN) before saving. Handles all 50 state full names + existing abbreviations pass through unchanged.' },
+
+      // ── Sidebar & shell ──
+      { tag: 'improvement', text: 'Sidebar reordered — Dashboard, Records, Lists, Campaigns, List Filtration, Upload, Activity, NIS Numbers, Changelog, Setup.' },
+      { tag: 'improvement', text: 'Map Columns page — responsive auto-fill grid that adapts to screen width. Phones section shows each phone on one row with Number, Type, Status columns clearly labeled.' },
+      { tag: 'improvement', text: 'Preview Import page — full width layout matching Records page.' },
+      { tag: 'improvement', text: 'bulk_import_jobs table added to DB migrations with list_id FK. tr.row-selected CSS added to shared-shell for selection highlight.' },
+    ],
+  },
+  {
     date: 'April 13, 2026',
     title: 'Dashboard, Import Flow, Export, UI fixes & Loki branding',
     items: [
