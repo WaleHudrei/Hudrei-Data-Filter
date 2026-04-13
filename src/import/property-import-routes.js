@@ -194,10 +194,10 @@ router.get('/map', requireAuth, (req, res) => {
   const groupHTML = groups.map(group => `
     <div style="margin-bottom:1.5rem">
       <div style="font-size:11px;font-weight:700;color:#aaa;text-transform:uppercase;letter-spacing:.1em;margin-bottom:10px">${group}</div>
-      <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(260px,1fr));gap:10px">
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px 24px">
         ${fieldsByGroup(group).map(f => `
-          <div style="display:flex;align-items:center;gap:10px">
-            <div style="width:140px;font-size:13px;color:${f.required?'#1a1a1a':'#555'};flex-shrink:0">
+          <div style="display:flex;align-items:center;gap:12px">
+            <div style="width:150px;font-size:13px;color:${f.required?'#1a1a1a':'#555'};flex-shrink:0;font-weight:${f.required?'500':'400'}">
               ${f.label}${f.required?' <span style="color:#c0392b">*</span>':''}
             </div>
             <select id="map_${f.key}" data-loki="${f.key}" style="flex:1;padding:7px 10px;border:1px solid #ddd;border-radius:7px;font-size:13px;font-family:inherit;background:#fff">
@@ -208,7 +208,7 @@ router.get('/map', requireAuth, (req, res) => {
     </div>`).join('');
 
   res.send(shell('Map Columns', `
-    <div style="max-width:900px">
+    <div style="max-width:780px">
       <div style="margin-bottom:1.5rem"><a href="/import/property" style="font-size:13px;color:#888;text-decoration:none">← Back</a></div>
       <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:1.5rem;flex-wrap:wrap;gap:12px">
         <div>
