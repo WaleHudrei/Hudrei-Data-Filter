@@ -187,31 +187,66 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
 // Records page checkbox logic — runs at true bottom of DOM
 if (document.getElementById('select-all')) {
   var _selIds = {};
+  var _allSelected = false;
+
   function _upd() {
-    var c = Object.keys(_selIds).length;
-    var t = document.getElementById('export-toolbar');
-    var s = document.getElementById('selected-count');
-    if (t) t.style.display = c > 0 ? 'flex' : 'none';
-    if (s) s.textContent = c.toLocaleString();
+    var count = Object.keys(_selIds).length;
+    var toolbar = document.getElementById('export-toolbar');
+    var counter = document.getElementById('selected-count');
+    var banner = document.getElementById('select-all-banner');
+    var pageChecks = document.querySelectorAll('.row-check');
+    if (toolbar) toolbar.style.display = count > 0 ? 'flex' : 'none';
+    if (counter) {
+      if (_allSelected && banner) {
+        var tot = banner.getAttribute('data-total');
+        counter.textContent = Number(tot).toLocaleString();
+      } else {
+        counter.textContent = count.toLocaleString();
+      }
+    }
+    if (banner) {
+      var allPageChecked = count > 0 && count >= pageChecks.length;
+      banner.style.display = (allPageChecked && !_allSelected) ? 'flex' : 'none';
+    }
   }
+
   function selectRow(cb, on) {
     var id = cb.getAttribute('data-id'); if (!id) return;
     cb.checked = on;
     var tr = cb.closest ? cb.closest('tr') : cb.parentNode.parentNode;
     if (tr) { if (on) tr.classList.add('row-selected'); else tr.classList.remove('row-selected'); }
     if (on) _selIds[id] = 1; else delete _selIds[id];
+    _allSelected = false;
     _upd();
   }
+
   function clearSelection() {
     _selIds = {};
-    document.querySelectorAll('.row-check').forEach(function(cb) { cb.checked = false; var tr = cb.closest ? cb.closest('tr') : cb.parentNode.parentNode; if (tr) tr.classList.remove('row-selected'); });
+    _allSelected = false;
+    document.querySelectorAll('.row-check').forEach(function(cb) {
+      cb.checked = false;
+      var tr = cb.closest ? cb.closest('tr') : cb.parentNode.parentNode;
+      if (tr) tr.classList.remove('row-selected');
+    });
     document.getElementById('select-all').checked = false;
+    var banner = document.getElementById('select-all-banner');
+    if (banner) banner.style.display = 'none';
     _upd();
   }
+
+  function selectAllRecords() {
+    _allSelected = true;
+    var banner = document.getElementById('select-all-banner');
+    if (banner) banner.style.display = 'none';
+    _upd();
+  }
+
   document.getElementById('select-all').addEventListener('change', function() {
     var on = this.checked;
+    _allSelected = false;
     document.querySelectorAll('.row-check').forEach(function(cb) { selectRow(cb, on); });
   });
+
   document.querySelectorAll('.row-check').forEach(function(cb) {
     cb.addEventListener('change', function() { selectRow(cb, cb.checked); });
   });
