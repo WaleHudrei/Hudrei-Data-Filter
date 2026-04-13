@@ -516,9 +516,9 @@ router.get('/preview', requireAuth, (req, res) => {
           totalErrors += BATCH_SIZE;
         }
         offset += BATCH_SIZE;
-        const pct = Math.min(100, Math.round((offset / rows.length) * 100));
+        const pct = Math.min(100, Math.round((offset / totalRows) * 100));
         document.getElementById('progress-fill').style.width = pct + '%';
-        document.getElementById('progress-text').textContent = offset + ' / ' + rows.length + ' processed';
+        document.getElementById('progress-text').textContent = Math.min(offset, totalRows).toLocaleString() + ' / ' + totalRows.toLocaleString() + ' processed';
       }
 
       document.getElementById('progress-fill').style.width = '100%';
@@ -601,131 +601,159 @@ router.post('/commit', requireAuth, async (req, res) => {
     const toBool = v => { const s = (v||'').toLowerCase(); return s==='yes'||s==='true'||s==='1'||s==='y' ? true : s==='no'||s==='false'||s==='0'||s==='n' ? false : null; };
     const cleanPhone = v => v ? v.replace(/\D/g,'') : '';
 
+    // ── Bulk upsert properties ───────────────────────────────────────────────
+    const validRows = [];
     for (const row of rows) {
+      const street = get(row, 'street');
+      const city   = get(row, 'city');
+      const state  = (get(row, 'state_code') || '').toUpperCase().slice(0,2);
+      if (!street || !city || !state) { errors++; continue; }
+      validRows.push(row);
+    }
+
+    if (!validRows.length) {
+      return res.json({ created, updated, errors, resolvedListId, firstError: global._importFirstError || null });
+    }
+
+    // Build arrays for UNNEST bulk insert
+    const streets=[], cities=[], states=[], zips=[], counties=[], mktIds=[], sources=[];
+    const propTypes=[], yearBuilts=[], sqfts=[], bedrooms=[], bathrooms=[], lotSizes=[];
+    const assessedVals=[], estVals=[], equityPcts=[], propStatuses=[], conditions=[];
+    const lastSaleDates=[], lastSalePrices=[], vacants=[];
+
+    for (const row of validRows) {
+      const state = get(row,'state_code').toUpperCase().slice(0,2);
+      streets.push(get(row,'street'));
+      cities.push(get(row,'city'));
+      states.push(state);
+      zips.push(get(row,'zip_code')||'');
+      counties.push(get(row,'county')||null);
+      mktIds.push(mktMap[state]||null);
+      sources.push(get(row,'source')||filename||null);
+      propTypes.push(get(row,'property_type')||null);
+      yearBuilts.push(toInt(get(row,'year_built')));
+      sqfts.push(toInt(get(row,'sqft')));
+      bedrooms.push(toInt(get(row,'bedrooms')));
+      bathrooms.push(toNum(get(row,'bathrooms')));
+      lotSizes.push(toInt(get(row,'lot_size')));
+      assessedVals.push(toNum(get(row,'assessed_value')));
+      estVals.push(toNum(get(row,'estimated_value')));
+      equityPcts.push(toNum(get(row,'equity_percent')));
+      propStatuses.push(get(row,'property_status')||null);
+      conditions.push(get(row,'condition')||null);
+      lastSaleDates.push(toDate(get(row,'last_sale_date')));
+      lastSalePrices.push(toNum(get(row,'last_sale_price')));
+      vacants.push(toBool(get(row,'vacant')));
+    }
+
+    const propRes = await query(`
+      INSERT INTO properties (
+        street,city,state_code,zip_code,county,market_id,source,
+        property_type,year_built,sqft,bedrooms,bathrooms,lot_size,
+        assessed_value,estimated_value,equity_percent,property_status,
+        condition,last_sale_date,last_sale_price,vacant,first_seen_at
+      )
+      SELECT * FROM UNNEST(
+        $1::text[],$2::text[],$3::text[],$4::text[],$5::text[],$6::int[],$7::text[],
+        $8::text[],$9::int[],$10::int[],$11::int[],$12::numeric[],$13::int[],
+        $14::numeric[],$15::numeric[],$16::numeric[],$17::text[],
+        $18::text[],$19::date[],$20::numeric[],$21::boolean[]
+      ) AS t(street,city,state_code,zip_code,county,market_id,source,
+        property_type,year_built,sqft,bedrooms,bathrooms,lot_size,
+        assessed_value,estimated_value,equity_percent,property_status,
+        condition,last_sale_date,last_sale_price,vacant),
+      (SELECT NOW()) AS s(first_seen_at)
+      ON CONFLICT (street,city,state_code,zip_code) DO UPDATE SET
+        county          = COALESCE(EXCLUDED.county, properties.county),
+        source          = COALESCE(EXCLUDED.source, properties.source),
+        property_type   = COALESCE(EXCLUDED.property_type, properties.property_type),
+        year_built      = COALESCE(EXCLUDED.year_built, properties.year_built),
+        sqft            = COALESCE(EXCLUDED.sqft, properties.sqft),
+        bedrooms        = COALESCE(EXCLUDED.bedrooms, properties.bedrooms),
+        bathrooms       = COALESCE(EXCLUDED.bathrooms, properties.bathrooms),
+        lot_size        = COALESCE(EXCLUDED.lot_size, properties.lot_size),
+        assessed_value  = COALESCE(EXCLUDED.assessed_value, properties.assessed_value),
+        estimated_value = COALESCE(EXCLUDED.estimated_value, properties.estimated_value),
+        equity_percent  = COALESCE(EXCLUDED.equity_percent, properties.equity_percent),
+        property_status = COALESCE(EXCLUDED.property_status, properties.property_status),
+        condition       = COALESCE(EXCLUDED.condition, properties.condition),
+        last_sale_date  = COALESCE(EXCLUDED.last_sale_date, properties.last_sale_date),
+        last_sale_price = COALESCE(EXCLUDED.last_sale_price, properties.last_sale_price),
+        vacant          = COALESCE(EXCLUDED.vacant, properties.vacant),
+        updated_at      = NOW()
+      RETURNING id, xmax, street, city, state_code, zip_code
+    `, [streets,cities,states,zips,counties,mktIds,sources,
+        propTypes,yearBuilts,sqfts,bedrooms,bathrooms,lotSizes,
+        assessedVals,estVals,equityPcts,propStatuses,conditions,
+        lastSaleDates,lastSalePrices,vacants]);
+
+    // Map address -> property id
+    const propMap = {};
+    for (const p of propRes.rows) {
+      const key = (p.street+'|'+p.city+'|'+p.state_code+'|'+p.zip_code).toLowerCase();
+      propMap[key] = { id: p.id, wasInsert: p.xmax === '0' };
+      if (p.xmax === '0') created++; else updated++;
+    }
+
+    // ── Bulk upsert contacts + phones row by row (contacts need property_id lookup) ──
+    for (const row of validRows) {
       try {
-        const street = get(row, 'street');
-        const city   = get(row, 'city');
-        const state  = get(row, 'state_code').toUpperCase().slice(0,2);
-        if (!street || !city || !state) { errors++; continue; }
+        const street = get(row,'street');
+        const city   = get(row,'city');
+        const state  = get(row,'state_code').toUpperCase().slice(0,2);
+        const zip    = get(row,'zip_code')||'';
+        const key    = (street+'|'+city+'|'+state+'|'+zip).toLowerCase();
+        const prop   = propMap[key];
+        if (!prop) continue;
+        const propertyId = prop.id;
 
-        const zip     = get(row, 'zip_code');
-        const county  = get(row, 'county');
-        const source  = get(row, 'source') || filename || null;
-        const mktId   = mktMap[state] || null;
-
-        // Upsert property
-        const pr = await query(`
-          INSERT INTO properties (
-            street, city, state_code, zip_code, county, market_id, source,
-            property_type, year_built, sqft, bedrooms, bathrooms, lot_size,
-            assessed_value, estimated_value, equity_percent, property_status,
-            condition, last_sale_date, last_sale_price, vacant, first_seen_at
-          ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,NOW())
-          ON CONFLICT (street, city, state_code, zip_code)
-          DO UPDATE SET
-            county           = COALESCE(NULLIF($5,''), properties.county),
-            source           = COALESCE(NULLIF($7,''), properties.source),
-            property_type    = COALESCE(NULLIF($8,''), properties.property_type),
-            year_built       = COALESCE($9, properties.year_built),
-            sqft             = COALESCE($10, properties.sqft),
-            bedrooms         = COALESCE($11, properties.bedrooms),
-            bathrooms        = COALESCE($12, properties.bathrooms),
-            lot_size         = COALESCE($13, properties.lot_size),
-            assessed_value   = COALESCE($14, properties.assessed_value),
-            estimated_value  = COALESCE($15, properties.estimated_value),
-            equity_percent   = COALESCE($16, properties.equity_percent),
-            property_status  = COALESCE(NULLIF($17,''), properties.property_status),
-            condition        = COALESCE(NULLIF($18,''), properties.condition),
-            last_sale_date   = COALESCE($19, properties.last_sale_date),
-            last_sale_price  = COALESCE($20, properties.last_sale_price),
-            vacant           = COALESCE($21, properties.vacant),
-            updated_at       = NOW()
-          RETURNING id, xmax
-        `, [
-          street, city, state, zip||'', county||'', mktId, source,
-          get(row,'property_type')||null,
-          toInt(get(row,'year_built')),
-          toInt(get(row,'sqft')),
-          toInt(get(row,'bedrooms')),
-          toNum(get(row,'bathrooms')),
-          toInt(get(row,'lot_size')),
-          toNum(get(row,'assessed_value')),
-          toNum(get(row,'estimated_value')),
-          toNum(get(row,'equity_percent')),
-          get(row,'property_status')||null,
-          get(row,'condition')||null,
-          toDate(get(row,'last_sale_date')),
-          toNum(get(row,'last_sale_price')),
-          toBool(get(row,'vacant'))
-        ]);
-
-        const propertyId = pr.rows[0].id;
-        const wasInsert = pr.rows[0].xmax === '0';
-        if (wasInsert) created++; else updated++;
-
-        // Upsert contact
-        const firstName = get(row, 'first_name');
-        const lastName  = get(row, 'last_name');
+        const firstName = get(row,'first_name');
+        const lastName  = get(row,'last_name');
         if (firstName || lastName) {
-          const existPC = await query(`SELECT contact_id FROM property_contacts WHERE property_id=$1 AND primary_contact=true LIMIT 1`, [propertyId]);
+          const existPC = await query(`SELECT contact_id FROM property_contacts WHERE property_id=$1 AND primary_contact=true LIMIT 1`,[propertyId]);
           let contactId;
-          if (existPC.rows.length > 0) {
+          if (existPC.rows.length) {
             contactId = existPC.rows[0].contact_id;
             await query(`UPDATE contacts SET
-              first_name = COALESCE(NULLIF($1,''), first_name),
-              last_name  = COALESCE(NULLIF($2,''), last_name),
-              mailing_address = COALESCE(NULLIF($3,''), mailing_address),
-              mailing_city    = COALESCE(NULLIF($4,''), mailing_city),
-              mailing_state   = COALESCE(NULLIF($5,''), mailing_state),
-              mailing_zip     = COALESCE(NULLIF($6,''), mailing_zip),
-              email_1 = COALESCE(NULLIF($7,''), email_1),
-              email_2 = COALESCE(NULLIF($8,''), email_2),
-              updated_at = NOW()
-              WHERE id = $9`,
-              [firstName, lastName, get(row,'mailing_address'), get(row,'mailing_city'), get(row,'mailing_state'), get(row,'mailing_zip'), get(row,'email_1')||'', get(row,'email_2')||'', contactId]);
+              first_name=COALESCE(NULLIF($1,''),first_name),last_name=COALESCE(NULLIF($2,''),last_name),
+              mailing_address=COALESCE(NULLIF($3,''),mailing_address),mailing_city=COALESCE(NULLIF($4,''),mailing_city),
+              mailing_state=COALESCE(NULLIF($5,''),mailing_state),mailing_zip=COALESCE(NULLIF($6,''),mailing_zip),
+              email_1=COALESCE(NULLIF($7,''),email_1),email_2=COALESCE(NULLIF($8,''),email_2),updated_at=NOW()
+              WHERE id=$9`,
+              [firstName,lastName,get(row,'mailing_address'),get(row,'mailing_city'),
+               get(row,'mailing_state'),get(row,'mailing_zip'),get(row,'email_1')||'',get(row,'email_2')||'',contactId]);
           } else {
             const cr = await query(`INSERT INTO contacts (first_name,last_name,mailing_address,mailing_city,mailing_state,mailing_zip,email_1,email_2)
               VALUES ($1,$2,$3,$4,$5,$6,$7,$8) RETURNING id`,
-              [firstName, lastName, get(row,'mailing_address'), get(row,'mailing_city'), get(row,'mailing_state'), get(row,'mailing_zip'), get(row,'email_1')||null, get(row,'email_2')||null]);
+              [firstName,lastName,get(row,'mailing_address'),get(row,'mailing_city'),
+               get(row,'mailing_state'),get(row,'mailing_zip'),get(row,'email_1')||null,get(row,'email_2')||null]);
             contactId = cr.rows[0].id;
-            await query(`INSERT INTO property_contacts (property_id,contact_id,primary_contact) VALUES ($1,$2,true) ON CONFLICT DO NOTHING`, [propertyId, contactId]);
+            await query(`INSERT INTO property_contacts (property_id,contact_id,primary_contact) VALUES ($1,$2,true) ON CONFLICT DO NOTHING`,[propertyId,contactId]);
           }
 
-          // Upsert phones with type and status
-          for (let i = 1; i <= 10; i++) {
-            const phoneRaw = cleanPhone(get(row, `phone_${i}`));
-            if (!phoneRaw || phoneRaw.length < 7) continue;
-            const pType   = (get(row, `phone_type_${i}`)   || 'unknown').toLowerCase().trim();
-            const pStatus = (get(row, `phone_status_${i}`) || 'unknown').toLowerCase().trim();
-            await query(`INSERT INTO phones (contact_id, phone_number, phone_index, phone_type, phone_status)
-              VALUES ($1,$2,$3,$4,$5)
-              ON CONFLICT (contact_id, phone_number)
-              DO UPDATE SET
-                phone_type   = CASE WHEN EXCLUDED.phone_type   != 'unknown' THEN EXCLUDED.phone_type   ELSE phones.phone_type   END,
-                phone_status = CASE WHEN EXCLUDED.phone_status != 'unknown' THEN EXCLUDED.phone_status ELSE phones.phone_status END`,
-              [contactId, phoneRaw, i, pType, pStatus]);
+          // Phones
+          for (let i=1;i<=10;i++) {
+            const phoneRaw = cleanPhone(get(row,`phone_${i}`));
+            if (!phoneRaw||phoneRaw.length<7) continue;
+            const pType   = (get(row,`phone_type_${i}`)||'unknown').toLowerCase().trim();
+            const pStatus = (get(row,`phone_status_${i}`)||'unknown').toLowerCase().trim();
+            await query(`INSERT INTO phones (contact_id,phone_number,phone_index,phone_type,phone_status)
+              VALUES ($1,$2,$3,$4,$5) ON CONFLICT (contact_id,phone_number) DO UPDATE SET
+              phone_type=CASE WHEN EXCLUDED.phone_type!='unknown' THEN EXCLUDED.phone_type ELSE phones.phone_type END,
+              phone_status=CASE WHEN EXCLUDED.phone_status!='unknown' THEN EXCLUDED.phone_status ELSE phones.phone_status END`,
+              [contactId,phoneRaw,i,pType,pStatus]);
           }
         }
 
         // Tag to list
         if (resolvedListId) {
-          await query(
-            `INSERT INTO property_lists (property_id, list_id, added_at)
-              VALUES ($1, $2, NOW())
-              ON CONFLICT (property_id, list_id) DO NOTHING`,
-            [propertyId, resolvedListId]
-          );
+          await query(`INSERT INTO property_lists (property_id,list_id,added_at) VALUES ($1,$2,NOW()) ON CONFLICT DO NOTHING`,
+            [propertyId,resolvedListId]);
         }
-
-        // Log import history
-        await query(`INSERT INTO import_history (property_id, source, imported_by, fields_added, notes)
-          VALUES ($1,$2,'import','property, owner, phones',$3)`,
-          [propertyId, source, wasInsert ? 'New record' : 'Updated existing record']);
-
       } catch(rowErr) {
         errors++;
-        if (errors <= 3) console.error('Row error:', rowErr.message, rowErr.stack);
-        if (errors === 1) global._importFirstError = rowErr.message;
+        if (errors<=3) console.error('Row error:',rowErr.message);
+        if (errors===1) global._importFirstError = rowErr.message;
       }
     }
 
