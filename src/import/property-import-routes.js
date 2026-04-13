@@ -490,6 +490,7 @@ router.get('/preview', requireAuth, (req, res) => {
           totalCreated += data.created || 0;
           totalUpdated += data.updated || 0;
           totalErrors += data.errors || 0;
+          if (data.firstError && !window._firstImportError) window._firstImportError = data.firstError;
         } catch(e) {
           totalErrors += batch.length;
         }
@@ -505,12 +506,18 @@ router.get('/preview', requireAuth, (req, res) => {
 
       const resultEl = document.getElementById('import-result');
       resultEl.style.display = 'block';
-      resultEl.innerHTML = '<div style="background:#e8f5ee;border:1px solid #c3e6cc;border-radius:8px;padding:12px 16px;font-size:13px;color:#1a7a4a">'
-        + '✓ Import complete — '
+      const bgColor = totalErrors > 0 && totalCreated === 0 ? '#fff0f0' : '#e8f5ee';
+      const borderColor = totalErrors > 0 && totalCreated === 0 ? '#f5c5c5' : '#c3e6cc';
+      const textColor = totalErrors > 0 && totalCreated === 0 ? '#c0392b' : '#1a7a4a';
+      resultEl.innerHTML = '<div style="background:'+bgColor+';border:1px solid '+borderColor+';border-radius:8px;padding:12px 16px;font-size:13px;color:'+textColor+'">'
+        + (totalCreated > 0 || totalUpdated > 0 ? '✓ ' : '⚠ ')
+        + 'Import complete — '
         + '<strong>' + totalCreated + '</strong> new records, '
         + '<strong>' + totalUpdated + '</strong> updated'
-        + (totalErrors > 0 ? ', <span style="color:#c0392b">' + totalErrors + ' errors</span>' : '')
-        + ' · <a href="/records" style="color:#1a7a4a;font-weight:600">View Records →</a></div>';
+        + (totalErrors > 0 ? ', <span style="color:#c0392b"><strong>' + totalErrors + '</strong> errors</span>' : '')
+        + (totalCreated > 0 ? ' · <a href="/records" style="color:#1a7a4a;font-weight:600">View Records →</a>' : '')
+        + (window._firstImportError ? '<br><br><span style="font-size:12px;color:#c0392b">Error: ' + window._firstImportError + '</span>' : '')
+        + '</div>';
 
       sessionStorage.removeItem('loki_import');
     }
@@ -691,10 +698,13 @@ router.post('/commit', requireAuth, async (req, res) => {
 
       } catch(rowErr) {
         errors++;
+        if (errors <= 3) console.error('Row error:', rowErr.message, rowErr.stack);
+        if (errors === 1) global._importFirstError = rowErr.message;
       }
     }
 
-    res.json({ created, updated, errors });
+    res.json({ created, updated, errors, firstError: global._importFirstError || null });
+    global._importFirstError = null;
   } catch(e) {
     console.error('Import commit error:', e.message);
     res.status(500).json({ error: e.message });
