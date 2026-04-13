@@ -479,68 +479,82 @@ router.get('/preview', requireAuth, (req, res) => {
     });
 
     async function startImport() {
-      document.getElementById('import-btn').disabled = true;
-      document.getElementById('import-btn').textContent = 'Importing…';
+      const btn = document.getElementById('import-btn');
+      btn.disabled = true;
+      btn.textContent = 'Starting…';
       document.getElementById('progress-bar').style.display = 'block';
+      document.getElementById('progress-text').textContent = 'Queuing import…';
 
-      const BATCH_SIZE = 500;
-      let offset = 0;
-      let totalCreated = 0, totalUpdated = 0, totalErrors = 0;
-      let resolvedListId = null;
+      try {
+        const res = await fetch('/import/property/start-job', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            mapping,
+            filename: importData.filename,
+            listName:   importData.listName   || null,
+            listId:     importData.listId     || null,
+            listType:   importData.listType   || null,
+            listSource: importData.listSource || null
+          })
+        });
+        const data = await res.json();
+        if (data.error) throw new Error(data.error);
 
-      while (offset < totalRows) {
-        try {
-          const res = await fetch('/import/property/commit', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              mapping,
-              filename: importData.filename,
-              totalRows,
-              offset,
-              batchSize: BATCH_SIZE,
-              listName:   offset===0 ? (importData.listName||null)   : null,
-              listId:     offset===0 ? (resolvedListId||importData.listId||null) : resolvedListId,
-              listType:   importData.listType   || null,
-              listSource: importData.listSource || null
-            })
-          });
-          const data = await res.json();
-          if (data.error) throw new Error(data.error);
-          totalCreated += data.created || 0;
-          totalUpdated += data.updated || 0;
-          totalErrors += data.errors || 0;
-          if (data.resolvedListId) resolvedListId = data.resolvedListId;
-          if (data.firstError && !window._firstImportError) window._firstImportError = data.firstError;
-        } catch(e) {
-          totalErrors += BATCH_SIZE;
-        }
-        offset += BATCH_SIZE;
-        const pct = Math.min(100, Math.round((offset / totalRows) * 100));
-        document.getElementById('progress-fill').style.width = pct + '%';
-        document.getElementById('progress-text').textContent = Math.min(offset, totalRows).toLocaleString() + ' / ' + totalRows.toLocaleString() + ' processed';
+        const jobId = data.jobId;
+        const listId = data.resolvedListId;
+        window._resolvedListId = listId;
+        sessionStorage.removeItem('loki_import');
+
+        // Poll for progress
+        document.getElementById('progress-text').textContent = 'Import running in background…';
+        btn.textContent = 'View Activity →';
+        btn.disabled = false;
+        btn.style.background = '#2c5cc5';
+        btn.onclick = () => window.location.href = '/activity';
+
+        document.getElementById('import-result').style.display = 'block';
+        document.getElementById('import-result').innerHTML =
+          '<div style="background:#e8f0ff;border:1px solid #c5d5f5;border-radius:8px;padding:12px 16px;font-size:13px;color:#2c5cc5">'
+          + '🔄 Import running in the background — <strong>' + totalRows.toLocaleString() + ' rows</strong> queued.'
+          + ' You can navigate away and check progress on the <a href="/activity" style="color:#2c5cc5;font-weight:600">Activity page</a>.'
+          + (listId ? ' · <a href="/records?list_id='+listId+'" style="color:#2c5cc5;font-weight:600">View List →</a>' : '')
+          + '</div>';
+
+        // Poll progress bar
+        const poll = setInterval(async () => {
+          try {
+            const pr = await fetch('/activity/job/' + jobId);
+            const pd = await pr.json();
+            if (pd.total > 0) {
+              const pct = Math.round((pd.processed / pd.total) * 100);
+              document.getElementById('progress-fill').style.width = pct + '%';
+              document.getElementById('progress-text').textContent = pd.processed.toLocaleString() + ' / ' + pd.total.toLocaleString() + ' processed';
+            }
+            if (pd.status === 'complete' || pd.status === 'error') {
+              clearInterval(poll);
+              document.getElementById('progress-fill').style.width = '100%';
+              document.getElementById('progress-text').textContent = pd.status === 'complete' ? 'Complete ✓' : 'Error — check Activity page';
+              if (pd.status === 'complete') {
+                document.getElementById('import-result').innerHTML =
+                  '<div style="background:#e8f5ee;border:1px solid #c3e6cc;border-radius:8px;padding:12px 16px;font-size:13px;color:#1a7a4a">'
+                  + '✓ Import complete — <strong>' + pd.inserted.toLocaleString() + '</strong> new, <strong>' + pd.updated.toLocaleString() + '</strong> updated'
+                  + (pd.errors > 0 ? ', <span style="color:#c0392b">'+pd.errors+' errors</span>' : '')
+                  + (listId ? ' · <a href="/records?list_id='+listId+'" style="color:#1a7a4a;font-weight:600">View Records →</a>' : ' · <a href="/records" style="color:#1a7a4a;font-weight:600">View Records →</a>')
+                  + '</div>';
+                btn.textContent = 'View Records →';
+                btn.style.background = '#1a7a4a';
+                btn.onclick = () => listId ? window.location.href='/records?list_id='+listId : window.location.href='/records';
+              }
+            }
+          } catch(e) {}
+        }, 2000);
+
+      } catch(e) {
+        btn.disabled = false;
+        btn.textContent = 'Import Records';
+        document.getElementById('progress-text').textContent = 'Error: ' + e.message;
       }
-
-      document.getElementById('progress-fill').style.width = '100%';
-      document.getElementById('progress-text').textContent = 'Complete';
-      document.getElementById('import-btn').textContent = 'Done';
-
-      const resultEl = document.getElementById('import-result');
-      resultEl.style.display = 'block';
-      const bgColor = totalErrors > 0 && totalCreated === 0 ? '#fff0f0' : '#e8f5ee';
-      const borderColor = totalErrors > 0 && totalCreated === 0 ? '#f5c5c5' : '#c3e6cc';
-      const textColor = totalErrors > 0 && totalCreated === 0 ? '#c0392b' : '#1a7a4a';
-      resultEl.innerHTML = '<div style="background:'+bgColor+';border:1px solid '+borderColor+';border-radius:8px;padding:12px 16px;font-size:13px;color:'+textColor+'">'
-        + (totalCreated > 0 || totalUpdated > 0 ? '✓ ' : '⚠ ')
-        + 'Import complete — '
-        + '<strong>' + totalCreated + '</strong> new records, '
-        + '<strong>' + totalUpdated + '</strong> updated'
-        + (totalErrors > 0 ? ', <span style="color:#c0392b"><strong>' + totalErrors + '</strong> errors</span>' : '')
-        + (totalCreated > 0 ? ' · <a href="/records" style="color:#1a7a4a;font-weight:600">View Records →</a>' : '')
-        + (window._firstImportError ? '<br><br><span style="font-size:12px;color:#c0392b">Error: ' + window._firstImportError + '</span>' : '')
-        + '</div>';
-
-      sessionStorage.removeItem('loki_import');
     }
     </script>
   `, 'upload'));
@@ -764,5 +778,173 @@ router.post('/commit', requireAuth, async (req, res) => {
     res.status(500).json({ error: e.message });
   }
 });
+
+// ── BACKGROUND JOB: Start import as background job ───────────────────────────
+router.post('/start-job', requireAuth, async (req, res) => {
+  try {
+    const { mapping, filename, listName, listId, listType, listSource } = req.body;
+    if (!mapping) return res.status(400).json({ error: 'Missing mapping.' });
+
+    const allRows = req.session.importRows;
+    if (!allRows || !allRows.length) return res.status(400).json({ error: 'Session expired. Please re-upload your file.' });
+
+    // Resolve or create list first
+    let resolvedListId = null;
+    if (listName && listName.trim()) {
+      const existingList = await query(`SELECT id FROM lists WHERE LOWER(list_name) = LOWER($1)`, [listName.trim()]);
+      if (existingList.rows.length) {
+        resolvedListId = existingList.rows[0].id;
+      } else {
+        const newList = await query(
+          `INSERT INTO lists (list_name, list_type, source, upload_date, active) VALUES ($1,$2,$3,NOW(),true) RETURNING id`,
+          [listName.trim(), listType || null, listSource || null]
+        );
+        resolvedListId = newList.rows[0].id;
+      }
+    } else if (listId) {
+      resolvedListId = parseInt(listId);
+    }
+
+    // Create job record
+    const jobRes = await query(
+      `INSERT INTO bulk_import_jobs (status, filename, list_id, total_rows) VALUES ('pending',$1,$2,$3) RETURNING id`,
+      [filename || 'import.csv', resolvedListId, allRows.length]
+    );
+    const jobId = jobRes.rows[0].id;
+
+    // Copy rows out of session for background use (session may expire)
+    const rows = [...allRows];
+    req.session.importRows = null;
+    req.session.save();
+
+    // Fire background processing
+    setImmediate(() => runBackgroundImport(jobId, rows, mapping, filename, resolvedListId, listType, listSource));
+
+    res.json({ jobId, resolvedListId, total: allRows.length });
+  } catch(e) {
+    console.error('Start job error:', e.message);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// ── BACKGROUND IMPORT WORKER ──────────────────────────────────────────────────
+async function runBackgroundImport(jobId, allRows, mapping, filename, resolvedListId) {
+  const BATCH = 500;
+  let inserted = 0, updated = 0, errors = 0, processed = 0;
+
+  try {
+    await query(`UPDATE bulk_import_jobs SET status='running', updated_at=NOW() WHERE id=$1`, [jobId]);
+
+    // Ensure markets
+    await query(`INSERT INTO markets (name,state_code,state_name) VALUES ('Indianapolis Metro','IN','Indiana'),('Atlanta Metro','GA','Georgia') ON CONFLICT (state_code) DO NOTHING`);
+    const mktRes = await query(`SELECT id, state_code FROM markets`);
+    const mktMap = {};
+    mktRes.rows.forEach(m => { mktMap[m.state_code] = m.id; });
+
+    const get = (row, key) => { const col = mapping[key]; return col ? (row[col] || '').toString().trim() : ''; };
+    const toNum = v => v && !isNaN(String(v).replace(/[$,%]/g,'')) ? parseFloat(String(v).replace(/[$,%]/g,'')) : null;
+    const toInt = v => v && !isNaN(v) ? parseInt(v) : null;
+    const toDate = v => { if (!v) return null; const d = new Date(v); return isNaN(d) ? null : d.toISOString().split('T')[0]; };
+    const toBool = v => { const s=(v||'').toLowerCase(); return s==='yes'||s==='true'||s==='1'||s==='y'?true:s==='no'||s==='false'||s==='0'||s==='n'?false:null; };
+    const cleanPhone = v => v ? v.replace(/\D/g,'') : '';
+
+    for (let offset = 0; offset < allRows.length; offset += BATCH) {
+      const rows = allRows.slice(offset, offset + BATCH);
+      const validRows = rows.filter(row => get(row,'street') && get(row,'city') && get(row,'state_code'));
+      errors += rows.length - validRows.length;
+
+      if (validRows.length) {
+        // Bulk upsert properties
+        const streets=[],cities=[],states=[],zips=[],counties=[],mktIds=[],sources=[];
+        const propTypes=[],yearBuilts=[],sqfts=[],beds=[],baths=[],lots=[];
+        const assessed=[],estVals=[],equity=[],propStatus=[],conds=[];
+        const lastSaleDates=[],lastSalePrices=[],vacants=[];
+
+        for (const row of validRows) {
+          const state = get(row,'state_code').toUpperCase().slice(0,2);
+          streets.push(get(row,'street')); cities.push(get(row,'city')); states.push(state);
+          zips.push(get(row,'zip_code')||''); counties.push(get(row,'county')||null);
+          mktIds.push(mktMap[state]||null); sources.push(get(row,'source')||filename||null);
+          propTypes.push(get(row,'property_type')||null); yearBuilts.push(toInt(get(row,'year_built')));
+          sqfts.push(toInt(get(row,'sqft'))); beds.push(toInt(get(row,'bedrooms')));
+          baths.push(toNum(get(row,'bathrooms'))); lots.push(toInt(get(row,'lot_size')));
+          assessed.push(toNum(get(row,'assessed_value'))); estVals.push(toNum(get(row,'estimated_value')));
+          equity.push(toNum(get(row,'equity_percent'))); propStatus.push(get(row,'property_status')||null);
+          conds.push(get(row,'condition')||null); lastSaleDates.push(toDate(get(row,'last_sale_date')));
+          lastSalePrices.push(toNum(get(row,'last_sale_price'))); vacants.push(toBool(get(row,'vacant')));
+        }
+
+        const propRes = await query(`
+          INSERT INTO properties (street,city,state_code,zip_code,county,market_id,source,property_type,year_built,sqft,bedrooms,bathrooms,lot_size,assessed_value,estimated_value,equity_percent,property_status,condition,last_sale_date,last_sale_price,vacant,first_seen_at)
+          SELECT *,NOW() FROM UNNEST($1::text[],$2::text[],$3::text[],$4::text[],$5::text[],$6::int[],$7::text[],$8::text[],$9::int[],$10::int[],$11::int[],$12::numeric[],$13::int[],$14::numeric[],$15::numeric[],$16::numeric[],$17::text[],$18::text[],$19::date[],$20::numeric[],$21::boolean[])
+          AS t(street,city,state_code,zip_code,county,market_id,source,property_type,year_built,sqft,bedrooms,bathrooms,lot_size,assessed_value,estimated_value,equity_percent,property_status,condition,last_sale_date,last_sale_price,vacant)
+          ON CONFLICT (street,city,state_code,zip_code) DO UPDATE SET
+            county=COALESCE(EXCLUDED.county,properties.county),source=COALESCE(EXCLUDED.source,properties.source),
+            property_type=COALESCE(EXCLUDED.property_type,properties.property_type),year_built=COALESCE(EXCLUDED.year_built,properties.year_built),
+            sqft=COALESCE(EXCLUDED.sqft,properties.sqft),bedrooms=COALESCE(EXCLUDED.bedrooms,properties.bedrooms),
+            bathrooms=COALESCE(EXCLUDED.bathrooms,properties.bathrooms),lot_size=COALESCE(EXCLUDED.lot_size,properties.lot_size),
+            assessed_value=COALESCE(EXCLUDED.assessed_value,properties.assessed_value),estimated_value=COALESCE(EXCLUDED.estimated_value,properties.estimated_value),
+            equity_percent=COALESCE(EXCLUDED.equity_percent,properties.equity_percent),property_status=COALESCE(EXCLUDED.property_status,properties.property_status),
+            condition=COALESCE(EXCLUDED.condition,properties.condition),last_sale_date=COALESCE(EXCLUDED.last_sale_date,properties.last_sale_date),
+            last_sale_price=COALESCE(EXCLUDED.last_sale_price,properties.last_sale_price),vacant=COALESCE(EXCLUDED.vacant,properties.vacant),updated_at=NOW()
+          RETURNING id, xmax, street, city, state_code, zip_code
+        `, [streets,cities,states,zips,counties,mktIds,sources,propTypes,yearBuilts,sqfts,beds,baths,lots,assessed,estVals,equity,propStatus,conds,lastSaleDates,lastSalePrices,vacants]);
+
+        const propMap = {};
+        for (const p of propRes.rows) {
+          propMap[(p.street+'|'+p.city+'|'+p.state_code+'|'+p.zip_code).toLowerCase()] = { id: p.id, wasInsert: p.xmax==='0' };
+          if (p.xmax==='0') inserted++; else updated++;
+        }
+
+        // Contacts + phones
+        for (const row of validRows) {
+          try {
+            const key = (get(row,'street')+'|'+get(row,'city')+'|'+get(row,'state_code').toUpperCase().slice(0,2)+'|'+(get(row,'zip_code')||'')).toLowerCase();
+            const prop = propMap[key];
+            if (!prop) continue;
+            const propertyId = prop.id;
+            const firstName = get(row,'first_name'), lastName = get(row,'last_name');
+            if (firstName || lastName) {
+              const existPC = await query(`SELECT contact_id FROM property_contacts WHERE property_id=$1 AND primary_contact=true LIMIT 1`,[propertyId]);
+              let contactId;
+              if (existPC.rows.length) {
+                contactId = existPC.rows[0].contact_id;
+                await query(`UPDATE contacts SET first_name=COALESCE(NULLIF($1,''),first_name),last_name=COALESCE(NULLIF($2,''),last_name),mailing_address=COALESCE(NULLIF($3,''),mailing_address),mailing_city=COALESCE(NULLIF($4,''),mailing_city),mailing_state=COALESCE(NULLIF($5,''),mailing_state),mailing_zip=COALESCE(NULLIF($6,''),mailing_zip),email_1=COALESCE(NULLIF($7,''),email_1),email_2=COALESCE(NULLIF($8,''),email_2),updated_at=NOW() WHERE id=$9`,
+                  [firstName,lastName,get(row,'mailing_address'),get(row,'mailing_city'),get(row,'mailing_state'),get(row,'mailing_zip'),get(row,'email_1')||'',get(row,'email_2')||'',contactId]);
+              } else {
+                const cr = await query(`INSERT INTO contacts (first_name,last_name,mailing_address,mailing_city,mailing_state,mailing_zip,email_1,email_2) VALUES ($1,$2,$3,$4,$5,$6,$7,$8) RETURNING id`,
+                  [firstName,lastName,get(row,'mailing_address'),get(row,'mailing_city'),get(row,'mailing_state'),get(row,'mailing_zip'),get(row,'email_1')||null,get(row,'email_2')||null]);
+                contactId = cr.rows[0].id;
+                await query(`INSERT INTO property_contacts (property_id,contact_id,primary_contact) VALUES ($1,$2,true) ON CONFLICT DO NOTHING`,[propertyId,contactId]);
+              }
+              for (let i=1;i<=10;i++) {
+                const phoneRaw = cleanPhone(get(row,`phone_${i}`));
+                if (!phoneRaw||phoneRaw.length<7) continue;
+                const pType=(get(row,`phone_type_${i}`)||'unknown').toLowerCase().trim();
+                const pStatus=(get(row,`phone_status_${i}`)||'unknown').toLowerCase().trim();
+                await query(`INSERT INTO phones (contact_id,phone_number,phone_index,phone_type,phone_status) VALUES ($1,$2,$3,$4,$5) ON CONFLICT (contact_id,phone_number) DO UPDATE SET phone_type=CASE WHEN EXCLUDED.phone_type!='unknown' THEN EXCLUDED.phone_type ELSE phones.phone_type END,phone_status=CASE WHEN EXCLUDED.phone_status!='unknown' THEN EXCLUDED.phone_status ELSE phones.phone_status END`,
+                  [contactId,phoneRaw,i,pType,pStatus]);
+              }
+            }
+            if (resolvedListId) {
+              await query(`INSERT INTO property_lists (property_id,list_id,added_at) VALUES ($1,$2,NOW()) ON CONFLICT DO NOTHING`,[propertyId,resolvedListId]);
+            }
+          } catch(rowErr) { errors++; }
+        }
+      }
+
+      processed += rows.length;
+      await query(`UPDATE bulk_import_jobs SET processed_rows=$1,inserted=$2,updated=$3,errors=$4,updated_at=NOW() WHERE id=$5`,
+        [processed, inserted, updated, errors, jobId]);
+    }
+
+    await query(`UPDATE bulk_import_jobs SET status='complete',processed_rows=$1,inserted=$2,updated=$3,errors=$4,updated_at=NOW() WHERE id=$5`,
+      [allRows.length, inserted, updated, errors, jobId]);
+
+  } catch(e) {
+    console.error('Background import error:', e.message);
+    await query(`UPDATE bulk_import_jobs SET status='error',error_log=$1,updated_at=NOW() WHERE id=$2`, [e.message, jobId]);
+  }
+}
 
 module.exports = router;
