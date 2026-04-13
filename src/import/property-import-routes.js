@@ -266,11 +266,18 @@ router.get('/', requireAuth, async (req, res) => {
         const res = await fetch('/import/property/parse', { method: 'POST', body: form });
         const data = await res.json();
         if (!res.ok || data.error) { showError(data.error || 'Failed to parse.'); return; }
-        data.listName    = newName || document.getElementById('existing-list-id').options[document.getElementById('existing-list-id').selectedIndex]?.dataset?.name || '';
-        data.listId      = existingId || null;
-        data.listType    = listType;
-        data.listSource  = listSource;
-        sessionStorage.setItem('loki_import', JSON.stringify(data));
+        const importMeta = {
+          columns:    data.columns,
+          previewRows: data.previewRows,
+          totalRows:  data.totalRows,
+          mapping:    data.mapping,
+          filename:   data.filename,
+          listName:   newName || document.getElementById('existing-list-id').options[document.getElementById('existing-list-id').selectedIndex]?.dataset?.name || '',
+          listId:     existingId || null,
+          listType:   listType,
+          listSource: listSource
+        };
+        sessionStorage.setItem('loki_import', JSON.stringify(importMeta));
         window.location.href = '/import/property/map';
       } catch(e) { showError(e.message); }
       finally { document.getElementById('upload-spinner').style.display='none'; dz.style.opacity='1'; }
@@ -291,12 +298,15 @@ router.post('/parse', requireAuth, upload.single('csvfile'), (req, res) => {
     const columns = parsed.meta.fields || [];
     const rows = parsed.data;
     if (!rows.length) return res.status(400).json({ error: 'File is empty.' });
-    const MAX_ROWS = 20000;
+    const MAX_ROWS = 100000;
     if (rows.length > MAX_ROWS) {
-      return res.status(400).json({ error: `File has ${rows.length.toLocaleString()} rows. Maximum import size is ${MAX_ROWS.toLocaleString()} rows. Please split into batches.` });
+      return res.status(400).json({ error: `File has ${rows.length.toLocaleString()} rows. Use Bulk Import for files over 100k rows.` });
     }
     const mapping = autoMap(columns);
-    res.json({ columns, rows: rows, totalRows: rows.length, mapping, filename: req.file.originalname });
+    // Store full rows in server session — only send preview to browser
+    req.session.importRows = rows;
+    req.session.save();
+    res.json({ columns, previewRows: rows.slice(0, 10), totalRows: rows.length, mapping, filename: req.file.originalname });
   } catch(e) { res.status(500).json({ error: e.message }); }
 });
 
@@ -442,23 +452,23 @@ router.get('/preview', requireAuth, (req, res) => {
     <script>
     const importData = JSON.parse(sessionStorage.getItem('loki_import') || '{}');
     const mapping = importData.finalMapping || {};
-    const rows = importData.rows || [];
+    const previewRows = importData.previewRows || [];
     const totalRows = importData.totalRows || 0;
 
     document.getElementById('preview-info').textContent =
-      (importData.filename||'') + ' — ' + totalRows.toLocaleString() + ' rows · Showing first ' + Math.min(rows.length, 10);
+      (importData.filename||'') + ' — ' + totalRows.toLocaleString() + ' rows · Showing first ' + Math.min(previewRows.length, 10);
     if (importData.listName) {
       const badge = document.getElementById('list-badge');
       badge.textContent = '📋 ' + importData.listName;
       badge.style.display = 'inline-flex';
     }
 
-    // Build preview table
+    // Build preview table from previewRows
     const lokiKeys = Object.keys(mapping);
     const thead = document.getElementById('preview-head');
     const tbody = document.getElementById('preview-body');
     lokiKeys.forEach(k => { const th=document.createElement('th'); th.textContent=mapping[k]; thead.appendChild(th); });
-    rows.slice(0,10).forEach(row => {
+    previewRows.slice(0,10).forEach(row => {
       const tr = document.createElement('tr');
       lokiKeys.forEach(k => {
         const td = document.createElement('td');
@@ -473,18 +483,27 @@ router.get('/preview', requireAuth, (req, res) => {
       document.getElementById('import-btn').textContent = 'Importing…';
       document.getElementById('progress-bar').style.display = 'block';
 
-      const BATCH = 200;
+      const BATCH_SIZE = 500;
       let offset = 0;
       let totalCreated = 0, totalUpdated = 0, totalErrors = 0;
       let resolvedListId = null;
 
-      while (offset < rows.length) {
-        const batch = rows.slice(offset, offset + BATCH);
+      while (offset < totalRows) {
         try {
           const res = await fetch('/import/property/commit', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ rows: batch, mapping, filename: importData.filename, totalRows, listName: offset===0?(importData.listName||null):null, listId: offset===0?(resolvedListId||importData.listId||null):resolvedListId, listType: importData.listType||null, listSource: importData.listSource||null })
+            body: JSON.stringify({
+              mapping,
+              filename: importData.filename,
+              totalRows,
+              offset,
+              batchSize: BATCH_SIZE,
+              listName:   offset===0 ? (importData.listName||null)   : null,
+              listId:     offset===0 ? (resolvedListId||importData.listId||null) : resolvedListId,
+              listType:   importData.listType   || null,
+              listSource: importData.listSource || null
+            })
           });
           const data = await res.json();
           if (data.error) throw new Error(data.error);
@@ -494,9 +513,9 @@ router.get('/preview', requireAuth, (req, res) => {
           if (data.resolvedListId) resolvedListId = data.resolvedListId;
           if (data.firstError && !window._firstImportError) window._firstImportError = data.firstError;
         } catch(e) {
-          totalErrors += batch.length;
+          totalErrors += BATCH_SIZE;
         }
-        offset += BATCH;
+        offset += BATCH_SIZE;
         const pct = Math.min(100, Math.round((offset / rows.length) * 100));
         document.getElementById('progress-fill').style.width = pct + '%';
         document.getElementById('progress-text').textContent = offset + ' / ' + rows.length + ' processed';
@@ -530,8 +549,13 @@ router.get('/preview', requireAuth, (req, res) => {
 // ── COMMIT: Save batch to DB ──────────────────────────────────────────────────
 router.post('/commit', requireAuth, async (req, res) => {
   try {
-    const { rows, mapping, filename, listName, listId, listType, listSource } = req.body;
-    if (!rows || !mapping) return res.status(400).json({ error: 'Missing data.' });
+    const { mapping, filename, listName, listId, listType, listSource, offset, batchSize } = req.body;
+    if (!mapping) return res.status(400).json({ error: 'Missing mapping.' });
+
+    // Read rows from server session
+    const allRows = req.session.importRows;
+    if (!allRows || !allRows.length) return res.status(400).json({ error: 'Session expired. Please re-upload your file.' });
+    const rows = allRows.slice(offset || 0, (offset || 0) + (batchSize || 500));
 
     let created = 0, updated = 0, errors = 0;
 
