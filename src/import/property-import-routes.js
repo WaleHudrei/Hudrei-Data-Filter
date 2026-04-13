@@ -296,7 +296,7 @@ router.post('/parse', requireAuth, upload.single('csvfile'), (req, res) => {
       return res.status(400).json({ error: `File has ${rows.length.toLocaleString()} rows. Maximum import size is ${MAX_ROWS.toLocaleString()} rows. Please split into batches.` });
     }
     const mapping = autoMap(columns);
-    res.json({ columns, rows: rows.slice(0, 500), totalRows: rows.length, mapping, filename: req.file.originalname });
+    res.json({ columns, rows: rows, totalRows: rows.length, mapping, filename: req.file.originalname });
   } catch(e) { res.status(500).json({ error: e.message }); }
 });
 
@@ -476,6 +476,7 @@ router.get('/preview', requireAuth, (req, res) => {
       const BATCH = 200;
       let offset = 0;
       let totalCreated = 0, totalUpdated = 0, totalErrors = 0;
+      let resolvedListId = null;
 
       while (offset < rows.length) {
         const batch = rows.slice(offset, offset + BATCH);
@@ -483,13 +484,14 @@ router.get('/preview', requireAuth, (req, res) => {
           const res = await fetch('/import/property/commit', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ rows: batch, mapping, filename: importData.filename, totalRows, listName: offset===0?(importData.listName||null):null, listId: offset===0?(importData.listId||null):null, listType: importData.listType||null, listSource: importData.listSource||null })
+            body: JSON.stringify({ rows: batch, mapping, filename: importData.filename, totalRows, listName: offset===0?(importData.listName||null):null, listId: offset===0?(resolvedListId||importData.listId||null):resolvedListId, listType: importData.listType||null, listSource: importData.listSource||null })
           });
           const data = await res.json();
           if (data.error) throw new Error(data.error);
           totalCreated += data.created || 0;
           totalUpdated += data.updated || 0;
           totalErrors += data.errors || 0;
+          if (data.resolvedListId) resolvedListId = data.resolvedListId;
           if (data.firstError && !window._firstImportError) window._firstImportError = data.firstError;
         } catch(e) {
           totalErrors += batch.length;
@@ -703,7 +705,7 @@ router.post('/commit', requireAuth, async (req, res) => {
       }
     }
 
-    res.json({ created, updated, errors, firstError: global._importFirstError || null });
+    res.json({ created, updated, errors, firstError: global._importFirstError || null, resolvedListId });
     global._importFirstError = null;
   } catch(e) {
     console.error('Import commit error:', e.message);
