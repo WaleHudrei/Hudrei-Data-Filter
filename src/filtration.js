@@ -154,8 +154,9 @@ async function applyFiltrationToContacts(campaignId, allRows) {
       [status || 'unknown', tag, isWrong, wasRemoved, count, row.Disposition || '', isCorrect, campaignId, phone]
     );
 
-    // If Transfer — flag the contact as Lead (scoped to this campaign only)
+    // If Transfer — flag lead at property level + mark phone correct globally
     if (dispo === 'transfer') {
+      // 1. Flag campaign contact as Lead
       await query(
         `UPDATE campaign_contacts cc
          SET marketing_result = 'Lead'
@@ -165,6 +166,27 @@ async function applyFiltrationToContacts(campaignId, allRows) {
            AND ccp.phone_number = $2
            AND cc.campaign_id = $1`,
         [campaignId, phone]
+      );
+
+      // 2. Flag the specific property as lead in the main properties table
+      // Find property via campaign_contacts → property address match
+      await query(
+        `UPDATE properties p SET pipeline_stage = 'lead', updated_at = NOW()
+         FROM campaign_contacts cc
+         JOIN campaign_contact_phones ccp ON ccp.contact_id = cc.id
+         WHERE cc.campaign_id = $1
+           AND ccp.phone_number = $2
+           AND p.street = cc.property_address
+           AND p.state_code = cc.property_state
+           AND p.pipeline_stage NOT IN ('contract','closed')`,
+        [campaignId, phone]
+      );
+
+      // 3. Mark phone as correct in global phones table
+      await query(
+        `UPDATE phones SET phone_status = 'correct', updated_at = NOW()
+         WHERE phone_number = $1`,
+        [phone]
       );
     }
   }
