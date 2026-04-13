@@ -238,6 +238,20 @@ async function initSchema() {
   // Migration: add list_id if missing
   await query(`ALTER TABLE bulk_import_jobs ADD COLUMN IF NOT EXISTS list_id INTEGER REFERENCES lists(id) ON DELETE SET NULL`);
 
+  // ── Seed all 50 state markets ─────────────────────────────────────────────────
+  await query(`INSERT INTO markets (name,state_code,state_name) VALUES
+    ('AL','AL','Alabama'),('AK','AK','Alaska'),('AZ','AZ','Arizona'),('AR','AR','Arkansas'),('CA','CA','California'),
+    ('CO','CO','Colorado'),('CT','CT','Connecticut'),('DE','DE','Delaware'),('FL','FL','Florida'),('GA','GA','Georgia'),
+    ('HI','HI','Hawaii'),('ID','ID','Idaho'),('IL','IL','Illinois'),('IN','IN','Indiana'),('IA','IA','Iowa'),
+    ('KS','KS','Kansas'),('KY','KY','Kentucky'),('LA','LA','Louisiana'),('ME','ME','Maine'),('MD','MD','Maryland'),
+    ('MA','MA','Massachusetts'),('MI','MI','Michigan'),('MN','MN','Minnesota'),('MS','MS','Mississippi'),('MO','MO','Missouri'),
+    ('MT','MT','Montana'),('NE','NE','Nebraska'),('NV','NV','Nevada'),('NH','NH','New Hampshire'),('NJ','NJ','New Jersey'),
+    ('NM','NM','New Mexico'),('NY','NY','New York'),('NC','NC','North Carolina'),('ND','ND','North Dakota'),('OH','OH','Ohio'),
+    ('OK','OK','Oklahoma'),('OR','OR','Oregon'),('PA','PA','Pennsylvania'),('RI','RI','Rhode Island'),('SC','SC','South Carolina'),
+    ('SD','SD','South Dakota'),('TN','TN','Tennessee'),('TX','TX','Texas'),('UT','UT','Utah'),('VT','VT','Vermont'),
+    ('VA','VA','Virginia'),('WA','WA','Washington'),('WV','WV','West Virginia'),('WI','WI','Wisconsin'),('WY','WY','Wyoming')
+    ON CONFLICT (state_code) DO UPDATE SET name=EXCLUDED.name, state_name=EXCLUDED.state_name`);
+
   // ── Migration: add new columns if they don't exist yet ──────────────────────
   const migrations = [
 
@@ -286,12 +300,7 @@ async function initSchema() {
   }
 
   // Seed base markets
-  await query(`
-    INSERT INTO markets (name, state_code, state_name) VALUES
-      ('Indianapolis Metro', 'IN', 'Indiana'),
-      ('Atlanta Metro', 'GA', 'Georgia')
-    ON CONFLICT (state_code) DO NOTHING;
-  `);
+  // Legacy market seed removed — all 50 states seeded above
 
   console.log('Database schema initialized + migrations applied');
 }
