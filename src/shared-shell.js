@@ -39,6 +39,8 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
 .data-table th{text-align:left;padding:8px 12px;font-weight:500;color:#888;border-bottom:1px solid #f0efe9;font-size:11px;white-space:nowrap;background:#fff}
 .data-table td{padding:8px 12px;border-bottom:1px solid #f8f7f4;vertical-align:top}
 .data-table tbody tr:hover{background:#fafaf8}
+tr.row-selected td{background:#eef4ff !important}
+tr.row-selected:hover td{background:#e4edff !important}
 .data-table tbody tr:last-child td{border-bottom:none}
 .btn-primary-link{display:inline-flex;padding:8px 16px;background:#1a1a1a;color:#fff;border-radius:8px;font-size:13px;font-weight:500;text-decoration:none}
 .btn-primary-link:hover{background:#333}
