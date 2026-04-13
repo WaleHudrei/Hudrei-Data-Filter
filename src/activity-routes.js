@@ -1,7 +1,7 @@
 const express = require('express');
 const router = express.Router();
-const { query } = require('../db');
-const { shell } = require('../shared-shell');
+const { query } = require('./db');
+const { shell } = require('./shared-shell');
 
 function requireAuth(req, res, next) {
   if (req.session && req.session.authenticated) return next();
