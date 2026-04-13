@@ -42,6 +42,8 @@ const LOKI_FIELDS = [
   { key: 'mailing_city',    label: 'Mailing City',      required: false, group: 'Owner' },
   { key: 'mailing_state',   label: 'Mailing State',     required: false, group: 'Owner' },
   { key: 'mailing_zip',     label: 'Mailing ZIP',       required: false, group: 'Owner' },
+  { key: 'email_1',          label: 'Email 1',           required: false, group: 'Owner' },
+  { key: 'email_2',          label: 'Email 2',           required: false, group: 'Owner' },
   // Phones
   { key: 'phone_1',         label: 'Phone 1',           required: false, group: 'Phones' },
   { key: 'phone_2',         label: 'Phone 2',           required: false, group: 'Phones' },
@@ -86,6 +88,8 @@ function autoMap(csvColumns) {
     mailing_city: ['mailingcity','ownercity','mailcity'],
     mailing_state: ['mailingstate','ownerstate','mailstate'],
     mailing_zip: ['mailingzip','ownerzip','mailzip','mailingzipcode'],
+    email_1: ['email1','email','email#1','primaryemail','contactemail'],
+    email_2: ['email2','email#2'],
     phone_1: ['phone1','ph1','phone','phonenumber','primaryphone','ph#1'],
     phone_2: ['phone2','ph2','ph#2'],
     phone_3: ['phone3','ph3','ph#3'],
@@ -476,13 +480,15 @@ router.post('/commit', requireAuth, async (req, res) => {
               mailing_city    = COALESCE(NULLIF($4,''), mailing_city),
               mailing_state   = COALESCE(NULLIF($5,''), mailing_state),
               mailing_zip     = COALESCE(NULLIF($6,''), mailing_zip),
+              email_1 = COALESCE(NULLIF($7,''), email_1),
+              email_2 = COALESCE(NULLIF($8,''), email_2),
               updated_at = NOW()
-              WHERE id = $7`,
-              [firstName, lastName, get(row,'mailing_address'), get(row,'mailing_city'), get(row,'mailing_state'), get(row,'mailing_zip'), contactId]);
+              WHERE id = $9`,
+              [firstName, lastName, get(row,'mailing_address'), get(row,'mailing_city'), get(row,'mailing_state'), get(row,'mailing_zip'), get(row,'email_1')||'', get(row,'email_2')||'', contactId]);
           } else {
-            const cr = await query(`INSERT INTO contacts (first_name,last_name,mailing_address,mailing_city,mailing_state,mailing_zip)
-              VALUES ($1,$2,$3,$4,$5,$6) RETURNING id`,
-              [firstName, lastName, get(row,'mailing_address'), get(row,'mailing_city'), get(row,'mailing_state'), get(row,'mailing_zip')]);
+            const cr = await query(`INSERT INTO contacts (first_name,last_name,mailing_address,mailing_city,mailing_state,mailing_zip,email_1,email_2)
+              VALUES ($1,$2,$3,$4,$5,$6,$7,$8) RETURNING id`,
+              [firstName, lastName, get(row,'mailing_address'), get(row,'mailing_city'), get(row,'mailing_state'), get(row,'mailing_zip'), get(row,'email_1')||null, get(row,'email_2')||null]);
             contactId = cr.rows[0].id;
             await query(`INSERT INTO property_contacts (property_id,contact_id,primary_contact) VALUES ($1,$2,true) ON CONFLICT DO NOTHING`, [propertyId, contactId]);
           }
