@@ -46,15 +46,35 @@ const LOKI_FIELDS = [
   { key: 'email_2',          label: 'Email 2',           required: false, group: 'Owner' },
   // Phones
   { key: 'phone_1',         label: 'Phone 1',           required: false, group: 'Phones' },
+  { key: 'phone_type_1',    label: 'Phone 1 Type',      required: false, group: 'Phones' },
+  { key: 'phone_status_1',  label: 'Phone 1 Status',    required: false, group: 'Phones' },
   { key: 'phone_2',         label: 'Phone 2',           required: false, group: 'Phones' },
+  { key: 'phone_type_2',    label: 'Phone 2 Type',      required: false, group: 'Phones' },
+  { key: 'phone_status_2',  label: 'Phone 2 Status',    required: false, group: 'Phones' },
   { key: 'phone_3',         label: 'Phone 3',           required: false, group: 'Phones' },
+  { key: 'phone_type_3',    label: 'Phone 3 Type',      required: false, group: 'Phones' },
+  { key: 'phone_status_3',  label: 'Phone 3 Status',    required: false, group: 'Phones' },
   { key: 'phone_4',         label: 'Phone 4',           required: false, group: 'Phones' },
+  { key: 'phone_type_4',    label: 'Phone 4 Type',      required: false, group: 'Phones' },
+  { key: 'phone_status_4',  label: 'Phone 4 Status',    required: false, group: 'Phones' },
   { key: 'phone_5',         label: 'Phone 5',           required: false, group: 'Phones' },
+  { key: 'phone_type_5',    label: 'Phone 5 Type',      required: false, group: 'Phones' },
+  { key: 'phone_status_5',  label: 'Phone 5 Status',    required: false, group: 'Phones' },
   { key: 'phone_6',         label: 'Phone 6',           required: false, group: 'Phones' },
+  { key: 'phone_type_6',    label: 'Phone 6 Type',      required: false, group: 'Phones' },
+  { key: 'phone_status_6',  label: 'Phone 6 Status',    required: false, group: 'Phones' },
   { key: 'phone_7',         label: 'Phone 7',           required: false, group: 'Phones' },
+  { key: 'phone_type_7',    label: 'Phone 7 Type',      required: false, group: 'Phones' },
+  { key: 'phone_status_7',  label: 'Phone 7 Status',    required: false, group: 'Phones' },
   { key: 'phone_8',         label: 'Phone 8',           required: false, group: 'Phones' },
+  { key: 'phone_type_8',    label: 'Phone 8 Type',      required: false, group: 'Phones' },
+  { key: 'phone_status_8',  label: 'Phone 8 Status',    required: false, group: 'Phones' },
   { key: 'phone_9',         label: 'Phone 9',           required: false, group: 'Phones' },
+  { key: 'phone_type_9',    label: 'Phone 9 Type',      required: false, group: 'Phones' },
+  { key: 'phone_status_9',  label: 'Phone 9 Status',    required: false, group: 'Phones' },
   { key: 'phone_10',        label: 'Phone 10',          required: false, group: 'Phones' },
+  { key: 'phone_type_10',   label: 'Phone 10 Type',     required: false, group: 'Phones' },
+  { key: 'phone_status_10', label: 'Phone 10 Status',   required: false, group: 'Phones' },
 ];
 
 // Auto-map CSV headers to Loki fields
@@ -100,6 +120,26 @@ function autoMap(csvColumns) {
     phone_8: ['phone8','ph8','ph#8'],
     phone_9: ['phone9','ph9','ph#9'],
     phone_10: ['phone10','ph10','ph#10'],
+    phone_type_1:    ['phonetype1','phone1type','type1','phonetype','ph1type','phonetype#1'],
+    phone_type_2:    ['phonetype2','phone2type','type2','ph2type','phonetype#2'],
+    phone_type_3:    ['phonetype3','phone3type','type3','ph3type'],
+    phone_type_4:    ['phonetype4','phone4type','type4','ph4type'],
+    phone_type_5:    ['phonetype5','phone5type','type5','ph5type'],
+    phone_type_6:    ['phonetype6','phone6type','type6','ph6type'],
+    phone_type_7:    ['phonetype7','phone7type','type7','ph7type'],
+    phone_type_8:    ['phonetype8','phone8type','type8','ph8type'],
+    phone_type_9:    ['phonetype9','phone9type','type9','ph9type'],
+    phone_type_10:   ['phonetype10','phone10type','type10','ph10type'],
+    phone_status_1:  ['phonestatus1','phone1status','status1','ph1status','phonestatus#1'],
+    phone_status_2:  ['phonestatus2','phone2status','status2','ph2status'],
+    phone_status_3:  ['phonestatus3','phone3status','status3','ph3status'],
+    phone_status_4:  ['phonestatus4','phone4status','status4','ph4status'],
+    phone_status_5:  ['phonestatus5','phone5status','status5','ph5status'],
+    phone_status_6:  ['phonestatus6','phone6status','status6','ph6status'],
+    phone_status_7:  ['phonestatus7','phone7status','status7','ph7status'],
+    phone_status_8:  ['phonestatus8','phone8status','status8','ph8status'],
+    phone_status_9:  ['phonestatus9','phone9status','status9','ph9status'],
+    phone_status_10: ['phonestatus10','phone10status','status10','ph10status'],
   };
 
   for (const col of csvColumns) {
@@ -188,27 +228,47 @@ router.post('/parse', requireAuth, upload.single('csvfile'), (req, res) => {
 
 // ── STEP 2: Map columns ───────────────────────────────────────────────────────
 router.get('/map', requireAuth, (req, res) => {
-  const groups = ['Property', 'Owner', 'Phones'];
   const fieldsByGroup = group => LOKI_FIELDS.filter(f => f.group === group);
 
-  const groupHTML = groups.map(group => `
-    <div style="margin-bottom:1.5rem">
-      <div style="font-size:11px;font-weight:700;color:#aaa;text-transform:uppercase;letter-spacing:.1em;margin-bottom:10px">${group}</div>
-      <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px 24px">
-        ${fieldsByGroup(group).map(f => `
-          <div style="display:flex;align-items:center;gap:12px">
-            <div style="width:150px;font-size:13px;color:${f.required?'#1a1a1a':'#555'};flex-shrink:0;font-weight:${f.required?'500':'400'}">
-              ${f.label}${f.required?' <span style="color:#c0392b">*</span>':''}
-            </div>
-            <select id="map_${f.key}" data-loki="${f.key}" style="flex:1;padding:7px 10px;border:1px solid #ddd;border-radius:7px;font-size:13px;font-family:inherit;background:#fff">
-              <option value="">— Skip —</option>
-            </select>
-          </div>`).join('')}
+  const fieldRow = f => `
+    <div style="display:flex;align-items:center;gap:10px;min-width:0">
+      <div style="width:130px;font-size:13px;color:${f.required?'#1a1a1a':'#555'};flex-shrink:0;font-weight:${f.required?'500':'400'}">
+        ${f.label}${f.required?' <span style="color:#c0392b">*</span>':''}
       </div>
+      <select id="map_${f.key}" data-loki="${f.key}" style="flex:1;min-width:0;padding:7px 10px;border:1px solid #ddd;border-radius:7px;font-size:13px;font-family:inherit;background:#fff">
+        <option value="">— Skip —</option>
+      </select>
+    </div>`;
+
+  // For phones: group each phone's number+type+status into one row
+  const phoneNums = [1,2,3,4,5,6,7,8,9,10];
+  const phoneHTML = phoneNums.map(n => `
+    <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px 16px;padding:8px 0;border-bottom:1px solid #f0efe9">
+      ${fieldRow({key:`phone_${n}`,       label:`Phone ${n}`,        required:false})}
+      ${fieldRow({key:`phone_type_${n}`,  label:`Phone ${n} Type`,   required:false})}
+      ${fieldRow({key:`phone_status_${n}`,label:`Phone ${n} Status`, required:false})}
     </div>`).join('');
 
+  const groupHTML = ['Property','Owner'].map(group => `
+    <div style="margin-bottom:1.5rem">
+      <div style="font-size:11px;font-weight:700;color:#aaa;text-transform:uppercase;letter-spacing:.1em;margin-bottom:12px">${group}</div>
+      <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(320px,1fr));gap:10px 32px">
+        ${fieldsByGroup(group).map(f => fieldRow(f)).join('')}
+      </div>
+    </div>`).join('') + `
+    <div style="margin-bottom:1rem">
+      <div style="font-size:11px;font-weight:700;color:#aaa;text-transform:uppercase;letter-spacing:.1em;margin-bottom:4px">Phones</div>
+      <div style="display:grid;grid-template-columns:130px 1fr;gap:4px 0;margin-bottom:8px;font-size:11px;color:#aaa;font-weight:600;text-transform:uppercase;letter-spacing:.05em;padding:0 0 4px 0;border-bottom:2px solid #e0dfd8">
+        <div></div>
+        <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px 16px">
+          <div>Number</div><div>Type</div><div>Status</div>
+        </div>
+      </div>
+      ${phoneHTML}
+    </div>`;
+
   res.send(shell('Map Columns', `
-    <div style="max-width:780px">
+    <div style="max-width:100%">
       <div style="margin-bottom:1.5rem"><a href="/import/property" style="font-size:13px;color:#888;text-decoration:none">← Back</a></div>
       <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:1.5rem;flex-wrap:wrap;gap:12px">
         <div>
@@ -493,14 +553,19 @@ router.post('/commit', requireAuth, async (req, res) => {
             await query(`INSERT INTO property_contacts (property_id,contact_id,primary_contact) VALUES ($1,$2,true) ON CONFLICT DO NOTHING`, [propertyId, contactId]);
           }
 
-          // Upsert phones
+          // Upsert phones with type and status
           for (let i = 1; i <= 10; i++) {
             const phoneRaw = cleanPhone(get(row, `phone_${i}`));
             if (!phoneRaw || phoneRaw.length < 7) continue;
-            await query(`INSERT INTO phones (contact_id, phone_number, phone_index, phone_status)
-              VALUES ($1,$2,$3,'unknown')
-              ON CONFLICT (contact_id, phone_number) DO NOTHING`,
-              [contactId, phoneRaw, i]);
+            const pType   = (get(row, `phone_type_${i}`)   || 'unknown').toLowerCase().trim();
+            const pStatus = (get(row, `phone_status_${i}`) || 'unknown').toLowerCase().trim();
+            await query(`INSERT INTO phones (contact_id, phone_number, phone_index, phone_type, phone_status)
+              VALUES ($1,$2,$3,$4,$5)
+              ON CONFLICT (contact_id, phone_number)
+              DO UPDATE SET
+                phone_type   = CASE WHEN EXCLUDED.phone_type   != 'unknown' THEN EXCLUDED.phone_type   ELSE phones.phone_type   END,
+                phone_status = CASE WHEN EXCLUDED.phone_status != 'unknown' THEN EXCLUDED.phone_status ELSE phones.phone_status END`,
+              [contactId, phoneRaw, i, pType, pStatus]);
           }
         }
 
