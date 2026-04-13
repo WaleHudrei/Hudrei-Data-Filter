@@ -103,12 +103,12 @@ router.get('/', requireAuth, async (req, res) => {
       return `<tr data-id="${r.id}" style="cursor:pointer;border-bottom:1px solid #f0efe9" onclick="window.location='/records/${r.id}'" onmouseover="if(!this.classList.contains('row-selected'))this.style.background='#fafaf8'" onmouseout="if(!this.classList.contains('row-selected'))this.style.background=''">
         <td style="width:40px;padding:12px 0 12px 16px" onclick="event.stopPropagation()"><input type="checkbox" class="row-check" data-id="${r.id}" style="cursor:pointer;width:15px;height:15px"></td>
         <td style="padding:12px"><div style="font-weight:500;font-size:13px">${r.street}</div><div style="font-size:12px;color:#888;margin-top:2px">${r.city}, ${r.state_code} ${r.zip_code}</div></td>
-        <td style="padding:12px;font-size:13px;color:#555">${owner}</td>
-        <td style="padding:12px;font-size:13px;color:#555">${fmt(r.property_type)}</td>
+        <td style="padding:12px;font-size:13px;color:#555;text-align:left">${owner}</td>
+        <td style="padding:12px;font-size:13px;color:#555;text-align:left">${fmt(r.property_type)}</td>
         <td style="padding:12px;font-size:13px;text-align:center">${r.phone_count || 0}</td>
         <td style="padding:12px;font-size:13px;text-align:center">${r.list_count || 0}</td>
-        <td style="padding:12px"><span style="background:${stageColor};color:${stageText};padding:3px 10px;border-radius:5px;font-size:11px;font-weight:600;text-transform:capitalize">${stage}</span></td>
-        <td style="padding:12px;font-size:12px;color:#888;white-space:nowrap">${fmtDate(r.created_at)}</td>
+        <td style="padding:12px;text-align:left"><span style="background:${stageColor};color:${stageText};padding:3px 10px;border-radius:5px;font-size:11px;font-weight:600;text-transform:capitalize">${stage}</span></td>
+        <td style="padding:12px;font-size:12px;color:#888;white-space:nowrap;text-align:right">${fmtDate(r.created_at)}</td>
       </tr>`;
     }).join('');
 
@@ -320,14 +320,14 @@ router.get('/', requireAuth, async (req, res) => {
       <div style="background:#fff;border-radius:10px;border:1px solid #e0dfd8;overflow:hidden">
         <table style="width:100%;font-size:13px;border-collapse:collapse">
           <thead><tr style="border-bottom:1px solid #e0dfd8">
-            <th style="width:40px;padding:10px 0 10px 16px"><input type="checkbox" id="select-all" style="cursor:pointer;width:15px;height:15px" title="Select all"></th>
-            <th style="padding:10px 12px;font-size:11px;font-weight:600;color:#888;text-transform:uppercase;letter-spacing:.05em">Address</th>
-            <th style="padding:10px 12px;font-size:11px;font-weight:600;color:#888;text-transform:uppercase;letter-spacing:.05em">Owner</th>
-            <th style="padding:10px 12px;font-size:11px;font-weight:600;color:#888;text-transform:uppercase;letter-spacing:.05em">Type</th>
-            <th style="padding:10px 12px;font-size:11px;font-weight:600;color:#888;text-transform:uppercase;letter-spacing:.05em">Phones</th>
-            <th style="padding:10px 12px;font-size:11px;font-weight:600;color:#888;text-transform:uppercase;letter-spacing:.05em">Lists</th>
-            <th style="padding:10px 12px;font-size:11px;font-weight:600;color:#888;text-transform:uppercase;letter-spacing:.05em">Stage</th>
-            <th style="padding:10px 12px;font-size:11px;font-weight:600;color:#888;text-transform:uppercase;letter-spacing:.05em">Added</th>
+            <th style="width:40px;padding:10px 0 10px 16px;text-align:left"><input type="checkbox" id="select-all" style="cursor:pointer;width:15px;height:15px" title="Select all"></th>
+            <th style="padding:10px 12px;font-size:11px;font-weight:600;color:#888;text-transform:uppercase;letter-spacing:.05em;text-align:left">Address</th>
+            <th style="padding:10px 12px;font-size:11px;font-weight:600;color:#888;text-transform:uppercase;letter-spacing:.05em;text-align:left">Owner</th>
+            <th style="padding:10px 12px;font-size:11px;font-weight:600;color:#888;text-transform:uppercase;letter-spacing:.05em;text-align:left">Type</th>
+            <th style="padding:10px 12px;font-size:11px;font-weight:600;color:#888;text-transform:uppercase;letter-spacing:.05em;text-align:center">Phones</th>
+            <th style="padding:10px 12px;font-size:11px;font-weight:600;color:#888;text-transform:uppercase;letter-spacing:.05em;text-align:center">Lists</th>
+            <th style="padding:10px 12px;font-size:11px;font-weight:600;color:#888;text-transform:uppercase;letter-spacing:.05em;text-align:left">Stage</th>
+            <th style="padding:10px 12px;font-size:11px;font-weight:600;color:#888;text-transform:uppercase;letter-spacing:.05em;text-align:right">Added</th>
           </tr></thead>
           <tbody>
             ${tableRows || '<tr><td colspan="8" style="text-align:center;padding:40px;color:#aaa;font-size:13px">No records found</td></tr>'}
