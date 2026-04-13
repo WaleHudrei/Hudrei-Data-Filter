@@ -287,7 +287,7 @@ router.get('/', requireAuth, async (req, res) => {
             ${[
               ['street','Street Address'],['city','City'],['state_code','State'],['zip_code','ZIP'],['county','County'],
               ['first_name','Owner First Name'],['last_name','Owner Last Name'],
-              ['mailing_address','Mailing Address'],['mailing_city','Mailing City'],['mailing_state','Mailing State'],['mailing_zip','Mailing ZIP'],
+              ['mailing_address','Mailing Address'],['mailing_city','Mailing City'],['mailing_state','Mailing State'],['mailing_zip','Mailing ZIP'],['email_1','Email 1'],['email_2','Email 2'],
               ['phones','All Phones'],
               ['property_type','Property Type'],['year_built','Year Built'],['sqft','Sq Ft'],['bedrooms','Bedrooms'],['bathrooms','Bathrooms'],
               ['assessed_value','Assessed Value'],['estimated_value','Est. Value'],['equity_percent','Equity %'],
@@ -452,6 +452,7 @@ router.post('/export', requireAuth, async (req, res) => {
           p.source, p.created_at,
           c.first_name, c.last_name,
           c.mailing_address, c.mailing_city, c.mailing_state, c.mailing_zip,
+          c.email_1, c.email_2,
           (SELECT COUNT(*) FROM property_lists pl WHERE pl.property_id = p.id) AS list_count
         FROM properties p
         LEFT JOIN property_contacts pc ON pc.property_id = p.id AND pc.primary_contact = true
@@ -503,6 +504,7 @@ router.post('/export', requireAuth, async (req, res) => {
       first_name: 'Owner First Name', last_name: 'Owner Last Name',
       mailing_address: 'Mailing Address', mailing_city: 'Mailing City',
       mailing_state: 'Mailing State', mailing_zip: 'Mailing ZIP',
+      email_1: 'Email 1', email_2: 'Email 2',
       phones: 'Phones',
       property_type: 'Property Type', year_built: 'Year Built', sqft: 'Sq Ft',
       bedrooms: 'Bedrooms', bathrooms: 'Bathrooms',
@@ -704,6 +706,8 @@ router.get('/:id', requireAuth, async (req, res) => {
             <div class="kv"><div class="kv-label">First Name</div><div class="kv-val">${primaryContact?.first_name || '—'}</div></div>
             <div class="kv"><div class="kv-label">Last Name</div><div class="kv-val">${primaryContact?.last_name || '—'}</div></div>
             <div class="kv" style="grid-column:1/-1"><div class="kv-label">Mailing Address</div><div class="kv-val">${mailingAddr || '—'}</div></div>
+            ${primaryContact?.email_1 ? `<div class="kv"><div class="kv-label">Email 1</div><div class="kv-val"><a href="mailto:${primaryContact.email_1}" style="color:#1a4a9a">${primaryContact.email_1}</a></div></div>` : ''}
+            ${primaryContact?.email_2 ? `<div class="kv"><div class="kv-label">Email 2</div><div class="kv-val"><a href="mailto:${primaryContact.email_2}" style="color:#1a4a9a">${primaryContact.email_2}</a></div></div>` : ''}
           </div>
           <div class="sec-lbl">Phone Numbers <span class="count-pill">${phones.length}</span></div>
           ${phoneHTML}
@@ -810,6 +814,8 @@ router.get('/:id', requireAuth, async (req, res) => {
               <div class="form-field" style="margin:0;grid-column:1/-1"><label>Mailing Address</label><input type="text" name="mailing_address" value="${primaryContact.mailing_address||''}"></div>
               <div class="form-field" style="margin:0"><label>Mailing City</label><input type="text" name="mailing_city" value="${primaryContact.mailing_city||''}"></div>
               <div class="form-field" style="margin:0"><label>Mailing State</label><input type="text" name="mailing_state" value="${primaryContact.mailing_state||''}" maxlength="2"></div>
+              <div class="form-field" style="margin:0;grid-column:1/-1"><label>Email 1</label><input type="email" name="email_1" value="${primaryContact.email_1||''}" placeholder="email@example.com"></div>
+              <div class="form-field" style="margin:0;grid-column:1/-1"><label>Email 2</label><input type="email" name="email_2" value="${primaryContact.email_2||''}" placeholder="email@example.com"></div>
             </div>` : ''}
             <div class="form-field" style="margin-top:4px"><label>Notes (logged to import history)</label><textarea name="edit_notes" rows="2" placeholder="Optional note about this edit…"></textarea></div>
             <div style="display:flex;gap:8px;margin-top:4px">
@@ -837,7 +843,7 @@ router.post('/:id/edit', requireAuth, async (req, res) => {
       estimated_value, vacant, last_sale_date, last_sale_price, source,
       property_status, assessed_value, equity_percent, marketing_result,
       contact_id, first_name, last_name, mailing_address, mailing_city,
-      mailing_state, edit_notes
+      mailing_state, email_1, email_2, edit_notes
     } = req.body;
 
     const updated = [];
@@ -875,9 +881,11 @@ router.post('/:id/edit', requireAuth, async (req, res) => {
           mailing_address = COALESCE(NULLIF($3,''), mailing_address),
           mailing_city = COALESCE(NULLIF($4,''), mailing_city),
           mailing_state = COALESCE(NULLIF($5,''), mailing_state),
+          email_1 = COALESCE(NULLIF($6,''), email_1),
+          email_2 = COALESCE(NULLIF($7,''), email_2),
           updated_at = NOW()
-        WHERE id = $6
-      `, [first_name, last_name, mailing_address, mailing_city, mailing_state, contact_id]);
+        WHERE id = $8
+      `, [first_name, last_name, mailing_address, mailing_city, mailing_state, email_1||'', email_2||'', contact_id]);
       updated.push('owner info');
     }
 
