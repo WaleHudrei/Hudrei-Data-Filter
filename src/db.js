@@ -224,6 +224,7 @@ async function initSchema() {
     id SERIAL PRIMARY KEY,
     status VARCHAR(20) DEFAULT 'pending',
     filename TEXT,
+    list_id INTEGER REFERENCES lists(id) ON DELETE SET NULL,
     total_rows INTEGER DEFAULT 0,
     processed_rows INTEGER DEFAULT 0,
     inserted INTEGER DEFAULT 0,
@@ -234,6 +235,8 @@ async function initSchema() {
     created_at TIMESTAMPTZ DEFAULT NOW(),
     updated_at TIMESTAMPTZ DEFAULT NOW()
   )`);
+  // Migration: add list_id if missing
+  await query(`ALTER TABLE bulk_import_jobs ADD COLUMN IF NOT EXISTS list_id INTEGER REFERENCES lists(id) ON DELETE SET NULL`);
 
   // ── Migration: add new columns if they don't exist yet ──────────────────────
   const migrations = [
