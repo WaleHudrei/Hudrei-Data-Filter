@@ -178,9 +178,9 @@ router.get('/', requireAuth, async (req, res) => {
 // ═══════════════════════════════════════════════════════════════════════════════
 router.post('/edit', requireAuth, async (req, res) => {
   try {
-    const { id, list_name, list_type } = req.body;
-    await query(`UPDATE lists SET list_name=$1, list_type=COALESCE(NULLIF($2,''),list_type) WHERE id=$3`,
-      [list_name, list_type, id]);
+    const { id, list_name, list_type, source } = req.body;
+    await query(`UPDATE lists SET list_name=$1, list_type=COALESCE(NULLIF($2,''),list_type), source=COALESCE(NULLIF($3,''),source) WHERE id=$4`,
+      [list_name, list_type, source, id]);
     res.redirect('/lists?msg=saved');
   } catch(e) {
     console.error(e);
