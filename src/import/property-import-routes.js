@@ -593,9 +593,18 @@ router.post('/commit', requireAuth, async (req, res) => {
     }
 
     // Ensure markets
-    await query(`INSERT INTO markets (name, state_code, state_name) VALUES
-      ('Indianapolis Metro','IN','Indiana'),('Atlanta Metro','GA','Georgia')
-      ON CONFLICT (state_code) DO NOTHING`);
+    await query(`INSERT INTO markets (name,state_code,state_name) VALUES
+      ('AL','AL','Alabama'),('AK','AK','Alaska'),('AZ','AZ','Arizona'),('AR','AR','Arkansas'),('CA','CA','California'),
+      ('CO','CO','Colorado'),('CT','CT','Connecticut'),('DE','DE','Delaware'),('FL','FL','Florida'),('GA','GA','Georgia'),
+      ('HI','HI','Hawaii'),('ID','ID','Idaho'),('IL','IL','Illinois'),('IN','IN','Indiana'),('IA','IA','Iowa'),
+      ('KS','KS','Kansas'),('KY','KY','Kentucky'),('LA','LA','Louisiana'),('ME','ME','Maine'),('MD','MD','Maryland'),
+      ('MA','MA','Massachusetts'),('MI','MI','Michigan'),('MN','MN','Minnesota'),('MS','MS','Mississippi'),('MO','MO','Missouri'),
+      ('MT','MT','Montana'),('NE','NE','Nebraska'),('NV','NV','Nevada'),('NH','NH','New Hampshire'),('NJ','NJ','New Jersey'),
+      ('NM','NM','New Mexico'),('NY','NY','New York'),('NC','NC','North Carolina'),('ND','ND','North Dakota'),('OH','OH','Ohio'),
+      ('OK','OK','Oklahoma'),('OR','OR','Oregon'),('PA','PA','Pennsylvania'),('RI','RI','Rhode Island'),('SC','SC','South Carolina'),
+      ('SD','SD','South Dakota'),('TN','TN','Tennessee'),('TX','TX','Texas'),('UT','UT','Utah'),('VT','VT','Vermont'),
+      ('VA','VA','Virginia'),('WA','WA','Washington'),('WV','WV','West Virginia'),('WI','WI','Wisconsin'),('WY','WY','Wyoming')
+      ON CONFLICT (state_code) DO UPDATE SET name=EXCLUDED.name, state_name=EXCLUDED.state_name`);
     const mktRes = await query(`SELECT id, state_code FROM markets`);
     const mktMap = {};
     mktRes.rows.forEach(m => { mktMap[m.state_code] = m.id; });
@@ -620,7 +629,7 @@ router.post('/commit', requireAuth, async (req, res) => {
     for (const row of rows) {
       const street = get(row, 'street');
       const city   = get(row, 'city');
-      const state  = (get(row, 'state_code') || '').toUpperCase().slice(0,2);
+      const state  = normalizeState(get(row,'state_code'));
       if (!street || !city || !state) { errors++; continue; }
       validRows.push(row);
     }
@@ -636,7 +645,7 @@ router.post('/commit', requireAuth, async (req, res) => {
     const lastSaleDates=[], lastSalePrices=[], vacants=[];
 
     for (const row of validRows) {
-      const state = get(row,'state_code').toUpperCase().slice(0,2);
+      const state = normalizeState(get(row,'state_code'));
       streets.push(get(row,'street'));
       cities.push(get(row,'city'));
       states.push(state);
@@ -714,7 +723,7 @@ router.post('/commit', requireAuth, async (req, res) => {
       try {
         const street = get(row,'street');
         const city   = get(row,'city');
-        const state  = get(row,'state_code').toUpperCase().slice(0,2);
+        const state  = normalizeState(get(row,'state_code'));
         const zip    = get(row,'zip_code')||'';
         const key    = (street+'|'+city+'|'+state+'|'+zip).toLowerCase();
         const prop   = propMap[key];
@@ -836,7 +845,18 @@ async function runBackgroundImport(jobId, allRows, mapping, filename, resolvedLi
     await query(`UPDATE bulk_import_jobs SET status='running', updated_at=NOW() WHERE id=$1`, [jobId]);
 
     // Ensure markets
-    await query(`INSERT INTO markets (name,state_code,state_name) VALUES ('Indianapolis Metro','IN','Indiana'),('Atlanta Metro','GA','Georgia') ON CONFLICT (state_code) DO NOTHING`);
+    await query(`INSERT INTO markets (name,state_code,state_name) VALUES
+      ('AL','AL','Alabama'),('AK','AK','Alaska'),('AZ','AZ','Arizona'),('AR','AR','Arkansas'),('CA','CA','California'),
+      ('CO','CO','Colorado'),('CT','CT','Connecticut'),('DE','DE','Delaware'),('FL','FL','Florida'),('GA','GA','Georgia'),
+      ('HI','HI','Hawaii'),('ID','ID','Idaho'),('IL','IL','Illinois'),('IN','IN','Indiana'),('IA','IA','Iowa'),
+      ('KS','KS','Kansas'),('KY','KY','Kentucky'),('LA','LA','Louisiana'),('ME','ME','Maine'),('MD','MD','Maryland'),
+      ('MA','MA','Massachusetts'),('MI','MI','Michigan'),('MN','MN','Minnesota'),('MS','MS','Mississippi'),('MO','MO','Missouri'),
+      ('MT','MT','Montana'),('NE','NE','Nebraska'),('NV','NV','Nevada'),('NH','NH','New Hampshire'),('NJ','NJ','New Jersey'),
+      ('NM','NM','New Mexico'),('NY','NY','New York'),('NC','NC','North Carolina'),('ND','ND','North Dakota'),('OH','OH','Ohio'),
+      ('OK','OK','Oklahoma'),('OR','OR','Oregon'),('PA','PA','Pennsylvania'),('RI','RI','Rhode Island'),('SC','SC','South Carolina'),
+      ('SD','SD','South Dakota'),('TN','TN','Tennessee'),('TX','TX','Texas'),('UT','UT','Utah'),('VT','VT','Vermont'),
+      ('VA','VA','Virginia'),('WA','WA','Washington'),('WV','WV','West Virginia'),('WI','WI','Wisconsin'),('WY','WY','Wyoming')
+      ON CONFLICT (state_code) DO UPDATE SET name=EXCLUDED.name, state_name=EXCLUDED.state_name`);
     const mktRes = await query(`SELECT id, state_code FROM markets`);
     const mktMap = {};
     mktRes.rows.forEach(m => { mktMap[m.state_code] = m.id; });
@@ -847,7 +867,28 @@ async function runBackgroundImport(jobId, allRows, mapping, filename, resolvedLi
     const toDate = v => { if (!v) return null; const d = new Date(v); return isNaN(d) ? null : d.toISOString().split('T')[0]; };
     const toBool = v => { const s=(v||'').toLowerCase(); return s==='yes'||s==='true'||s==='1'||s==='y'?true:s==='no'||s==='false'||s==='0'||s==='n'?false:null; };
     const cleanPhone = v => v ? v.replace(/\D/g,'') : '';
-
+    // Normalize state: full name → abbreviation
+    const STATE_ABBR = {
+      'alabama':'AL','alaska':'AK','arizona':'AZ','arkansas':'AR','california':'CA',
+      'colorado':'CO','connecticut':'CT','delaware':'DE','florida':'FL','georgia':'GA',
+      'hawaii':'HI','idaho':'ID','illinois':'IL','indiana':'IN','iowa':'IA',
+      'kansas':'KS','kentucky':'KY','louisiana':'LA','maine':'ME','maryland':'MD',
+      'massachusetts':'MA','michigan':'MI','minnesota':'MN','mississippi':'MS','missouri':'MO',
+      'montana':'MT','nebraska':'NE','nevada':'NV','new hampshire':'NH','new jersey':'NJ',
+      'new mexico':'NM','new york':'NY','north carolina':'NC','north dakota':'ND','ohio':'OH',
+      'oklahoma':'OK','oregon':'OR','pennsylvania':'PA','rhode island':'RI','south carolina':'SC',
+      'south dakota':'SD','tennessee':'TN','texas':'TX','utah':'UT','vermont':'VT',
+      'virginia':'VA','washington':'WA','west virginia':'WV','wisconsin':'WI','wyoming':'WY',
+      'district of columbia':'DC','washington dc':'DC',
+    };
+    const VALID_STATES = new Set(['AL','AK','AZ','AR','CA','CO','CT','DE','FL','GA','HI','ID','IL','IN','IA','KS','KY','LA','ME','MD','MA','MI','MN','MS','MO','MT','NE','NV','NH','NJ','NM','NY','NC','ND','OH','OK','OR','PA','RI','SC','SD','TN','TX','UT','VT','VA','WA','WV','WI','WY','DC']);
+    const normalizeState = v => {
+      if (!v) return '';
+      const up = v.trim().toUpperCase();
+      if (VALID_STATES.has(up)) return up;
+      return STATE_ABBR[v.trim().toLowerCase()] || up.slice(0,2);
+    };
+    // Normalize state: full name → abbreviation
     for (let offset = 0; offset < allRows.length; offset += BATCH) {
       const rows = allRows.slice(offset, offset + BATCH);
       const validRows = rows.filter(row => get(row,'street') && get(row,'city') && get(row,'state_code'));
@@ -861,7 +902,7 @@ async function runBackgroundImport(jobId, allRows, mapping, filename, resolvedLi
         const lastSaleDates=[],lastSalePrices=[],vacants=[];
 
         for (const row of validRows) {
-          const state = get(row,'state_code').toUpperCase().slice(0,2);
+          const state = normalizeState(get(row,'state_code'));
           streets.push(get(row,'street')); cities.push(get(row,'city')); states.push(state);
           zips.push(get(row,'zip_code')||''); counties.push(get(row,'county')||null);
           mktIds.push(mktMap[state]||null); sources.push(get(row,'source')||filename||null);
@@ -899,7 +940,7 @@ async function runBackgroundImport(jobId, allRows, mapping, filename, resolvedLi
         // Contacts + phones
         for (const row of validRows) {
           try {
-            const key = (get(row,'street')+'|'+get(row,'city')+'|'+get(row,'state_code').toUpperCase().slice(0,2)+'|'+(get(row,'zip_code')||'')).toLowerCase();
+            const key = (get(row,'street')+'|'+get(row,'city')+'|'+normalizeState(get(row,'state_code'))+'|'+(get(row,'zip_code')||'')).toLowerCase();
             const prop = propMap[key];
             if (!prop) continue;
             const propertyId = prop.id;
