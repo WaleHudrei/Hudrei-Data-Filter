@@ -459,7 +459,7 @@ app.post('/process',requireAuth,upload.single('csvfile'),async(req,res)=>{
     if(campaignId){
       try{
         await campaigns.initCampaignSchema();
-        await campaigns.recordUpload(campaignId, req.file.originalname||'upload.csv', Object.keys(result.listsSeen)[0]||'upload', 'cold_call', allRows);
+        await campaigns.recordUpload(campaignId, req.file.originalname||'upload.csv', Object.keys(result.listsSeen)[0]||'upload', 'cold_call', allRows, result.totalRows);
       // Apply filtration results to contact phone statuses
       try { await campaigns.applyFiltrationToContacts(campaignId, allRows); } catch(e) { console.error('applyFiltration error:', e.message); }
       }catch(campErr){ console.error('Campaign record error:', campErr.message); }
@@ -1095,7 +1095,7 @@ app.post('/campaigns/:id/upload', requireAuth, upload.single('csvfile'), async (
     req.session.lastResult = { cleanRows: result.cleanRows, filteredRows: result.filteredRows };
     const allRows = [...result.cleanRows, ...result.filteredRows];
     const sourceList = allRows[0]?.['List Name (REISift Campaign)'] || req.file.originalname;
-    await campaigns.recordUpload(req.params.id, req.file.originalname, sourceList, req.body.channel || 'cold_call', allRows);
+    await campaigns.recordUpload(req.params.id, req.file.originalname, sourceList, req.body.channel || 'cold_call', allRows, result.totalRows);
     const newMemSize = Object.keys(result.memory).length;
     const newListCount = new Set(Object.keys(result.memory).map(k => k.split('||')[0])).size;
     res.json({
