@@ -489,6 +489,9 @@ async function importSmarterContactFile(campaignId, rows, headers) {
 
     const label    = String(row[COL.labels] || '').trim();
     const dispo    = normSmsLabel(label);
+    // Store the cleaned label (prefix + trailing emoji stripped) so downstream
+    // queries (e.g. "contacts reached") can match reliably without regex tricks.
+    const cleanedLabel = stripSmsLabelPrefix(label);
 
     // Find the contact-phone record in this campaign
     const phoneRes = await query(
@@ -517,7 +520,7 @@ async function importSmarterContactFile(campaignId, rows, headers) {
            last_disposition = $1,
            updated_at = NOW()
          WHERE id = $2`,
-        [label, phoneRow.id]
+        [cleanedLabel, phoneRow.id]
       );
     }
 
@@ -529,7 +532,7 @@ async function importSmarterContactFile(campaignId, rows, headers) {
            last_disposition = $1,
            updated_at = NOW()
          WHERE id = $2`,
-        [label, phoneRow.id]
+        [cleanedLabel, phoneRow.id]
       );
     }
 
@@ -543,7 +546,7 @@ async function importSmarterContactFile(campaignId, rows, headers) {
            last_disposition = $1,
            updated_at = NOW()
          WHERE id = $2`,
-        [label, phoneRow.id]
+        [cleanedLabel, phoneRow.id]
       );
     }
 
@@ -558,7 +561,7 @@ async function importSmarterContactFile(campaignId, rows, headers) {
            last_disposition = $1,
            updated_at = NOW()
          WHERE id = $2`,
-        [label, phoneRow.id]
+        [cleanedLabel, phoneRow.id]
       );
       // Flag the contact as Lead for this campaign
       await query(
@@ -579,7 +582,7 @@ async function importSmarterContactFile(campaignId, rows, headers) {
            last_disposition = $1,
            updated_at = NOW()
          WHERE id = $2`,
-        [label, phoneRow.id]
+        [cleanedLabel, phoneRow.id]
       );
       await query(
         `UPDATE campaign_contacts SET marketing_result = 'Potential Lead'
@@ -598,7 +601,7 @@ async function importSmarterContactFile(campaignId, rows, headers) {
            last_disposition = $1,
            updated_at = NOW()
          WHERE id = $2`,
-        [label, phoneRow.id]
+        [cleanedLabel, phoneRow.id]
       );
       await query(
         `UPDATE campaign_contacts SET marketing_result = 'Sold'
@@ -617,7 +620,7 @@ async function importSmarterContactFile(campaignId, rows, headers) {
            last_disposition = $1,
            updated_at = NOW()
          WHERE id = $2`,
-        [label, phoneRow.id]
+        [cleanedLabel, phoneRow.id]
       );
       await query(
         `UPDATE campaign_contacts SET marketing_result = 'Listed'
@@ -628,6 +631,9 @@ async function importSmarterContactFile(campaignId, rows, headers) {
   }
 
   // ── Step 4: Update campaign totals ────────────────────────────────────────
+  // Note: total_transfers counts ALL lead-like outcomes (Lead, Appointment,
+  // Potential Lead, Sold, Listed) since they all represent real conversions.
+  const totalLeads = tally.transfer + tally.potential_lead + tally.sold + tally.listed;
   await query(
     `UPDATE campaigns SET
        total_wrong_numbers = total_wrong_numbers + $1,
@@ -637,7 +643,7 @@ async function importSmarterContactFile(campaignId, rows, headers) {
        last_filtered_at = NOW(),
        updated_at = NOW()
      WHERE id = $4`,
-    [tally.wrong, tally.ni, tally.transfer, campaignId]
+    [tally.wrong, tally.ni, totalLeads, campaignId]
   );
 
   return {
@@ -801,6 +807,8 @@ async function getSmsEligibleStats(campaignId) {
   // (Lead, Not Interested, Disqualified, Potential Lead, Sold, Listed).
   // We exclude Wrong Number and no-action labels (New, CRM Transferred, etc.)
   // because those don't represent actual engagement with the right person.
+  // Note: importSmarterContactFile stores last_disposition already cleaned
+  // (prefix and trailing emoji stripped), so a direct ILIKE works.
   const REACHED_LABELS = [
     'Lead', 'Appointment',
     'Not interested',
@@ -814,7 +822,7 @@ async function getSmsEligibleStats(campaignId) {
        FROM campaign_contact_phones ccp
       WHERE ccp.campaign_id = $1
         AND ccp.last_disposition IS NOT NULL
-        AND TRIM(REGEXP_REPLACE(ccp.last_disposition, '^[^|]*\\|', '')) ILIKE ANY($2::text[])`,
+        AND ccp.last_disposition ILIKE ANY($2::text[])`,
     [campaignId, REACHED_LABELS]
   );
 
