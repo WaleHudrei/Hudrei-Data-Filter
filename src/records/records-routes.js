@@ -126,7 +126,7 @@ router.get('/', requireAuth, async (req, res) => {
       const stageColor = {prospect:'#f5f4f0',lead:'#e8f5ee',contract:'#fff8e1',closed:'#e8f0ff'}[stage]||'#f5f4f0';
       const stageText = {prospect:'#555',lead:'#1a7a4a',contract:'#9a6800',closed:'#2c5cc5'}[stage]||'#555';
       return `<tr data-id="${r.id}" style="cursor:pointer;border-bottom:1px solid #f0efe9" onclick="window.location='/records/${r.id}'" onmouseover="if(!this.classList.contains('row-selected'))this.style.background='#fafaf8'" onmouseout="if(!this.classList.contains('row-selected'))this.style.background=''">
-        <td style="width:40px;padding:12px 0 12px 16px" onclick="event.stopPropagation()"><input type="checkbox" class="row-check" data-id="${r.id}" style="cursor:pointer;width:15px;height:15px"></td>
+        <td style="width:40px;padding:12px 0 12px 16px" onclick="event.stopPropagation()"><input type="checkbox" class="row-check" data-id="${r.id}" onchange="selectRow(this, this.checked)" style="cursor:pointer;width:15px;height:15px"></td>
         <td style="padding:12px"><div style="font-weight:500;font-size:13px">${r.street}</div><div style="font-size:12px;color:#888;margin-top:2px">${r.city}, ${r.state_code} ${r.zip_code}</div></td>
         <td style="padding:12px;font-size:13px;color:#555;text-align:left">${owner}</td>
         <td style="padding:12px;font-size:13px;color:#555;text-align:left">${fmt(r.property_type)}</td>
@@ -504,7 +504,7 @@ router.get('/', requireAuth, async (req, res) => {
       <div style="background:#fff;border-radius:10px;border:1px solid #e0dfd8;overflow:hidden">
         <table style="width:100%;font-size:13px;border-collapse:collapse">
           <thead><tr style="border-bottom:1px solid #e0dfd8">
-            <th style="width:40px;padding:10px 0 10px 16px;text-align:left"><input type="checkbox" id="select-all" style="cursor:pointer;width:15px;height:15px" title="Select all"></th>
+            <th style="width:40px;padding:10px 0 10px 16px;text-align:left"><input type="checkbox" id="select-all" onchange="selectAllOnPage(this.checked)" style="cursor:pointer;width:15px;height:15px" title="Select all on this page"></th>
             <th style="padding:10px 12px;font-size:11px;font-weight:600;color:#888;text-transform:uppercase;letter-spacing:.05em;text-align:left">Address</th>
             <th style="padding:10px 12px;font-size:11px;font-weight:600;color:#888;text-transform:uppercase;letter-spacing:.05em;text-align:left">Owner</th>
             <th style="padding:10px 12px;font-size:11px;font-weight:600;color:#888;text-transform:uppercase;letter-spacing:.05em;text-align:left">Type</th>
@@ -522,9 +522,11 @@ router.get('/', requireAuth, async (req, res) => {
 
       <script>
       var selectedIds = {};
+      var _allSelected = false;
+      var _pageTotal = parseInt(document.getElementById('select-all-banner')?.getAttribute('data-total') || '0', 10);
 
       function updateToolbar() {
-        var count = Object.keys(selectedIds).length;
+        var count = _allSelected ? _pageTotal : Object.keys(selectedIds).length;
         var toolbar = document.getElementById('export-toolbar');
         var counter = document.getElementById('selected-count');
         if (toolbar) toolbar.style.display = count > 0 ? 'flex' : 'none';
@@ -532,6 +534,10 @@ router.get('/', requireAuth, async (req, res) => {
       }
 
       function selectRow(cb, checked) {
+        _allSelected = false; // manual selection cancels "select all across pages"
+        var banner = document.getElementById('select-all-banner');
+        if (banner) banner.style.display = 'none';
+
         var id = cb.getAttribute('data-id');
         if (!id) return;
         cb.checked = checked;
@@ -545,10 +551,35 @@ router.get('/', requireAuth, async (req, res) => {
         updateToolbar();
       }
 
+      // Header checkbox: toggle every row on this page, then show cross-page banner
+      function selectAllOnPage(checked) {
+        var boxes = document.querySelectorAll('.row-check');
+        for (var i = 0; i < boxes.length; i++) {
+          selectRow(boxes[i], checked);
+        }
+        var banner = document.getElementById('select-all-banner');
+        if (banner) {
+          // Show banner only if the total exceeds the current page AND user just checked all
+          var onPage = boxes.length;
+          if (checked && _pageTotal > onPage) {
+            banner.style.display = 'flex';
+          } else {
+            banner.style.display = 'none';
+          }
+        }
+      }
 
+      // "Select all N records" banner button — flags every filtered record on the server
+      function selectAllRecords() {
+        _allSelected = true;
+        var banner = document.getElementById('select-all-banner');
+        if (banner) banner.style.display = 'none';
+        updateToolbar();
+      }
 
       function clearSelection() {
         selectedIds = {};
+        _allSelected = false;
         var boxes = document.querySelectorAll('.row-check');
         for (var i = 0; i < boxes.length; i++) {
           boxes[i].checked = false;
@@ -556,6 +587,8 @@ router.get('/', requireAuth, async (req, res) => {
         }
         var sa = document.getElementById('select-all');
         if (sa) sa.checked = false;
+        var banner = document.getElementById('select-all-banner');
+        if (banner) banner.style.display = 'none';
         updateToolbar();
       }
 
@@ -574,7 +607,7 @@ router.get('/', requireAuth, async (req, res) => {
         for (var i = 0; i < colEls.length; i++) cols.push(colEls[i].value);
         if (!cols.length) { alert('Select at least one column.'); return; }
         var ids = Object.keys(selectedIds);
-        if (!ids.length) { alert('No records selected.'); return; }
+        if (!_allSelected && !ids.length) { alert('No records selected.'); return; }
         var btn = document.querySelector('[onclick="doExport()"]');
         if (btn) { btn.textContent = 'Downloading…'; btn.disabled = true; }
         try {
@@ -616,15 +649,38 @@ router.post('/export', requireAuth, async (req, res) => {
       const qs = new URLSearchParams(filterParams || '');
       let conditions = [], params = [], idx = 1;
       const qv = (k) => qs.get(k) || '';
-      if (qv('q'))           { conditions.push(`(p.street ILIKE ${idx} OR p.city ILIKE ${idx} OR c.first_name ILIKE ${idx} OR c.last_name ILIKE ${idx})`); params.push(`%${qv('q')}%`); idx++; }
-      if (qv('state'))       { conditions.push(`p.state_code = ${idx}`);       params.push(qv('state')); idx++; }
-      if (qv('city'))        { conditions.push(`p.city ILIKE ${idx}`);          params.push(`%${qv('city')}%`); idx++; }
-      if (qv('zip'))         { conditions.push(`p.zip_code ILIKE ${idx}`);      params.push(`%${qv('zip')}%`); idx++; }
-      if (qv('type'))        { conditions.push(`p.property_type = ${idx}`);     params.push(qv('type')); idx++; }
-      if (qv('pipeline'))    { conditions.push(`p.pipeline_stage = ${idx}`);    params.push(qv('pipeline')); idx++; }
-      if (qv('prop_status')) { conditions.push(`p.property_status = ${idx}`);   params.push(qv('prop_status')); idx++; }
-      if (qv('mkt_result'))  { conditions.push(`p.marketing_result = ${idx}`);  params.push(qv('mkt_result')); idx++; }
-      if (qv('list_id'))     { conditions.push(`EXISTS (SELECT 1 FROM property_lists pl2 WHERE pl2.property_id = p.id AND pl2.list_id = ${idx})`); params.push(qv('list_id')); idx++; }
+      const qvAll = (k) => qs.getAll(k).filter(v => v && String(v).trim() !== '');
+      if (qv('q'))           { conditions.push(`(p.street ILIKE $${idx} OR p.city ILIKE $${idx} OR c.first_name ILIKE $${idx} OR c.last_name ILIKE $${idx})`); params.push(`%${qv('q')}%`); idx++; }
+      if (qv('state'))       { conditions.push(`p.state_code = $${idx}`);       params.push(qv('state')); idx++; }
+      if (qv('city'))        { conditions.push(`p.city ILIKE $${idx}`);          params.push(`%${qv('city')}%`); idx++; }
+      if (qv('zip'))         { conditions.push(`p.zip_code ILIKE $${idx}`);      params.push(`%${qv('zip')}%`); idx++; }
+      if (qv('county'))      { conditions.push(`p.county ILIKE $${idx}`);        params.push(`%${qv('county')}%`); idx++; }
+      if (qv('type'))        { conditions.push(`p.property_type = $${idx}`);     params.push(qv('type')); idx++; }
+      if (qv('pipeline'))    { conditions.push(`p.pipeline_stage = $${idx}`);    params.push(qv('pipeline')); idx++; }
+      if (qv('prop_status')) { conditions.push(`p.property_status = $${idx}`);   params.push(qv('prop_status')); idx++; }
+      if (qv('mkt_result'))  { conditions.push(`p.marketing_result = $${idx}`);  params.push(qv('mkt_result')); idx++; }
+      if (qv('min_assessed')){ conditions.push(`p.assessed_value >= $${idx}`);   params.push(qv('min_assessed')); idx++; }
+      if (qv('max_assessed')){ conditions.push(`p.assessed_value <= $${idx}`);   params.push(qv('max_assessed')); idx++; }
+      if (qv('min_equity'))  { conditions.push(`p.equity_percent >= $${idx}`);   params.push(qv('min_equity')); idx++; }
+      if (qv('max_equity'))  { conditions.push(`p.equity_percent <= $${idx}`);   params.push(qv('max_equity')); idx++; }
+      if (qv('min_year'))    { conditions.push(`p.year_built >= $${idx}`);       params.push(qv('min_year')); idx++; }
+      if (qv('max_year'))    { conditions.push(`p.year_built <= $${idx}`);       params.push(qv('max_year')); idx++; }
+      if (qv('upload_from')) { conditions.push(`p.created_at >= $${idx}`);       params.push(qv('upload_from')); idx++; }
+      if (qv('upload_to'))   { conditions.push(`p.created_at <= $${idx}`);       params.push(qv('upload_to') + ' 23:59:59'); idx++; }
+      if (qv('list_id'))     { conditions.push(`EXISTS (SELECT 1 FROM property_lists pl2 WHERE pl2.property_id = p.id AND pl2.list_id = $${idx})`); params.push(qv('list_id')); idx++; }
+      const stackArr = qvAll('stack_list').map(v => parseInt(v)).filter(n => !isNaN(n));
+      if (stackArr.length > 0) {
+        conditions.push(
+          `(SELECT COUNT(DISTINCT pl_stack.list_id)
+              FROM property_lists pl_stack
+             WHERE pl_stack.property_id = p.id
+               AND pl_stack.list_id = ANY($${idx}::int[])) = $${idx+1}`
+        );
+        params.push(stackArr);
+        params.push(stackArr.length);
+        idx += 2;
+      }
+      if (qv('min_stack'))   { conditions.push(`(SELECT COUNT(*) FROM property_lists plc WHERE plc.property_id = p.id) >= $${idx}`); params.push(parseInt(qv('min_stack'))); idx++; }
       const where = conditions.length ? 'WHERE ' + conditions.join(' AND ') : '';
       props = await query(`
         SELECT DISTINCT ON (p.id)
@@ -646,7 +702,7 @@ router.post('/export', requireAuth, async (req, res) => {
       `, params);
     } else {
       if (!ids || !ids.length) return res.status(400).json({ error: 'No IDs provided' });
-      const placeholders = ids.map((_, i) => `${i + 1}`).join(',');
+      const placeholders = ids.map((_, i) => `$${i + 1}`).join(',');
       props = await query(`
         SELECT
           p.id, p.street, p.city, p.state_code, p.zip_code, p.county,
@@ -657,6 +713,7 @@ router.post('/export', requireAuth, async (req, res) => {
           p.source, p.created_at,
           c.first_name, c.last_name,
           c.mailing_address, c.mailing_city, c.mailing_state, c.mailing_zip,
+          c.email_1, c.email_2,
           (SELECT COUNT(*) FROM property_lists pl WHERE pl.property_id = p.id) AS list_count
         FROM properties p
         LEFT JOIN property_contacts pc ON pc.property_id = p.id AND pc.primary_contact = true
@@ -669,7 +726,7 @@ router.post('/export', requireAuth, async (req, res) => {
     const allIds = props.rows.map(r => r.id);
     const phoneMap = {};
     if (columns.includes('phones') && allIds.length) {
-      const phonePlaceholders = allIds.map((_, i) => `${i + 1}`).join(',');
+      const phonePlaceholders = allIds.map((_, i) => `$${i + 1}`).join(',');
       const phoneRes = await query(`
         SELECT ph.phone_number, ph.phone_index, pc.property_id
         FROM phones ph
