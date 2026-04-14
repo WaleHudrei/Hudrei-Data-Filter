@@ -213,6 +213,80 @@ async function scoreProperty(propertyId) {
   return result;
 }
 
+// ── Score a specific SET of properties (bulk SQL, no breakdown) ────────────
+// Fast path used after imports/uploads — only rescores touched properties.
+async function scoreProperties(propertyIds) {
+  if (!Array.isArray(propertyIds) || propertyIds.length === 0) return { scored: 0 };
+  await ensureDistressSchema();
+
+  const w = WEIGHTS;
+  const sql = `
+    WITH touched AS (
+      SELECT UNNEST($1::int[]) AS id
+    ),
+    list_flags AS (
+      SELECT pl.property_id,
+             BOOL_OR(LOWER(COALESCE(l.list_type,'') || ' ' || COALESCE(l.list_name,'')) ~ 'tax[[:space:]]*sale|tax[[:space:]]*delinq') AS has_tax_sale,
+             BOOL_OR(LOWER(COALESCE(l.list_type,'') || ' ' || COALESCE(l.list_name,'')) ~ 'pre[[:space:]-]?foreclosure|pre[[:space:]-]?fc|notice[[:space:]]*of[[:space:]]*default|nod|lis[[:space:]]*pendens|auction') AS has_pre_fc,
+             BOOL_OR(LOWER(COALESCE(l.list_type,'') || ' ' || COALESCE(l.list_name,'')) ~ 'probate|deceased|estate|affidavit[[:space:]]*of[[:space:]]*death') AS has_probate,
+             BOOL_OR(LOWER(COALESCE(l.list_type,'') || ' ' || COALESCE(l.list_name,'')) ~ 'code[[:space:]]*violation|municipal[[:space:]]*lien') AS has_code_viol,
+             BOOL_OR(LOWER(COALESCE(l.list_type,'') || ' ' || COALESCE(l.list_name,'')) ~ 'vacant') AS has_vacant,
+             COUNT(DISTINCT pl.list_id) AS list_count
+        FROM property_lists pl
+        JOIN lists l ON l.id = pl.list_id
+       WHERE pl.property_id IN (SELECT id FROM touched)
+       GROUP BY pl.property_id
+    ),
+    primary_contact AS (
+      SELECT pc.property_id, c.mailing_state
+        FROM property_contacts pc
+        JOIN contacts c ON c.id = pc.contact_id
+       WHERE pc.primary_contact = true
+         AND pc.property_id IN (SELECT id FROM touched)
+    ),
+    scored AS (
+      SELECT p.id,
+             LEAST(100,
+               CASE WHEN lf.has_tax_sale  THEN ${w.list_tax_sale}        ELSE 0 END +
+               CASE WHEN lf.has_pre_fc    THEN ${w.list_pre_foreclosure} ELSE 0 END +
+               CASE WHEN lf.has_probate   THEN ${w.list_probate}         ELSE 0 END +
+               CASE WHEN lf.has_code_viol THEN ${w.list_code_violation}  ELSE 0 END +
+               CASE WHEN lf.has_vacant    THEN ${w.list_vacant}          ELSE 0 END +
+               CASE
+                 WHEN COALESCE(lf.list_count,0) >= 5 THEN ${w.stack_5_plus}
+                 WHEN COALESCE(lf.list_count,0) >= 3 THEN ${w.stack_3_4}
+                 WHEN COALESCE(lf.list_count,0) = 2 THEN ${w.stack_2}
+                 ELSE 0
+               END +
+               CASE WHEN p.equity_percent >= 50 THEN ${w.high_equity} ELSE 0 END +
+               CASE WHEN UPPER(TRIM(COALESCE(p.state_code,''))) <> ''
+                     AND UPPER(TRIM(COALESCE(pc.mailing_state,''))) <> ''
+                     AND UPPER(TRIM(p.state_code)) <> UPPER(TRIM(pc.mailing_state))
+                    THEN ${w.out_of_state} ELSE 0 END +
+               CASE WHEN LOWER(COALESCE(p.marketing_result,'')) = 'lead' THEN ${w.marketing_lead} ELSE 0 END
+             ) AS score
+        FROM properties p
+        LEFT JOIN list_flags lf ON lf.property_id = p.id
+        LEFT JOIN primary_contact pc ON pc.property_id = p.id
+       WHERE p.id IN (SELECT id FROM touched)
+    )
+    UPDATE properties p
+       SET distress_score = s.score,
+           distress_band = CASE
+             WHEN s.score >= 75 THEN 'burning'
+             WHEN s.score >= 55 THEN 'hot'
+             WHEN s.score >= 30 THEN 'warm'
+             ELSE 'cold'
+           END,
+           distress_scored_at = NOW()
+      FROM scored s
+     WHERE p.id = s.id;
+  `;
+
+  const res = await query(sql, [propertyIds]);
+  return { scored: res.rowCount || 0 };
+}
+
 // ── Score many properties (batch, used by Recompute All button) ────────────
 // Uses bulk SQL for performance. 41k properties done in ~2-3 seconds instead
 // of 10+ minutes if we looped per-property.
@@ -375,6 +449,7 @@ module.exports = {
   computeScore,
   ensureDistressSchema,
   scoreProperty,
+  scoreProperties,
   scoreAllProperties,
   scoreAllPropertiesWithBreakdown,
   logOutcomeChange,
