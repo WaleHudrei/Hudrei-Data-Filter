@@ -764,8 +764,12 @@ async function importSmarterContactAccepted(campaignId, rows, headers) {
 // ─────────────────────────────────────────────────────────────────────────────
 async function getSmsNextBatch(campaignId) {
   await ensureSmsEligibleColumns();
+  // Return one row per UNIQUE phone number. When the same phone is on multiple
+  // properties (e.g. Rodney Gaard owns 4 properties), we pick one property's
+  // metadata (the first by sort order) to keep the CSV clean. SMC dedupes
+  // anyway, but this keeps the next-batch count honest.
   const res = await query(
-    `SELECT
+    `SELECT DISTINCT ON (ccp.phone_number)
         cc.first_name,
         cc.last_name,
         cc.property_address,
@@ -781,7 +785,7 @@ async function getSmsNextBatch(campaignId) {
         AND ccp.sms_eligible = true
         AND COALESCE(ccp.filtered, false) = false
         AND COALESCE(ccp.wrong_number, false) = false
-      ORDER BY cc.last_name, cc.first_name, ccp.phone_number`,
+      ORDER BY ccp.phone_number, cc.last_name, cc.first_name`,
     [campaignId]
   );
   return res.rows;
@@ -789,26 +793,9 @@ async function getSmsNextBatch(campaignId) {
 
 async function getSmsEligibleStats(campaignId) {
   await ensureSmsEligibleColumns();
-  const res = await query(
-    `SELECT
-        COUNT(*) FILTER (WHERE sms_eligible = true)  AS eligible,
-        COUNT(*) FILTER (WHERE sms_eligible = false) AS ineligible,
-        COUNT(*) FILTER (WHERE sms_eligible IS NULL) AS unchecked,
-        COUNT(*) FILTER (WHERE sms_eligible = true
-                          AND COALESCE(filtered, false) = false
-                          AND COALESCE(wrong_number, false) = false) AS next_batch
-       FROM campaign_contact_phones
-      WHERE campaign_id = $1`,
-    [campaignId]
-  );
-  const r = res.rows[0] || {};
 
-  // Count distinct contacts where any phone got a meaningful response label
-  // (Lead, Not Interested, Disqualified, Potential Lead, Sold, Listed).
-  // We exclude Wrong Number and no-action labels (New, CRM Transferred, etc.)
-  // because those don't represent actual engagement with the right person.
-  // Note: importSmarterContactFile stores last_disposition already cleaned
-  // (prefix and trailing emoji stripped), so a direct ILIKE works.
+  // Labels that count as a real response (business-meaningful engagement).
+  // Excludes Wrong Number and no-action tags like New, CRM Transferred, etc.
   const REACHED_LABELS = [
     'Lead', 'Appointment',
     'Not interested',
@@ -817,30 +804,102 @@ async function getSmsEligibleStats(campaignId) {
     'Sold',
     'Listed',
   ];
-  const reachedRes = await query(
-    `SELECT COUNT(DISTINCT ccp.contact_id) AS reached
-       FROM campaign_contact_phones ccp
-      WHERE ccp.campaign_id = $1
-        AND ccp.last_disposition IS NOT NULL
-        AND ccp.last_disposition ILIKE ANY($2::text[])`,
-    [campaignId, REACHED_LABELS]
-  );
 
-  // Count distinct contacts on this campaign for the percentage denominator
-  const totalRes = await query(
-    `SELECT COUNT(DISTINCT contact_id) AS total
+  // ── Phone-level row counts (for backwards-compat + sidebar stats) ─────────
+  const phoneRes = await query(
+    `SELECT
+        COUNT(*) FILTER (WHERE sms_eligible = true)  AS eligible_rows,
+        COUNT(*) FILTER (WHERE sms_eligible = false) AS ineligible_rows,
+        COUNT(*) FILTER (WHERE sms_eligible IS NULL) AS unchecked_rows
        FROM campaign_contact_phones
       WHERE campaign_id = $1`,
     [campaignId]
   );
 
+  // ── Unique phones that are textable (dedup across duplicate contact rows) ─
+  const uniquePhonesRes = await query(
+    `SELECT COUNT(DISTINCT phone_number) AS unique_textable
+       FROM campaign_contact_phones
+      WHERE campaign_id = $1 AND sms_eligible = true`,
+    [campaignId]
+  );
+
+  // ── Property-level metrics (the business-meaningful numbers) ──────────────
+  // A property = one campaign_contacts row.
+  // Properties with >=1 eligible phone = textable properties.
+  // Properties with ALL phones ineligible = landline-only.
+  // Properties where any phone got a real response = properties responded.
+  // Properties in next batch = textable AND no response yet on any phone.
+  //
+  // Note on label matching: we accept BOTH cleaned labels ("Lead") and raw
+  // SMC labels ("C2|Lead 📞"). The regex strips "<code>|" prefix AND trailing
+  // whitespace/emojis so rows stored before the label-cleaning fix still match.
+  const propRes = await query(
+    `WITH prop AS (
+       SELECT
+         cc.id AS contact_id,
+         BOOL_OR(ccp.sms_eligible = true)  AS has_textable,
+         BOOL_OR(ccp.sms_eligible = false) AS has_ineligible,
+         COUNT(ccp.id)                      AS phone_row_count,
+         BOOL_OR(ccp.last_disposition IS NOT NULL
+                 AND (
+                   ccp.last_disposition ILIKE ANY($2::text[])
+                   OR TRIM(REGEXP_REPLACE(REGEXP_REPLACE(ccp.last_disposition, '^[^|]*\\|', ''), '[^A-Za-z]+$', '')) ILIKE ANY($2::text[])
+                 )) AS responded,
+         BOOL_OR(ccp.sms_eligible = true
+                 AND COALESCE(ccp.filtered, false) = false
+                 AND COALESCE(ccp.wrong_number, false) = false) AS in_next_batch
+       FROM campaign_contacts cc
+       LEFT JOIN campaign_contact_phones ccp ON ccp.contact_id = cc.id
+       WHERE cc.campaign_id = $1
+       GROUP BY cc.id
+     )
+     SELECT
+       COUNT(*) AS total_properties,
+       COUNT(*) FILTER (WHERE has_textable = true)                          AS textable_properties,
+       COUNT(*) FILTER (WHERE (has_textable IS NULL OR has_textable = false)
+                          AND phone_row_count > 0)                          AS landline_only_properties,
+       COUNT(*) FILTER (WHERE responded = true)                             AS properties_responded,
+       COUNT(*) FILTER (WHERE in_next_batch = true)                         AS properties_next_batch
+     FROM prop`,
+    [campaignId, REACHED_LABELS]
+  );
+
+  // ── Unique phones in next batch (for the CSV export count) ────────────────
+  const nextBatchPhonesRes = await query(
+    `SELECT COUNT(DISTINCT phone_number) AS unique_next_batch_phones
+       FROM campaign_contact_phones
+      WHERE campaign_id = $1
+        AND sms_eligible = true
+        AND COALESCE(filtered, false) = false
+        AND COALESCE(wrong_number, false) = false`,
+    [campaignId]
+  );
+
+  const r = phoneRes.rows[0] || {};
+  const p = propRes.rows[0] || {};
+
   return {
-    eligible:        parseInt(r.eligible)   || 0,
-    ineligible:      parseInt(r.ineligible) || 0,
-    unchecked:       parseInt(r.unchecked)  || 0,
-    next_batch:      parseInt(r.next_batch) || 0,
-    reached_contacts: parseInt(reachedRes.rows[0]?.reached) || 0,
-    total_contacts:   parseInt(totalRes.rows[0]?.total)     || 0,
+    // Property-level metrics (primary — shown on dashboard)
+    total_properties:         parseInt(p.total_properties)          || 0,
+    textable_properties:      parseInt(p.textable_properties)       || 0,
+    landline_only_properties: parseInt(p.landline_only_properties)  || 0,
+    properties_responded:     parseInt(p.properties_responded)      || 0,
+    properties_next_batch:    parseInt(p.properties_next_batch)     || 0,
+
+    // Unique phone counts
+    unique_phones_textable:   parseInt(uniquePhonesRes.rows[0]?.unique_textable)       || 0,
+    unique_phones_next_batch: parseInt(nextBatchPhonesRes.rows[0]?.unique_next_batch_phones) || 0,
+
+    // Phone-row counts (kept for the small stats strip under Step 1 upload)
+    eligible:    parseInt(r.eligible_rows)    || 0,
+    ineligible:  parseInt(r.ineligible_rows)  || 0,
+    unchecked:   parseInt(r.unchecked_rows)   || 0,
+    next_batch:  parseInt(p.properties_next_batch) || 0,
+
+    // Legacy aliases (keep working with any code still referencing these)
+    reached_contacts: parseInt(p.properties_responded) || 0,
+    total_contacts:   parseInt(p.total_properties)     || 0,
   };
 }
 
