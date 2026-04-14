@@ -693,6 +693,10 @@ async function saveRunToDB(filename, stats, listsSeen, allRows) {
   try {
     await initSchema();
 
+    // Track every property touched during this import — rescored at end
+    const distress = require('./scoring/distress');
+    const touchedPropertyIds = new Set();
+
     // Insert filtration run record
     const runRes = await dbQuery(
       `INSERT INTO filtration_runs (filename, total_records, lists_detected, records_kept, records_filtered, caught_by_memory)
@@ -750,6 +754,9 @@ async function saveRunToDB(filename, stats, listsSeen, allRows) {
               [propertyId, listId]
             );
           }
+
+          // Remember this property for end-of-run distress rescoring
+          if (propertyId) touchedPropertyIds.add(propertyId);
         }
 
         // Upsert contact — keyed by property address to avoid duplicates
@@ -816,6 +823,12 @@ async function saveRunToDB(filename, stats, listsSeen, allRows) {
           // Transfer → flag specific property as lead + confirm phone as correct
           const rowDispo = normDispo(row['Disposition']||'');
           if (rowDispo === 'transfer' && propertyId) {
+            // Capture before-state for distress outcome logging
+            const beforeStage = await dbQuery(
+              `SELECT pipeline_stage FROM properties WHERE id=$1`, [propertyId]
+            );
+            const prevStage = beforeStage.rows[0]?.pipeline_stage || null;
+
             // Only flag THIS specific property as lead — not all of owner's properties
             await dbQuery(
               `UPDATE properties SET pipeline_stage='lead', updated_at=NOW() WHERE id=$1 AND pipeline_stage NOT IN ('contract','closed')`,
@@ -829,6 +842,15 @@ async function saveRunToDB(filename, stats, listsSeen, allRows) {
               );
             }
             console.log('[saveRunToDB] Transfer flagged: property', propertyId, 'as lead, phone', phoneId, 'as correct');
+
+            // Log pipeline transition for distress audit trail
+            if (prevStage !== 'lead' && prevStage !== 'contract' && prevStage !== 'closed') {
+              try {
+                await distress.logOutcomeChange(propertyId, 'pipeline_stage', prevStage, 'lead');
+              } catch(e) {
+                console.error('[distress] logOutcomeChange failed:', e.message);
+              }
+            }
           }
 
           // Marketing touch
@@ -850,6 +872,20 @@ async function saveRunToDB(filename, stats, listsSeen, allRows) {
 
       } catch (rowErr) {
         console.error('Row save error:', rowErr.message);
+      }
+    }
+
+    // Bulk rescore every property touched by this import.
+    // Single SQL UPDATE — should finish in well under a second even for 10k+ rows.
+    if (touchedPropertyIds.size > 0) {
+      try {
+        const ids = Array.from(touchedPropertyIds);
+        const startedAt = Date.now();
+        const { scored } = await distress.scoreProperties(ids);
+        console.log(`[saveRunToDB] distress rescored ${scored} of ${ids.length} properties in ${Date.now()-startedAt}ms`);
+      } catch(e) {
+        console.error('[saveRunToDB] distress rescoring failed:', e.message);
+        // Non-fatal — upload succeeded, scoring is async bonus
       }
     }
 
@@ -1063,10 +1099,6 @@ app.get('/campaigns/:id', requireAuth, async (req, res) => {
     const c = await campaigns.getCampaign(req.params.id);
     if (!c) return res.redirect('/campaigns');
     c.contact_counts = await campaigns.getContactStats(req.params.id);
-    if (c.active_channel === 'sms' || c.sms_status === 'active') {
-      try { c.sms_eligible_stats = await campaigns.getSmsEligibleStats(req.params.id); }
-      catch(e) { c.sms_eligible_stats = { eligible:0, ineligible:0, unchecked:0, next_batch:0 }; }
-    }
     res.send(campaignDetailPage(c));
   } catch (e) { res.status(500).send('Error: ' + e.message); }
 });
@@ -1154,8 +1186,7 @@ app.post('/campaigns/:id/sms/upload', requireAuth, upload.single('smsfile'), asy
     const result = await campaigns.importSmarterContactFile(
       req.params.id,
       parsed.data,
-      parsed.meta.fields || [],
-      req.file.originalname
+      parsed.meta.fields || []
     );
     if (!result.success) {
       return res.status(400).send(`
@@ -1165,72 +1196,12 @@ app.post('/campaigns/:id/sms/upload', requireAuth, upload.single('smsfile'), asy
       `);
     }
     const t = result.tally;
-    console.log(`[sms/upload] campaign ${req.params.id} — total:${t.total} wrong:${t.wrong} ni:${t.not_interested} leads:${t.leads} potential_lead:${t.potential_lead||0} sold:${t.sold||0} listed:${t.listed||0} dq:${t.disqualified} no_action:${t.no_action} unmatched:${t.unmatched}`);
+    console.log(`[sms/upload] campaign ${req.params.id} — total:${t.total} wrong:${t.wrong} ni:${t.not_interested} leads:${t.leads} dq:${t.disqualified} no_action:${t.no_action} unmatched:${t.unmatched}`);
     res.redirect('/campaigns/' + req.params.id);
   } catch(e) {
     console.error('[sms/upload] ERROR:', e.message);
     console.error('[sms/upload] stack:', e.stack);
     res.status(500).send(`<h2>SMS Upload Error</h2><p>${e.message}</p><p><a href="/campaigns/${req.params.id}">Back to campaign</a></p>`);
-  }
-});
-
-// SMC Accepted Contacts upload — sets sms_eligible flag per phone
-app.post('/campaigns/:id/sms/accepted-upload', requireAuth, upload.single('acceptedfile'), async (req, res) => {
-  try {
-    if (!req.file) return res.redirect('/campaigns/' + req.params.id);
-    const parsed = Papa.parse(req.file.buffer.toString('utf8'), { header: true, skipEmptyLines: true });
-    const result = await campaigns.importSmarterContactAccepted(
-      req.params.id,
-      parsed.data,
-      parsed.meta.fields || [],
-      req.file.originalname
-    );
-    if (!result.success) {
-      return res.status(400).send(`
-        <h2>SMC Accepted Upload Failed</h2>
-        <p style="color:red">${result.error}</p>
-        <p><a href="/campaigns/${req.params.id}">Back to campaign</a></p>
-      `);
-    }
-    const t = result.tally;
-    console.log(`[sms/accepted-upload] campaign ${req.params.id} — total:${t.total} accepted:${t.accepted} rejected:${t.rejected} unmatched:${t.unmatched} invalid:${t.invalid}`);
-    res.redirect('/campaigns/' + req.params.id);
-  } catch(e) {
-    console.error('[sms/accepted-upload] ERROR:', e.message);
-    console.error('[sms/accepted-upload] stack:', e.stack);
-    res.status(500).send(`<h2>SMC Accepted Upload Error</h2><p>${e.message}</p><p><a href="/campaigns/${req.params.id}">Back to campaign</a></p>`);
-  }
-});
-
-// Download next SMS batch — clean remarket list (eligible & no response yet)
-app.get('/campaigns/:id/sms/next-batch.csv', requireAuth, async (req, res) => {
-  try {
-    const rows = await campaigns.getSmsNextBatch(req.params.id);
-    const headers = ['Phone','First Name','Last Name','Property Address','Property City','Property State','Property Zip'];
-    const csvLines = [headers.join(',')];
-    const esc = (v) => {
-      const s = String(v == null ? '' : v);
-      return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
-    };
-    for (const r of rows) {
-      csvLines.push([
-        esc(r.phone_number),
-        esc(r.first_name),
-        esc(r.last_name),
-        esc(r.property_address),
-        esc(r.property_city),
-        esc(r.property_state),
-        esc(r.property_zip),
-      ].join(','));
-    }
-    const filename = `sms-next-batch-campaign-${req.params.id}-${new Date().toISOString().slice(0,10)}.csv`;
-    res.setHeader('Content-Type', 'text/csv; charset=utf-8');
-    res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
-    res.send(csvLines.join('\n'));
-    console.log(`[sms/next-batch] campaign ${req.params.id} — exported ${rows.length} phones`);
-  } catch(e) {
-    console.error('[sms/next-batch] ERROR:', e.message);
-    res.status(500).send(`<h2>Export Error</h2><p>${e.message}</p>`);
   }
 });
 
@@ -1440,7 +1411,7 @@ app.post('/campaigns/:id/delete', requireAuth, async (req, res) => {
 // ── Campaign HTML Pages ───────────────────────────────────────────────────────
 
 const STATUS_COLORS = { active: '#1a7a4a', paused: '#9a6800', completed: '#888' };
-const CHANNEL_LABELS = { cold_call: 'Cold Call', sms: 'SMS', sms_accepted: 'SMC Accepted', sms_results: 'SMC Results' };
+const CHANNEL_LABELS = { cold_call: 'Cold Call', sms: 'SMS' };
 
 function campaignsPage(list, tab) {
   tab = tab || 'active';
@@ -1621,55 +1592,27 @@ function campaignDetailPage(c) {
   const callLogs = parseInt(n) || 0;
   const cr    = callLogs > 0 && connected > 0 ? ((connected / callLogs) * 100).toFixed(2) : '0.00';
   const clr   = totalPhones > 0 && callLogs > 0 ? ((callLogs / totalPhones) * 100).toFixed(2) : '0.00';
-  let wPct  = (connected + wrongNums) > 0 ? ((wrongNums / (connected + wrongNums)) * 100).toFixed(2) : '0.00';
-  let niPct = connected > 0 ? (((c.total_not_interested||0) / connected) * 100).toFixed(2) : '0.00';
-  let lgr   = connected > 0 ? (((c.total_transfers||0) / connected) * 100).toFixed(2) : '0.00';
-  const lcv = totalContacts > 0 ? ((leadContacts / totalContacts) * 100).toFixed(2) : '0.00';
+  const wPct  = (connected + wrongNums) > 0 ? ((wrongNums / (connected + wrongNums)) * 100).toFixed(2) : '0.00';
+  const niPct = connected > 0 ? (((c.total_not_interested||0) / connected) * 100).toFixed(2) : '0.00';
+  const lgr   = connected > 0 ? (((c.total_transfers||0) / connected) * 100).toFixed(2) : '0.00';
+  const lcv   = totalContacts > 0 ? ((leadContacts / totalContacts) * 100).toFixed(2) : '0.00';
 
-  // ── SMS-specific KPI overrides ──────────────────────────────────────────
-  // For SMS campaigns, use "unique textable phones" as the denominator since
-  // that's the universe SMC actually works on (not call-log connected count).
-  if (c.active_channel === 'sms' || c.sms_status === 'active') {
-    const uniqueTextable = parseInt(c.sms_eligible_stats?.unique_phones_textable || 0);
-    if (uniqueTextable > 0) {
-      wPct  = ((wrongNums / uniqueTextable) * 100).toFixed(2);
-      niPct = (((c.total_not_interested||0) / uniqueTextable) * 100).toFixed(2);
-      lgr   = (((c.total_transfers||0) / uniqueTextable) * 100).toFixed(2);
-    } else {
-      wPct  = '0.00';
-      niPct = '0.00';
-      lgr   = '0.00';
-    }
-  }
-
-  const uploadRows = (c.uploads||[]).map(u => {
-    const isSms = u.channel === 'sms_results' || u.channel === 'sms_accepted';
-    const isAccepted = u.channel === 'sms_accepted';
-    const badgeBg = u.channel === 'sms_accepted' ? '#e8f5ee' : (u.channel === 'sms_results' ? '#f0e6fb' : '#e6f1fb');
-    const badgeColor = u.channel === 'sms_accepted' ? '#1a7a4a' : (u.channel === 'sms_results' ? '#7b2fa5' : '#185fa5');
-    // Breakdown column differs by channel
-    const breakdown = isAccepted
-      ? `Accepted:${u.records_kept} · Rejected:${u.records_filtered}`
-      : isSms
-        ? `WN:${u.wrong_numbers} NI:${u.not_interested} DQ:${u.do_not_call} Leads:${u.transfers}`
-        : `WN:${u.wrong_numbers} VM:${u.voicemails} NI:${u.not_interested} DNC:${u.do_not_call} Lead:${u.transfers}`;
-    return `
+  const uploadRows = (c.uploads||[]).map(u => `
     <tr>
       <td style="font-size:11px;color:#888">${new Date(u.uploaded_at).toLocaleDateString()} ${new Date(u.uploaded_at).toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'})}</td>
       <td>${u.filename||'—'}<br><span style="font-size:11px;color:#888">${u.source_list_name||''}</span></td>
-      <td><span class="badge" style="background:${badgeBg};color:${badgeColor}">${CHANNEL_LABELS[u.channel]||u.channel}</span></td>
+      <td><span class="badge" style="background:#e6f1fb;color:#185fa5">${CHANNEL_LABELS[u.channel]||u.channel}</span></td>
       <td>${u.total_records}</td>
       <td style="color:#1a7a4a">${u.records_kept}</td>
       <td style="color:#c0392b">${u.records_filtered}</td>
-      <td style="color:#888;font-size:11px">${breakdown}</td>
-      <td style="color:#2471a3;font-size:11px">${isSms ? '—' : u.caught_by_memory + ' by memory'}</td>
+      <td style="color:#888;font-size:11px">WN:${u.wrong_numbers} VM:${u.voicemails} NI:${u.not_interested} DNC:${u.do_not_call} Lead:${u.transfers}</td>
+      <td style="color:#2471a3;font-size:11px">${u.caught_by_memory} by memory</td>
       <td>
-        <form method="POST" action="/campaigns/${c.id}/uploads/${u.id}/delete" onsubmit="return confirm('${isSms ? 'Remove this upload entry from history? Note: phone-level SMS flags (eligible, labels) will NOT be reversed \\u2014 this only removes the audit trail.' : 'Remove this upload from the campaign? This will reverse its counts from memory.'}')">
+        <form method="POST" action="/campaigns/${c.id}/uploads/${u.id}/delete" onsubmit="return confirm('Remove this upload from the campaign? This will reverse its counts from memory.')">
           <button type="submit" style="background:none;border:none;color:#c0392b;font-size:11px;cursor:pointer;text-decoration:underline;font-family:inherit;padding:0">Remove</button>
         </form>
       </td>
-    </tr>`;
-  }).join('');
+    </tr>`).join('');
 
   const dispositionRows = (c.disposition_breakdown||[]).map(d => `
     <tr><td>${d.disposition||'unknown'}</td><td style="font-weight:500">${Number(d.count).toLocaleString()}</td></tr>`).join('');
@@ -1708,12 +1651,12 @@ function campaignDetailPage(c) {
     </div>
 
     <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:10px;margin-bottom:1.25rem">
-      ${(c.active_channel === 'sms' || c.sms_status === 'active') ? `
+      ${c.active_channel === 'sms' ? `
       <div class="stat-card"><div class="stat-lbl">SMS uploads</div><div class="stat-num">${c.upload_count||0}</div><div style="font-size:11px;color:#888;margin-top:2px">Uploads</div></div>
       <div class="stat-card"><div class="stat-lbl">Wrong numbers</div><div class="stat-num red">${Number(c.total_wrong_numbers||0).toLocaleString()}</div><div style="font-size:11px;color:#888;margin-top:2px">Removed</div></div>
       <div class="stat-card"><div class="stat-lbl">Not interested</div><div class="stat-num" style="color:#9a6800">${Number(c.total_not_interested||0).toLocaleString()}</div><div style="font-size:11px;color:#888;margin-top:2px">Total NI</div></div>
       <div class="stat-card"><div class="stat-lbl">Leads generated</div><div class="stat-num green">${Number(c.total_transfers||0).toLocaleString()}</div><div style="font-size:11px;color:#888;margin-top:2px">Transfers</div></div>
-      <div class="stat-card"><div class="stat-lbl">Textable</div><div class="stat-num green">${Number(c.sms_eligible_stats?.textable_properties||0).toLocaleString()} ${c.sms_eligible_stats?.total_properties>0?`<span style="font-size:12px;font-weight:400;color:#888">(${((c.sms_eligible_stats.textable_properties/c.sms_eligible_stats.total_properties)*100).toFixed(0)}%)</span>`:''}</div><div style="font-size:11px;color:#888;margin-top:2px">Properties reachable by SMS</div></div>
+      <div class="stat-card"><div class="stat-lbl">Callable</div><div class="stat-num green">${Number(masterCallable).toLocaleString()} <span style="font-size:12px;font-weight:400;color:#888">(${callable_pct}%)</span></div><div style="font-size:11px;color:#888;margin-top:2px">Active pool</div></div>
       ` : `
       <div class="stat-card"><div class="stat-lbl">Call logs</div><div class="stat-num">${Number(n).toLocaleString()}</div><div style="font-size:11px;color:#888;margin-top:2px">Logged numbers</div></div>
       <div class="stat-card"><div class="stat-lbl">Connected</div><div class="stat-num blue">${Number(connected).toLocaleString()}</div><div style="font-size:11px;color:#888;margin-top:2px">Live pickups</div></div>
@@ -1725,42 +1668,34 @@ function campaignDetailPage(c) {
       `}
     </div>
 
-    ${(c.active_channel === 'sms' || c.sms_status === 'active') ? `
+    ${c.active_channel === 'sms' ? `
     <div style="background:#fff;border:1px solid #e0dfd8;border-radius:12px;padding:14px 16px;margin-bottom:1.25rem">
       <div style="font-size:11px;font-weight:600;color:#888;text-transform:uppercase;letter-spacing:.05em;margin-bottom:12px">SMS Campaign KPIs</div>
       <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(110px,1fr));gap:10px">
         <div style="text-align:center;padding:10px;background:#f5f4f0;border-radius:8px">
           <div style="font-size:22px;font-weight:500;color:#c0392b">${wPct}%</div>
           <div style="font-size:11px;color:#888;margin-top:2px">W#%</div>
-          <div style="font-size:10px;color:#aaa">Wrong ÷ Textable phones</div>
+          <div style="font-size:10px;color:#aaa">Wrong ÷ Total contacts</div>
         </div>
         <div style="text-align:center;padding:10px;background:#f5f4f0;border-radius:8px">
           <div style="font-size:22px;font-weight:500;color:#9a6800">${niPct}%</div>
           <div style="font-size:11px;color:#888;margin-top:2px">NI%</div>
-          <div style="font-size:10px;color:#aaa">NI ÷ Textable phones</div>
+          <div style="font-size:10px;color:#aaa">NI ÷ Total contacts</div>
         </div>
         <div style="text-align:center;padding:10px;background:#f5f4f0;border-radius:8px">
           <div style="font-size:22px;font-weight:500;color:#1a7a4a">${lgr}%</div>
           <div style="font-size:11px;color:#888;margin-top:2px">LGR</div>
-          <div style="font-size:10px;color:#aaa">Leads ÷ Textable phones</div>
+          <div style="font-size:10px;color:#aaa">Leads ÷ Total contacts</div>
         </div>
         <div style="text-align:center;padding:10px;background:#f5f4f0;border-radius:8px">
           <div style="font-size:22px;font-weight:500;color:#534AB7">${lcv}%</div>
           <div style="font-size:11px;color:#888;margin-top:2px">LCV</div>
-          <div style="font-size:10px;color:#aaa">Leads ÷ Total properties</div>
+          <div style="font-size:10px;color:#aaa">Lead contacts ÷ Total contacts</div>
         </div>
         <div style="text-align:center;padding:10px;background:#f5f4f0;border-radius:8px">
-          ${(() => {
-            const tp = c.sms_eligible_stats?.total_properties || 0;
-            const xp = c.sms_eligible_stats?.textable_properties || 0;
-            const smsHealth = tp > 0 ? ((xp / tp) * 100).toFixed(1) : '0.0';
-            const smsHealthColor = parseFloat(smsHealth)>50?'#1a7a4a':parseFloat(smsHealth)>25?'#9a6800':'#c0392b';
-            return `
-          <div style="font-size:22px;font-weight:500;color:${smsHealthColor}">${smsHealth}%</div>
+          <div style="font-size:22px;font-weight:500;color:${parseFloat(health)>50?'#1a7a4a':parseFloat(health)>25?'#9a6800':'#c0392b'}">${health}%</div>
           <div style="font-size:11px;color:#888;margin-top:2px">Health</div>
-          <div style="font-size:10px;color:#aaa">Textable ÷ Total properties</div>
-            `;
-          })()}
+          <div style="font-size:10px;color:#aaa">Callable ÷ Total phones</div>
         </div>
       </div>
     </div>
@@ -1821,34 +1756,12 @@ function campaignDetailPage(c) {
       </div>
       <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:10px;margin-bottom:14px">
         <div class="stat-card"><div class="stat-lbl">Total properties</div><div class="stat-num">${Number(c.contact_counts?.total_contacts||0).toLocaleString()}</div><div style="font-size:11px;color:#888;margin-top:2px">Contacts uploaded</div></div>
-        ${c.sms_status === 'active' ? (() => {
-          const s = c.sms_eligible_stats || {};
-          const totalProps = s.total_properties || 0;
-          const textableProps = s.textable_properties || 0;
-          const landlineOnly = s.landline_only_properties || 0;
-          const respondedProps = s.properties_responded || 0;
-          const uniqueTextable = s.unique_phones_textable || 0;
-          const nextBatchProps = s.properties_next_batch || 0;
-          const textablePct = totalProps > 0 ? ((textableProps / totalProps) * 100).toFixed(0) : '0';
-          const respondedPct = totalProps > 0 ? ((respondedProps / totalProps) * 100).toFixed(1) : '0.0';
-          return `
-          <div class="stat-card"><div class="stat-lbl">Textable properties</div><div class="stat-num green">${Number(textableProps).toLocaleString()} ${totalProps > 0 ? `<span style="font-size:12px;font-weight:400;color:#888">(${textablePct}%)</span>` : ''}</div></div>
-          <div class="stat-card"><div class="stat-lbl">Landline-only</div><div class="stat-num" style="color:#9a6800">${Number(landlineOnly).toLocaleString()}</div></div>
-          <div class="stat-card"><div class="stat-lbl">Total phones</div><div class="stat-num">${Number(c.contact_counts?.total_phones||0).toLocaleString()}</div></div>
-          <div class="stat-card"><div class="stat-lbl">Unique textable phones</div><div class="stat-num">${Number(uniqueTextable).toLocaleString()}</div></div>
-          <div class="stat-card"><div class="stat-lbl">Wrong numbers</div><div class="stat-num red">${Number(c.contact_counts?.wrong_phones||0).toLocaleString()}</div><div style="font-size:11px;color:#888;margin-top:2px">Permanently excluded</div></div>
-          <div class="stat-card"><div class="stat-lbl">NIS flagged</div><div class="stat-num" style="color:#c0392b">${Number(c.contact_counts?.nis_phones||0).toLocaleString()}</div><div style="font-size:11px;color:#888;margin-top:2px">Dead numbers</div></div>
-          <div class="stat-card"><div class="stat-lbl">Properties responded</div><div class="stat-num" style="color:#185fa5">${Number(respondedProps).toLocaleString()} ${totalProps > 0 ? `<span style="font-size:13px;color:#888">(${respondedPct}%)</span>` : ''}</div></div>
-          <div class="stat-card"><div class="stat-lbl">Next batch</div><div class="stat-num" style="color:#2563eb">${Number(nextBatchProps).toLocaleString()}</div></div>
-          `;
-        })() : `
         <div class="stat-card"><div class="stat-lbl">Accepted by Readymode</div><div class="stat-num">${Number(c.manual_count||0).toLocaleString()} <button onclick="document.getElementById('rm-count-form').style.display=document.getElementById('rm-count-form').style.display==='none'?'block':'none'" style="font-size:11px;color:#888;background:none;border:none;cursor:pointer;text-decoration:underline">edit</button></div><div style="font-size:11px;color:#888;margin-top:2px">Manually entered</div></div>
         <div class="stat-card"><div class="stat-lbl">Total phones</div><div class="stat-num">${Number(c.contact_counts?.total_phones||0).toLocaleString()}</div><div style="font-size:11px;color:#888;margin-top:2px">Across all contacts</div></div>
         <div class="stat-card"><div class="stat-lbl">Wrong numbers</div><div class="stat-num red">${Number(c.contact_counts?.wrong_phones||0).toLocaleString()}</div><div style="font-size:11px;color:#888;margin-top:2px">Permanently excluded</div></div>
         <div class="stat-card"><div class="stat-lbl">NIS flagged</div><div class="stat-num" style="color:#c0392b">${Number(c.contact_counts?.nis_phones||0).toLocaleString()}</div><div style="font-size:11px;color:#888;margin-top:2px">Dead numbers</div></div>
         <div class="stat-card"><div class="stat-lbl">Confirmed correct</div><div class="stat-num green">${Number(c.contact_counts?.correct_phones||0).toLocaleString()}</div><div style="font-size:11px;color:#888;margin-top:2px">Live person confirmed</div></div>
         <div class="stat-card"><div class="stat-lbl">Contacts reached</div><div class="stat-num" style="color:#185fa5">${Number(c.contact_counts?.reached_contacts||0).toLocaleString()} ${c.contact_counts?.total_contacts>0?`<span style="font-size:13px;color:#888">(${((c.contact_counts.reached_contacts/c.contact_counts.total_contacts)*100).toFixed(1)}%)</span>`:''}</div><div style="font-size:11px;color:#888;margin-top:2px">At least 1 live pickup</div></div>
-        `}
       </div>
       <div id="rm-count-form" style="display:none;background:#f5f4f0;border-radius:8px;padding:12px;margin-bottom:10px">
         <form method="POST" action="/campaigns/${c.id}/readymode-count" style="display:flex;align-items:center;gap:8px">
@@ -1874,24 +1787,7 @@ function campaignDetailPage(c) {
         </form>
 ${c.sms_status === 'active' ? `
         <div style="margin-top:1rem;padding-top:1rem;border-top:1px solid #f0f0f0">
-          <div class="sec-lbl" style="margin-bottom:8px">Step 1 — Upload SmarterContact accepted contacts</div>
-          <form method="POST" action="/campaigns/${c.id}/sms/accepted-upload" enctype="multipart/form-data">
-            <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
-              <input type="file" name="acceptedfile" accept=".csv" required style="font-size:13px;padding:6px;border:1px solid #ddd;border-radius:7px;background:#fff">
-              <button type="submit" style="padding:7px 16px;background:#16a34a;color:#fff;border:none;border-radius:7px;font-size:13px;cursor:pointer;font-family:inherit">Upload accepted contacts</button>
-            </div>
-            <p style="font-size:11px;color:#aaa;margin-top:6px">Required column: Phone. This tells Loki which numbers SMC accepted as textable (landlines stripped). Re-upload anytime to refresh.</p>
-          </form>
-          ${c.sms_eligible_stats ? `
-          <div style="display:flex;gap:14px;margin-top:10px;font-size:12px;flex-wrap:wrap">
-            <div><span style="color:#888">Eligible phones:</span> <strong style="color:#1a7a4a">${Number(c.sms_eligible_stats.eligible).toLocaleString()}</strong></div>
-            <div><span style="color:#888">Ineligible phones:</span> <strong style="color:#c0392b">${Number(c.sms_eligible_stats.ineligible).toLocaleString()}</strong></div>
-            <div><span style="color:#888">Unchecked:</span> <strong style="color:#9a6800">${Number(c.sms_eligible_stats.unchecked).toLocaleString()}</strong></div>
-            <div><span style="color:#888">Textable properties:</span> <strong style="color:#185fa5">${Number(c.sms_eligible_stats.textable_properties||0).toLocaleString()}</strong></div>
-          </div>` : ''}
-        </div>
-        <div style="margin-top:1rem;padding-top:1rem;border-top:1px solid #f0f0f0">
-          <div class="sec-lbl" style="margin-bottom:8px">Step 2 — Upload SmarterContact SMS results</div>
+          <div class="sec-lbl" style="margin-bottom:8px">Upload SmarterContact SMS results</div>
           <form method="POST" action="/campaigns/${c.id}/sms/upload" enctype="multipart/form-data">
             <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
               <input type="file" name="smsfile" accept=".csv" required style="font-size:13px;padding:6px;border:1px solid #ddd;border-radius:7px;background:#fff">
@@ -1899,13 +1795,7 @@ ${c.sms_status === 'active' ? `
             </div>
             <p style="font-size:11px;color:#aaa;margin-top:6px">Required columns: Phone, Labels, First name, Last name, Property address, Property city, Property state, Property zip. One label per row only.</p>
           </form>
-        </div>
-        ${c.sms_eligible_stats && (c.sms_eligible_stats.properties_next_batch > 0 || c.sms_eligible_stats.next_batch > 0) ? `
-        <div style="margin-top:1rem;padding-top:1rem;border-top:1px solid #f0f0f0">
-          <div class="sec-lbl" style="margin-bottom:8px">Step 3 — Download next SMS batch</div>
-          <a href="/campaigns/${c.id}/sms/next-batch.csv" style="display:inline-block;padding:7px 16px;background:#1a1a1a;color:#fff;border-radius:7px;font-size:13px;text-decoration:none;font-family:inherit">⬇ Download next batch (${Number(c.sms_eligible_stats.properties_next_batch||0).toLocaleString()} properties / ${Number(c.sms_eligible_stats.unique_phones_next_batch||0).toLocaleString()} phones)</a>
-          <p style="font-size:11px;color:#aaa;margin-top:6px">Unique textable phones from properties with no response yet. Upload this back into SmarterContact for the next blast.</p>
-        </div>` : ''}` : ''}
+        </div>` : ''}
       </div>
     </div>
 
@@ -1941,7 +1831,7 @@ ${c.sms_status === 'active' ? `
     ${c.status === 'completed' ? `
     <div class="card" style="padding:1rem 1.25rem;margin-bottom:1.25rem;background:#fafaf8">
       <p style="font-size:13px;color:#888;text-align:center;padding:8px 0">This campaign is completed — no more uploads accepted. <a href="/campaigns" style="color:#1a1a1a">Start a new round</a> to continue.</p>
-    </div>` : (c.active_channel === 'cold_call' && c.sms_status !== 'active') ? `
+    </div>` : c.active_channel === 'cold_call' ? `
     <div class="card" style="padding:1rem 1.25rem;margin-bottom:1.25rem">
       <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
         <div class="sec-lbl" style="margin-bottom:0">Upload filtration file to this campaign</div>
