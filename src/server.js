@@ -1619,10 +1619,26 @@ function campaignDetailPage(c) {
   const callLogs = parseInt(n) || 0;
   const cr    = callLogs > 0 && connected > 0 ? ((connected / callLogs) * 100).toFixed(2) : '0.00';
   const clr   = totalPhones > 0 && callLogs > 0 ? ((callLogs / totalPhones) * 100).toFixed(2) : '0.00';
-  const wPct  = (connected + wrongNums) > 0 ? ((wrongNums / (connected + wrongNums)) * 100).toFixed(2) : '0.00';
-  const niPct = connected > 0 ? (((c.total_not_interested||0) / connected) * 100).toFixed(2) : '0.00';
-  const lgr   = connected > 0 ? (((c.total_transfers||0) / connected) * 100).toFixed(2) : '0.00';
-  const lcv   = totalContacts > 0 ? ((leadContacts / totalContacts) * 100).toFixed(2) : '0.00';
+  let wPct  = (connected + wrongNums) > 0 ? ((wrongNums / (connected + wrongNums)) * 100).toFixed(2) : '0.00';
+  let niPct = connected > 0 ? (((c.total_not_interested||0) / connected) * 100).toFixed(2) : '0.00';
+  let lgr   = connected > 0 ? (((c.total_transfers||0) / connected) * 100).toFixed(2) : '0.00';
+  const lcv = totalContacts > 0 ? ((leadContacts / totalContacts) * 100).toFixed(2) : '0.00';
+
+  // ── SMS-specific KPI overrides ──────────────────────────────────────────
+  // For SMS campaigns, use "unique textable phones" as the denominator since
+  // that's the universe SMC actually works on (not call-log connected count).
+  if (c.active_channel === 'sms' || c.sms_status === 'active') {
+    const uniqueTextable = parseInt(c.sms_eligible_stats?.unique_phones_textable || 0);
+    if (uniqueTextable > 0) {
+      wPct  = ((wrongNums / uniqueTextable) * 100).toFixed(2);
+      niPct = (((c.total_not_interested||0) / uniqueTextable) * 100).toFixed(2);
+      lgr   = (((c.total_transfers||0) / uniqueTextable) * 100).toFixed(2);
+    } else {
+      wPct  = '0.00';
+      niPct = '0.00';
+      lgr   = '0.00';
+    }
+  }
 
   const uploadRows = (c.uploads||[]).map(u => `
     <tr>
@@ -1678,12 +1694,12 @@ function campaignDetailPage(c) {
     </div>
 
     <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:10px;margin-bottom:1.25rem">
-      ${c.active_channel === 'sms' ? `
+      ${(c.active_channel === 'sms' || c.sms_status === 'active') ? `
       <div class="stat-card"><div class="stat-lbl">SMS uploads</div><div class="stat-num">${c.upload_count||0}</div><div style="font-size:11px;color:#888;margin-top:2px">Uploads</div></div>
       <div class="stat-card"><div class="stat-lbl">Wrong numbers</div><div class="stat-num red">${Number(c.total_wrong_numbers||0).toLocaleString()}</div><div style="font-size:11px;color:#888;margin-top:2px">Removed</div></div>
       <div class="stat-card"><div class="stat-lbl">Not interested</div><div class="stat-num" style="color:#9a6800">${Number(c.total_not_interested||0).toLocaleString()}</div><div style="font-size:11px;color:#888;margin-top:2px">Total NI</div></div>
       <div class="stat-card"><div class="stat-lbl">Leads generated</div><div class="stat-num green">${Number(c.total_transfers||0).toLocaleString()}</div><div style="font-size:11px;color:#888;margin-top:2px">Transfers</div></div>
-      <div class="stat-card"><div class="stat-lbl">Callable</div><div class="stat-num green">${Number(masterCallable).toLocaleString()} <span style="font-size:12px;font-weight:400;color:#888">(${callable_pct}%)</span></div><div style="font-size:11px;color:#888;margin-top:2px">Active pool</div></div>
+      <div class="stat-card"><div class="stat-lbl">Textable</div><div class="stat-num green">${Number(c.sms_eligible_stats?.textable_properties||0).toLocaleString()} ${c.sms_eligible_stats?.total_properties>0?`<span style="font-size:12px;font-weight:400;color:#888">(${((c.sms_eligible_stats.textable_properties/c.sms_eligible_stats.total_properties)*100).toFixed(0)}%)</span>`:''}</div><div style="font-size:11px;color:#888;margin-top:2px">Properties reachable by SMS</div></div>
       ` : `
       <div class="stat-card"><div class="stat-lbl">Call logs</div><div class="stat-num">${Number(n).toLocaleString()}</div><div style="font-size:11px;color:#888;margin-top:2px">Logged numbers</div></div>
       <div class="stat-card"><div class="stat-lbl">Connected</div><div class="stat-num blue">${Number(connected).toLocaleString()}</div><div style="font-size:11px;color:#888;margin-top:2px">Live pickups</div></div>
@@ -1695,34 +1711,42 @@ function campaignDetailPage(c) {
       `}
     </div>
 
-    ${c.active_channel === 'sms' ? `
+    ${(c.active_channel === 'sms' || c.sms_status === 'active') ? `
     <div style="background:#fff;border:1px solid #e0dfd8;border-radius:12px;padding:14px 16px;margin-bottom:1.25rem">
       <div style="font-size:11px;font-weight:600;color:#888;text-transform:uppercase;letter-spacing:.05em;margin-bottom:12px">SMS Campaign KPIs</div>
       <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(110px,1fr));gap:10px">
         <div style="text-align:center;padding:10px;background:#f5f4f0;border-radius:8px">
           <div style="font-size:22px;font-weight:500;color:#c0392b">${wPct}%</div>
           <div style="font-size:11px;color:#888;margin-top:2px">W#%</div>
-          <div style="font-size:10px;color:#aaa">Wrong ÷ Total contacts</div>
+          <div style="font-size:10px;color:#aaa">Wrong ÷ Textable phones</div>
         </div>
         <div style="text-align:center;padding:10px;background:#f5f4f0;border-radius:8px">
           <div style="font-size:22px;font-weight:500;color:#9a6800">${niPct}%</div>
           <div style="font-size:11px;color:#888;margin-top:2px">NI%</div>
-          <div style="font-size:10px;color:#aaa">NI ÷ Total contacts</div>
+          <div style="font-size:10px;color:#aaa">NI ÷ Textable phones</div>
         </div>
         <div style="text-align:center;padding:10px;background:#f5f4f0;border-radius:8px">
           <div style="font-size:22px;font-weight:500;color:#1a7a4a">${lgr}%</div>
           <div style="font-size:11px;color:#888;margin-top:2px">LGR</div>
-          <div style="font-size:10px;color:#aaa">Leads ÷ Total contacts</div>
+          <div style="font-size:10px;color:#aaa">Leads ÷ Textable phones</div>
         </div>
         <div style="text-align:center;padding:10px;background:#f5f4f0;border-radius:8px">
           <div style="font-size:22px;font-weight:500;color:#534AB7">${lcv}%</div>
           <div style="font-size:11px;color:#888;margin-top:2px">LCV</div>
-          <div style="font-size:10px;color:#aaa">Lead contacts ÷ Total contacts</div>
+          <div style="font-size:10px;color:#aaa">Leads ÷ Total properties</div>
         </div>
         <div style="text-align:center;padding:10px;background:#f5f4f0;border-radius:8px">
-          <div style="font-size:22px;font-weight:500;color:${parseFloat(health)>50?'#1a7a4a':parseFloat(health)>25?'#9a6800':'#c0392b'}">${health}%</div>
+          ${(() => {
+            const tp = c.sms_eligible_stats?.total_properties || 0;
+            const xp = c.sms_eligible_stats?.textable_properties || 0;
+            const smsHealth = tp > 0 ? ((xp / tp) * 100).toFixed(1) : '0.0';
+            const smsHealthColor = parseFloat(smsHealth)>50?'#1a7a4a':parseFloat(smsHealth)>25?'#9a6800':'#c0392b';
+            return `
+          <div style="font-size:22px;font-weight:500;color:${smsHealthColor}">${smsHealth}%</div>
           <div style="font-size:11px;color:#888;margin-top:2px">Health</div>
-          <div style="font-size:10px;color:#aaa">Callable ÷ Total phones</div>
+          <div style="font-size:10px;color:#aaa">Textable ÷ Total properties</div>
+            `;
+          })()}
         </div>
       </div>
     </div>
@@ -1794,14 +1818,14 @@ function campaignDetailPage(c) {
           const textablePct = totalProps > 0 ? ((textableProps / totalProps) * 100).toFixed(0) : '0';
           const respondedPct = totalProps > 0 ? ((respondedProps / totalProps) * 100).toFixed(1) : '0.0';
           return `
-          <div class="stat-card"><div class="stat-lbl">Textable properties</div><div class="stat-num green">${Number(textableProps).toLocaleString()} ${totalProps > 0 ? `<span style="font-size:12px;font-weight:400;color:#888">(${textablePct}%)</span>` : ''}</div><div style="font-size:11px;color:#888;margin-top:2px">≥1 SMC-accepted phone</div></div>
-          <div class="stat-card"><div class="stat-lbl">Landline-only</div><div class="stat-num" style="color:#9a6800">${Number(landlineOnly).toLocaleString()}</div><div style="font-size:11px;color:#888;margin-top:2px">Call-only — no SMS</div></div>
-          <div class="stat-card"><div class="stat-lbl">Total phones</div><div class="stat-num">${Number(c.contact_counts?.total_phones||0).toLocaleString()}</div><div style="font-size:11px;color:#888;margin-top:2px">Across all contacts</div></div>
-          <div class="stat-card"><div class="stat-lbl">Unique textable phones</div><div class="stat-num">${Number(uniqueTextable).toLocaleString()}</div><div style="font-size:11px;color:#888;margin-top:2px">What SMC actually works</div></div>
+          <div class="stat-card"><div class="stat-lbl">Textable properties</div><div class="stat-num green">${Number(textableProps).toLocaleString()} ${totalProps > 0 ? `<span style="font-size:12px;font-weight:400;color:#888">(${textablePct}%)</span>` : ''}</div></div>
+          <div class="stat-card"><div class="stat-lbl">Landline-only</div><div class="stat-num" style="color:#9a6800">${Number(landlineOnly).toLocaleString()}</div></div>
+          <div class="stat-card"><div class="stat-lbl">Total phones</div><div class="stat-num">${Number(c.contact_counts?.total_phones||0).toLocaleString()}</div></div>
+          <div class="stat-card"><div class="stat-lbl">Unique textable phones</div><div class="stat-num">${Number(uniqueTextable).toLocaleString()}</div></div>
           <div class="stat-card"><div class="stat-lbl">Wrong numbers</div><div class="stat-num red">${Number(c.contact_counts?.wrong_phones||0).toLocaleString()}</div><div style="font-size:11px;color:#888;margin-top:2px">Permanently excluded</div></div>
           <div class="stat-card"><div class="stat-lbl">NIS flagged</div><div class="stat-num" style="color:#c0392b">${Number(c.contact_counts?.nis_phones||0).toLocaleString()}</div><div style="font-size:11px;color:#888;margin-top:2px">Dead numbers</div></div>
-          <div class="stat-card"><div class="stat-lbl">Properties responded</div><div class="stat-num" style="color:#185fa5">${Number(respondedProps).toLocaleString()} ${totalProps > 0 ? `<span style="font-size:13px;color:#888">(${respondedPct}%)</span>` : ''}</div><div style="font-size:11px;color:#888;margin-top:2px">Real response received</div></div>
-          <div class="stat-card"><div class="stat-lbl">Next batch</div><div class="stat-num" style="color:#2563eb">${Number(nextBatchProps).toLocaleString()}</div><div style="font-size:11px;color:#888;margin-top:2px">Properties to re-text</div></div>
+          <div class="stat-card"><div class="stat-lbl">Properties responded</div><div class="stat-num" style="color:#185fa5">${Number(respondedProps).toLocaleString()} ${totalProps > 0 ? `<span style="font-size:13px;color:#888">(${respondedPct}%)</span>` : ''}</div></div>
+          <div class="stat-card"><div class="stat-lbl">Next batch</div><div class="stat-num" style="color:#2563eb">${Number(nextBatchProps).toLocaleString()}</div></div>
           `;
         })() : `
         <div class="stat-card"><div class="stat-lbl">Accepted by Readymode</div><div class="stat-num">${Number(c.manual_count||0).toLocaleString()} <button onclick="document.getElementById('rm-count-form').style.display=document.getElementById('rm-count-form').style.display==='none'?'block':'none'" style="font-size:11px;color:#888;background:none;border:none;cursor:pointer;text-decoration:underline">edit</button></div><div style="font-size:11px;color:#888;margin-top:2px">Manually entered</div></div>
@@ -1903,7 +1927,7 @@ ${c.sms_status === 'active' ? `
     ${c.status === 'completed' ? `
     <div class="card" style="padding:1rem 1.25rem;margin-bottom:1.25rem;background:#fafaf8">
       <p style="font-size:13px;color:#888;text-align:center;padding:8px 0">This campaign is completed — no more uploads accepted. <a href="/campaigns" style="color:#1a1a1a">Start a new round</a> to continue.</p>
-    </div>` : c.active_channel === 'cold_call' ? `
+    </div>` : (c.active_channel === 'cold_call' && c.sms_status !== 'active') ? `
     <div class="card" style="padding:1rem 1.25rem;margin-bottom:1.25rem">
       <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
         <div class="sec-lbl" style="margin-bottom:0">Upload filtration file to this campaign</div>
