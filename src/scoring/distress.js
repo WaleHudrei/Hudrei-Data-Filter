@@ -8,6 +8,7 @@ const { query } = require('../db');
 // ── WEIGHTS (single source of truth — tune here, recompute, done) ──────────
 const WEIGHTS = {
   list_tax_sale:        20,
+  list_tax_delinquent:  10,
   list_pre_foreclosure: 20,
   list_probate:         20,
   list_code_violation:  15,
@@ -18,6 +19,7 @@ const WEIGHTS = {
   high_equity:          10,   // equity_percent >= 50
   out_of_state:         10,   // mailing_state != property state_code
   marketing_lead:       5,    // marketing_result = 'Lead'
+  county_source:        5,    // on at least one list whose source contains "county"
 };
 
 // Display cap so the score reads as a 0-100 percentage-feel
@@ -46,7 +48,9 @@ function classifyList(listType, listName) {
   const t = String(listType || '').toLowerCase().trim();
   const n = String(listName || '').toLowerCase().trim();
   const both = t + ' ' + n;
-  if (/tax\s*sale|tax\s*delinq/.test(both)) return 'tax_sale';
+  // Order matters: check tax_sale first (more specific), then tax_delinquent
+  if (/tax\s*sale/.test(both)) return 'tax_sale';
+  if (/tax\s*delinq/.test(both)) return 'tax_delinquent';
   if (/pre[\s-]?foreclosure|pre[\s-]?fc|notice\s*of\s*default|nod|lis\s*pendens|auction/.test(both)) return 'pre_foreclosure';
   if (/probate|deceased|estate|affidavit\s*of\s*death/.test(both)) return 'probate';
   if (/code\s*violation|municipal\s*lien/.test(both)) return 'code_violation';
@@ -60,6 +64,7 @@ function classifyList(listType, listName) {
 //     property_state_code, mailing_state, equity_percent, marketing_result,
 //     list_signals: Set<string>,  // e.g. new Set(['tax_sale','vacant'])
 //     list_count: number,
+//     has_county_source: boolean,
 //   }
 // Returns: { score, capped_score, band, breakdown: [{key, label, points}] }
 function computeScore(ctx) {
@@ -74,6 +79,7 @@ function computeScore(ctx) {
 
   // List signals
   if (ctx.list_signals && ctx.list_signals.has('tax_sale'))        add('list_tax_sale',        WEIGHTS.list_tax_sale,        'On Tax Sale list');
+  if (ctx.list_signals && ctx.list_signals.has('tax_delinquent'))  add('list_tax_delinquent',  WEIGHTS.list_tax_delinquent,  'On Tax Delinquent list');
   if (ctx.list_signals && ctx.list_signals.has('pre_foreclosure')) add('list_pre_foreclosure', WEIGHTS.list_pre_foreclosure, 'On Pre-Foreclosure list');
   if (ctx.list_signals && ctx.list_signals.has('probate'))         add('list_probate',         WEIGHTS.list_probate,         'On Probate list');
   if (ctx.list_signals && ctx.list_signals.has('code_violation'))  add('list_code_violation',  WEIGHTS.list_code_violation,  'On Code Violation list');
@@ -97,6 +103,11 @@ function computeScore(ctx) {
   // Marketing already engaged
   if (String(ctx.marketing_result || '').toLowerCase() === 'lead') {
     add('marketing_lead', WEIGHTS.marketing_lead, 'Already a Lead');
+  }
+
+  // County-sourced data (more authoritative than third-party scrapes)
+  if (ctx.has_county_source) {
+    add('county_source', WEIGHTS.county_source, 'County-sourced list');
   }
 
   const capped = Math.min(raw, DISPLAY_CAP);
@@ -165,16 +176,20 @@ async function scoreProperty(propertyId) {
 
   // Lists this property is on
   const listRes = await query(
-    `SELECT l.list_type, l.list_name
+    `SELECT l.list_type, l.list_name, l.source
        FROM property_lists pl
        JOIN lists l ON l.id = pl.list_id
       WHERE pl.property_id = $1`,
     [propertyId]
   );
   const list_signals = new Set();
+  let has_county_source = false;
   for (const l of listRes.rows) {
     const sig = classifyList(l.list_type, l.list_name);
     if (sig) list_signals.add(sig);
+    if (l.source && /county/i.test(String(l.source))) {
+      has_county_source = true;
+    }
   }
   const list_count = listRes.rows.length;
 
@@ -185,6 +200,7 @@ async function scoreProperty(propertyId) {
     marketing_result:    p.marketing_result,
     list_signals,
     list_count,
+    has_county_source,
   });
 
   // Get prior score to detect changes
@@ -226,11 +242,13 @@ async function scoreProperties(propertyIds) {
     ),
     list_flags AS (
       SELECT pl.property_id,
-             BOOL_OR(LOWER(COALESCE(l.list_type,'') || ' ' || COALESCE(l.list_name,'')) ~ 'tax[[:space:]]*sale|tax[[:space:]]*delinq') AS has_tax_sale,
+             BOOL_OR(LOWER(COALESCE(l.list_type,'') || ' ' || COALESCE(l.list_name,'')) ~ 'tax[[:space:]]*sale') AS has_tax_sale,
+             BOOL_OR(LOWER(COALESCE(l.list_type,'') || ' ' || COALESCE(l.list_name,'')) ~ 'tax[[:space:]]*delinq') AS has_tax_delinq,
              BOOL_OR(LOWER(COALESCE(l.list_type,'') || ' ' || COALESCE(l.list_name,'')) ~ 'pre[[:space:]-]?foreclosure|pre[[:space:]-]?fc|notice[[:space:]]*of[[:space:]]*default|nod|lis[[:space:]]*pendens|auction') AS has_pre_fc,
              BOOL_OR(LOWER(COALESCE(l.list_type,'') || ' ' || COALESCE(l.list_name,'')) ~ 'probate|deceased|estate|affidavit[[:space:]]*of[[:space:]]*death') AS has_probate,
              BOOL_OR(LOWER(COALESCE(l.list_type,'') || ' ' || COALESCE(l.list_name,'')) ~ 'code[[:space:]]*violation|municipal[[:space:]]*lien') AS has_code_viol,
              BOOL_OR(LOWER(COALESCE(l.list_type,'') || ' ' || COALESCE(l.list_name,'')) ~ 'vacant') AS has_vacant,
+             BOOL_OR(LOWER(COALESCE(l.source,'')) ~ 'county') AS has_county_source,
              COUNT(DISTINCT pl.list_id) AS list_count
         FROM property_lists pl
         JOIN lists l ON l.id = pl.list_id
@@ -247,11 +265,14 @@ async function scoreProperties(propertyIds) {
     scored AS (
       SELECT p.id,
              LEAST(100,
-               CASE WHEN lf.has_tax_sale  THEN ${w.list_tax_sale}        ELSE 0 END +
+               CASE WHEN lf.has_tax_sale   THEN ${w.list_tax_sale}        ELSE 0 END +
+               CASE WHEN lf.has_tax_delinq AND NOT COALESCE(lf.has_tax_sale,false)
+                                           THEN ${w.list_tax_delinquent}  ELSE 0 END +
                CASE WHEN lf.has_pre_fc    THEN ${w.list_pre_foreclosure} ELSE 0 END +
                CASE WHEN lf.has_probate   THEN ${w.list_probate}         ELSE 0 END +
                CASE WHEN lf.has_code_viol THEN ${w.list_code_violation}  ELSE 0 END +
                CASE WHEN lf.has_vacant    THEN ${w.list_vacant}          ELSE 0 END +
+               CASE WHEN lf.has_county_source THEN ${w.county_source}    ELSE 0 END +
                CASE
                  WHEN COALESCE(lf.list_count,0) >= 5 THEN ${w.stack_5_plus}
                  WHEN COALESCE(lf.list_count,0) >= 3 THEN ${w.stack_3_4}
@@ -300,11 +321,13 @@ async function scoreAllProperties(progressCb) {
   const sql = `
     WITH list_flags AS (
       SELECT pl.property_id,
-             BOOL_OR(LOWER(COALESCE(l.list_type,'') || ' ' || COALESCE(l.list_name,'')) ~ 'tax[[:space:]]*sale|tax[[:space:]]*delinq') AS has_tax_sale,
+             BOOL_OR(LOWER(COALESCE(l.list_type,'') || ' ' || COALESCE(l.list_name,'')) ~ 'tax[[:space:]]*sale') AS has_tax_sale,
+             BOOL_OR(LOWER(COALESCE(l.list_type,'') || ' ' || COALESCE(l.list_name,'')) ~ 'tax[[:space:]]*delinq') AS has_tax_delinq,
              BOOL_OR(LOWER(COALESCE(l.list_type,'') || ' ' || COALESCE(l.list_name,'')) ~ 'pre[[:space:]-]?foreclosure|pre[[:space:]-]?fc|notice[[:space:]]*of[[:space:]]*default|nod|lis[[:space:]]*pendens|auction') AS has_pre_fc,
              BOOL_OR(LOWER(COALESCE(l.list_type,'') || ' ' || COALESCE(l.list_name,'')) ~ 'probate|deceased|estate|affidavit[[:space:]]*of[[:space:]]*death') AS has_probate,
              BOOL_OR(LOWER(COALESCE(l.list_type,'') || ' ' || COALESCE(l.list_name,'')) ~ 'code[[:space:]]*violation|municipal[[:space:]]*lien') AS has_code_viol,
              BOOL_OR(LOWER(COALESCE(l.list_type,'') || ' ' || COALESCE(l.list_name,'')) ~ 'vacant') AS has_vacant,
+             BOOL_OR(LOWER(COALESCE(l.source,'')) ~ 'county') AS has_county_source,
              COUNT(DISTINCT pl.list_id) AS list_count
         FROM property_lists pl
         JOIN lists l ON l.id = pl.list_id
@@ -319,11 +342,14 @@ async function scoreAllProperties(progressCb) {
     scored AS (
       SELECT p.id,
              LEAST(100,
-               CASE WHEN lf.has_tax_sale  THEN ${w.list_tax_sale}        ELSE 0 END +
+               CASE WHEN lf.has_tax_sale   THEN ${w.list_tax_sale}        ELSE 0 END +
+               CASE WHEN lf.has_tax_delinq AND NOT COALESCE(lf.has_tax_sale,false)
+                                           THEN ${w.list_tax_delinquent}  ELSE 0 END +
                CASE WHEN lf.has_pre_fc    THEN ${w.list_pre_foreclosure} ELSE 0 END +
                CASE WHEN lf.has_probate   THEN ${w.list_probate}         ELSE 0 END +
                CASE WHEN lf.has_code_viol THEN ${w.list_code_violation}  ELSE 0 END +
                CASE WHEN lf.has_vacant    THEN ${w.list_vacant}          ELSE 0 END +
+               CASE WHEN lf.has_county_source THEN ${w.county_source}    ELSE 0 END +
                CASE
                  WHEN COALESCE(lf.list_count,0) >= 5 THEN ${w.stack_5_plus}
                  WHEN COALESCE(lf.list_count,0) >= 3 THEN ${w.stack_3_4}
