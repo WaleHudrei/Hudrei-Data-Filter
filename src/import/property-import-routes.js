@@ -635,17 +635,42 @@ router.post('/commit', requireAuth, async (req, res) => {
     const cleanPhone = v => v ? v.replace(/\D/g,'') : '';
 
     // ── Bulk upsert properties ───────────────────────────────────────────────
+    // Length caps for short VARCHAR columns. Rows exceeding these limits are
+    // SKIPPED (not silently truncated) so the DB stays clean and dirty data
+    // surfaces explicitly in the error log.
+    const CAP = {
+      state_code: 10,  // VARCHAR(10) — normally 2 chars
+      zip_code:   10,  // VARCHAR(10) — normally 5 or 5+4
+    };
     const validRows = [];
+    const skippedReasons = [];  // { street, reason } — logged on response
     for (const row of rows) {
       const street = get(row, 'street');
       const city   = get(row, 'city');
       const state  = normalizeState(get(row,'state_code'));
+      const zip    = get(row, 'zip_code') || '';
       if (!street || !city || !state) { errors++; continue; }
+      // Length guards
+      if (state.length > CAP.state_code) {
+        errors++;
+        skippedReasons.push({ street, reason: `state_code too long (${state.length} chars): "${state}"` });
+        continue;
+      }
+      if (zip.length > CAP.zip_code) {
+        errors++;
+        skippedReasons.push({ street, reason: `zip_code too long (${zip.length} chars): "${zip}"` });
+        continue;
+      }
       validRows.push(row);
     }
 
+    if (skippedReasons.length > 0) {
+      console.warn(`[property-import] Skipped ${skippedReasons.length} rows due to length violations:`,
+        skippedReasons.slice(0, 5));  // log first 5 for visibility
+    }
+
     if (!validRows.length) {
-      return res.json({ created, updated, errors, resolvedListId, firstError: global._importFirstError || null });
+      return res.json({ created, updated, errors, resolvedListId, skipped: skippedReasons, firstError: global._importFirstError || null });
     }
 
     // Build arrays for UNNEST bulk insert
@@ -790,7 +815,7 @@ router.post('/commit', requireAuth, async (req, res) => {
       }
     }
 
-    res.json({ created, updated, errors, firstError: global._importFirstError || null, resolvedListId });
+    res.json({ created, updated, errors, skipped: skippedReasons, firstError: global._importFirstError || null, resolvedListId });
     global._importFirstError = null;
   } catch(e) {
     console.error('Import commit error:', e.message);
@@ -850,6 +875,7 @@ router.post('/start-job', requireAuth, async (req, res) => {
 async function runBackgroundImport(jobId, allRows, mapping, filename, resolvedListId) {
   const BATCH = 500;
   let inserted = 0, updated = 0, errors = 0, processed = 0;
+  const allSkipped = [];  // hoisted so the catch block can reference it
 
   try {
     await query(`UPDATE bulk_import_jobs SET status='running', updated_at=NOW() WHERE id=$1`, [jobId]);
@@ -898,11 +924,31 @@ async function runBackgroundImport(jobId, allRows, mapping, filename, resolvedLi
       if (VALID_STATES.has(up)) return up;
       return STATE_ABBR[v.trim().toLowerCase()] || up.slice(0,2);
     };
+    // Length caps for short VARCHAR columns — skip rows exceeding these
+    const CAP = { state_code: 10, zip_code: 10 };
     // Normalize state: full name → abbreviation
     for (let offset = 0; offset < allRows.length; offset += BATCH) {
       const rows = allRows.slice(offset, offset + BATCH);
-      const validRows = rows.filter(row => get(row,'street') && get(row,'city') && get(row,'state_code'));
-      errors += rows.length - validRows.length;
+      const validRows = [];
+      for (const row of rows) {
+        const street = get(row,'street');
+        const city   = get(row,'city');
+        const state  = get(row,'state_code');
+        if (!street || !city || !state) { errors++; continue; }
+        const stateNorm = normalizeState(state);
+        const zip = get(row,'zip_code') || '';
+        if (stateNorm.length > CAP.state_code) {
+          errors++;
+          allSkipped.push(`Row skipped — state_code too long: "${stateNorm}" (street: ${street})`);
+          continue;
+        }
+        if (zip.length > CAP.zip_code) {
+          errors++;
+          allSkipped.push(`Row skipped — zip_code too long: "${zip}" (street: ${street})`);
+          continue;
+        }
+        validRows.push(row);
+      }
 
       if (validRows.length) {
         // Bulk upsert properties
@@ -989,12 +1035,27 @@ async function runBackgroundImport(jobId, allRows, mapping, filename, resolvedLi
         [processed, inserted, updated, errors, jobId]);
     }
 
-    await query(`UPDATE bulk_import_jobs SET status='complete',processed_rows=$1,inserted=$2,updated=$3,errors=$4,updated_at=NOW() WHERE id=$5`,
-      [allRows.length, inserted, updated, errors, jobId]);
+    // Write skip summary to error_log even on successful completion so
+    // user can see which rows were dropped and why.
+    const skipSummary = allSkipped.length > 0
+      ? `${allSkipped.length} row(s) skipped due to oversize fields:\n` + allSkipped.slice(0, 20).join('\n')
+        + (allSkipped.length > 20 ? `\n…(${allSkipped.length - 20} more)` : '')
+      : null;
+
+    await query(`UPDATE bulk_import_jobs SET status='complete',processed_rows=$1,inserted=$2,updated=$3,errors=$4,error_log=$5,updated_at=NOW() WHERE id=$6`,
+      [allRows.length, inserted, updated, errors, skipSummary, jobId]);
+
+    if (allSkipped.length > 0) {
+      console.warn(`[bulk-import] job ${jobId} — ${allSkipped.length} rows skipped due to length violations`);
+    }
 
   } catch(e) {
     console.error('Background import error:', e.message);
-    await query(`UPDATE bulk_import_jobs SET status='error',error_log=$1,updated_at=NOW() WHERE id=$2`, [e.message, jobId]);
+    // Preserve skipped-rows context when we crash
+    const combined = (allSkipped && allSkipped.length > 0
+      ? `CRASH: ${e.message}\n\nBefore crash, ${allSkipped.length} row(s) had been skipped due to oversize fields.`
+      : e.message);
+    await query(`UPDATE bulk_import_jobs SET status='error',error_log=$1,updated_at=NOW() WHERE id=$2`, [combined, jobId]);
   }
 }
 
