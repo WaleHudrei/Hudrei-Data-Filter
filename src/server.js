@@ -1154,7 +1154,8 @@ app.post('/campaigns/:id/sms/upload', requireAuth, upload.single('smsfile'), asy
     const result = await campaigns.importSmarterContactFile(
       req.params.id,
       parsed.data,
-      parsed.meta.fields || []
+      parsed.meta.fields || [],
+      req.file.originalname
     );
     if (!result.success) {
       return res.status(400).send(`
@@ -1181,7 +1182,8 @@ app.post('/campaigns/:id/sms/accepted-upload', requireAuth, upload.single('accep
     const result = await campaigns.importSmarterContactAccepted(
       req.params.id,
       parsed.data,
-      parsed.meta.fields || []
+      parsed.meta.fields || [],
+      req.file.originalname
     );
     if (!result.success) {
       return res.status(400).send(`
@@ -1438,7 +1440,7 @@ app.post('/campaigns/:id/delete', requireAuth, async (req, res) => {
 // ── Campaign HTML Pages ───────────────────────────────────────────────────────
 
 const STATUS_COLORS = { active: '#1a7a4a', paused: '#9a6800', completed: '#888' };
-const CHANNEL_LABELS = { cold_call: 'Cold Call', sms: 'SMS' };
+const CHANNEL_LABELS = { cold_call: 'Cold Call', sms: 'SMS', sms_accepted: 'SMC Accepted', sms_results: 'SMC Results' };
 
 function campaignsPage(list, tab) {
   tab = tab || 'active';
@@ -1640,22 +1642,34 @@ function campaignDetailPage(c) {
     }
   }
 
-  const uploadRows = (c.uploads||[]).map(u => `
+  const uploadRows = (c.uploads||[]).map(u => {
+    const isSms = u.channel === 'sms_results' || u.channel === 'sms_accepted';
+    const isAccepted = u.channel === 'sms_accepted';
+    const badgeBg = u.channel === 'sms_accepted' ? '#e8f5ee' : (u.channel === 'sms_results' ? '#f0e6fb' : '#e6f1fb');
+    const badgeColor = u.channel === 'sms_accepted' ? '#1a7a4a' : (u.channel === 'sms_results' ? '#7b2fa5' : '#185fa5');
+    // Breakdown column differs by channel
+    const breakdown = isAccepted
+      ? `Accepted:${u.records_kept} · Rejected:${u.records_filtered}`
+      : isSms
+        ? `WN:${u.wrong_numbers} NI:${u.not_interested} DQ:${u.do_not_call} Leads:${u.transfers}`
+        : `WN:${u.wrong_numbers} VM:${u.voicemails} NI:${u.not_interested} DNC:${u.do_not_call} Lead:${u.transfers}`;
+    return `
     <tr>
       <td style="font-size:11px;color:#888">${new Date(u.uploaded_at).toLocaleDateString()} ${new Date(u.uploaded_at).toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'})}</td>
       <td>${u.filename||'—'}<br><span style="font-size:11px;color:#888">${u.source_list_name||''}</span></td>
-      <td><span class="badge" style="background:#e6f1fb;color:#185fa5">${CHANNEL_LABELS[u.channel]||u.channel}</span></td>
+      <td><span class="badge" style="background:${badgeBg};color:${badgeColor}">${CHANNEL_LABELS[u.channel]||u.channel}</span></td>
       <td>${u.total_records}</td>
       <td style="color:#1a7a4a">${u.records_kept}</td>
       <td style="color:#c0392b">${u.records_filtered}</td>
-      <td style="color:#888;font-size:11px">WN:${u.wrong_numbers} VM:${u.voicemails} NI:${u.not_interested} DNC:${u.do_not_call} Lead:${u.transfers}</td>
-      <td style="color:#2471a3;font-size:11px">${u.caught_by_memory} by memory</td>
+      <td style="color:#888;font-size:11px">${breakdown}</td>
+      <td style="color:#2471a3;font-size:11px">${isSms ? '—' : u.caught_by_memory + ' by memory'}</td>
       <td>
-        <form method="POST" action="/campaigns/${c.id}/uploads/${u.id}/delete" onsubmit="return confirm('Remove this upload from the campaign? This will reverse its counts from memory.')">
+        <form method="POST" action="/campaigns/${c.id}/uploads/${u.id}/delete" onsubmit="return confirm('${isSms ? 'Remove this upload entry from history? Note: phone-level SMS flags (eligible, labels) will NOT be reversed \\u2014 this only removes the audit trail.' : 'Remove this upload from the campaign? This will reverse its counts from memory.'}')">
           <button type="submit" style="background:none;border:none;color:#c0392b;font-size:11px;cursor:pointer;text-decoration:underline;font-family:inherit;padding:0">Remove</button>
         </form>
       </td>
-    </tr>`).join('');
+    </tr>`;
+  }).join('');
 
   const dispositionRows = (c.disposition_breakdown||[]).map(d => `
     <tr><td>${d.disposition||'unknown'}</td><td style="font-weight:500">${Number(d.count).toLocaleString()}</td></tr>`).join('');
