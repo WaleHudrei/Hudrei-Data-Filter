@@ -1,6 +1,7 @@
 const express = require('express');
 const router = express.Router();
 const { query } = require('../db');
+const distress = require('../scoring/distress');
 
 function requireAuth(req, res, next) {
   if (req.session && req.session.authenticated) return next();
@@ -26,6 +27,7 @@ router.get('/', requireAuth, async (req, res) => {
       min_equity = '', max_equity = '',
       min_year = '', max_year = '',
       upload_from = '', upload_to = '',
+      min_distress = '',
       page = 1
     } = req.query;
 
@@ -93,6 +95,7 @@ router.get('/', requireAuth, async (req, res) => {
     }
 
     if (min_stack)    { conditions.push(`(SELECT COUNT(*) FROM property_lists plc WHERE plc.property_id = p.id) >= $${idx}`); params.push(parseInt(min_stack)); idx++; }
+    if (min_distress) { conditions.push(`p.distress_score >= $${idx}`); params.push(parseInt(min_distress)); idx++; }
 
     const where = conditions.length ? 'WHERE ' + conditions.join(' AND ') : '';
 
@@ -119,6 +122,7 @@ router.get('/', requireAuth, async (req, res) => {
         p.id, p.street, p.city, p.state_code, p.zip_code,
         p.property_type, p.vacant, p.pipeline_stage, p.source,
         p.estimated_value, p.condition, p.created_at,
+        p.distress_score, p.distress_band,
         c.first_name, c.last_name,
         (SELECT COUNT(*) FROM property_lists pl WHERE pl.property_id = p.id) AS list_count,
         (SELECT COUNT(*) FROM phones ph2
@@ -140,6 +144,13 @@ router.get('/', requireAuth, async (req, res) => {
       const stage = r.pipeline_stage || 'prospect';
       const stageColor = {prospect:'#f5f4f0',lead:'#e8f5ee',contract:'#fff8e1',closed:'#e8f0ff'}[stage]||'#f5f4f0';
       const stageText = {prospect:'#555',lead:'#1a7a4a',contract:'#9a6800',closed:'#2c5cc5'}[stage]||'#555';
+      // Distress badge
+      const dScore = r.distress_score;
+      const dBand = r.distress_band;
+      const dColor = (dBand && distress.BAND_COLORS[dBand]) ? distress.BAND_COLORS[dBand] : null;
+      const distressCell = (dScore == null || dScore === undefined)
+        ? '<span style="color:#ccc;font-size:12px">—</span>'
+        : `<span style="background:${dColor.bg};color:${dColor.text};padding:3px 9px;border-radius:5px;font-size:11px;font-weight:600;display:inline-block;min-width:38px">${dScore}</span>`;
       return `<tr data-id="${r.id}" style="cursor:pointer;border-bottom:1px solid #f0efe9" onclick="window.location='/records/${r.id}'" onmouseover="if(!this.classList.contains('row-selected'))this.style.background='#fafaf8'" onmouseout="if(!this.classList.contains('row-selected'))this.style.background=''">
         <td style="width:40px;padding:12px 0 12px 16px" onclick="event.stopPropagation()"><input type="checkbox" class="row-check" data-id="${r.id}" onchange="selectRow(this, this.checked)" style="cursor:pointer;width:15px;height:15px"></td>
         <td style="padding:12px"><div style="font-weight:500;font-size:13px">${r.street}</div><div style="font-size:12px;color:#888;margin-top:2px">${r.city}, ${r.state_code} ${r.zip_code}</div></td>
@@ -147,6 +158,7 @@ router.get('/', requireAuth, async (req, res) => {
         <td style="padding:12px;font-size:13px;color:#555;text-align:left">${fmt(r.property_type)}</td>
         <td style="padding:12px;font-size:13px;text-align:center">${r.phone_count || 0}</td>
         <td style="padding:12px;font-size:13px;text-align:center">${r.list_count || 0}</td>
+        <td style="padding:12px;text-align:center">${distressCell}</td>
         <td style="padding:12px;text-align:left"><span style="background:${stageColor};color:${stageText};padding:3px 10px;border-radius:5px;font-size:11px;font-weight:600;text-transform:capitalize">${stage}</span></td>
         <td style="padding:12px;font-size:12px;color:#888;white-space:nowrap;text-align:right">${fmtDate(r.created_at)}</td>
       </tr>`;
@@ -163,6 +175,7 @@ router.get('/', requireAuth, async (req, res) => {
       add('min_equity', min_equity); add('max_equity', max_equity);
       add('min_year', min_year); add('max_year', max_year);
       add('upload_from', upload_from); add('upload_to', upload_to);
+      add('min_distress', min_distress);
       stackList.forEach(sl => parts.push(`stack_list=${encodeURIComponent(sl)}`));
       stateList.forEach(s => parts.push(`state=${encodeURIComponent(s)}`));
       parts.push(`page=${newPage}`);
@@ -179,7 +192,7 @@ router.get('/', requireAuth, async (req, res) => {
       </div>` : '';
 
     // Filter count — multi-select filters count as 1 each regardless of how many values
-    const activeFilterCount = [city,zip,county,type,pipeline,prop_status,mkt_result,min_assessed,max_assessed,min_equity,max_equity,min_year,max_year,upload_from,upload_to,min_stack].filter(Boolean).length + (stackList.length > 0 ? 1 : 0) + (stateList.length > 0 ? 1 : 0);
+    const activeFilterCount = [city,zip,county,type,pipeline,prop_status,mkt_result,min_assessed,max_assessed,min_equity,max_equity,min_year,max_year,upload_from,upload_to,min_stack,min_distress].filter(Boolean).length + (stackList.length > 0 ? 1 : 0) + (stateList.length > 0 ? 1 : 0);
 
     res.send(shell('Records', `
       <div class="page-header">
@@ -371,6 +384,11 @@ router.get('/', requireAuth, async (req, res) => {
             <div>
               <label style="font-size:11px;color:#888;display:block;margin-bottom:3px">Min list stack count</label>
               <input type="number" name="min_stack" value="${min_stack}" placeholder="e.g. 2" min="1" style="width:100%;padding:7px 10px;border:1px solid #ddd;border-radius:7px;font-size:13px;font-family:inherit">
+            </div>
+            <div>
+              <label style="font-size:11px;color:#888;display:block;margin-bottom:3px">Min Distress Score</label>
+              <input type="number" name="min_distress" value="${min_distress}" placeholder="e.g. 55" min="0" max="100" style="width:100%;padding:7px 10px;border:1px solid #ddd;border-radius:7px;font-size:13px;font-family:inherit">
+              <p style="font-size:10px;color:#aaa;margin-top:3px">30+ Warm · 55+ Hot · 75+ Burning</p>
             </div>
 
           </div>
@@ -649,6 +667,7 @@ router.get('/', requireAuth, async (req, res) => {
               ['last_sale_date','Last Sale Date'],['last_sale_price','Last Sale Price'],
               ['marketing_result','Marketing Result'],['source','Source'],
               ['list_count','Lists Count'],['created_at','Date Added'],
+              ['distress_score','Distress Score'],['distress_band','Distress Band'],
             ].map(([k,l]) => `<label style="display:flex;align-items:center;gap:8px;font-size:13px;cursor:pointer;padding:4px 0">
               <input type="checkbox" value="${k}" class="col-check" checked style="width:14px;height:14px"> ${l}
             </label>`).join('')}
@@ -680,11 +699,12 @@ router.get('/', requireAuth, async (req, res) => {
             <th style="padding:10px 12px;font-size:11px;font-weight:600;color:#888;text-transform:uppercase;letter-spacing:.05em;text-align:left">Type</th>
             <th style="padding:10px 12px;font-size:11px;font-weight:600;color:#888;text-transform:uppercase;letter-spacing:.05em;text-align:center">Phones</th>
             <th style="padding:10px 12px;font-size:11px;font-weight:600;color:#888;text-transform:uppercase;letter-spacing:.05em;text-align:center">Lists</th>
+            <th style="padding:10px 12px;font-size:11px;font-weight:600;color:#888;text-transform:uppercase;letter-spacing:.05em;text-align:center">Distress</th>
             <th style="padding:10px 12px;font-size:11px;font-weight:600;color:#888;text-transform:uppercase;letter-spacing:.05em;text-align:left">Stage</th>
             <th style="padding:10px 12px;font-size:11px;font-weight:600;color:#888;text-transform:uppercase;letter-spacing:.05em;text-align:right">Added</th>
           </tr></thead>
           <tbody>
-            ${tableRows || '<tr><td colspan="8" style="text-align:center;padding:40px;color:#aaa;font-size:13px">No records found</td></tr>'}
+            ${tableRows || '<tr><td colspan="9" style="text-align:center;padding:40px;color:#aaa;font-size:13px">No records found</td></tr>'}
           </tbody>
         </table>
       </div>
@@ -864,6 +884,7 @@ router.post('/export', requireAuth, async (req, res) => {
           p.assessed_value, p.estimated_value, p.equity_percent,
           p.property_status, p.pipeline_stage, p.condition,
           p.last_sale_date, p.last_sale_price, p.marketing_result,
+          p.distress_score, p.distress_band,
           p.source, p.created_at,
           c.first_name, c.last_name,
           c.mailing_address, c.mailing_city, c.mailing_state, c.mailing_zip,
@@ -885,6 +906,7 @@ router.post('/export', requireAuth, async (req, res) => {
           p.assessed_value, p.estimated_value, p.equity_percent,
           p.property_status, p.pipeline_stage, p.condition,
           p.last_sale_date, p.last_sale_price, p.marketing_result,
+          p.distress_score, p.distress_band,
           p.source, p.created_at,
           c.first_name, c.last_name,
           c.mailing_address, c.mailing_city, c.mailing_state, c.mailing_zip,
@@ -929,6 +951,7 @@ router.post('/export', requireAuth, async (req, res) => {
       last_sale_date: 'Last Sale Date', last_sale_price: 'Last Sale Price',
       marketing_result: 'Marketing Result', source: 'Source',
       list_count: 'Lists Count', created_at: 'Date Added',
+      distress_score: 'Distress Score', distress_band: 'Distress Band',
     };
 
     // Expand the single 'phones' column into Phone 1 ... Phone 15 columns.
@@ -957,6 +980,10 @@ router.post('/export', requireAuth, async (req, res) => {
           val = phoneList[slot - 1] || '';
         } else if (col === 'last_sale_date' || col === 'created_at') {
           val = row[col] ? new Date(row[col]).toLocaleDateString('en-US') : '';
+        } else if (col === 'distress_band') {
+          // Render as nice label ("Burning" not "burning")
+          const labels = { burning: 'Burning', hot: 'Hot', warm: 'Warm', cold: 'Cold' };
+          val = row[col] ? (labels[row[col]] || row[col]) : '';
         } else {
           val = row[col] !== null && row[col] !== undefined ? String(row[col]) : '';
         }
@@ -978,7 +1005,7 @@ router.post('/export', requireAuth, async (req, res) => {
 // ═══════════════════════════════════════════════════════════════════════════════
 // PROPERTY DETAIL — GET /records/:id
 // ═══════════════════════════════════════════════════════════════════════════════
-router.get('/:id', requireAuth, async (req, res) => {
+router.get('/:id(\\d+)', requireAuth, async (req, res) => {
   try {
     const { id } = req.params;
     const msg = req.query.msg || '';
@@ -1014,6 +1041,25 @@ router.get('/:id', requireAuth, async (req, res) => {
       WHERE pl.property_id = $1
       ORDER BY pl.added_at DESC
     `, [id]);
+
+    // Compute distress score on detail view if not yet scored
+    // (event-driven updates handle most cases; this catches any gaps)
+    if (p.distress_score == null) {
+      try {
+        const scored = await distress.scoreProperty(id);
+        if (scored) {
+          p.distress_score = scored.score;
+          p.distress_band = scored.band;
+          p.distress_breakdown = scored.breakdown;
+        }
+      } catch(e) { console.error('[distress] detail-page score failed:', e.message); }
+    }
+    // Parse breakdown if stored as JSONB string
+    let distressBreakdown = p.distress_breakdown;
+    if (typeof distressBreakdown === 'string') {
+      try { distressBreakdown = JSON.parse(distressBreakdown); } catch(_) { distressBreakdown = []; }
+    }
+    if (!Array.isArray(distressBreakdown)) distressBreakdown = [];
 
     // Campaign history (via call_logs + sms_logs joined through phones)
     const campaignRes = await query(`
@@ -1122,6 +1168,10 @@ router.get('/:id', requireAuth, async (req, res) => {
               ${p.source ? `<span class="badge" style="background:#e8f0ff;color:#2c5cc5">📂 ${p.source}</span>` : ''}
               ${p.vacant ? `<span class="badge" style="background:#fdf0f0;color:#c0392b">⚠ Vacant</span>` : ''}
               ${listsRes.rows.length ? `<span class="badge" style="background:#e8f5ee;color:#1a7a4a">${listsRes.rows.length} List${listsRes.rows.length!==1?'s':''}</span>` : ''}
+              ${p.distress_score != null && p.distress_band ? (() => {
+                const c = distress.BAND_COLORS[p.distress_band];
+                return `<span class="badge" style="background:${c.bg};color:${c.text}">🔥 Distress ${p.distress_score} · ${c.label}</span>`;
+              })() : ''}
               <span style="font-size:12px;color:#aaa;font-family:monospace">First seen: ${fmtDate(p.first_seen_at || p.created_at)}</span>
             </div>
           </div>
@@ -1131,6 +1181,38 @@ router.get('/:id', requireAuth, async (req, res) => {
           </div>
         </div>
       </div>
+
+      <!-- DISTRESS SCORE CARD -->
+      ${p.distress_score != null ? (() => {
+        const c = distress.BAND_COLORS[p.distress_band] || distress.BAND_COLORS.cold;
+        const breakdownHtml = distressBreakdown.length > 0
+          ? distressBreakdown.map(b => `
+              <div style="display:flex;justify-content:space-between;align-items:center;padding:7px 0;border-bottom:1px solid #f0efe9;font-size:13px">
+                <span style="color:#444">${b.label}</span>
+                <span style="font-weight:600;color:#1a7a4a">+${b.points}</span>
+              </div>`).join('')
+          : '<div style="color:#aaa;font-size:13px;padding:12px 0;text-align:center">No distress signals detected. This property looks clean.</div>';
+        return `
+        <div class="card" style="margin-bottom:1.25rem;border-left:4px solid ${c.text}">
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
+            <div>
+              <div class="sec-lbl" style="margin-bottom:4px">Distress Score</div>
+              <div style="display:flex;align-items:baseline;gap:10px">
+                <span style="font-size:36px;font-weight:700;color:${c.text};letter-spacing:-.5px">${p.distress_score}</span>
+                <span style="font-size:14px;color:${c.text};font-weight:600;text-transform:uppercase;letter-spacing:.06em">${c.label}</span>
+              </div>
+              <p style="font-size:11px;color:#aaa;margin-top:6px">Scored ${p.distress_scored_at ? fmtDate(p.distress_scored_at) : 'just now'}</p>
+            </div>
+            <div style="text-align:right;max-width:280px">
+              <p style="font-size:11px;color:#888;line-height:1.5;margin:0">Rule-based score from signals in Loki. <br><span style="color:#aaa">Audit and tune weights in Setup → Distress.</span></p>
+            </div>
+          </div>
+          <div style="margin-top:8px">
+            <div class="sec-lbl" style="margin-bottom:4px">Signals Contributing</div>
+            ${breakdownHtml}
+          </div>
+        </div>`;
+      })() : ''}
 
       <!-- OWNER + PHONES -->
       <div class="grid-2" style="margin-bottom:1.25rem">
@@ -1238,6 +1320,12 @@ router.get('/:id', requireAuth, async (req, res) => {
                   ${['Lead','Not Interested','Do Not Call','Wrong Number','Callback','Voicemail'].map(t=>`<option value="${t}" ${p.marketing_result===t?'selected':''}>${t}</option>`).join('')}
                 </select>
               </div>
+              <div class="form-field" style="margin:0"><label>Pipeline Stage</label>
+                <select name="pipeline_stage">
+                  <option value="">—</option>
+                  ${['prospect','lead','contract','closed'].map(s=>`<option value="${s}" ${p.pipeline_stage===s?'selected':''}>${s.charAt(0).toUpperCase()+s.slice(1)}</option>`).join('')}
+                </select>
+              </div>
             </div>
             ${primaryContact ? `
             <div style="font-size:12px;font-weight:600;color:#888;text-transform:uppercase;letter-spacing:.06em;margin:14px 0 10px">Owner</div>
@@ -1269,16 +1357,24 @@ router.get('/:id', requireAuth, async (req, res) => {
 // ═══════════════════════════════════════════════════════════════════════════════
 // EDIT SUBMIT — POST /records/:id/edit
 // ═══════════════════════════════════════════════════════════════════════════════
-router.post('/:id/edit', requireAuth, async (req, res) => {
+router.post('/:id(\\d+)/edit', requireAuth, async (req, res) => {
   try {
     const { id } = req.params;
     const {
       property_type, condition, bedrooms, bathrooms, sqft, year_built,
       estimated_value, vacant, last_sale_date, last_sale_price, source,
       property_status, assessed_value, equity_percent, marketing_result,
+      pipeline_stage,
       contact_id, first_name, last_name, mailing_address, mailing_city,
       mailing_state, email_1, email_2, edit_notes
     } = req.body;
+
+    // Capture before-state for outcome logging
+    const beforeRes = await query(
+      `SELECT marketing_result, pipeline_stage FROM properties WHERE id = $1`,
+      [id]
+    );
+    const before = beforeRes.rows[0] || {};
 
     const updated = [];
 
@@ -1299,11 +1395,13 @@ router.post('/:id/edit', requireAuth, async (req, res) => {
         assessed_value = CASE WHEN $13 = '' THEN assessed_value ELSE $13::numeric END,
         equity_percent = CASE WHEN $14 = '' THEN equity_percent ELSE $14::numeric END,
         marketing_result = COALESCE(NULLIF($15,''), marketing_result),
+        pipeline_stage = COALESCE(NULLIF($16,''), pipeline_stage),
         updated_at = NOW()
-      WHERE id = $16
+      WHERE id = $17
     `, [property_type, condition, bedrooms||'', bathrooms||'', sqft||'', year_built||'',
         estimated_value||'', vacant||'', last_sale_date||'', last_sale_price||'', source,
-        property_status||'', assessed_value||'', equity_percent||'', marketing_result||'', id]);
+        property_status||'', assessed_value||'', equity_percent||'',
+        marketing_result||'', pipeline_stage||'', id]);
 
     updated.push('property fields');
 
@@ -1329,10 +1427,158 @@ router.post('/:id/edit', requireAuth, async (req, res) => {
       VALUES ($1, 'Manual Edit', $2, $3, $4)
     `, [id, req.session.username || 'admin', updated.join(', '), edit_notes || null]);
 
+    // Distress: log outcome transitions + rescore
+    try {
+      // If marketing_result or pipeline_stage actually changed, log outcome
+      const newMkt = (marketing_result || '').trim();
+      const newStage = (pipeline_stage || '').trim();
+      if (newMkt && newMkt !== (before.marketing_result || '')) {
+        await distress.logOutcomeChange(id, 'marketing_result', before.marketing_result, newMkt);
+      }
+      if (newStage && newStage !== (before.pipeline_stage || '')) {
+        await distress.logOutcomeChange(id, 'pipeline_stage', before.pipeline_stage, newStage);
+      }
+      // Always re-score after edit — equity, mailing state, marketing result all affect it
+      await distress.scoreProperty(id);
+    } catch(e) {
+      console.error('[distress] post-edit hook failed:', e.message);
+      // Non-fatal — don't block the user's edit on scoring failure
+    }
+
     res.redirect(`/records/${id}?msg=saved`);
   } catch (e) {
     console.error(e);
     res.redirect(`/records/${req.params.id}?msg=error`);
+  }
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// SETUP → DISTRESS (admin audit page)
+// Mounted at /records/_distress — links from Setup sidebar go here.
+// ─────────────────────────────────────────────────────────────────────────────
+router.get('/_distress', requireAuth, async (req, res) => {
+  try {
+    await distress.ensureDistressSchema();
+    const dist = await distress.getScoreDistribution();
+    const conv = await distress.getConversionByBand();
+
+    const total = parseInt(dist.total || 0);
+    const scored = total - parseInt(dist.unscored || 0);
+    const pct = (n) => total > 0 ? ((parseInt(n||0) / total) * 100).toFixed(1) + '%' : '0%';
+
+    // Group conversion data by band → outcome type → {new_value: count}
+    const convByBand = { burning: {}, hot: {}, warm: {}, cold: {} };
+    conv.forEach(r => {
+      if (!convByBand[r.band]) convByBand[r.band] = {};
+      if (!convByBand[r.band][r.outcome_type]) convByBand[r.band][r.outcome_type] = {};
+      convByBand[r.band][r.outcome_type][r.new_value || '(empty)'] = parseInt(r.count);
+    });
+
+    const weightRows = Object.entries(distress.WEIGHTS).map(([k, v]) =>
+      `<tr>
+        <td style="padding:8px 12px;font-size:13px;color:#444">${k.replace(/_/g, ' ')}</td>
+        <td style="padding:8px 12px;font-size:13px;font-weight:600;color:#1a7a4a;text-align:right">+${v}</td>
+      </tr>`
+    ).join('');
+
+    const bandBar = (band, count) => {
+      const c = distress.BAND_COLORS[band];
+      const width = total > 0 ? (parseInt(count||0) / total) * 100 : 0;
+      return `
+        <div style="margin-bottom:12px">
+          <div style="display:flex;justify-content:space-between;font-size:12px;margin-bottom:4px">
+            <span style="color:${c.text};font-weight:600">${c.label}</span>
+            <span style="color:#888">${parseInt(count||0).toLocaleString()} · ${pct(count)}</span>
+          </div>
+          <div style="background:#f0efe9;border-radius:6px;height:10px;overflow:hidden">
+            <div style="background:${c.text};width:${width}%;height:100%;transition:width .3s"></div>
+          </div>
+        </div>`;
+    };
+
+    const convTable = Object.entries(convByBand).map(([band, outcomes]) => {
+      const c = distress.BAND_COLORS[band];
+      const outcomeKeys = Object.keys(outcomes);
+      if (outcomeKeys.length === 0) return '';
+      const rows = outcomeKeys.map(ot => {
+        return Object.entries(outcomes[ot]).map(([val, cnt]) =>
+          `<tr>
+            <td style="padding:6px 12px;font-size:12px;color:#888">${ot}</td>
+            <td style="padding:6px 12px;font-size:12px;color:#444">${val}</td>
+            <td style="padding:6px 12px;font-size:12px;text-align:right;font-weight:600">${cnt.toLocaleString()}</td>
+          </tr>`
+        ).join('');
+      }).join('');
+      return `
+        <div style="margin-bottom:16px">
+          <div style="padding:6px 12px;background:${c.bg};color:${c.text};font-size:12px;font-weight:600;border-radius:6px 6px 0 0">${c.label} band outcomes</div>
+          <table style="width:100%;border:1px solid #e0dfd8;border-top:none;border-collapse:collapse;border-radius:0 0 6px 6px;overflow:hidden">
+            <thead><tr style="background:#fafaf8">
+              <th style="padding:6px 12px;text-align:left;font-size:11px;color:#888;font-weight:600;text-transform:uppercase">Type</th>
+              <th style="padding:6px 12px;text-align:left;font-size:11px;color:#888;font-weight:600;text-transform:uppercase">New Value</th>
+              <th style="padding:6px 12px;text-align:right;font-size:11px;color:#888;font-weight:600;text-transform:uppercase">Count</th>
+            </tr></thead>
+            <tbody>${rows}</tbody>
+          </table>
+        </div>`;
+    }).join('');
+
+    res.send(shell('Distress Score Audit', `
+      <div style="margin-bottom:1rem"><a href="/records" style="font-size:13px;color:#888;text-decoration:none">← Records</a></div>
+      <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:16px;flex-wrap:wrap;margin-bottom:1.5rem">
+        <div>
+          <div style="font-size:24px;font-weight:700;letter-spacing:-.3px">Distress Score Audit</div>
+          <div style="font-size:13px;color:#888;margin-top:4px">Rule-based scoring engine · Phase 1</div>
+        </div>
+        <form method="POST" action="/records/_distress/recompute" onsubmit="return confirm('Recompute distress score for ALL ${total.toLocaleString()} properties? This may take 30-60 seconds.')">
+          <button type="submit" class="btn" style="background:#1a4a9a;color:#fff;border:none">↻ Recompute All Scores</button>
+        </form>
+      </div>
+
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:1rem;margin-bottom:1.25rem">
+        <div class="card">
+          <div class="sec-lbl" style="margin-bottom:10px">Score Distribution</div>
+          <div style="font-size:12px;color:#888;margin-bottom:10px">${scored.toLocaleString()} of ${total.toLocaleString()} records scored${dist.unscored > 0 ? ` · ${parseInt(dist.unscored).toLocaleString()} pending` : ''}</div>
+          ${bandBar('burning', dist.burning)}
+          ${bandBar('hot', dist.hot)}
+          ${bandBar('warm', dist.warm)}
+          ${bandBar('cold', dist.cold)}
+        </div>
+
+        <div class="card">
+          <div class="sec-lbl" style="margin-bottom:10px">Current Weights</div>
+          <table style="width:100%;border-collapse:collapse">
+            <tbody>${weightRows}</tbody>
+          </table>
+          <p style="font-size:11px;color:#aaa;margin-top:10px">Tune weights in <code>src/scoring/distress.js</code>, then click <b>Recompute All</b>.</p>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="sec-lbl" style="margin-bottom:10px">Outcome Log — Conversion by Band</div>
+        <div style="font-size:12px;color:#888;margin-bottom:14px">Captures what happened to properties at each score level. As data accumulates, this tells you which bands actually convert — the feedback loop for tuning weights.</div>
+        ${convTable || '<div style="color:#aaa;font-size:13px;text-align:center;padding:20px">No outcome data yet. As you mark properties as Lead / Contract / Closed, data will accumulate here.</div>'}
+      </div>
+    `));
+  } catch (e) {
+    console.error('[distress/audit]', e);
+    res.status(500).send('Distress audit page error: ' + e.message);
+  }
+});
+
+router.post('/_distress/recompute', requireAuth, async (req, res) => {
+  try {
+    const startedAt = Date.now();
+    console.log('[distress/recompute] starting…');
+    const result = await distress.scoreAllProperties((p) => {
+      if (p.finished) console.log(`[distress/recompute] done: ${p.done}/${p.total}`);
+      else console.log(`[distress/recompute] progress: ${p.done}/${p.total}`);
+    });
+    console.log(`[distress/recompute] finished in ${Math.round((Date.now()-startedAt)/1000)}s — scored ${result.scored} of ${result.total}`);
+    res.redirect('/records/_distress');
+  } catch(e) {
+    console.error('[distress/recompute]', e);
+    res.status(500).send('Recompute failed: ' + e.message);
   }
 });
 
