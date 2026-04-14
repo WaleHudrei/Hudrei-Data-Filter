@@ -1048,7 +1048,18 @@ router.get('/:id(\\d+)', requireAuth, async (req, res) => {
 
     // Compute distress score on detail view if not yet scored
     // (event-driven updates handle most cases; this catches any gaps)
-    if (p.distress_score == null) {
+    // Parse current breakdown to check if it's empty
+    let currentBreakdown = p.distress_breakdown;
+    if (typeof currentBreakdown === 'string') {
+      try { currentBreakdown = JSON.parse(currentBreakdown); } catch(_) { currentBreakdown = null; }
+    }
+    const breakdownIsEmpty = !Array.isArray(currentBreakdown) || currentBreakdown.length === 0;
+
+    // Lazy-score this property if:
+    //   - never scored at all (distress_score is null), OR
+    //   - score exists but breakdown is missing (likely set by bulk Recompute All
+    //     which skips breakdown for performance — fill it on demand here)
+    if (p.distress_score == null || breakdownIsEmpty) {
       try {
         const scored = await distress.scoreProperty(id);
         if (scored) {
@@ -1058,7 +1069,7 @@ router.get('/:id(\\d+)', requireAuth, async (req, res) => {
         }
       } catch(e) { console.error('[distress] detail-page score failed:', e.message); }
     }
-    // Parse breakdown if stored as JSONB string
+    // Parse breakdown for render (re-parse in case scoreProperty just refreshed it)
     let distressBreakdown = p.distress_breakdown;
     if (typeof distressBreakdown === 'string') {
       try { distressBreakdown = JSON.parse(distressBreakdown); } catch(_) { distressBreakdown = []; }
@@ -1186,38 +1197,6 @@ router.get('/:id(\\d+)', requireAuth, async (req, res) => {
         </div>
       </div>
 
-      <!-- DISTRESS SCORE CARD -->
-      ${p.distress_score != null ? (() => {
-        const c = distress.BAND_COLORS[p.distress_band] || distress.BAND_COLORS.cold;
-        const breakdownHtml = distressBreakdown.length > 0
-          ? distressBreakdown.map(b => `
-              <div style="display:flex;justify-content:space-between;align-items:center;padding:7px 0;border-bottom:1px solid #f0efe9;font-size:13px">
-                <span style="color:#444">${b.label}</span>
-                <span style="font-weight:600;color:#1a7a4a">+${b.points}</span>
-              </div>`).join('')
-          : '<div style="color:#aaa;font-size:13px;padding:12px 0;text-align:center">No distress signals detected. This property looks clean.</div>';
-        return `
-        <div class="card" style="margin-bottom:1.25rem;border-left:4px solid ${c.text}">
-          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
-            <div>
-              <div class="sec-lbl" style="margin-bottom:4px">Distress Score</div>
-              <div style="display:flex;align-items:baseline;gap:10px">
-                <span style="font-size:36px;font-weight:700;color:${c.text};letter-spacing:-.5px">${p.distress_score}</span>
-                <span style="font-size:14px;color:${c.text};font-weight:600;text-transform:uppercase;letter-spacing:.06em">${c.label}</span>
-              </div>
-              <p style="font-size:11px;color:#aaa;margin-top:6px">Scored ${p.distress_scored_at ? fmtDate(p.distress_scored_at) : 'just now'}</p>
-            </div>
-            <div style="text-align:right;max-width:280px">
-              <p style="font-size:11px;color:#888;line-height:1.5;margin:0">Rule-based score from signals in Loki. <br><span style="color:#aaa">Audit and tune weights in Setup → Distress.</span></p>
-            </div>
-          </div>
-          <div style="margin-top:8px">
-            <div class="sec-lbl" style="margin-bottom:4px">Signals Contributing</div>
-            ${breakdownHtml}
-          </div>
-        </div>`;
-      })() : ''}
-
       <!-- OWNER + PHONES -->
       <div class="grid-2" style="margin-bottom:1.25rem">
         <div class="card">
@@ -1260,6 +1239,38 @@ router.get('/:id(\\d+)', requireAuth, async (req, res) => {
         <div class="sec-lbl">Lists <span class="count-pill">${listsRes.rows.length}</span></div>
         ${listsHTML}
       </div>
+
+      <!-- DISTRESS SCORE CARD -->
+      ${p.distress_score != null ? (() => {
+        const c = distress.BAND_COLORS[p.distress_band] || distress.BAND_COLORS.cold;
+        const breakdownHtml = distressBreakdown.length > 0
+          ? distressBreakdown.map(b => `
+              <div style="display:flex;justify-content:space-between;align-items:center;padding:7px 0;border-bottom:1px solid #f0efe9;font-size:13px">
+                <span style="color:#444">${b.label}</span>
+                <span style="font-weight:600;color:#1a7a4a">+${b.points}</span>
+              </div>`).join('')
+          : '<div style="color:#aaa;font-size:13px;padding:12px 0;text-align:center">No distress signals detected. This property looks clean.</div>';
+        return `
+        <div class="card" style="margin-bottom:1.25rem;border-left:4px solid ${c.text}">
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
+            <div>
+              <div class="sec-lbl" style="margin-bottom:4px">Distress Score</div>
+              <div style="display:flex;align-items:baseline;gap:10px">
+                <span style="font-size:36px;font-weight:700;color:${c.text};letter-spacing:-.5px">${p.distress_score}</span>
+                <span style="font-size:14px;color:${c.text};font-weight:600;text-transform:uppercase;letter-spacing:.06em">${c.label}</span>
+              </div>
+              <p style="font-size:11px;color:#aaa;margin-top:6px">Scored ${p.distress_scored_at ? fmtDate(p.distress_scored_at) : 'just now'}</p>
+            </div>
+            <div style="text-align:right;max-width:280px">
+              <p style="font-size:11px;color:#888;line-height:1.5;margin:0">Rule-based score from signals in Loki. <br><span style="color:#aaa">Audit and tune weights in Setup → Distress.</span></p>
+            </div>
+          </div>
+          <div style="margin-top:8px">
+            <div class="sec-lbl" style="margin-bottom:4px">Signals Contributing</div>
+            ${breakdownHtml}
+          </div>
+        </div>`;
+      })() : ''}
 
       <!-- CAMPAIGN HISTORY -->
       <div class="card" style="margin-bottom:1.25rem">
