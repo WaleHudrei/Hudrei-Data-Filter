@@ -685,6 +685,12 @@ app.listen(PORT, async ()=>{
   console.log(`HudREI Filtration Bot v2 running on port ${PORT}`);
   console.log(`Redis: ${redis?'connected':'not configured'}`);
   try { await initSchema(); console.log('Schema ready'); } catch(e) { console.error('Schema init error:', e.message); }
+  // Distress scoring schema — ensures distress_score columns exist before any request
+  try {
+    const distress = require('./scoring/distress');
+    await distress.ensureDistressSchema();
+    console.log('Distress schema ready');
+  } catch(e) { console.error('Distress schema init error:', e.message); }
 });
 
 // ── DB Write: save filtration run + results + upsert properties/phones ───────
