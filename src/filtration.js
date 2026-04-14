@@ -436,7 +436,7 @@ function normSmsLabel(label) {
   return 'no_action';
 }
 
-async function importSmarterContactFile(campaignId, rows, headers) {
+async function importSmarterContactFile(campaignId, rows, headers, filename) {
   // ── Step 1: Validate required columns ──────────────────────────────────────
   const headerLower = headers.map(h => String(h || '').toLowerCase().trim());
   const missingCols = SMS_REQUIRED_COLS.filter(req => !headerLower.includes(req));
@@ -646,6 +646,22 @@ async function importSmarterContactFile(campaignId, rows, headers) {
     [tally.wrong, tally.ni, totalLeads, campaignId]
   );
 
+  // Log this upload to Filtration History
+  await recordSmsUploadEvent({
+    campaignId,
+    filename,
+    channel: 'sms_results',
+    tally: {
+      total_records:       tally.total,
+      records_kept:        tally.total - tally.unmatched,
+      records_filtered:    tally.unmatched,
+      wrong_numbers:       tally.wrong,
+      not_interested:      tally.ni,
+      disqualified:        tally.disqualified,
+      transfers_combined:  totalLeads,
+    },
+  });
+
   return {
     success: true,
     tally: {
@@ -679,7 +695,50 @@ async function ensureSmsEligibleColumns() {
   `);
 }
 
-async function importSmarterContactAccepted(campaignId, rows, headers) {
+// Log an SMS upload event into campaign_uploads so it shows up in Filtration
+// History. Reuses the existing schema; SMS-specific breakdown fields map as:
+//   total_records     = total rows in file
+//   records_kept      = rows that matched DB & were processed
+//   records_filtered  = rows that were not matched / invalid
+//   wrong_numbers     = Wrong Number label count
+//   not_interested    = Not Interested label count
+//   transfers         = Lead/Appointment/Potential Lead/Sold/Listed combined
+//   voicemails        = 0 (SMS has no voicemails; kept for schema compat)
+//   do_not_call       = Disqualified label count (closest analog)
+async function recordSmsUploadEvent({ campaignId, filename, channel, tally, sourceListName }) {
+  try {
+    await query(
+      `INSERT INTO campaign_uploads
+         (campaign_id, filename, source_list_name, channel, total_records,
+          new_unique_numbers, records_kept, records_filtered,
+          wrong_numbers, voicemails, not_interested, do_not_call, transfers,
+          caught_by_memory, connected)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)`,
+      [
+        campaignId,
+        filename || 'SMC Export',
+        sourceListName || null,
+        channel,
+        tally.total_records || 0,
+        0,
+        tally.records_kept || 0,
+        tally.records_filtered || 0,
+        tally.wrong_numbers || 0,
+        0,
+        tally.not_interested || 0,
+        tally.disqualified || 0,
+        tally.transfers_combined || 0,
+        0,
+        0,
+      ]
+    );
+  } catch (e) {
+    console.error('[sms-upload-log] failed to record:', e.message);
+    // Don't throw — logging failure should never block the main SMS import.
+  }
+}
+
+async function importSmarterContactAccepted(campaignId, rows, headers, filename) {
   await ensureSmsEligibleColumns();
 
   // ── Step 1: Validate required columns ──────────────────────────────────────
@@ -744,6 +803,28 @@ async function importSmarterContactAccepted(campaignId, rows, headers) {
   const rejected = rejRes.rowCount || 0;
 
   console.log(`[smc/accepted] campaign ${campaignId} — file_rows:${rows.length} unique_phones_in_file:${acceptedSet.size} db_rows_marked_eligible:${matched} phones_unmatched:${unmatched} duplicate_phone_rows_in_master:${phoneRowsExpanded} db_rows_marked_ineligible:${rejected} invalid_phone_format:${invalidRows}`);
+
+  // Log this upload to Filtration History
+  // Note: we store UNIQUE phone counts so the history row makes sense.
+  //   total_records    = unique phones in the SMC export
+  //   records_kept     = unique phones that matched the master list
+  //   records_filtered = phones in file that didn't match any master row
+  // (The DB-row count of 280 is internal plumbing — see audit notes.)
+  const uniquePhonesMatched = Math.min(acceptedSet.size, matched);
+  await recordSmsUploadEvent({
+    campaignId,
+    filename,
+    channel: 'sms_accepted',
+    tally: {
+      total_records:       acceptedSet.size,
+      records_kept:        uniquePhonesMatched,
+      records_filtered:    unmatched + invalidRows,
+      wrong_numbers:       0,
+      not_interested:      0,
+      disqualified:        0,
+      transfers_combined:  0,
+    },
+  });
 
   return {
     success: true,
