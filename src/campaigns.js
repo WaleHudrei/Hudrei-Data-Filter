@@ -596,4 +596,8 @@ module.exports = {
   normalizePhone:            filtration.normalizePhone,
   importSmarterContactFile:  filtration.importSmarterContactFile,
   normSmsLabel:              filtration.normSmsLabel,
+  importSmarterContactAccepted: filtration.importSmarterContactAccepted,
+  getSmsNextBatch:              filtration.getSmsNextBatch,
+  getSmsEligibleStats:          filtration.getSmsEligibleStats,
+  ensureSmsEligibleColumns:     filtration.ensureSmsEligibleColumns,
 };
