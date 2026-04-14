@@ -573,6 +573,149 @@ async function importSmarterContactFile(campaignId, rows, headers) {
   };
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// SMC ACCEPTED CONTACTS — textability validator
+// SmarterContact strips landlines on upload; the "accepted" export tells us
+// exactly which phones SMC will actually send SMS to. We mirror that here.
+// ─────────────────────────────────────────────────────────────────────────────
+
+const SMC_ACCEPTED_REQUIRED_COLS = ['phone'];
+
+async function ensureSmsEligibleColumns() {
+  await query(`
+    ALTER TABLE campaign_contact_phones
+      ADD COLUMN IF NOT EXISTS sms_eligible BOOLEAN DEFAULT NULL,
+      ADD COLUMN IF NOT EXISTS sms_eligible_checked_at TIMESTAMP
+  `);
+}
+
+async function importSmarterContactAccepted(campaignId, rows, headers) {
+  await ensureSmsEligibleColumns();
+
+  // ── Step 1: Validate required columns ──────────────────────────────────────
+  const headerLower = headers.map(h => String(h || '').toLowerCase().trim());
+  const missing = SMC_ACCEPTED_REQUIRED_COLS.filter(req => !headerLower.includes(req));
+  if (missing.length > 0) {
+    return {
+      success: false,
+      error: `Missing required column: ${missing.join(', ')}. The SmarterContact accepted-contacts export must include a "Phone" column.`,
+    };
+  }
+
+  const findHeader = (req) => headers.find(h => String(h || '').toLowerCase().trim() === req);
+  const phoneCol = findHeader('phone');
+
+  // ── Step 2: Build set of accepted phones ──────────────────────────────────
+  const acceptedSet = new Set();
+  let invalidRows = 0;
+  for (const row of rows) {
+    const p = normalizePhone(row[phoneCol] || '');
+    if (p && p.length === 10) acceptedSet.add(p);
+    else invalidRows++;
+  }
+
+  if (acceptedSet.size === 0) {
+    return {
+      success: false,
+      error: `No valid phone numbers found in the upload. Check the Phone column.`,
+    };
+  }
+
+  // ── Step 3: Mark accepted phones as sms_eligible = true ───────────────────
+  const acceptedArr = Array.from(acceptedSet);
+  const updRes = await query(
+    `UPDATE campaign_contact_phones
+        SET sms_eligible = true,
+            sms_eligible_checked_at = NOW(),
+            updated_at = NOW()
+      WHERE campaign_id = $1
+        AND phone_number = ANY($2::text[])`,
+    [campaignId, acceptedArr]
+  );
+  const matched = updRes.rowCount || 0;
+  const unmatched = acceptedSet.size - matched;
+
+  // ── Step 4: Mark every other phone in this campaign as ineligible ─────────
+  // (these are the landlines/rejects SMC stripped out)
+  const rejRes = await query(
+    `UPDATE campaign_contact_phones
+        SET sms_eligible = false,
+            sms_eligible_checked_at = NOW(),
+            updated_at = NOW()
+      WHERE campaign_id = $1
+        AND NOT (phone_number = ANY($2::text[]))
+        AND (sms_eligible IS DISTINCT FROM false)`,
+    [campaignId, acceptedArr]
+  );
+  const rejected = rejRes.rowCount || 0;
+
+  console.log(`[smc/accepted] campaign ${campaignId} — total:${rows.length} accepted_in_file:${acceptedSet.size} matched:${matched} unmatched_in_file:${unmatched} marked_ineligible:${rejected} invalid:${invalidRows}`);
+
+  return {
+    success: true,
+    tally: {
+      total:     rows.length,
+      accepted:  matched,
+      rejected:  rejected,
+      unmatched: unmatched,
+      invalid:   invalidRows,
+    }
+  };
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// NEXT SMS BATCH — clean remarket list
+// Phones in this campaign that are SMS-eligible AND haven't been responded
+// against (not filtered, not wrong number). This is your "clean 800."
+// ─────────────────────────────────────────────────────────────────────────────
+async function getSmsNextBatch(campaignId) {
+  await ensureSmsEligibleColumns();
+  const res = await query(
+    `SELECT
+        cc.first_name,
+        cc.last_name,
+        cc.property_address,
+        cc.property_city,
+        cc.property_state,
+        cc.property_zip,
+        ccp.phone_number,
+        ccp.phone_status,
+        ccp.last_disposition
+       FROM campaign_contact_phones ccp
+       JOIN campaign_contacts cc ON cc.id = ccp.contact_id
+      WHERE ccp.campaign_id = $1
+        AND ccp.sms_eligible = true
+        AND COALESCE(ccp.filtered, false) = false
+        AND COALESCE(ccp.wrong_number, false) = false
+      ORDER BY cc.last_name, cc.first_name, ccp.phone_number`,
+    [campaignId]
+  );
+  return res.rows;
+}
+
+async function getSmsEligibleStats(campaignId) {
+  await ensureSmsEligibleColumns();
+  const res = await query(
+    `SELECT
+        COUNT(*) FILTER (WHERE sms_eligible = true)  AS eligible,
+        COUNT(*) FILTER (WHERE sms_eligible = false) AS ineligible,
+        COUNT(*) FILTER (WHERE sms_eligible IS NULL) AS unchecked,
+        COUNT(*) FILTER (WHERE sms_eligible = true
+                          AND COALESCE(filtered, false) = false
+                          AND COALESCE(wrong_number, false) = false) AS next_batch
+       FROM campaign_contact_phones
+      WHERE campaign_id = $1`,
+    [campaignId]
+  );
+  const r = res.rows[0] || {};
+  return {
+    eligible:   parseInt(r.eligible)   || 0,
+    ineligible: parseInt(r.ineligible) || 0,
+    unchecked:  parseInt(r.unchecked)  || 0,
+    next_batch: parseInt(r.next_batch) || 0,
+  };
+}
+
 module.exports = {
   normalizePhone,
   detectPhoneColumns,
@@ -584,4 +727,8 @@ module.exports = {
   getNisStats,
   importSmarterContactFile,
   normSmsLabel,
+  importSmarterContactAccepted,
+  getSmsNextBatch,
+  getSmsEligibleStats,
+  ensureSmsEligibleColumns,
 };
