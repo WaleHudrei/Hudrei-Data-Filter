@@ -62,7 +62,16 @@ router.get('/', requireAuth, async (req, res) => {
       idx++;
     }
     if (city)         { conditions.push(`p.city ILIKE $${idx}`);          params.push(`%${city}%`); idx++; }
-    if (zip)          { conditions.push(`p.zip_code ILIKE $${idx}`);      params.push(`%${zip}%`); idx++; }
+    if (zip) {
+      const zipList = zip.split(',').map(z => z.trim()).filter(Boolean);
+      if (zipList.length === 1) {
+        conditions.push(`p.zip_code ILIKE $${idx}`);
+        params.push(`%${zipList[0]}%`); idx++;
+      } else {
+        conditions.push(`p.zip_code = ANY($${idx}::text[])`);
+        params.push(zipList); idx++;
+      }
+    }
     if (county)       { conditions.push(`p.county ILIKE $${idx}`);        params.push(`%${county}%`); idx++; }
     if (type)         { conditions.push(`p.property_type = $${idx}`);     params.push(type); idx++; }
     if (pipeline)     { conditions.push(`p.pipeline_stage = $${idx}`);    params.push(pipeline); idx++; }
