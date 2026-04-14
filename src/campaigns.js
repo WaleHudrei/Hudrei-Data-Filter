@@ -163,10 +163,25 @@ async function getCampaign(id) {
   const c = await query(`SELECT * FROM campaigns WHERE id=$1`, [id]);
   if (!c.rows.length) return null;
   const uploads = await query(`SELECT * FROM campaign_uploads WHERE campaign_id=$1 ORDER BY uploaded_at DESC LIMIT 30`, [id]);
+  // Union call-log dispositions (from campaign_numbers) with SMS labels
+  // (from campaign_contact_phones.last_disposition). Cleans any legacy raw
+  // "C2|Label 📞" values on the fly so they roll up properly.
   const disposition_breakdown = await query(`
-    SELECT last_disposition_normalized as disposition, COUNT(*) as count
-    FROM campaign_numbers WHERE campaign_id=$1
-    GROUP BY last_disposition_normalized ORDER BY count DESC`, [id]);
+    SELECT disposition, SUM(count)::int AS count FROM (
+      SELECT last_disposition_normalized AS disposition, COUNT(*) AS count
+        FROM campaign_numbers
+       WHERE campaign_id = $1 AND last_disposition_normalized IS NOT NULL
+       GROUP BY last_disposition_normalized
+      UNION ALL
+      SELECT TRIM(REGEXP_REPLACE(REGEXP_REPLACE(last_disposition, '^[^|]*\\|', ''), '[^A-Za-z ]+$', '')) AS disposition,
+             COUNT(*) AS count
+        FROM campaign_contact_phones
+       WHERE campaign_id = $1 AND last_disposition IS NOT NULL
+       GROUP BY TRIM(REGEXP_REPLACE(REGEXP_REPLACE(last_disposition, '^[^|]*\\|', ''), '[^A-Za-z ]+$', ''))
+    ) merged
+    WHERE disposition IS NOT NULL AND disposition <> ''
+    GROUP BY disposition
+    ORDER BY count DESC`, [id]);
   return { ...c.rows[0], uploads: uploads.rows, disposition_breakdown: disposition_breakdown.rows };
 }
 
