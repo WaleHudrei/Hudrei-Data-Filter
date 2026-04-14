@@ -404,9 +404,26 @@ async function getNisStats() {
 
 const SMS_REQUIRED_COLS = ['phone', 'labels', 'first name', 'last name', 'property address', 'property city', 'property state', 'property zip'];
 
+// Strip the SMC campaign-code prefix (e.g. "C2|Wrong Number" -> "Wrong Number")
+// and any trailing emoji/whitespace. Returns the cleaned label string.
+function stripSmsLabelPrefix(rawLabel) {
+  let s = String(rawLabel || '').trim();
+  if (!s) return '';
+  // SMC format: "<campaign code>|<label name>" — exactly ONE pipe expected
+  const pipes = (s.match(/\|/g) || []).length;
+  if (pipes === 1) {
+    s = s.split('|')[1].trim();
+  }
+  // Strip trailing emojis and any non-letter punctuation at the end
+  // (preserves things like "Not Interested" but cleans "Not interested 📞")
+  s = s.replace(/[\s\p{Extended_Pictographic}\p{Emoji_Presentation}]+$/u, '').trim();
+  return s;
+}
+
 // Label → normalized disposition
 function normSmsLabel(label) {
-  const l = (label || '').toLowerCase().trim();
+  const cleaned = stripSmsLabelPrefix(label);
+  const l = cleaned.toLowerCase().trim();
   if (l === 'wrong number')   return 'wrong_number';
   if (l === 'not interested') return 'not_interested';
   if (l === 'lead')           return 'transfer';
@@ -440,11 +457,14 @@ async function importSmarterContactFile(campaignId, rows, headers) {
     pzip:     findHeader('property zip'),
   };
 
-  // ── Step 2: Validate no multiple labels in any row ────────────────────────
+  // ── Step 2: Validate no MULTIPLE labels in any row ────────────────────────
+  // SMC format is "<campaign code>|<label>" (1 pipe = normal).
+  // 2+ pipes means the row has multiple labels concatenated, which we reject.
   const multiLabelRows = [];
   for (let i = 0; i < rows.length; i++) {
     const labelVal = String(rows[i][COL.labels] || '').trim();
-    if (labelVal.includes('|')) {
+    const pipeCount = (labelVal.match(/\|/g) || []).length;
+    if (pipeCount >= 2) {
       multiLabelRows.push({ row: i + 2, phone: rows[i][COL.phone] || 'unknown', labels: labelVal });
     }
   }
@@ -452,7 +472,7 @@ async function importSmarterContactFile(campaignId, rows, headers) {
     const examples = multiLabelRows.slice(0, 5).map(r => `Row ${r.row} (${r.phone}): "${r.labels}"`).join(', ');
     return {
       success: false,
-      error: `Multiple labels detected on ${multiLabelRows.length} row(s). Each contact must have exactly one label. Fix these rows and re-upload. Examples: ${examples}`,
+      error: `Multiple labels detected on ${multiLabelRows.length} row(s). Each contact must have exactly one label in SmarterContact. Clean these in SMC and re-export. Examples: ${examples}`,
     };
   }
 
@@ -633,7 +653,11 @@ async function importSmarterContactAccepted(campaignId, rows, headers) {
     [campaignId, acceptedArr]
   );
   const matched = updRes.rowCount || 0;
-  const unmatched = acceptedSet.size - matched;
+  // Note: matched can EXCEED acceptedSet.size when the same phone appears
+  // under multiple contacts in the master list (each is its own DB row).
+  // unmatched = phones in the file with no DB row at all (clamped to >= 0).
+  const unmatched = Math.max(0, acceptedSet.size - matched);
+  const phoneRowsExpanded = Math.max(0, matched - acceptedSet.size);
 
   // ── Step 4: Mark every other phone in this campaign as ineligible ─────────
   // (these are the landlines/rejects SMC stripped out)
@@ -649,7 +673,7 @@ async function importSmarterContactAccepted(campaignId, rows, headers) {
   );
   const rejected = rejRes.rowCount || 0;
 
-  console.log(`[smc/accepted] campaign ${campaignId} — total:${rows.length} accepted_in_file:${acceptedSet.size} matched:${matched} unmatched_in_file:${unmatched} marked_ineligible:${rejected} invalid:${invalidRows}`);
+  console.log(`[smc/accepted] campaign ${campaignId} — file_rows:${rows.length} unique_phones_in_file:${acceptedSet.size} db_rows_marked_eligible:${matched} phones_unmatched:${unmatched} duplicate_phone_rows_in_master:${phoneRowsExpanded} db_rows_marked_ineligible:${rejected} invalid_phone_format:${invalidRows}`);
 
   return {
     success: true,
