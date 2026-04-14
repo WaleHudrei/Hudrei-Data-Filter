@@ -441,6 +441,114 @@ async function getConversionByBand() {
   return r.rows;
 }
 
+// ── AUDIT 1: Score history of closed/contracted deals ─────────────────────
+// "When you closed deals, what was their score path? Did the system catch them?"
+async function getClosedDealScoreHistory() {
+  await ensureDistressSchema();
+  // Find properties currently in 'closed' or 'contract' stage,
+  // then attach their full score history.
+  const r = await query(`
+    WITH closed_props AS (
+      SELECT id, street, city, state_code, pipeline_stage, distress_score, distress_band, updated_at
+        FROM properties
+       WHERE pipeline_stage IN ('closed','contract','lead')
+       ORDER BY
+         CASE pipeline_stage WHEN 'closed' THEN 1 WHEN 'contract' THEN 2 WHEN 'lead' THEN 3 END,
+         updated_at DESC
+       LIMIT 50
+    )
+    SELECT cp.*,
+           (SELECT json_agg(json_build_object(
+              'score', dsl.score,
+              'band', dsl.band,
+              'logged_at', dsl.logged_at
+            ) ORDER BY dsl.logged_at)
+              FROM distress_score_log dsl
+             WHERE dsl.property_id = cp.id
+           ) AS score_history
+      FROM closed_props cp
+  `);
+  return r.rows;
+}
+
+// ── AUDIT 2: Signal coverage report ───────────────────────────────────────
+// "What % of records have each scoring input populated? Tells you where data
+// gaps are silently muting the score."
+async function getSignalCoverage() {
+  await ensureDistressSchema();
+  const r = await query(`
+    SELECT
+      COUNT(*) AS total,
+      COUNT(*) FILTER (WHERE state_code IS NOT NULL AND state_code <> '')             AS has_state,
+      COUNT(*) FILTER (WHERE equity_percent IS NOT NULL)                              AS has_equity,
+      COUNT(*) FILTER (WHERE marketing_result IS NOT NULL AND marketing_result <> '') AS has_marketing,
+      COUNT(*) FILTER (WHERE pipeline_stage IS NOT NULL AND pipeline_stage <> 'prospect') AS has_pipeline
+    FROM properties
+  `);
+  // Mailing state lives on contacts (joined via property_contacts)
+  const mailing = await query(`
+    SELECT COUNT(DISTINCT pc.property_id) AS has_mailing_state
+      FROM property_contacts pc
+      JOIN contacts c ON c.id = pc.contact_id
+     WHERE pc.primary_contact = true
+       AND c.mailing_state IS NOT NULL
+       AND c.mailing_state <> ''
+  `);
+  // List membership at all
+  const onLists = await query(`
+    SELECT COUNT(DISTINCT property_id) AS has_any_list
+      FROM property_lists
+  `);
+  const base = r.rows[0] || {};
+  return {
+    total: parseInt(base.total || 0),
+    has_state: parseInt(base.has_state || 0),
+    has_equity: parseInt(base.has_equity || 0),
+    has_marketing: parseInt(base.has_marketing || 0),
+    has_pipeline: parseInt(base.has_pipeline || 0),
+    has_mailing_state: parseInt(mailing.rows[0]?.has_mailing_state || 0),
+    has_any_list: parseInt(onLists.rows[0]?.has_any_list || 0),
+  };
+}
+
+// ── AUDIT 3: Conversion rate by band over time ────────────────────────────
+// "How well does the score predict outcomes? If Burning closes more often
+// than Cold, the score is working. If they're equal, weights need tuning."
+async function getConversionRateByBand() {
+  await ensureDistressSchema();
+  // Count current pipeline state of properties grouped by their CURRENT band
+  const r = await query(`
+    SELECT distress_band AS band,
+           COUNT(*) AS total,
+           COUNT(*) FILTER (WHERE pipeline_stage = 'lead')     AS leads,
+           COUNT(*) FILTER (WHERE pipeline_stage = 'contract') AS contracts,
+           COUNT(*) FILTER (WHERE pipeline_stage = 'closed')   AS closed
+      FROM properties
+     WHERE distress_band IS NOT NULL
+     GROUP BY distress_band
+     ORDER BY CASE distress_band
+       WHEN 'burning' THEN 1 WHEN 'hot' THEN 2 WHEN 'warm' THEN 3 WHEN 'cold' THEN 4
+     END
+  `);
+  return r.rows.map(row => {
+    const total = parseInt(row.total || 0);
+    const leads = parseInt(row.leads || 0);
+    const contracts = parseInt(row.contracts || 0);
+    const closed = parseInt(row.closed || 0);
+    const advancedAny = leads + contracts + closed;
+    return {
+      band: row.band,
+      total,
+      leads, contracts, closed,
+      advanced_any: advancedAny,
+      lead_rate:     total > 0 ? (leads / total) * 100 : 0,
+      contract_rate: total > 0 ? (contracts / total) * 100 : 0,
+      closed_rate:   total > 0 ? (closed / total) * 100 : 0,
+      any_rate:      total > 0 ? (advancedAny / total) * 100 : 0,
+    };
+  });
+}
+
 module.exports = {
   WEIGHTS,
   BAND_COLORS,
@@ -455,4 +563,7 @@ module.exports = {
   logOutcomeChange,
   getScoreDistribution,
   getConversionByBand,
+  getClosedDealScoreHistory,
+  getSignalCoverage,
+  getConversionRateByBand,
 };
