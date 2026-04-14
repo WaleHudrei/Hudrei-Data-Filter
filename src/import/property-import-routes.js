@@ -205,7 +205,7 @@ router.get('/', requireAuth, async (req, res) => {
             </div>
             <div style="flex:1;min-width:150px">
               <label style="font-size:12px;color:#888;display:block;margin-bottom:4px">Source</label>
-              <select id="list-source" style="width:100%;padding:9px 12px;border:1px solid #ddd;border-radius:8px;font-size:13px;font-family:inherit;background:#fff">
+              <select id="list-source" onchange="document.getElementById('list-source-custom').style.display = this.value === '__custom__' ? 'block' : 'none'; if(this.value === '__custom__') document.getElementById('list-source-custom').focus();" style="width:100%;padding:9px 12px;border:1px solid #ddd;border-radius:8px;font-size:13px;font-family:inherit;background:#fff">
                 <option value="">— Source (optional) —</option>
                 <option value="PropStream">PropStream</option>
                 <option value="DealMachine">DealMachine</option>
@@ -214,7 +214,10 @@ router.get('/', requireAuth, async (req, res) => {
                 <option value="DataSift">DataSift</option>
                 <option value="Listsource">Listsource</option>
                 <option value="Manual">Manual</option>
+                <option value="__custom__">+ Add custom source…</option>
               </select>
+              <input type="text" id="list-source-custom" placeholder="e.g. County Records, Cook County Auditor"
+                style="display:none;width:100%;margin-top:6px;padding:9px 12px;border:1px solid #ddd;border-radius:8px;font-size:13px;font-family:inherit">
             </div>
           </div>
         </div>
@@ -256,7 +259,14 @@ router.get('/', requireAuth, async (req, res) => {
       const newName = document.getElementById('new-list-name').value.trim();
       const existingId = document.getElementById('existing-list-id').value;
       const listType = document.getElementById('list-type').value;
-      const listSource = document.getElementById('list-source').value;
+      // Source: if "Custom..." was selected, read the text input instead
+      const sourceSelect = document.getElementById('list-source').value;
+      const listSource = sourceSelect === '__custom__'
+        ? document.getElementById('list-source-custom').value.trim()
+        : sourceSelect;
+      if (sourceSelect === '__custom__' && !listSource) {
+        showError('Please type a custom source name or pick a different option.'); return;
+      }
       if (!newName && !existingId) { showError('Please enter a list name or select an existing list before uploading.'); return; }
       document.getElementById('upload-spinner').style.display = 'flex';
       dz.style.opacity = '0.5';
