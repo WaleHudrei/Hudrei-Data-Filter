@@ -544,6 +544,25 @@ app.get('/dashboard', requireAuth, async (req, res) => {
       FROM filtration_runs ORDER BY run_at DESC LIMIT 5
     `);
 
+    // Distress distribution + top hot leads (defensive — schema may not exist on first deploy)
+    let distressDist = { burning: 0, hot: 0, warm: 0, cold: 0, unscored: 0, total: 0 };
+    let topHotLeads = [];
+    try {
+      const distress = require('./scoring/distress');
+      await distress.ensureDistressSchema();
+      distressDist = await distress.getScoreDistribution();
+      const hotRes = await dbQuery(`
+        SELECT id, street, city, state_code, distress_score, distress_band
+          FROM properties
+         WHERE distress_score >= 30
+         ORDER BY distress_score DESC, id DESC
+         LIMIT 5
+      `);
+      topHotLeads = hotRes.rows;
+    } catch(e) {
+      console.error('[dashboard] distress fetch failed:', e.message);
+    }
+
     // Recent imports
     const recentImports = await dbQuery(`
       SELECT source, imported_at, COUNT(*) AS count
@@ -646,6 +665,59 @@ app.get('/dashboard', requireAuth, async (req, res) => {
                 </div>
                 <div style="font-size:13px;font-weight:500;background:${bg};color:${color};padding:2px 9px;border-radius:4px">${fmtNum(count)}</div>
               </div>`).join('')}
+          </div>
+        </div>
+      </div>
+
+      <!-- Distress Score Snapshot -->
+      <div class="card" style="margin-bottom:1.25rem">
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px">
+          <div class="sec-lbl" style="margin:0">🔥 Distress Score Snapshot</div>
+          <a href="/records/_distress" style="font-size:12px;color:#888;text-decoration:none">Audit page →</a>
+        </div>
+        <div style="display:grid;grid-template-columns:2fr 3fr;gap:24px;align-items:start">
+          <!-- Band breakdown -->
+          <div>
+            <div style="display:flex;gap:6px;height:36px;border-radius:6px;overflow:hidden;background:#f0efe9;margin-bottom:10px">
+              ${[
+                ['burning', '#c0392b', distressDist.burning],
+                ['hot',     '#d35400', distressDist.hot],
+                ['warm',    '#9a6800', distressDist.warm],
+                ['cold',    '#bbb',    distressDist.cold],
+              ].map(([band, color, count]) => {
+                const c = parseInt(count || 0);
+                const total = parseInt(distressDist.total || 0) || 1;
+                const pct = (c / total) * 100;
+                return pct > 0 ? `<div style="width:${pct}%;background:${color}" title="${band}: ${c.toLocaleString()}"></div>` : '';
+              }).join('')}
+            </div>
+            <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;font-size:12px">
+              <div style="display:flex;justify-content:space-between"><span style="color:#c0392b;font-weight:600">● Burning</span><span style="color:#444">${parseInt(distressDist.burning||0).toLocaleString()}</span></div>
+              <div style="display:flex;justify-content:space-between"><span style="color:#d35400;font-weight:600">● Hot</span><span style="color:#444">${parseInt(distressDist.hot||0).toLocaleString()}</span></div>
+              <div style="display:flex;justify-content:space-between"><span style="color:#9a6800;font-weight:600">● Warm</span><span style="color:#444">${parseInt(distressDist.warm||0).toLocaleString()}</span></div>
+              <div style="display:flex;justify-content:space-between"><span style="color:#888;font-weight:600">● Cold</span><span style="color:#444">${parseInt(distressDist.cold||0).toLocaleString()}</span></div>
+            </div>
+            ${parseInt(distressDist.unscored||0) > 0 ? `<div style="font-size:11px;color:#aaa;margin-top:6px">${parseInt(distressDist.unscored).toLocaleString()} unscored — visit audit page to recompute</div>` : ''}
+          </div>
+          <!-- Top hot leads -->
+          <div>
+            <div style="font-size:11px;font-weight:600;color:#888;text-transform:uppercase;letter-spacing:.05em;margin-bottom:8px">Top Distressed Leads (Score 30+)</div>
+            ${topHotLeads.length === 0
+              ? '<div style="font-size:13px;color:#aaa;padding:12px 0">No properties scored 30 or higher yet.</div>'
+              : topHotLeads.map(l => {
+                  const colorMap = { burning: '#c0392b', hot: '#d35400', warm: '#9a6800', cold: '#888' };
+                  const bgMap = { burning: '#fdecec', hot: '#fff2e6', warm: '#fff8e1', cold: '#f5f4f0' };
+                  const color = colorMap[l.distress_band] || '#888';
+                  const bg = bgMap[l.distress_band] || '#f5f4f0';
+                  return `
+                    <a href="/records/${l.id}" style="display:flex;justify-content:space-between;align-items:center;padding:7px 0;border-bottom:1px solid #f0efe9;text-decoration:none">
+                      <div>
+                        <div style="font-size:13px;color:#1a1a1a;font-weight:500">${l.street}</div>
+                        <div style="font-size:11px;color:#888">${l.city}, ${l.state_code}</div>
+                      </div>
+                      <span style="background:${bg};color:${color};padding:3px 9px;border-radius:5px;font-size:11px;font-weight:600">${l.distress_score}</span>
+                    </a>`;
+                }).join('')}
           </div>
         </div>
       </div>
