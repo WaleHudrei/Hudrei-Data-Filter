@@ -20,7 +20,7 @@ router.get('/', requireAuth, async (req, res) => {
   try {
     const {
       q = '', state = '', city = '', zip = '', county = '',
-      type = '', list_id = '', stack_list = '', min_stack = '',
+      type = '', list_id = '', min_stack = '',
       pipeline = '', mkt_result = '', prop_status = '',
       min_assessed = '', max_assessed = '',
       min_equity = '', max_equity = '',
@@ -28,6 +28,13 @@ router.get('/', requireAuth, async (req, res) => {
       upload_from = '', upload_to = '',
       page = 1
     } = req.query;
+
+    // stack_list can arrive as a single string, an array (multi-checkbox), or absent.
+    // Normalize to an array of non-empty strings.
+    let stackList = req.query.stack_list;
+    if (!stackList) stackList = [];
+    else if (!Array.isArray(stackList)) stackList = [stackList];
+    stackList = stackList.filter(v => v !== null && v !== undefined && String(v).trim() !== '');
     const limit = 25;
     const offset = (parseInt(page) - 1) * limit;
 
@@ -56,7 +63,25 @@ router.get('/', requireAuth, async (req, res) => {
     if (upload_from)  { conditions.push(`p.created_at >= $${idx}`);       params.push(upload_from); idx++; }
     if (upload_to)    { conditions.push(`p.created_at <= $${idx}`);       params.push(upload_to + ' 23:59:59'); idx++; }
     if (list_id)      { conditions.push(`EXISTS (SELECT 1 FROM property_lists pl2 WHERE pl2.property_id = p.id AND pl2.list_id = $${idx})`); params.push(list_id); idx++; }
-    if (stack_list)   { conditions.push(`EXISTS (SELECT 1 FROM property_lists pl3 WHERE pl3.property_id = p.id AND pl3.list_id = $${idx})`); params.push(stack_list); idx++; }
+
+    // ── AND-stacking: property must appear on EVERY selected list ────────────
+    // For N selected lists, require N matching rows in property_lists. If only
+    // 1 list is selected, this behaves identically to the old single-list filter.
+    if (stackList.length > 0) {
+      const listIdInts = stackList.map(v => parseInt(v)).filter(n => !isNaN(n));
+      if (listIdInts.length > 0) {
+        conditions.push(
+          `(SELECT COUNT(DISTINCT pl_stack.list_id)
+              FROM property_lists pl_stack
+             WHERE pl_stack.property_id = p.id
+               AND pl_stack.list_id = ANY($${idx}::int[])) = $${idx+1}`
+        );
+        params.push(listIdInts);
+        params.push(listIdInts.length);
+        idx += 2;
+      }
+    }
+
     if (min_stack)    { conditions.push(`(SELECT COUNT(*) FROM property_lists plc WHERE plc.property_id = p.id) >= $${idx}`); params.push(parseInt(min_stack)); idx++; }
 
     const where = conditions.length ? 'WHERE ' + conditions.join(' AND ') : '';
@@ -112,14 +137,33 @@ router.get('/', requireAuth, async (req, res) => {
       </tr>`;
     }).join('');
 
+    // Build a pagination URL that preserves ALL current filters including multi-select stack_list
+    const preserveQS = (newPage) => {
+      const parts = [];
+      const add = (k, v) => { if (v !== undefined && v !== null && v !== '') parts.push(`${encodeURIComponent(k)}=${encodeURIComponent(v)}`); };
+      add('q', q); add('state', state); add('city', city); add('zip', zip); add('county', county);
+      add('type', type); add('list_id', list_id); add('min_stack', min_stack);
+      add('pipeline', pipeline); add('mkt_result', mkt_result); add('prop_status', prop_status);
+      add('min_assessed', min_assessed); add('max_assessed', max_assessed);
+      add('min_equity', min_equity); add('max_equity', max_equity);
+      add('min_year', min_year); add('max_year', max_year);
+      add('upload_from', upload_from); add('upload_to', upload_to);
+      stackList.forEach(sl => parts.push(`stack_list=${encodeURIComponent(sl)}`));
+      parts.push(`page=${newPage}`);
+      return '/records?' + parts.join('&');
+    };
+
     const pagination = totalPages > 1 ? `
       <div style="display:flex;align-items:center;justify-content:space-between;margin-top:1rem;font-size:13px;color:#555;padding:4px 0">
         <span>Showing ${offset+1}–${Math.min(offset+limit,total)} of ${total.toLocaleString()} records</span>
         <div style="display:flex;gap:6px">
-          ${parseInt(page) > 1 ? `<a href="/records?q=${encodeURIComponent(q)}&state=${state}&type=${type}&list_id=${list_id}&page=${parseInt(page)-1}" class="btn btn-ghost" style="padding:6px 12px">← Prev</a>` : ''}
-          ${parseInt(page) < totalPages ? `<a href="/records?q=${encodeURIComponent(q)}&state=${state}&type=${type}&list_id=${list_id}&page=${parseInt(page)+1}" class="btn btn-ghost" style="padding:6px 12px">Next →</a>` : ''}
+          ${parseInt(page) > 1 ? `<a href="${preserveQS(parseInt(page)-1)}" class="btn btn-ghost" style="padding:6px 12px">← Prev</a>` : ''}
+          ${parseInt(page) < totalPages ? `<a href="${preserveQS(parseInt(page)+1)}" class="btn btn-ghost" style="padding:6px 12px">Next →</a>` : ''}
         </div>
       </div>` : '';
+
+    // Filter count — stackList (regardless of size) counts as 1 filter
+    const activeFilterCount = [state,city,zip,county,type,pipeline,prop_status,mkt_result,min_assessed,max_assessed,min_equity,max_equity,min_year,max_year,upload_from,upload_to,min_stack].filter(Boolean).length + (stackList.length > 0 ? 1 : 0);
 
     res.send(shell('Records', `
       <div class="page-header">
@@ -138,14 +182,14 @@ router.get('/', requireAuth, async (req, res) => {
             style="flex:1;min-width:200px;padding:9px 14px;border:1px solid #ddd;border-radius:8px;font-size:14px;font-family:inherit;background:#fff">
           <button type="submit" class="btn btn-primary">Search</button>
           <button type="button" class="btn btn-ghost" onclick="toggleFilters()" id="filter-toggle">
-            ⚙ Filters${[state,city,zip,county,type,pipeline,prop_status,mkt_result,min_assessed,max_assessed,min_equity,max_equity,min_year,max_year,upload_from,upload_to,stack_list,min_stack].filter(Boolean).length > 0 ? ' <span style="background:#1a1a1a;color:#fff;border-radius:10px;padding:1px 7px;font-size:11px;margin-left:4px">'+[state,city,zip,county,type,pipeline,prop_status,mkt_result,min_assessed,max_assessed,min_equity,max_equity,min_year,max_year,upload_from,upload_to,stack_list,min_stack].filter(Boolean).length+'</span>' : ''}
+            ⚙ Filters${activeFilterCount > 0 ? ' <span style="background:#1a1a1a;color:#fff;border-radius:10px;padding:1px 7px;font-size:11px;margin-left:4px">'+activeFilterCount+'</span>' : ''}
           </button>
-          ${[q,state,city,zip,county,type,pipeline,prop_status,mkt_result,min_assessed,max_assessed,min_equity,max_equity,min_year,max_year,upload_from,upload_to,stack_list,min_stack].filter(Boolean).length > 0
+          ${q || activeFilterCount > 0
             ? '<a href="/records' + (list_id?'?list_id='+list_id:'') + '" class="btn btn-ghost" style="color:#c0392b;border-color:#f5c5c5">✕ Clear</a>' : ''}
         </div>
 
         <!-- Expandable filter panel -->
-        <div id="filter-panel" style="display:${[state,city,zip,county,type,pipeline,prop_status,mkt_result,min_assessed,max_assessed,min_equity,max_equity,min_year,max_year,upload_from,upload_to,stack_list,min_stack].filter(Boolean).length>0?'block':'none'};background:#fff;border:1px solid #e0dfd8;border-radius:10px;padding:16px 18px;margin-bottom:14px">
+        <div id="filter-panel" style="display:${activeFilterCount>0?'block':'none'};background:#fff;border:1px solid #e0dfd8;border-radius:10px;padding:16px 18px;margin-bottom:14px">
 
           <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(180px,1fr));gap:12px">
 
@@ -241,11 +285,19 @@ router.get('/', requireAuth, async (req, res) => {
             <!-- List Stacking -->
             <div style="grid-column:1/-1;font-size:10px;font-weight:700;color:#aaa;text-transform:uppercase;letter-spacing:.1em;margin:6px 0 2px">List Stacking</div>
             <div style="grid-column:1/-1">
-              <label style="font-size:11px;color:#888;display:block;margin-bottom:3px">Also appears on list</label>
-              <select name="stack_list" style="width:100%;padding:7px 10px;border:1px solid #ddd;border-radius:7px;font-size:13px;font-family:inherit;background:#fff">
-                <option value="">— Any list —</option>
-                ${allLists.map(l=>`<option value="${l.id}" ${stack_list==l.id?'selected':''}}>${l.list_name}</option>`).join('')}
-              </select>
+              <label style="font-size:11px;color:#888;display:block;margin-bottom:6px">Stacks on ALL of these lists <span style="color:#1a1a1a;font-weight:600">(${stackList.length} selected)</span></label>
+              <div style="max-height:200px;overflow-y:auto;border:1px solid #ddd;border-radius:7px;padding:8px;background:#fff">
+                ${allLists.length === 0
+                  ? '<div style="color:#aaa;font-size:13px;padding:6px">No lists available yet</div>'
+                  : allLists.map(l => {
+                      const checked = stackList.includes(String(l.id)) ? 'checked' : '';
+                      return `<label style="display:flex;align-items:center;gap:8px;padding:5px 4px;font-size:13px;cursor:pointer;border-radius:4px" onmouseover="this.style.background='#f5f4f0'" onmouseout="this.style.background=''">
+                        <input type="checkbox" name="stack_list" value="${l.id}" ${checked} style="width:14px;height:14px;cursor:pointer">
+                        <span>${l.list_name}</span>
+                      </label>`;
+                    }).join('')}
+              </div>
+              <p style="font-size:11px;color:#aaa;margin-top:5px">Select 2+ lists to find properties on every one (AND logic). Select 1 for "on this list."</p>
             </div>
             <div>
               <label style="font-size:11px;color:#888;display:block;margin-bottom:3px">Min list stack count</label>
