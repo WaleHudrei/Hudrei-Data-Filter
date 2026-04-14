@@ -46,7 +46,19 @@ router.get('/', requireAuth, async (req, res) => {
       }[j.status] || '#888';
 
       return `<tr>
-        <td style="padding:13px 16px;font-weight:500">${j.filename || '—'}</td>
+        <td style="padding:13px 16px;font-weight:500">
+          ${j.filename || '—'}
+          ${j.error_log ? (() => {
+            // Complete + error_log = warning (skipped rows). Error status = real crash.
+            const isWarn = j.status === 'complete';
+            const color = isWarn ? '#9a6800' : '#c0392b';
+            const bg    = isWarn ? '#fff8e1' : '#fdecec';
+            const icon  = isWarn ? '⚠️' : '❌';
+            const msg   = String(j.error_log).replace(/</g,'&lt;');
+            const shown = msg.slice(0, 500) + (msg.length > 500 ? '…' : '');
+            return `<div style="margin-top:4px;font-size:11px;color:${color};background:${bg};padding:5px 8px;border-radius:4px;white-space:pre-wrap;word-break:break-word;max-width:400px;font-weight:normal;line-height:1.4">${icon} ${shown}</div>`;
+          })() : ''}
+        </td>
         <td style="padding:13px 16px">
           ${j.list_name ? `<a href="/records?list_id=${j.list_id}" style="color:#1a1a1a;text-decoration:none;font-weight:500">${j.list_name}</a>` : '—'}
         </td>
@@ -163,7 +175,19 @@ router.get('/status', requireAuth, async (req, res) => {
       const statusIcon = { pending:'⏳', running:'🔄', complete:'✅', error:'❌' }[j.status] || '⏳';
       const statusColor = { pending:'#888', running:'#9a6800', complete:'#1a7a4a', error:'#c0392b' }[j.status] || '#888';
       return `<tr>
-        <td style="padding:13px 16px;font-weight:500">${j.filename || '—'}</td>
+        <td style="padding:13px 16px;font-weight:500">
+          ${j.filename || '—'}
+          ${j.error_log ? (() => {
+            // Complete + error_log = warning (skipped rows). Error status = real crash.
+            const isWarn = j.status === 'complete';
+            const color = isWarn ? '#9a6800' : '#c0392b';
+            const bg    = isWarn ? '#fff8e1' : '#fdecec';
+            const icon  = isWarn ? '⚠️' : '❌';
+            const msg   = String(j.error_log).replace(/</g,'&lt;');
+            const shown = msg.slice(0, 500) + (msg.length > 500 ? '…' : '');
+            return `<div style="margin-top:4px;font-size:11px;color:${color};background:${bg};padding:5px 8px;border-radius:4px;white-space:pre-wrap;word-break:break-word;max-width:400px;font-weight:normal;line-height:1.4">${icon} ${shown}</div>`;
+          })() : ''}
+        </td>
         <td style="padding:13px 16px">${j.list_name ? `<a href="/records?list_id=${j.list_id}" style="color:#1a1a1a;text-decoration:none;font-weight:500">${j.list_name}</a>` : '—'}</td>
         <td style="padding:13px 16px"><span style="color:${statusColor};font-weight:600;font-size:12px">${statusIcon} ${j.status.charAt(0).toUpperCase()+j.status.slice(1)}</span></td>
         <td style="padding:13px 16px">
