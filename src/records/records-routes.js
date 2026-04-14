@@ -19,7 +19,7 @@ function fmtMoney(val) { if (!val) return '—'; return '$' + Number(val).toLoca
 router.get('/', requireAuth, async (req, res) => {
   try {
     const {
-      q = '', state = '', city = '', zip = '', county = '',
+      q = '', city = '', zip = '', county = '',
       type = '', list_id = '', min_stack = '',
       pipeline = '', mkt_result = '', prop_status = '',
       min_assessed = '', max_assessed = '',
@@ -35,6 +35,12 @@ router.get('/', requireAuth, async (req, res) => {
     if (!stackList) stackList = [];
     else if (!Array.isArray(stackList)) stackList = [stackList];
     stackList = stackList.filter(v => v !== null && v !== undefined && String(v).trim() !== '');
+
+    // state can arrive as a single string OR an array. Normalize to array of upper-case codes.
+    let stateList = req.query.state;
+    if (!stateList) stateList = [];
+    else if (!Array.isArray(stateList)) stateList = [stateList];
+    stateList = stateList.filter(v => v !== null && v !== undefined && String(v).trim() !== '').map(s => String(s).toUpperCase());
     const limit = 25;
     const offset = (parseInt(page) - 1) * limit;
 
@@ -46,7 +52,11 @@ router.get('/', requireAuth, async (req, res) => {
       conditions.push(`(p.street ILIKE $${idx} OR p.city ILIKE $${idx} OR p.zip_code ILIKE $${idx} OR c.first_name ILIKE $${idx} OR c.last_name ILIKE $${idx} OR ph.phone_number ILIKE $${idx})`);
       params.push(`%${q}%`); idx++;
     }
-    if (state)        { conditions.push(`p.state_code = $${idx}`);       params.push(state); idx++; }
+    if (stateList.length > 0) {
+      conditions.push(`p.state_code = ANY($${idx}::text[])`);
+      params.push(stateList);
+      idx++;
+    }
     if (city)         { conditions.push(`p.city ILIKE $${idx}`);          params.push(`%${city}%`); idx++; }
     if (zip)          { conditions.push(`p.zip_code ILIKE $${idx}`);      params.push(`%${zip}%`); idx++; }
     if (county)       { conditions.push(`p.county ILIKE $${idx}`);        params.push(`%${county}%`); idx++; }
@@ -99,6 +109,11 @@ router.get('/', requireAuth, async (req, res) => {
     const allListsRes = await query(`SELECT id, list_name FROM lists ORDER BY list_name ASC`);
     const allLists = allListsRes.rows;
 
+    // Fetch all distinct states present in the DB for multi-select state filter
+    const allStatesRes = await query(`SELECT DISTINCT state_code FROM properties WHERE state_code IS NOT NULL AND state_code <> '' ORDER BY state_code ASC`);
+    const STATE_NAMES = { AL:'Alabama',AK:'Alaska',AZ:'Arizona',AR:'Arkansas',CA:'California',CO:'Colorado',CT:'Connecticut',DE:'Delaware',FL:'Florida',GA:'Georgia',HI:'Hawaii',ID:'Idaho',IL:'Illinois',IN:'Indiana',IA:'Iowa',KS:'Kansas',KY:'Kentucky',LA:'Louisiana',ME:'Maine',MD:'Maryland',MA:'Massachusetts',MI:'Michigan',MN:'Minnesota',MS:'Mississippi',MO:'Missouri',MT:'Montana',NE:'Nebraska',NV:'Nevada',NH:'New Hampshire',NJ:'New Jersey',NM:'New Mexico',NY:'New York',NC:'North Carolina',ND:'North Dakota',OH:'Ohio',OK:'Oklahoma',OR:'Oregon',PA:'Pennsylvania',RI:'Rhode Island',SC:'South Carolina',SD:'South Dakota',TN:'Tennessee',TX:'Texas',UT:'Utah',VT:'Vermont',VA:'Virginia',WA:'Washington',WV:'West Virginia',WI:'Wisconsin',WY:'Wyoming',DC:'District of Columbia' };
+    const allStates = allStatesRes.rows.map(r => ({ code: r.state_code, name: STATE_NAMES[r.state_code] || r.state_code }));
+
     const rows = await query(`
       SELECT DISTINCT ON (p.id)
         p.id, p.street, p.city, p.state_code, p.zip_code,
@@ -141,7 +156,7 @@ router.get('/', requireAuth, async (req, res) => {
     const preserveQS = (newPage) => {
       const parts = [];
       const add = (k, v) => { if (v !== undefined && v !== null && v !== '') parts.push(`${encodeURIComponent(k)}=${encodeURIComponent(v)}`); };
-      add('q', q); add('state', state); add('city', city); add('zip', zip); add('county', county);
+      add('q', q); add('city', city); add('zip', zip); add('county', county);
       add('type', type); add('list_id', list_id); add('min_stack', min_stack);
       add('pipeline', pipeline); add('mkt_result', mkt_result); add('prop_status', prop_status);
       add('min_assessed', min_assessed); add('max_assessed', max_assessed);
@@ -149,6 +164,7 @@ router.get('/', requireAuth, async (req, res) => {
       add('min_year', min_year); add('max_year', max_year);
       add('upload_from', upload_from); add('upload_to', upload_to);
       stackList.forEach(sl => parts.push(`stack_list=${encodeURIComponent(sl)}`));
+      stateList.forEach(s => parts.push(`state=${encodeURIComponent(s)}`));
       parts.push(`page=${newPage}`);
       return '/records?' + parts.join('&');
     };
@@ -162,8 +178,8 @@ router.get('/', requireAuth, async (req, res) => {
         </div>
       </div>` : '';
 
-    // Filter count — stackList (regardless of size) counts as 1 filter
-    const activeFilterCount = [state,city,zip,county,type,pipeline,prop_status,mkt_result,min_assessed,max_assessed,min_equity,max_equity,min_year,max_year,upload_from,upload_to,min_stack].filter(Boolean).length + (stackList.length > 0 ? 1 : 0);
+    // Filter count — multi-select filters count as 1 each regardless of how many values
+    const activeFilterCount = [city,zip,county,type,pipeline,prop_status,mkt_result,min_assessed,max_assessed,min_equity,max_equity,min_year,max_year,upload_from,upload_to,min_stack].filter(Boolean).length + (stackList.length > 0 ? 1 : 0) + (stateList.length > 0 ? 1 : 0);
 
     res.send(shell('Records', `
       <div class="page-header">
@@ -196,12 +212,40 @@ router.get('/', requireAuth, async (req, res) => {
             <!-- Location -->
             <div style="grid-column:1/-1;font-size:10px;font-weight:700;color:#aaa;text-transform:uppercase;letter-spacing:.1em;margin-bottom:2px">Location</div>
             <div>
-              <label style="font-size:11px;color:#888;display:block;margin-bottom:3px">State</label>
-              <select name="state" style="width:100%;padding:7px 10px;border:1px solid #ddd;border-radius:7px;font-size:13px;font-family:inherit;background:#fff">
-                <option value="">All States</option>
-                <option value="IN" ${state==='IN'?'selected':''}>Indiana</option>
-                <option value="GA" ${state==='GA'?'selected':''}>Georgia</option>
-              </select>
+              <label style="font-size:11px;color:#888;display:block;margin-bottom:3px">State <span id="state-count-label" style="color:#888">${stateList.length > 0 ? '('+stateList.length+' selected)' : ''}</span></label>
+              <div id="state-ms-wrapper" style="position:relative">
+                <div id="state-ms-control" onclick="toggleStateMsDropdown(event)" style="min-height:34px;border:1px solid #ddd;border-radius:7px;padding:4px 26px 4px 6px;background:#fff;cursor:text;display:flex;flex-wrap:wrap;gap:3px;align-items:center;font-size:13px">
+                  <div id="state-ms-pills" style="display:flex;flex-wrap:wrap;gap:3px">
+                    ${stateList.length === 0 ? '<span id="state-ms-placeholder" style="color:#aaa;font-size:13px;padding:2px">All States</span>' : ''}
+                    ${allStates.filter(s => stateList.includes(s.code)).map(s => `
+                      <span class="state-ms-pill" data-id="${s.code}" style="display:inline-flex;align-items:center;gap:4px;background:#e8f0ff;color:#1a4a9a;padding:2px 6px;border-radius:4px;font-size:12px;font-weight:500">
+                        ${s.code}
+                        <button type="button" onclick="removeStateMsPill(event,'${s.code}')" style="background:none;border:none;color:#1a4a9a;cursor:pointer;padding:0;font-size:13px;line-height:1;font-family:inherit">×</button>
+                      </span>
+                    `).join('')}
+                  </div>
+                  <span style="position:absolute;right:8px;top:50%;transform:translateY(-50%);color:#888;font-size:10px;pointer-events:none">▾</span>
+                </div>
+                <div id="state-ms-dropdown" style="display:none;position:absolute;top:calc(100% + 4px);left:0;right:0;background:#fff;border:1px solid #ddd;border-radius:7px;box-shadow:0 4px 16px rgba(0,0,0,.08);max-height:240px;overflow:hidden;z-index:100;flex-direction:column">
+                  <input type="text" id="state-ms-search" placeholder="Search state…" oninput="filterStateMsOptions()" onclick="event.stopPropagation()" style="width:100%;padding:7px 9px;border:none;border-bottom:1px solid #eee;font-size:13px;font-family:inherit;outline:none;box-sizing:border-box">
+                  <div id="state-ms-options" style="overflow-y:auto;flex:1">
+                    ${allStates.length === 0
+                      ? '<div style="color:#aaa;font-size:13px;padding:10px">No states found</div>'
+                      : allStates.map(s => {
+                          const isSel = stateList.includes(s.code);
+                          const safeName = (s.name || '').replace(/'/g, "\\'");
+                          return `<div class="state-ms-option" data-id="${s.code}" data-search="${(s.code+' '+s.name).toLowerCase()}" onclick="toggleStateMsOption(event,'${s.code}','${safeName}')" style="padding:6px 10px;font-size:13px;cursor:pointer;display:flex;align-items:center;gap:8px;${isSel ? 'background:#f0f7ff;color:#1a4a9a;font-weight:500' : ''}" onmouseover="if(!this.classList.contains('state-ms-selected'))this.style.background='#fafaf8'" onmouseout="if(!this.classList.contains('state-ms-selected'))this.style.background=''">
+                            <span style="width:14px;display:inline-block">${isSel ? '✓' : ''}</span>
+                            <span style="font-weight:500;font-family:monospace;width:28px">${s.code}</span>
+                            <span style="color:#888">${s.name}</span>
+                          </div>`;
+                        }).join('')}
+                  </div>
+                </div>
+              </div>
+              <div id="state-ms-hidden-inputs">
+                ${stateList.map(c => `<input type="hidden" name="state" value="${c}">`).join('')}
+              </div>
             </div>
             <div>
               <label style="font-size:11px;color:#888;display:block;margin-bottom:3px">City</label>
@@ -388,21 +432,31 @@ router.get('/', requireAuth, async (req, res) => {
         const countEl = document.getElementById('stack-count-label');
         if (countEl) countEl.textContent = '(' + ids.length + ' selected)';
 
+        pillsEl.innerHTML = '';
         if (ids.length === 0) {
-          pillsEl.innerHTML = '<span id="ms-placeholder" style="color:#aaa;font-size:13px;padding:4px 2px">Select lists…</span>';
+          const ph = document.createElement('span');
+          ph.id = 'ms-placeholder';
+          ph.style.cssText = 'color:#aaa;font-size:13px;padding:4px 2px';
+          ph.textContent = 'Select lists…';
+          pillsEl.appendChild(ph);
           return;
         }
-        // Build pills from the option elements' text
-        const html = ids.map(id => {
+        ids.forEach(id => {
           const opt = document.querySelector('#ms-options .ms-option[data-id="' + id + '"]');
           const name = opt ? opt.querySelector('span:last-child').textContent : ('List ' + id);
-          const safe = name.replace(/"/g, '&quot;');
-          return '<span class="ms-pill" data-id="' + id + '" style="display:inline-flex;align-items:center;gap:5px;background:#e8f0ff;color:#1a4a9a;padding:3px 8px;border-radius:5px;font-size:12px;font-weight:500">' +
-                 safe +
-                 '<button type="button" onclick="removeMsPill(event,' + id + ')" style="background:none;border:none;color:#1a4a9a;cursor:pointer;padding:0;font-size:14px;line-height:1;font-family:inherit">×</button>' +
-                 '</span>';
-        }).join('');
-        pillsEl.innerHTML = html;
+          const pill = document.createElement('span');
+          pill.className = 'ms-pill';
+          pill.setAttribute('data-id', id);
+          pill.style.cssText = 'display:inline-flex;align-items:center;gap:5px;background:#e8f0ff;color:#1a4a9a;padding:3px 8px;border-radius:5px;font-size:12px;font-weight:500';
+          pill.appendChild(document.createTextNode(name));
+          const btn = document.createElement('button');
+          btn.type = 'button';
+          btn.style.cssText = 'background:none;border:none;color:#1a4a9a;cursor:pointer;padding:0;font-size:14px;line-height:1;font-family:inherit';
+          btn.textContent = '×';
+          btn.addEventListener('click', function(ev) { removeMsPill(ev, id); });
+          pill.appendChild(btn);
+          pillsEl.appendChild(pill);
+        });
       }
 
       function toggleMsOption(ev, id, name) {
@@ -454,6 +508,122 @@ router.get('/', requireAuth, async (req, res) => {
         }
         renderMsPills();
       }
+
+      // ── Multi-select dropdown for STATE ──────────────────────────────────
+      function toggleStateMsDropdown(ev) {
+        ev.stopPropagation();
+        const dd = document.getElementById('state-ms-dropdown');
+        const isOpen = dd.style.display === 'flex';
+        dd.style.display = isOpen ? 'none' : 'flex';
+        if (!isOpen) {
+          const search = document.getElementById('state-ms-search');
+          if (search) { search.value = ''; filterStateMsOptions(); setTimeout(() => search.focus(), 10); }
+        }
+      }
+
+      document.addEventListener('click', function(e) {
+        const wrapper = document.getElementById('state-ms-wrapper');
+        if (wrapper && !wrapper.contains(e.target)) {
+          const dd = document.getElementById('state-ms-dropdown');
+          if (dd) dd.style.display = 'none';
+        }
+      });
+
+      function filterStateMsOptions() {
+        const q = document.getElementById('state-ms-search').value.toLowerCase();
+        const opts = document.querySelectorAll('#state-ms-options .state-ms-option');
+        opts.forEach(o => {
+          const term = o.getAttribute('data-search') || '';
+          o.style.display = term.includes(q) ? 'flex' : 'none';
+        });
+      }
+
+      function getSelectedStateCodes() {
+        const inputs = document.querySelectorAll('#state-ms-hidden-inputs input[name="state"]');
+        return Array.from(inputs).map(i => String(i.value));
+      }
+
+      function renderStateMsPills() {
+        const codes = getSelectedStateCodes();
+        const pillsEl = document.getElementById('state-ms-pills');
+        const countEl = document.getElementById('state-count-label');
+        if (countEl) countEl.textContent = codes.length > 0 ? '(' + codes.length + ' selected)' : '';
+
+        // Clear and rebuild via DOM (avoids quote-escaping nightmares)
+        pillsEl.innerHTML = '';
+        if (codes.length === 0) {
+          const ph = document.createElement('span');
+          ph.id = 'state-ms-placeholder';
+          ph.style.cssText = 'color:#aaa;font-size:13px;padding:2px';
+          ph.textContent = 'All States';
+          pillsEl.appendChild(ph);
+          return;
+        }
+        codes.forEach(code => {
+          const pill = document.createElement('span');
+          pill.className = 'state-ms-pill';
+          pill.setAttribute('data-id', code);
+          pill.style.cssText = 'display:inline-flex;align-items:center;gap:4px;background:#e8f0ff;color:#1a4a9a;padding:2px 6px;border-radius:4px;font-size:12px;font-weight:500';
+          pill.appendChild(document.createTextNode(code));
+          const btn = document.createElement('button');
+          btn.type = 'button';
+          btn.style.cssText = 'background:none;border:none;color:#1a4a9a;cursor:pointer;padding:0;font-size:13px;line-height:1;font-family:inherit';
+          btn.textContent = '×';
+          btn.addEventListener('click', function(ev) { removeStateMsPill(ev, code); });
+          pill.appendChild(btn);
+          pillsEl.appendChild(pill);
+        });
+      }
+
+      function toggleStateMsOption(ev, code, name) {
+        ev.stopPropagation();
+        const sid = String(code);
+        const container = document.getElementById('state-ms-hidden-inputs');
+        const existing = container.querySelector('input[value="' + sid + '"]');
+        const opt = document.querySelector('#state-ms-options .state-ms-option[data-id="' + sid + '"]');
+
+        if (existing) {
+          existing.remove();
+          if (opt) {
+            opt.classList.remove('state-ms-selected');
+            opt.style.background = '';
+            opt.style.color = '';
+            opt.style.fontWeight = '';
+            opt.querySelector('span').textContent = '';
+          }
+        } else {
+          const input = document.createElement('input');
+          input.type = 'hidden';
+          input.name = 'state';
+          input.value = sid;
+          container.appendChild(input);
+          if (opt) {
+            opt.classList.add('state-ms-selected');
+            opt.style.background = '#f0f7ff';
+            opt.style.color = '#1a4a9a';
+            opt.style.fontWeight = '500';
+            opt.querySelector('span').textContent = '✓';
+          }
+        }
+        renderStateMsPills();
+      }
+
+      function removeStateMsPill(ev, code) {
+        ev.stopPropagation();
+        const sid = String(code);
+        const container = document.getElementById('state-ms-hidden-inputs');
+        const existing = container.querySelector('input[value="' + sid + '"]');
+        if (existing) existing.remove();
+        const opt = document.querySelector('#state-ms-options .state-ms-option[data-id="' + sid + '"]');
+        if (opt) {
+          opt.classList.remove('state-ms-selected');
+          opt.style.background = '';
+          opt.style.color = '';
+          opt.style.fontWeight = '';
+          opt.querySelector('span').textContent = '';
+        }
+        renderStateMsPills();
+      }
       </script>
 
       <!-- Export Modal -->
@@ -472,7 +642,7 @@ router.get('/', requireAuth, async (req, res) => {
               ['street','Street Address'],['city','City'],['state_code','State'],['zip_code','ZIP'],['county','County'],
               ['first_name','Owner First Name'],['last_name','Owner Last Name'],
               ['mailing_address','Mailing Address'],['mailing_city','Mailing City'],['mailing_state','Mailing State'],['mailing_zip','Mailing ZIP'],['email_1','Email 1'],['email_2','Email 2'],
-              ['phones','All Phones'],
+              ['phones','Phones (1–15 separate columns)'],
               ['property_type','Property Type'],['year_built','Year Built'],['sqft','Sq Ft'],['bedrooms','Bedrooms'],['bathrooms','Bathrooms'],
               ['assessed_value','Assessed Value'],['estimated_value','Est. Value'],['equity_percent','Equity %'],
               ['property_status','Property Status'],['pipeline_stage','Pipeline Stage'],['condition','Condition'],
@@ -651,7 +821,12 @@ router.post('/export', requireAuth, async (req, res) => {
       const qv = (k) => qs.get(k) || '';
       const qvAll = (k) => qs.getAll(k).filter(v => v && String(v).trim() !== '');
       if (qv('q'))           { conditions.push(`(p.street ILIKE $${idx} OR p.city ILIKE $${idx} OR c.first_name ILIKE $${idx} OR c.last_name ILIKE $${idx})`); params.push(`%${qv('q')}%`); idx++; }
-      if (qv('state'))       { conditions.push(`p.state_code = $${idx}`);       params.push(qv('state')); idx++; }
+      const stateArr = qvAll('state').map(s => String(s).toUpperCase());
+      if (stateArr.length > 0) {
+        conditions.push(`p.state_code = ANY($${idx}::text[])`);
+        params.push(stateArr);
+        idx++;
+      }
       if (qv('city'))        { conditions.push(`p.city ILIKE $${idx}`);          params.push(`%${qv('city')}%`); idx++; }
       if (qv('zip'))         { conditions.push(`p.zip_code ILIKE $${idx}`);      params.push(`%${qv('zip')}%`); idx++; }
       if (qv('county'))      { conditions.push(`p.county ILIKE $${idx}`);        params.push(`%${qv('county')}%`); idx++; }
@@ -756,18 +931,36 @@ router.post('/export', requireAuth, async (req, res) => {
       list_count: 'Lists Count', created_at: 'Date Added',
     };
 
-    const headers = columns.map(k => colLabels[k] || k);
+    // Expand the single 'phones' column into Phone 1 ... Phone 15 columns.
+    // Wherever 'phones' appears in the user's selection, splice in 15 keys.
+    const PHONE_SLOTS = 15;
+    const expandedColumns = [];
+    for (const c of columns) {
+      if (c === 'phones') {
+        for (let i = 1; i <= PHONE_SLOTS; i++) expandedColumns.push(`__phone_${i}`);
+      } else {
+        expandedColumns.push(c);
+      }
+    }
+
+    const headers = expandedColumns.map(k => {
+      if (k.startsWith('__phone_')) return 'Phone ' + k.replace('__phone_', '');
+      return colLabels[k] || k;
+    });
+
     const csvRows = props.rows.map(row => {
-      return columns.map(col => {
+      const phoneList = phoneMap[row.id] || [];
+      return expandedColumns.map(col => {
         let val = '';
-        if (col === 'phones') {
-          val = (phoneMap[row.id] || []).join(' | ');
+        if (col.startsWith('__phone_')) {
+          const slot = parseInt(col.replace('__phone_', ''), 10);
+          val = phoneList[slot - 1] || '';
         } else if (col === 'last_sale_date' || col === 'created_at') {
           val = row[col] ? new Date(row[col]).toLocaleDateString('en-US') : '';
         } else {
           val = row[col] !== null && row[col] !== undefined ? String(row[col]) : '';
         }
-        return `"${val.replace(/"/g, '""')}"`;
+        return `"${String(val).replace(/"/g, '""')}"`;
       }).join(',');
     });
 
