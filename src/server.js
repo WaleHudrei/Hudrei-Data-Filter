@@ -1063,6 +1063,10 @@ app.get('/campaigns/:id', requireAuth, async (req, res) => {
     const c = await campaigns.getCampaign(req.params.id);
     if (!c) return res.redirect('/campaigns');
     c.contact_counts = await campaigns.getContactStats(req.params.id);
+    if (c.active_channel === 'sms' || c.sms_status === 'active') {
+      try { c.sms_eligible_stats = await campaigns.getSmsEligibleStats(req.params.id); }
+      catch(e) { c.sms_eligible_stats = { eligible:0, ineligible:0, unchecked:0, next_batch:0 }; }
+    }
     res.send(campaignDetailPage(c));
   } catch (e) { res.status(500).send('Error: ' + e.message); }
 });
@@ -1166,6 +1170,65 @@ app.post('/campaigns/:id/sms/upload', requireAuth, upload.single('smsfile'), asy
     console.error('[sms/upload] ERROR:', e.message);
     console.error('[sms/upload] stack:', e.stack);
     res.status(500).send(`<h2>SMS Upload Error</h2><p>${e.message}</p><p><a href="/campaigns/${req.params.id}">Back to campaign</a></p>`);
+  }
+});
+
+// SMC Accepted Contacts upload — sets sms_eligible flag per phone
+app.post('/campaigns/:id/sms/accepted-upload', requireAuth, upload.single('acceptedfile'), async (req, res) => {
+  try {
+    if (!req.file) return res.redirect('/campaigns/' + req.params.id);
+    const parsed = Papa.parse(req.file.buffer.toString('utf8'), { header: true, skipEmptyLines: true });
+    const result = await campaigns.importSmarterContactAccepted(
+      req.params.id,
+      parsed.data,
+      parsed.meta.fields || []
+    );
+    if (!result.success) {
+      return res.status(400).send(`
+        <h2>SMC Accepted Upload Failed</h2>
+        <p style="color:red">${result.error}</p>
+        <p><a href="/campaigns/${req.params.id}">Back to campaign</a></p>
+      `);
+    }
+    const t = result.tally;
+    console.log(`[sms/accepted-upload] campaign ${req.params.id} — total:${t.total} accepted:${t.accepted} rejected:${t.rejected} unmatched:${t.unmatched} invalid:${t.invalid}`);
+    res.redirect('/campaigns/' + req.params.id);
+  } catch(e) {
+    console.error('[sms/accepted-upload] ERROR:', e.message);
+    console.error('[sms/accepted-upload] stack:', e.stack);
+    res.status(500).send(`<h2>SMC Accepted Upload Error</h2><p>${e.message}</p><p><a href="/campaigns/${req.params.id}">Back to campaign</a></p>`);
+  }
+});
+
+// Download next SMS batch — clean remarket list (eligible & no response yet)
+app.get('/campaigns/:id/sms/next-batch.csv', requireAuth, async (req, res) => {
+  try {
+    const rows = await campaigns.getSmsNextBatch(req.params.id);
+    const headers = ['Phone','First Name','Last Name','Property Address','Property City','Property State','Property Zip'];
+    const csvLines = [headers.join(',')];
+    const esc = (v) => {
+      const s = String(v == null ? '' : v);
+      return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
+    };
+    for (const r of rows) {
+      csvLines.push([
+        esc(r.phone_number),
+        esc(r.first_name),
+        esc(r.last_name),
+        esc(r.property_address),
+        esc(r.property_city),
+        esc(r.property_state),
+        esc(r.property_zip),
+      ].join(','));
+    }
+    const filename = `sms-next-batch-campaign-${req.params.id}-${new Date().toISOString().slice(0,10)}.csv`;
+    res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+    res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+    res.send(csvLines.join('\n'));
+    console.log(`[sms/next-batch] campaign ${req.params.id} — exported ${rows.length} phones`);
+  } catch(e) {
+    console.error('[sms/next-batch] ERROR:', e.message);
+    res.status(500).send(`<h2>Export Error</h2><p>${e.message}</p>`);
   }
 });
 
@@ -1751,7 +1814,24 @@ function campaignDetailPage(c) {
         </form>
 ${c.sms_status === 'active' ? `
         <div style="margin-top:1rem;padding-top:1rem;border-top:1px solid #f0f0f0">
-          <div class="sec-lbl" style="margin-bottom:8px">Upload SmarterContact SMS results</div>
+          <div class="sec-lbl" style="margin-bottom:8px">Step 1 — Upload SmarterContact accepted contacts</div>
+          <form method="POST" action="/campaigns/${c.id}/sms/accepted-upload" enctype="multipart/form-data">
+            <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+              <input type="file" name="acceptedfile" accept=".csv" required style="font-size:13px;padding:6px;border:1px solid #ddd;border-radius:7px;background:#fff">
+              <button type="submit" style="padding:7px 16px;background:#16a34a;color:#fff;border:none;border-radius:7px;font-size:13px;cursor:pointer;font-family:inherit">Upload accepted contacts</button>
+            </div>
+            <p style="font-size:11px;color:#aaa;margin-top:6px">Required column: Phone. This tells Loki which numbers SMC accepted as textable (landlines stripped). Re-upload anytime to refresh.</p>
+          </form>
+          ${c.sms_eligible_stats ? `
+          <div style="display:flex;gap:14px;margin-top:10px;font-size:12px;flex-wrap:wrap">
+            <div><span style="color:#888">Eligible:</span> <strong style="color:#1a7a4a">${Number(c.sms_eligible_stats.eligible).toLocaleString()}</strong></div>
+            <div><span style="color:#888">Ineligible:</span> <strong style="color:#c0392b">${Number(c.sms_eligible_stats.ineligible).toLocaleString()}</strong></div>
+            <div><span style="color:#888">Unchecked:</span> <strong style="color:#9a6800">${Number(c.sms_eligible_stats.unchecked).toLocaleString()}</strong></div>
+            <div><span style="color:#888">Next batch:</span> <strong style="color:#185fa5">${Number(c.sms_eligible_stats.next_batch).toLocaleString()}</strong></div>
+          </div>` : ''}
+        </div>
+        <div style="margin-top:1rem;padding-top:1rem;border-top:1px solid #f0f0f0">
+          <div class="sec-lbl" style="margin-bottom:8px">Step 2 — Upload SmarterContact SMS results</div>
           <form method="POST" action="/campaigns/${c.id}/sms/upload" enctype="multipart/form-data">
             <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
               <input type="file" name="smsfile" accept=".csv" required style="font-size:13px;padding:6px;border:1px solid #ddd;border-radius:7px;background:#fff">
@@ -1759,7 +1839,13 @@ ${c.sms_status === 'active' ? `
             </div>
             <p style="font-size:11px;color:#aaa;margin-top:6px">Required columns: Phone, Labels, First name, Last name, Property address, Property city, Property state, Property zip. One label per row only.</p>
           </form>
-        </div>` : ''}
+        </div>
+        ${c.sms_eligible_stats && c.sms_eligible_stats.next_batch > 0 ? `
+        <div style="margin-top:1rem;padding-top:1rem;border-top:1px solid #f0f0f0">
+          <div class="sec-lbl" style="margin-bottom:8px">Step 3 — Download next SMS batch</div>
+          <a href="/campaigns/${c.id}/sms/next-batch.csv" style="display:inline-block;padding:7px 16px;background:#1a1a1a;color:#fff;border-radius:7px;font-size:13px;text-decoration:none;font-family:inherit">⬇ Download next batch (${Number(c.sms_eligible_stats.next_batch).toLocaleString()} phones)</a>
+          <p style="font-size:11px;color:#aaa;margin-top:6px">Eligible phones with no response yet. Upload this back into SmarterContact for the next blast.</p>
+        </div>` : ''}` : ''}
       </div>
     </div>
 
