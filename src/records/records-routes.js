@@ -1465,6 +1465,10 @@ router.get('/_distress', requireAuth, async (req, res) => {
     await distress.ensureDistressSchema();
     const dist = await distress.getScoreDistribution();
     const conv = await distress.getConversionByBand();
+    // 3 new audit datasets
+    const closedHistory = await distress.getClosedDealScoreHistory();
+    const coverage = await distress.getSignalCoverage();
+    const convRates = await distress.getConversionRateByBand();
 
     const total = parseInt(dist.total || 0);
     const scored = total - parseInt(dist.unscored || 0);
@@ -1556,6 +1560,125 @@ router.get('/_distress', requireAuth, async (req, res) => {
           </table>
           <p style="font-size:11px;color:#aaa;margin-top:10px">Tune weights in <code>src/scoring/distress.js</code>, then click <b>Recompute All</b>.</p>
         </div>
+      </div>
+
+      <!-- AUDIT 1: Closed Deal Score History — "Did the system catch deals that closed?" -->
+      <div class="card" style="margin-bottom:1.25rem">
+        <div class="sec-lbl" style="margin-bottom:10px">📊 Closed Deal Score History</div>
+        <div style="font-size:12px;color:#888;margin-bottom:14px">Properties currently in Lead / Contract / Closed stages. Look at score history — if deals closed while scoring Cold, the system missed signals. If they climbed Hot before closing, the system caught them.</div>
+        ${closedHistory.length === 0 ? `
+          <div style="color:#aaa;font-size:13px;text-align:center;padding:20px">No properties in Lead / Contract / Closed yet. As you mark them, score histories will appear here.</div>
+        ` : `
+          <div style="overflow-x:auto">
+            <table style="width:100%;font-size:12px;border-collapse:collapse">
+              <thead><tr style="border-bottom:1px solid #e0dfd8;text-align:left">
+                <th style="padding:8px;font-size:11px;color:#888;font-weight:600;text-transform:uppercase;letter-spacing:.05em">Property</th>
+                <th style="padding:8px;font-size:11px;color:#888;font-weight:600;text-transform:uppercase;letter-spacing:.05em">Stage</th>
+                <th style="padding:8px;font-size:11px;color:#888;font-weight:600;text-transform:uppercase;letter-spacing:.05em;text-align:center">Current Score</th>
+                <th style="padding:8px;font-size:11px;color:#888;font-weight:600;text-transform:uppercase;letter-spacing:.05em">Score History</th>
+                <th style="padding:8px;font-size:11px;color:#888;font-weight:600;text-transform:uppercase;letter-spacing:.05em">Verdict</th>
+              </tr></thead>
+              <tbody>
+                ${closedHistory.map(p => {
+                  const c = distress.BAND_COLORS[p.distress_band] || distress.BAND_COLORS.cold;
+                  const history = p.score_history || [];
+                  const histStr = history.length === 0
+                    ? '<span style="color:#aaa">No prior scores</span>'
+                    : history.map(h => {
+                        const hc = distress.BAND_COLORS[h.band] || distress.BAND_COLORS.cold;
+                        return `<span style="display:inline-block;background:${hc.bg};color:${hc.text};padding:2px 6px;border-radius:4px;font-size:10px;font-weight:600;margin-right:3px">${h.score}</span>`;
+                      }).join('→');
+                  // Verdict logic
+                  const stage = p.pipeline_stage;
+                  let verdict = '';
+                  if (stage === 'closed' || stage === 'contract') {
+                    if (p.distress_band === 'burning' || p.distress_band === 'hot') verdict = '<span style="color:#1a7a4a;font-weight:600">✓ Caught</span>';
+                    else if (p.distress_band === 'warm') verdict = '<span style="color:#9a6800;font-weight:600">~ Borderline</span>';
+                    else verdict = '<span style="color:#c0392b;font-weight:600">✗ Missed</span>';
+                  } else {
+                    verdict = '<span style="color:#888">In progress</span>';
+                  }
+                  return `
+                    <tr style="border-bottom:1px solid #f0efe9">
+                      <td style="padding:8px"><a href="/records/${p.id}" style="color:#1a4a9a;text-decoration:none">${p.street}</a><br><span style="color:#888;font-size:11px">${p.city}, ${p.state_code}</span></td>
+                      <td style="padding:8px;text-transform:capitalize">${stage}</td>
+                      <td style="padding:8px;text-align:center"><span style="background:${c.bg};color:${c.text};padding:3px 8px;border-radius:4px;font-weight:600">${p.distress_score}</span></td>
+                      <td style="padding:8px">${histStr}</td>
+                      <td style="padding:8px">${verdict}</td>
+                    </tr>`;
+                }).join('')}
+              </tbody>
+            </table>
+          </div>
+        `}
+      </div>
+
+      <!-- AUDIT 2: Signal Coverage Report — "What data is missing?" -->
+      <div class="card" style="margin-bottom:1.25rem">
+        <div class="sec-lbl" style="margin-bottom:10px">📋 Signal Coverage Report</div>
+        <div style="font-size:12px;color:#888;margin-bottom:14px">% of records with each scoring input populated. <b>Low coverage = signal silently mutes scoring.</b> If only 12% have equity data, the High Equity rule fires for nobody — that's a data gap, not a scoring problem.</div>
+        ${coverage.total === 0 ? '<div style="color:#aaa">No records to analyze.</div>' : (() => {
+          const sigs = [
+            { label: 'Property State Code', count: coverage.has_state, signal: 'Required for out-of-state detection' },
+            { label: 'Mailing State (owner)', count: coverage.has_mailing_state, signal: 'Required for out-of-state detection' },
+            { label: 'Equity %', count: coverage.has_equity, signal: 'Drives High Equity (+10) signal' },
+            { label: 'Marketing Result', count: coverage.has_marketing, signal: 'Drives Marketing Lead (+5) signal' },
+            { label: 'On at least 1 List', count: coverage.has_any_list, signal: 'Required for ALL list-based signals' },
+          ];
+          return `<div style="display:grid;gap:10px">
+            ${sigs.map(s => {
+              const p = (s.count / coverage.total) * 100;
+              const color = p >= 80 ? '#1a7a4a' : p >= 40 ? '#9a6800' : '#c0392b';
+              return `
+                <div>
+                  <div style="display:flex;justify-content:space-between;font-size:13px;margin-bottom:3px">
+                    <span style="color:#1a1a1a;font-weight:500">${s.label}</span>
+                    <span style="color:${color};font-weight:600">${s.count.toLocaleString()} / ${coverage.total.toLocaleString()} (${p.toFixed(1)}%)</span>
+                  </div>
+                  <div style="background:#f0efe9;height:6px;border-radius:3px;overflow:hidden;margin-bottom:3px">
+                    <div style="background:${color};width:${p}%;height:100%"></div>
+                  </div>
+                  <div style="font-size:11px;color:#aaa">${s.signal}</div>
+                </div>`;
+            }).join('')}
+          </div>`;
+        })()}
+      </div>
+
+      <!-- AUDIT 3: Conversion Rate by Band — "Are weights calibrated correctly?" -->
+      <div class="card" style="margin-bottom:1.25rem">
+        <div class="sec-lbl" style="margin-bottom:10px">🎯 Conversion Rate by Band</div>
+        <div style="font-size:12px;color:#888;margin-bottom:14px">% of properties in each band that have advanced to Lead / Contract / Closed. <b>If higher bands convert at higher rates, weights are calibrated.</b> If they're flat or inverted, time to tune.</div>
+        ${convRates.length === 0 ? '<div style="color:#aaa">No band data yet — recompute scores first.</div>' : `
+          <table style="width:100%;font-size:12px;border-collapse:collapse">
+            <thead><tr style="border-bottom:1px solid #e0dfd8">
+              <th style="padding:8px;text-align:left;font-size:11px;color:#888;font-weight:600;text-transform:uppercase">Band</th>
+              <th style="padding:8px;text-align:right;font-size:11px;color:#888;font-weight:600;text-transform:uppercase">Total</th>
+              <th style="padding:8px;text-align:right;font-size:11px;color:#888;font-weight:600;text-transform:uppercase">Lead</th>
+              <th style="padding:8px;text-align:right;font-size:11px;color:#888;font-weight:600;text-transform:uppercase">Contract</th>
+              <th style="padding:8px;text-align:right;font-size:11px;color:#888;font-weight:600;text-transform:uppercase">Closed</th>
+              <th style="padding:8px;text-align:right;font-size:11px;color:#888;font-weight:600;text-transform:uppercase">Any Adv. %</th>
+            </tr></thead>
+            <tbody>
+              ${convRates.map(r => {
+                const c = distress.BAND_COLORS[r.band] || distress.BAND_COLORS.cold;
+                return `
+                  <tr style="border-bottom:1px solid #f0efe9">
+                    <td style="padding:8px"><span style="background:${c.bg};color:${c.text};padding:3px 9px;border-radius:5px;font-weight:600;font-size:11px">${c.label}</span></td>
+                    <td style="padding:8px;text-align:right">${r.total.toLocaleString()}</td>
+                    <td style="padding:8px;text-align:right">${r.leads.toLocaleString()}</td>
+                    <td style="padding:8px;text-align:right">${r.contracts.toLocaleString()}</td>
+                    <td style="padding:8px;text-align:right;font-weight:600">${r.closed.toLocaleString()}</td>
+                    <td style="padding:8px;text-align:right;font-weight:600;color:${r.any_rate >= 5 ? '#1a7a4a' : r.any_rate >= 1 ? '#9a6800' : '#888'}">${r.any_rate.toFixed(2)}%</td>
+                  </tr>`;
+              }).join('')}
+            </tbody>
+          </table>
+          <p style="font-size:11px;color:#aaa;margin-top:12px;padding-top:8px;border-top:1px solid #f0efe9">
+            <b>Healthy pattern:</b> Burning &gt; Hot &gt; Warm &gt; Cold conversion rates.<br>
+            <b>Need tuning:</b> Cold converting equally well, or Hot converting worse than Warm.
+          </p>
+        `}
       </div>
 
       <div class="card">
