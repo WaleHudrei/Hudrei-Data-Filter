@@ -833,6 +833,7 @@ router.get('/', requireAuth, async (req, res) => {
 // ═══════════════════════════════════════════════════════════════════════════════
 router.post('/export', requireAuth, async (req, res) => {
   try {
+    await distress.ensureDistressSchema();
     const { ids, columns, selectAll, filterParams } = req.body;
     if (!columns || !columns.length) return res.status(400).json({ error: 'No columns selected' });
 
@@ -1009,6 +1010,7 @@ router.post('/export', requireAuth, async (req, res) => {
 // ═══════════════════════════════════════════════════════════════════════════════
 router.get('/:id(\\d+)', requireAuth, async (req, res) => {
   try {
+    await distress.ensureDistressSchema();
     const { id } = req.params;
     const msg = req.query.msg || '';
 
