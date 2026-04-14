@@ -1783,12 +1783,23 @@ function campaignDetailPage(c) {
       </div>
       <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:10px;margin-bottom:14px">
         <div class="stat-card"><div class="stat-lbl">Total properties</div><div class="stat-num">${Number(c.contact_counts?.total_contacts||0).toLocaleString()}</div><div style="font-size:11px;color:#888;margin-top:2px">Contacts uploaded</div></div>
+        ${c.sms_status === 'active' ? `
+        <div class="stat-card"><div class="stat-lbl">Accepted by SMC</div><div class="stat-num">${Number(c.sms_eligible_stats?.eligible||0).toLocaleString()}</div><div style="font-size:11px;color:#888;margin-top:2px">Auto from SMC upload</div></div>
+        ` : `
         <div class="stat-card"><div class="stat-lbl">Accepted by Readymode</div><div class="stat-num">${Number(c.manual_count||0).toLocaleString()} <button onclick="document.getElementById('rm-count-form').style.display=document.getElementById('rm-count-form').style.display==='none'?'block':'none'" style="font-size:11px;color:#888;background:none;border:none;cursor:pointer;text-decoration:underline">edit</button></div><div style="font-size:11px;color:#888;margin-top:2px">Manually entered</div></div>
+        `}
         <div class="stat-card"><div class="stat-lbl">Total phones</div><div class="stat-num">${Number(c.contact_counts?.total_phones||0).toLocaleString()}</div><div style="font-size:11px;color:#888;margin-top:2px">Across all contacts</div></div>
+        ${c.sms_status === 'active' ? `
+        <div class="stat-card"><div class="stat-lbl">Textable</div><div class="stat-num green">${Number(c.sms_eligible_stats?.eligible||0).toLocaleString()} ${c.contact_counts?.total_phones>0?`<span style="font-size:12px;font-weight:400;color:#888">(${((c.sms_eligible_stats.eligible/c.contact_counts.total_phones)*100).toFixed(0)}%)</span>`:''}</div><div style="font-size:11px;color:#888;margin-top:2px">SMC accepted</div></div>
+        ` : ''}
         <div class="stat-card"><div class="stat-lbl">Wrong numbers</div><div class="stat-num red">${Number(c.contact_counts?.wrong_phones||0).toLocaleString()}</div><div style="font-size:11px;color:#888;margin-top:2px">Permanently excluded</div></div>
         <div class="stat-card"><div class="stat-lbl">NIS flagged</div><div class="stat-num" style="color:#c0392b">${Number(c.contact_counts?.nis_phones||0).toLocaleString()}</div><div style="font-size:11px;color:#888;margin-top:2px">Dead numbers</div></div>
         <div class="stat-card"><div class="stat-lbl">Confirmed correct</div><div class="stat-num green">${Number(c.contact_counts?.correct_phones||0).toLocaleString()}</div><div style="font-size:11px;color:#888;margin-top:2px">Live person confirmed</div></div>
+        ${c.sms_status === 'active' ? `
+        <div class="stat-card"><div class="stat-lbl">Contacts reached</div><div class="stat-num" style="color:#185fa5">${Number(c.sms_eligible_stats?.reached_contacts||0).toLocaleString()} ${c.sms_eligible_stats?.total_contacts>0?`<span style="font-size:13px;color:#888">(${((c.sms_eligible_stats.reached_contacts/c.sms_eligible_stats.total_contacts)*100).toFixed(1)}%)</span>`:''}</div><div style="font-size:11px;color:#888;margin-top:2px">SMS response received</div></div>
+        ` : `
         <div class="stat-card"><div class="stat-lbl">Contacts reached</div><div class="stat-num" style="color:#185fa5">${Number(c.contact_counts?.reached_contacts||0).toLocaleString()} ${c.contact_counts?.total_contacts>0?`<span style="font-size:13px;color:#888">(${((c.contact_counts.reached_contacts/c.contact_counts.total_contacts)*100).toFixed(1)}%)</span>`:''}</div><div style="font-size:11px;color:#888;margin-top:2px">At least 1 live pickup</div></div>
+        `}
       </div>
       <div id="rm-count-form" style="display:none;background:#f5f4f0;border-radius:8px;padding:12px;margin-bottom:10px">
         <form method="POST" action="/campaigns/${c.id}/readymode-count" style="display:flex;align-items:center;gap:8px">
