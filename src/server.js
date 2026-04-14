@@ -1790,7 +1790,7 @@ function campaignDetailPage(c) {
         `}
         <div class="stat-card"><div class="stat-lbl">Total phones</div><div class="stat-num">${Number(c.contact_counts?.total_phones||0).toLocaleString()}</div><div style="font-size:11px;color:#888;margin-top:2px">Across all contacts</div></div>
         ${c.sms_status === 'active' ? `
-        <div class="stat-card"><div class="stat-lbl">Textable</div><div class="stat-num green">${Number(c.sms_eligible_stats?.eligible||0).toLocaleString()} ${c.contact_counts?.total_phones>0?`<span style="font-size:12px;font-weight:400;color:#888">(${((c.sms_eligible_stats.eligible/c.contact_counts.total_phones)*100).toFixed(0)}%)</span>`:''}</div><div style="font-size:11px;color:#888;margin-top:2px">SMC accepted</div></div>
+        <div class="stat-card"><div class="stat-lbl">Textable</div><div class="stat-num green">${Number(c.sms_eligible_stats?.eligible||0).toLocaleString()} ${c.contact_counts?.total_phones>0 && c.sms_eligible_stats?.eligible>0?`<span style="font-size:12px;font-weight:400;color:#888">(${((c.sms_eligible_stats.eligible/c.contact_counts.total_phones)*100).toFixed(0)}%)</span>`:''}</div><div style="font-size:11px;color:#888;margin-top:2px">SMC accepted</div></div>
         ` : ''}
         <div class="stat-card"><div class="stat-lbl">Wrong numbers</div><div class="stat-num red">${Number(c.contact_counts?.wrong_phones||0).toLocaleString()}</div><div style="font-size:11px;color:#888;margin-top:2px">Permanently excluded</div></div>
         <div class="stat-card"><div class="stat-lbl">NIS flagged</div><div class="stat-num" style="color:#c0392b">${Number(c.contact_counts?.nis_phones||0).toLocaleString()}</div><div style="font-size:11px;color:#888;margin-top:2px">Dead numbers</div></div>
