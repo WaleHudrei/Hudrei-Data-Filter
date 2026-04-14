@@ -429,7 +429,10 @@ function normSmsLabel(label) {
   if (l === 'lead')           return 'transfer';
   if (l === 'appointment')    return 'transfer';
   if (l === 'disqualified')   return 'disqualified';
-  // CRM Transferred, Potential Lead, No answer, New, Left voicemail → no action
+  if (l === 'potential lead') return 'potential_lead';
+  if (l === 'sold')           return 'sold';
+  if (l === 'listed')         return 'listed';
+  // CRM Transferred, No answer, New, Left voicemail → no action
   return 'no_action';
 }
 
@@ -477,7 +480,7 @@ async function importSmarterContactFile(campaignId, rows, headers) {
   }
 
   // ── Step 3: Process rows ──────────────────────────────────────────────────
-  const tally = { total: 0, wrong: 0, ni: 0, transfer: 0, disqualified: 0, no_action: 0, unmatched: 0 };
+  const tally = { total: 0, wrong: 0, ni: 0, transfer: 0, disqualified: 0, potential_lead: 0, sold: 0, listed: 0, no_action: 0, unmatched: 0 };
 
   for (const row of rows) {
     tally.total++;
@@ -564,6 +567,64 @@ async function importSmarterContactFile(campaignId, rows, headers) {
         [phoneRow.contact_id]
       );
     }
+
+    if (dispo === 'potential_lead') {
+      tally.potential_lead++;
+      // Mark phone as correct + filtered (real conversation, don't text again)
+      await query(
+        `UPDATE campaign_contact_phones SET
+           filtered = true,
+           phone_status = 'Correct',
+           correct_flagged_at = NOW(),
+           last_disposition = $1,
+           updated_at = NOW()
+         WHERE id = $2`,
+        [label, phoneRow.id]
+      );
+      await query(
+        `UPDATE campaign_contacts SET marketing_result = 'Potential Lead'
+         WHERE id = $1 AND (marketing_result IS NULL OR marketing_result = '')`,
+        [phoneRow.contact_id]
+      );
+    }
+
+    if (dispo === 'sold') {
+      tally.sold++;
+      await query(
+        `UPDATE campaign_contact_phones SET
+           filtered = true,
+           phone_status = 'Correct',
+           correct_flagged_at = NOW(),
+           last_disposition = $1,
+           updated_at = NOW()
+         WHERE id = $2`,
+        [label, phoneRow.id]
+      );
+      await query(
+        `UPDATE campaign_contacts SET marketing_result = 'Sold'
+         WHERE id = $1`,
+        [phoneRow.contact_id]
+      );
+    }
+
+    if (dispo === 'listed') {
+      tally.listed++;
+      await query(
+        `UPDATE campaign_contact_phones SET
+           filtered = true,
+           phone_status = 'Correct',
+           correct_flagged_at = NOW(),
+           last_disposition = $1,
+           updated_at = NOW()
+         WHERE id = $2`,
+        [label, phoneRow.id]
+      );
+      await query(
+        `UPDATE campaign_contacts SET marketing_result = 'Listed'
+         WHERE id = $1`,
+        [phoneRow.contact_id]
+      );
+    }
   }
 
   // ── Step 4: Update campaign totals ────────────────────────────────────────
@@ -587,6 +648,9 @@ async function importSmarterContactFile(campaignId, rows, headers) {
       not_interested: tally.ni,
       leads:        tally.transfer,
       disqualified: tally.disqualified,
+      potential_lead: tally.potential_lead,
+      sold:         tally.sold,
+      listed:       tally.listed,
       no_action:    tally.no_action,
       unmatched:    tally.unmatched,
     }
@@ -732,11 +796,43 @@ async function getSmsEligibleStats(campaignId) {
     [campaignId]
   );
   const r = res.rows[0] || {};
+
+  // Count distinct contacts where any phone got a meaningful response label
+  // (Lead, Not Interested, Disqualified, Potential Lead, Sold, Listed).
+  // We exclude Wrong Number and no-action labels (New, CRM Transferred, etc.)
+  // because those don't represent actual engagement with the right person.
+  const REACHED_LABELS = [
+    'Lead', 'Appointment',
+    'Not interested',
+    'disqualified', 'Disqualified',
+    'Potential Lead',
+    'Sold',
+    'Listed',
+  ];
+  const reachedRes = await query(
+    `SELECT COUNT(DISTINCT ccp.contact_id) AS reached
+       FROM campaign_contact_phones ccp
+      WHERE ccp.campaign_id = $1
+        AND ccp.last_disposition IS NOT NULL
+        AND TRIM(REGEXP_REPLACE(ccp.last_disposition, '^[^|]*\\|', '')) ILIKE ANY($2::text[])`,
+    [campaignId, REACHED_LABELS]
+  );
+
+  // Count distinct contacts on this campaign for the percentage denominator
+  const totalRes = await query(
+    `SELECT COUNT(DISTINCT contact_id) AS total
+       FROM campaign_contact_phones
+      WHERE campaign_id = $1`,
+    [campaignId]
+  );
+
   return {
-    eligible:   parseInt(r.eligible)   || 0,
-    ineligible: parseInt(r.ineligible) || 0,
-    unchecked:  parseInt(r.unchecked)  || 0,
-    next_batch: parseInt(r.next_batch) || 0,
+    eligible:        parseInt(r.eligible)   || 0,
+    ineligible:      parseInt(r.ineligible) || 0,
+    unchecked:       parseInt(r.unchecked)  || 0,
+    next_batch:      parseInt(r.next_batch) || 0,
+    reached_contacts: parseInt(reachedRes.rows[0]?.reached) || 0,
+    total_contacts:   parseInt(totalRes.rows[0]?.total)     || 0,
   };
 }
 
