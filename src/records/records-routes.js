@@ -285,18 +285,43 @@ router.get('/', requireAuth, async (req, res) => {
             <!-- List Stacking -->
             <div style="grid-column:1/-1;font-size:10px;font-weight:700;color:#aaa;text-transform:uppercase;letter-spacing:.1em;margin:6px 0 2px">List Stacking</div>
             <div style="grid-column:1/-1">
-              <label style="font-size:11px;color:#888;display:block;margin-bottom:6px">Stacks on ALL of these lists <span style="color:#1a1a1a;font-weight:600">(${stackList.length} selected)</span></label>
-              <div style="max-height:200px;overflow-y:auto;border:1px solid #ddd;border-radius:7px;padding:8px;background:#fff">
-                ${allLists.length === 0
-                  ? '<div style="color:#aaa;font-size:13px;padding:6px">No lists available yet</div>'
-                  : allLists.map(l => {
-                      const checked = stackList.includes(String(l.id)) ? 'checked' : '';
-                      return `<label style="display:flex;align-items:center;gap:8px;padding:5px 4px;font-size:13px;cursor:pointer;border-radius:4px" onmouseover="this.style.background='#f5f4f0'" onmouseout="this.style.background=''">
-                        <input type="checkbox" name="stack_list" value="${l.id}" ${checked} style="width:14px;height:14px;cursor:pointer">
-                        <span>${l.list_name}</span>
-                      </label>`;
-                    }).join('')}
+              <label style="font-size:11px;color:#888;display:block;margin-bottom:6px">Stacks on ALL of these lists <span id="stack-count-label" style="color:#1a1a1a;font-weight:600">(${stackList.length} selected)</span></label>
+
+              <!-- Multi-select dropdown: pills above, dropdown opens on click -->
+              <div id="ms-wrapper" style="position:relative">
+                <div id="ms-control" onclick="toggleMsDropdown(event)" style="min-height:38px;border:1px solid #ddd;border-radius:7px;padding:5px 30px 5px 8px;background:#fff;cursor:text;display:flex;flex-wrap:wrap;gap:4px;align-items:center">
+                  <div id="ms-pills" style="display:flex;flex-wrap:wrap;gap:4px">
+                    ${stackList.length === 0 ? '<span id="ms-placeholder" style="color:#aaa;font-size:13px;padding:4px 2px">Select lists…</span>' : ''}
+                    ${allLists.filter(l => stackList.includes(String(l.id))).map(l => `
+                      <span class="ms-pill" data-id="${l.id}" style="display:inline-flex;align-items:center;gap:5px;background:#e8f0ff;color:#1a4a9a;padding:3px 8px;border-radius:5px;font-size:12px;font-weight:500">
+                        ${l.list_name}
+                        <button type="button" onclick="removeMsPill(event, ${l.id})" style="background:none;border:none;color:#1a4a9a;cursor:pointer;padding:0;font-size:14px;line-height:1;font-family:inherit">×</button>
+                      </span>
+                    `).join('')}
+                  </div>
+                  <span style="position:absolute;right:10px;top:50%;transform:translateY(-50%);color:#888;font-size:11px;pointer-events:none">▾</span>
+                </div>
+                <div id="ms-dropdown" style="display:none;position:absolute;top:calc(100% + 4px);left:0;right:0;background:#fff;border:1px solid #ddd;border-radius:7px;box-shadow:0 4px 16px rgba(0,0,0,.08);max-height:240px;overflow:hidden;z-index:100;flex-direction:column">
+                  <input type="text" id="ms-search" placeholder="Search lists…" oninput="filterMsOptions()" onclick="event.stopPropagation()" style="width:100%;padding:8px 10px;border:none;border-bottom:1px solid #eee;font-size:13px;font-family:inherit;outline:none;box-sizing:border-box">
+                  <div id="ms-options" style="overflow-y:auto;flex:1">
+                    ${allLists.length === 0
+                      ? '<div style="color:#aaa;font-size:13px;padding:10px">No lists available yet</div>'
+                      : allLists.map(l => {
+                          const isSel = stackList.includes(String(l.id));
+                          return `<div class="ms-option" data-id="${l.id}" data-name="${l.list_name.toLowerCase()}" onclick="toggleMsOption(event, ${l.id}, '${l.list_name.replace(/'/g, "\\'")}')" style="padding:8px 12px;font-size:13px;cursor:pointer;display:flex;align-items:center;gap:8px;${isSel ? 'background:#f0f7ff;color:#1a4a9a;font-weight:500' : ''}" onmouseover="if(!this.classList.contains('ms-selected'))this.style.background='#fafaf8'" onmouseout="if(!this.classList.contains('ms-selected'))this.style.background=''">
+                            <span style="width:14px;display:inline-block">${isSel ? '✓' : ''}</span>
+                            <span>${l.list_name}</span>
+                          </div>`;
+                        }).join('')}
+                  </div>
+                </div>
               </div>
+
+              <!-- Hidden inputs that actually submit with the form -->
+              <div id="ms-hidden-inputs">
+                ${stackList.map(id => `<input type="hidden" name="stack_list" value="${id}">`).join('')}
+              </div>
+
               <p style="font-size:11px;color:#aaa;margin-top:5px">Select 2+ lists to find properties on every one (AND logic). Select 1 for "on this list."</p>
             </div>
             <div>
@@ -321,6 +346,113 @@ router.get('/', requireAuth, async (req, res) => {
       function toggleFilters() {
         const p = document.getElementById('filter-panel');
         p.style.display = p.style.display === 'none' ? 'block' : 'none';
+      }
+
+      // ── Multi-select dropdown for List Stacking ────────────────────────────
+      function toggleMsDropdown(ev) {
+        ev.stopPropagation();
+        const dd = document.getElementById('ms-dropdown');
+        const isOpen = dd.style.display === 'flex';
+        dd.style.display = isOpen ? 'none' : 'flex';
+        if (!isOpen) {
+          const search = document.getElementById('ms-search');
+          if (search) { search.value = ''; filterMsOptions(); setTimeout(() => search.focus(), 10); }
+        }
+      }
+
+      document.addEventListener('click', function(e) {
+        const wrapper = document.getElementById('ms-wrapper');
+        if (wrapper && !wrapper.contains(e.target)) {
+          const dd = document.getElementById('ms-dropdown');
+          if (dd) dd.style.display = 'none';
+        }
+      });
+
+      function filterMsOptions() {
+        const q = document.getElementById('ms-search').value.toLowerCase();
+        const opts = document.querySelectorAll('#ms-options .ms-option');
+        opts.forEach(o => {
+          const name = o.getAttribute('data-name') || '';
+          o.style.display = name.includes(q) ? 'flex' : 'none';
+        });
+      }
+
+      function getSelectedStackIds() {
+        const inputs = document.querySelectorAll('#ms-hidden-inputs input[name="stack_list"]');
+        return Array.from(inputs).map(i => String(i.value));
+      }
+
+      function renderMsPills() {
+        const ids = getSelectedStackIds();
+        const pillsEl = document.getElementById('ms-pills');
+        const countEl = document.getElementById('stack-count-label');
+        if (countEl) countEl.textContent = '(' + ids.length + ' selected)';
+
+        if (ids.length === 0) {
+          pillsEl.innerHTML = '<span id="ms-placeholder" style="color:#aaa;font-size:13px;padding:4px 2px">Select lists…</span>';
+          return;
+        }
+        // Build pills from the option elements' text
+        const html = ids.map(id => {
+          const opt = document.querySelector('#ms-options .ms-option[data-id="' + id + '"]');
+          const name = opt ? opt.querySelector('span:last-child').textContent : ('List ' + id);
+          const safe = name.replace(/"/g, '&quot;');
+          return '<span class="ms-pill" data-id="' + id + '" style="display:inline-flex;align-items:center;gap:5px;background:#e8f0ff;color:#1a4a9a;padding:3px 8px;border-radius:5px;font-size:12px;font-weight:500">' +
+                 safe +
+                 '<button type="button" onclick="removeMsPill(event,' + id + ')" style="background:none;border:none;color:#1a4a9a;cursor:pointer;padding:0;font-size:14px;line-height:1;font-family:inherit">×</button>' +
+                 '</span>';
+        }).join('');
+        pillsEl.innerHTML = html;
+      }
+
+      function toggleMsOption(ev, id, name) {
+        ev.stopPropagation();
+        const sid = String(id);
+        const container = document.getElementById('ms-hidden-inputs');
+        const existing = container.querySelector('input[value="' + sid + '"]');
+        const opt = document.querySelector('#ms-options .ms-option[data-id="' + sid + '"]');
+
+        if (existing) {
+          existing.remove();
+          if (opt) {
+            opt.classList.remove('ms-selected');
+            opt.style.background = '';
+            opt.style.color = '';
+            opt.style.fontWeight = '';
+            opt.querySelector('span').textContent = '';
+          }
+        } else {
+          const input = document.createElement('input');
+          input.type = 'hidden';
+          input.name = 'stack_list';
+          input.value = sid;
+          container.appendChild(input);
+          if (opt) {
+            opt.classList.add('ms-selected');
+            opt.style.background = '#f0f7ff';
+            opt.style.color = '#1a4a9a';
+            opt.style.fontWeight = '500';
+            opt.querySelector('span').textContent = '✓';
+          }
+        }
+        renderMsPills();
+      }
+
+      function removeMsPill(ev, id) {
+        ev.stopPropagation();
+        const sid = String(id);
+        const container = document.getElementById('ms-hidden-inputs');
+        const existing = container.querySelector('input[value="' + sid + '"]');
+        if (existing) existing.remove();
+        const opt = document.querySelector('#ms-options .ms-option[data-id="' + sid + '"]');
+        if (opt) {
+          opt.classList.remove('ms-selected');
+          opt.style.background = '';
+          opt.style.color = '';
+          opt.style.fontWeight = '';
+          opt.querySelector('span').textContent = '';
+        }
+        renderMsPills();
       }
       </script>
 
