@@ -1164,7 +1164,7 @@ app.post('/campaigns/:id/sms/upload', requireAuth, upload.single('smsfile'), asy
       `);
     }
     const t = result.tally;
-    console.log(`[sms/upload] campaign ${req.params.id} — total:${t.total} wrong:${t.wrong} ni:${t.not_interested} leads:${t.leads} dq:${t.disqualified} no_action:${t.no_action} unmatched:${t.unmatched}`);
+    console.log(`[sms/upload] campaign ${req.params.id} — total:${t.total} wrong:${t.wrong} ni:${t.not_interested} leads:${t.leads} potential_lead:${t.potential_lead||0} sold:${t.sold||0} listed:${t.listed||0} dq:${t.disqualified} no_action:${t.no_action} unmatched:${t.unmatched}`);
     res.redirect('/campaigns/' + req.params.id);
   } catch(e) {
     console.error('[sms/upload] ERROR:', e.message);
@@ -1783,21 +1783,32 @@ function campaignDetailPage(c) {
       </div>
       <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:10px;margin-bottom:14px">
         <div class="stat-card"><div class="stat-lbl">Total properties</div><div class="stat-num">${Number(c.contact_counts?.total_contacts||0).toLocaleString()}</div><div style="font-size:11px;color:#888;margin-top:2px">Contacts uploaded</div></div>
-        ${c.sms_status === 'active' ? `
-        <div class="stat-card"><div class="stat-lbl">Accepted by SMC</div><div class="stat-num">${Number(c.sms_eligible_stats?.eligible||0).toLocaleString()}</div><div style="font-size:11px;color:#888;margin-top:2px">Auto from SMC upload</div></div>
-        ` : `
+        ${c.sms_status === 'active' ? (() => {
+          const s = c.sms_eligible_stats || {};
+          const totalProps = s.total_properties || 0;
+          const textableProps = s.textable_properties || 0;
+          const landlineOnly = s.landline_only_properties || 0;
+          const respondedProps = s.properties_responded || 0;
+          const uniqueTextable = s.unique_phones_textable || 0;
+          const nextBatchProps = s.properties_next_batch || 0;
+          const textablePct = totalProps > 0 ? ((textableProps / totalProps) * 100).toFixed(0) : '0';
+          const respondedPct = totalProps > 0 ? ((respondedProps / totalProps) * 100).toFixed(1) : '0.0';
+          return `
+          <div class="stat-card"><div class="stat-lbl">Textable properties</div><div class="stat-num green">${Number(textableProps).toLocaleString()} ${totalProps > 0 ? `<span style="font-size:12px;font-weight:400;color:#888">(${textablePct}%)</span>` : ''}</div><div style="font-size:11px;color:#888;margin-top:2px">≥1 SMC-accepted phone</div></div>
+          <div class="stat-card"><div class="stat-lbl">Landline-only</div><div class="stat-num" style="color:#9a6800">${Number(landlineOnly).toLocaleString()}</div><div style="font-size:11px;color:#888;margin-top:2px">Call-only — no SMS</div></div>
+          <div class="stat-card"><div class="stat-lbl">Total phones</div><div class="stat-num">${Number(c.contact_counts?.total_phones||0).toLocaleString()}</div><div style="font-size:11px;color:#888;margin-top:2px">Across all contacts</div></div>
+          <div class="stat-card"><div class="stat-lbl">Unique textable phones</div><div class="stat-num">${Number(uniqueTextable).toLocaleString()}</div><div style="font-size:11px;color:#888;margin-top:2px">What SMC actually works</div></div>
+          <div class="stat-card"><div class="stat-lbl">Wrong numbers</div><div class="stat-num red">${Number(c.contact_counts?.wrong_phones||0).toLocaleString()}</div><div style="font-size:11px;color:#888;margin-top:2px">Permanently excluded</div></div>
+          <div class="stat-card"><div class="stat-lbl">NIS flagged</div><div class="stat-num" style="color:#c0392b">${Number(c.contact_counts?.nis_phones||0).toLocaleString()}</div><div style="font-size:11px;color:#888;margin-top:2px">Dead numbers</div></div>
+          <div class="stat-card"><div class="stat-lbl">Properties responded</div><div class="stat-num" style="color:#185fa5">${Number(respondedProps).toLocaleString()} ${totalProps > 0 ? `<span style="font-size:13px;color:#888">(${respondedPct}%)</span>` : ''}</div><div style="font-size:11px;color:#888;margin-top:2px">Real response received</div></div>
+          <div class="stat-card"><div class="stat-lbl">Next batch</div><div class="stat-num" style="color:#2563eb">${Number(nextBatchProps).toLocaleString()}</div><div style="font-size:11px;color:#888;margin-top:2px">Properties to re-text</div></div>
+          `;
+        })() : `
         <div class="stat-card"><div class="stat-lbl">Accepted by Readymode</div><div class="stat-num">${Number(c.manual_count||0).toLocaleString()} <button onclick="document.getElementById('rm-count-form').style.display=document.getElementById('rm-count-form').style.display==='none'?'block':'none'" style="font-size:11px;color:#888;background:none;border:none;cursor:pointer;text-decoration:underline">edit</button></div><div style="font-size:11px;color:#888;margin-top:2px">Manually entered</div></div>
-        `}
         <div class="stat-card"><div class="stat-lbl">Total phones</div><div class="stat-num">${Number(c.contact_counts?.total_phones||0).toLocaleString()}</div><div style="font-size:11px;color:#888;margin-top:2px">Across all contacts</div></div>
-        ${c.sms_status === 'active' ? `
-        <div class="stat-card"><div class="stat-lbl">Textable</div><div class="stat-num green">${Number(c.sms_eligible_stats?.eligible||0).toLocaleString()} ${c.contact_counts?.total_phones>0 && c.sms_eligible_stats?.eligible>0?`<span style="font-size:12px;font-weight:400;color:#888">(${((c.sms_eligible_stats.eligible/c.contact_counts.total_phones)*100).toFixed(0)}%)</span>`:''}</div><div style="font-size:11px;color:#888;margin-top:2px">SMC accepted</div></div>
-        ` : ''}
         <div class="stat-card"><div class="stat-lbl">Wrong numbers</div><div class="stat-num red">${Number(c.contact_counts?.wrong_phones||0).toLocaleString()}</div><div style="font-size:11px;color:#888;margin-top:2px">Permanently excluded</div></div>
         <div class="stat-card"><div class="stat-lbl">NIS flagged</div><div class="stat-num" style="color:#c0392b">${Number(c.contact_counts?.nis_phones||0).toLocaleString()}</div><div style="font-size:11px;color:#888;margin-top:2px">Dead numbers</div></div>
         <div class="stat-card"><div class="stat-lbl">Confirmed correct</div><div class="stat-num green">${Number(c.contact_counts?.correct_phones||0).toLocaleString()}</div><div style="font-size:11px;color:#888;margin-top:2px">Live person confirmed</div></div>
-        ${c.sms_status === 'active' ? `
-        <div class="stat-card"><div class="stat-lbl">Contacts reached</div><div class="stat-num" style="color:#185fa5">${Number(c.sms_eligible_stats?.reached_contacts||0).toLocaleString()} ${c.sms_eligible_stats?.total_contacts>0?`<span style="font-size:13px;color:#888">(${((c.sms_eligible_stats.reached_contacts/c.sms_eligible_stats.total_contacts)*100).toFixed(1)}%)</span>`:''}</div><div style="font-size:11px;color:#888;margin-top:2px">SMS response received</div></div>
-        ` : `
         <div class="stat-card"><div class="stat-lbl">Contacts reached</div><div class="stat-num" style="color:#185fa5">${Number(c.contact_counts?.reached_contacts||0).toLocaleString()} ${c.contact_counts?.total_contacts>0?`<span style="font-size:13px;color:#888">(${((c.contact_counts.reached_contacts/c.contact_counts.total_contacts)*100).toFixed(1)}%)</span>`:''}</div><div style="font-size:11px;color:#888;margin-top:2px">At least 1 live pickup</div></div>
         `}
       </div>
@@ -1835,10 +1846,10 @@ ${c.sms_status === 'active' ? `
           </form>
           ${c.sms_eligible_stats ? `
           <div style="display:flex;gap:14px;margin-top:10px;font-size:12px;flex-wrap:wrap">
-            <div><span style="color:#888">Eligible:</span> <strong style="color:#1a7a4a">${Number(c.sms_eligible_stats.eligible).toLocaleString()}</strong></div>
-            <div><span style="color:#888">Ineligible:</span> <strong style="color:#c0392b">${Number(c.sms_eligible_stats.ineligible).toLocaleString()}</strong></div>
+            <div><span style="color:#888">Eligible phones:</span> <strong style="color:#1a7a4a">${Number(c.sms_eligible_stats.eligible).toLocaleString()}</strong></div>
+            <div><span style="color:#888">Ineligible phones:</span> <strong style="color:#c0392b">${Number(c.sms_eligible_stats.ineligible).toLocaleString()}</strong></div>
             <div><span style="color:#888">Unchecked:</span> <strong style="color:#9a6800">${Number(c.sms_eligible_stats.unchecked).toLocaleString()}</strong></div>
-            <div><span style="color:#888">Next batch:</span> <strong style="color:#185fa5">${Number(c.sms_eligible_stats.next_batch).toLocaleString()}</strong></div>
+            <div><span style="color:#888">Textable properties:</span> <strong style="color:#185fa5">${Number(c.sms_eligible_stats.textable_properties||0).toLocaleString()}</strong></div>
           </div>` : ''}
         </div>
         <div style="margin-top:1rem;padding-top:1rem;border-top:1px solid #f0f0f0">
@@ -1851,11 +1862,11 @@ ${c.sms_status === 'active' ? `
             <p style="font-size:11px;color:#aaa;margin-top:6px">Required columns: Phone, Labels, First name, Last name, Property address, Property city, Property state, Property zip. One label per row only.</p>
           </form>
         </div>
-        ${c.sms_eligible_stats && c.sms_eligible_stats.next_batch > 0 ? `
+        ${c.sms_eligible_stats && (c.sms_eligible_stats.properties_next_batch > 0 || c.sms_eligible_stats.next_batch > 0) ? `
         <div style="margin-top:1rem;padding-top:1rem;border-top:1px solid #f0f0f0">
           <div class="sec-lbl" style="margin-bottom:8px">Step 3 — Download next SMS batch</div>
-          <a href="/campaigns/${c.id}/sms/next-batch.csv" style="display:inline-block;padding:7px 16px;background:#1a1a1a;color:#fff;border-radius:7px;font-size:13px;text-decoration:none;font-family:inherit">⬇ Download next batch (${Number(c.sms_eligible_stats.next_batch).toLocaleString()} phones)</a>
-          <p style="font-size:11px;color:#aaa;margin-top:6px">Eligible phones with no response yet. Upload this back into SmarterContact for the next blast.</p>
+          <a href="/campaigns/${c.id}/sms/next-batch.csv" style="display:inline-block;padding:7px 16px;background:#1a1a1a;color:#fff;border-radius:7px;font-size:13px;text-decoration:none;font-family:inherit">⬇ Download next batch (${Number(c.sms_eligible_stats.properties_next_batch||0).toLocaleString()} properties / ${Number(c.sms_eligible_stats.unique_phones_next_batch||0).toLocaleString()} phones)</a>
+          <p style="font-size:11px;color:#aaa;margin-top:6px">Unique textable phones from properties with no response yet. Upload this back into SmarterContact for the next blast.</p>
         </div>` : ''}` : ''}
       </div>
     </div>
