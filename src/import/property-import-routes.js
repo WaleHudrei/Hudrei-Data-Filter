@@ -673,13 +673,36 @@ router.post('/commit', requireAuth, async (req, res) => {
       return res.json({ created, updated, errors, resolvedListId, skipped: skippedReasons, firstError: global._importFirstError || null });
     }
 
+    // Dedup within batch — Postgres ON CONFLICT can't process the same key twice
+    const seenKeysSync = new Set();
+    const dedupedRows = [];
+    for (const row of validRows) {
+      const key = [
+        (get(row,'street')||'').toLowerCase().trim(),
+        (get(row,'city')||'').toLowerCase().trim(),
+        normalizeState(get(row,'state_code')),
+        (get(row,'zip_code')||'').trim(),
+      ].join('|');
+      if (seenKeysSync.has(key)) {
+        errors++;
+        skippedReasons.push({ street: get(row,'street'), reason: `duplicate (street,city,state,zip) within batch` });
+        continue;
+      }
+      seenKeysSync.add(key);
+      dedupedRows.push(row);
+    }
+
+    if (!dedupedRows.length) {
+      return res.json({ created, updated, errors, resolvedListId, skipped: skippedReasons, firstError: global._importFirstError || null });
+    }
+
     // Build arrays for UNNEST bulk insert
     const streets=[], cities=[], states=[], zips=[], counties=[], mktIds=[], sources=[];
     const propTypes=[], yearBuilts=[], sqfts=[], bedrooms=[], bathrooms=[], lotSizes=[];
     const assessedVals=[], estVals=[], equityPcts=[], propStatuses=[], conditions=[];
     const lastSaleDates=[], lastSalePrices=[], vacants=[];
 
-    for (const row of validRows) {
+    for (const row of dedupedRows) {
       const state = normalizeState(get(row,'state_code'));
       streets.push(get(row,'street'));
       cities.push(get(row,'city'));
@@ -754,7 +777,7 @@ router.post('/commit', requireAuth, async (req, res) => {
     }
 
     // ── Bulk upsert contacts + phones row by row (contacts need property_id lookup) ──
-    for (const row of validRows) {
+    for (const row of dedupedRows) {
       try {
         const street = get(row,'street');
         const city   = get(row,'city');
@@ -950,14 +973,34 @@ async function runBackgroundImport(jobId, allRows, mapping, filename, resolvedLi
         validRows.push(row);
       }
 
-      if (validRows.length) {
-        // Bulk upsert properties
+      // Dedup within this batch — Postgres ON CONFLICT can't act on the same
+      // unique-key row twice in one INSERT statement. Keep first occurrence,
+      // log dropped duplicates so user can clean source CSV.
+      const seenKeys = new Set();
+      const dedupedRows = [];
+      for (const row of validRows) {
+        const key = [
+          (get(row,'street')||'').toLowerCase().trim(),
+          (get(row,'city')||'').toLowerCase().trim(),
+          normalizeState(get(row,'state_code')),
+          (get(row,'zip_code')||'').trim(),
+        ].join('|');
+        if (seenKeys.has(key)) {
+          allSkipped.push(`Duplicate skipped — same (street,city,state,zip): "${get(row,'street')}, ${get(row,'city')}"`);
+          continue;
+        }
+        seenKeys.add(key);
+        dedupedRows.push(row);
+      }
+
+      if (dedupedRows.length) {
+        // Bulk upsert properties (using deduped batch)
         const streets=[],cities=[],states=[],zips=[],counties=[],mktIds=[],sources=[];
         const propTypes=[],yearBuilts=[],sqfts=[],beds=[],baths=[],lots=[];
         const assessed=[],estVals=[],equity=[],propStatus=[],conds=[];
         const lastSaleDates=[],lastSalePrices=[],vacants=[];
 
-        for (const row of validRows) {
+        for (const row of dedupedRows) {
           const state = normalizeState(get(row,'state_code'));
           streets.push(get(row,'street')); cities.push(get(row,'city')); states.push(state);
           zips.push(get(row,'zip_code')||''); counties.push(get(row,'county')||null);
@@ -994,7 +1037,7 @@ async function runBackgroundImport(jobId, allRows, mapping, filename, resolvedLi
         }
 
         // Contacts + phones
-        for (const row of validRows) {
+        for (const row of dedupedRows) {
           try {
             const key = (get(row,'street')+'|'+get(row,'city')+'|'+normalizeState(get(row,'state_code'))+'|'+(get(row,'zip_code')||'')).toLowerCase();
             const prop = propMap[key];
