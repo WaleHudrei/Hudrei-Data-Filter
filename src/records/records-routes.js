@@ -19,6 +19,8 @@ function fmtMoney(val) { if (!val) return '—'; return '$' + Number(val).toLoca
 // ═══════════════════════════════════════════════════════════════════════════════
 router.get('/', requireAuth, async (req, res) => {
   try {
+    // Ensure distress columns exist before querying them
+    await distress.ensureDistressSchema();
     const {
       q = '', city = '', zip = '', county = '',
       type = '', list_id = '', min_stack = '',
