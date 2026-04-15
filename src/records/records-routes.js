@@ -1060,13 +1060,13 @@ router.post('/export', requireAuth, async (req, res) => {
       `, ids);
     }
 
-    // Fetch phones
+    // Fetch phones (number + status, stored together so we can interleave in CSV)
     const allIds = props.rows.map(r => r.id);
     const phoneMap = {};
     if (columns.includes('phones') && allIds.length) {
       const phonePlaceholders = allIds.map((_, i) => `$${i + 1}`).join(',');
       const phoneRes = await query(`
-        SELECT ph.phone_number, ph.phone_index, pc.property_id
+        SELECT ph.phone_number, ph.phone_status, ph.phone_index, pc.property_id
         FROM phones ph
         JOIN property_contacts pc ON pc.contact_id = ph.contact_id
         WHERE pc.property_id IN (${phonePlaceholders})
@@ -1074,7 +1074,7 @@ router.post('/export', requireAuth, async (req, res) => {
       `, allIds);
       phoneRes.rows.forEach(ph => {
         if (!phoneMap[ph.property_id]) phoneMap[ph.property_id] = [];
-        phoneMap[ph.property_id].push(ph.phone_number);
+        phoneMap[ph.property_id].push({ number: ph.phone_number, status: ph.phone_status || '' });
       });
       console.log(`[export] Fetched ${phoneRes.rows.length} phones across ${Object.keys(phoneMap).length}/${allIds.length} properties`);
     }
@@ -1096,20 +1096,25 @@ router.post('/export', requireAuth, async (req, res) => {
       distress_score: 'Distress Score', distress_band: 'Distress Band',
     };
 
-    // Expand the single 'phones' column into Phone 1 ... Phone 15 columns.
-    // Wherever 'phones' appears in the user's selection, splice in 15 keys.
+    // Expand the single 'phones' column into INTERLEAVED:
+    // Phone 1 | Phone 1 Status | Phone 2 | Phone 2 Status | ... | Phone 15 | Phone 15 Status
+    // (30 columns total — easier for callers to read in Excel)
     const PHONE_SLOTS = 15;
     const expandedColumns = [];
     for (const c of columns) {
       if (c === 'phones') {
-        for (let i = 1; i <= PHONE_SLOTS; i++) expandedColumns.push(`__phone_${i}`);
+        for (let i = 1; i <= PHONE_SLOTS; i++) {
+          expandedColumns.push(`__phone_${i}`);
+          expandedColumns.push(`__phonestatus_${i}`);
+        }
       } else {
         expandedColumns.push(c);
       }
     }
 
     const headers = expandedColumns.map(k => {
-      if (k.startsWith('__phone_')) return 'Phone ' + k.replace('__phone_', '');
+      if (k.startsWith('__phonestatus_')) return 'Phone ' + k.replace('__phonestatus_', '') + ' Status';
+      if (k.startsWith('__phone_'))       return 'Phone ' + k.replace('__phone_', '');
       return colLabels[k] || k;
     });
 
@@ -1117,9 +1122,12 @@ router.post('/export', requireAuth, async (req, res) => {
       const phoneList = phoneMap[row.id] || [];
       return expandedColumns.map(col => {
         let val = '';
-        if (col.startsWith('__phone_')) {
+        if (col.startsWith('__phonestatus_')) {
+          const slot = parseInt(col.replace('__phonestatus_', ''), 10);
+          val = phoneList[slot - 1]?.status || '';
+        } else if (col.startsWith('__phone_')) {
           const slot = parseInt(col.replace('__phone_', ''), 10);
-          val = phoneList[slot - 1] || '';
+          val = phoneList[slot - 1]?.number || '';
         } else if (col === 'last_sale_date' || col === 'created_at') {
           val = row[col] ? new Date(row[col]).toLocaleDateString('en-US') : '';
         } else if (col === 'distress_band') {
