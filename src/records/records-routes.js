@@ -1076,6 +1076,7 @@ router.post('/export', requireAuth, async (req, res) => {
         if (!phoneMap[ph.property_id]) phoneMap[ph.property_id] = [];
         phoneMap[ph.property_id].push(ph.phone_number);
       });
+      console.log(`[export] Fetched ${phoneRes.rows.length} phones across ${Object.keys(phoneMap).length}/${allIds.length} properties`);
     }
 
     const colLabels = {
