@@ -46,12 +46,23 @@ router.get('/', requireAuth, async (req, res) => {
     else if (!Array.isArray(stateList)) stateList = [stateList];
     stateList = stateList.filter(v => v !== null && v !== undefined && String(v).trim() !== '').map(s => String(s).toUpperCase());
 
+    // Marketing Result Include/Exclude — both arrive as arrays from multi-select
+    const normalizeArr = (raw) => {
+      if (!raw) return [];
+      const arr = Array.isArray(raw) ? raw : [raw];
+      return arr.filter(v => v !== null && v !== undefined && String(v).trim() !== '');
+    };
+    const mktIncludeList = normalizeArr(req.query.mkt_include);
+    const mktExcludeList = normalizeArr(req.query.mkt_exclude);
+
     // Helper: parse comma- or whitespace-separated values into an array of trimmed strings.
     // "46218, 46219 46220" => ['46218','46219','46220']
     function splitCsv(raw) {
       if (!raw) return [];
       return String(raw).split(/[,\s]+/).map(s => s.trim()).filter(Boolean);
     }
+    // HTML escape — used wherever user-controlled query params flow into rendered HTML
+    const esc = (s) => String(s ?? '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;');
     const cityList   = splitCsv(city);
     const zipList    = splitCsv(zip);
     const countyList = splitCsv(county);
@@ -93,6 +104,17 @@ router.get('/', requireAuth, async (req, res) => {
     if (pipeline)     { conditions.push(`p.pipeline_stage = $${idx}`);    params.push(pipeline); idx++; }
     if (prop_status)  { conditions.push(`p.property_status = $${idx}`);   params.push(prop_status); idx++; }
     if (mkt_result)   { conditions.push(`p.marketing_result = $${idx}`);  params.push(mkt_result); idx++; }
+    if (mktIncludeList.length > 0) {
+      conditions.push(`p.marketing_result = ANY($${idx}::text[])`);
+      params.push(mktIncludeList);
+      idx++;
+    }
+    if (mktExcludeList.length > 0) {
+      // Exclude: not in the list, AND not null (treat null as "no result yet" — exclude only explicit values)
+      conditions.push(`(p.marketing_result IS NULL OR p.marketing_result != ALL($${idx}::text[]))`);
+      params.push(mktExcludeList);
+      idx++;
+    }
     if (min_assessed) { conditions.push(`p.assessed_value >= $${idx}`);   params.push(min_assessed); idx++; }
     if (max_assessed) { conditions.push(`p.assessed_value <= $${idx}`);   params.push(max_assessed); idx++; }
     if (min_equity)   { conditions.push(`p.equity_percent >= $${idx}`);   params.push(min_equity); idx++; }
@@ -205,6 +227,8 @@ router.get('/', requireAuth, async (req, res) => {
       add('min_distress', min_distress);
       stackList.forEach(sl => parts.push(`stack_list=${encodeURIComponent(sl)}`));
       stateList.forEach(s => parts.push(`state=${encodeURIComponent(s)}`));
+      mktIncludeList.forEach(m => parts.push(`mkt_include=${encodeURIComponent(m)}`));
+      mktExcludeList.forEach(m => parts.push(`mkt_exclude=${encodeURIComponent(m)}`));
       parts.push(`page=${newPage}`);
       return '/records?' + parts.join('&');
     };
@@ -219,7 +243,7 @@ router.get('/', requireAuth, async (req, res) => {
       </div>` : '';
 
     // Filter count — multi-select filters count as 1 each regardless of how many values
-    const activeFilterCount = [city,zip,county,type,pipeline,prop_status,mkt_result,min_assessed,max_assessed,min_equity,max_equity,min_year,max_year,upload_from,upload_to,min_stack,min_distress].filter(Boolean).length + (stackList.length > 0 ? 1 : 0) + (stateList.length > 0 ? 1 : 0);
+    const activeFilterCount = [city,zip,county,type,pipeline,prop_status,mkt_result,min_assessed,max_assessed,min_equity,max_equity,min_year,max_year,upload_from,upload_to,min_stack,min_distress].filter(Boolean).length + (stackList.length > 0 ? 1 : 0) + (stateList.length > 0 ? 1 : 0) + (mktIncludeList.length > 0 ? 1 : 0) + (mktExcludeList.length > 0 ? 1 : 0);
 
     res.send(shell('Records', `
       <div class="page-header">
@@ -354,12 +378,71 @@ router.get('/', requireAuth, async (req, res) => {
             <!-- Marketing -->
             <div style="grid-column:1/-1;font-size:10px;font-weight:700;color:#aaa;text-transform:uppercase;letter-spacing:.1em;margin:6px 0 2px">Marketing</div>
             <div>
-              <label style="font-size:11px;color:#888;display:block;margin-bottom:3px">Marketing Result</label>
-              <select name="mkt_result" style="width:100%;padding:7px 10px;border:1px solid #ddd;border-radius:7px;font-size:13px;font-family:inherit;background:#fff">
-                <option value="">Any</option>
-                ${['Lead','Not Interested','Do Not Call','Wrong Number','Spanish Speaker','Callback','Voicemail'].map(s=>`<option value="${s}" ${mkt_result===s?'selected':''}>${s}</option>`).join('')}
-              </select>
+              <label style="font-size:11px;color:#888;display:block;margin-bottom:3px">Marketing Result — Include</label>
+              <div style="position:relative">
+                <button type="button" id="mkt-inc-btn" onclick="toggleMkt('inc')" style="width:100%;padding:7px 10px;border:1px solid #ddd;border-radius:7px;font-size:13px;font-family:inherit;background:#fff;text-align:left;cursor:pointer">
+                  <span id="mkt-inc-summary">${mktIncludeList.length > 0 ? esc(mktIncludeList.join(', ')) : 'Any'}</span>
+                  <span style="float:right;color:#aaa">▾</span>
+                </button>
+                <div id="mkt-inc-pop" style="display:none;position:absolute;top:100%;left:0;right:0;margin-top:4px;background:#fff;border:1px solid #ddd;border-radius:7px;box-shadow:0 4px 12px rgba(0,0,0,.08);z-index:10;max-height:240px;overflow-y:auto;padding:6px 0">
+                  ${['Lead','Not Interested','Do Not Call','Wrong Number','Spanish Speaker','Callback','Voicemail'].map(s => `
+                    <label style="display:flex;align-items:center;gap:8px;padding:6px 12px;cursor:pointer;font-size:13px" onmouseover="this.style.background='#f5f4f0'" onmouseout="this.style.background='transparent'">
+                      <input type="checkbox" name="mkt_include" value="${s}" ${mktIncludeList.includes(s) ? 'checked' : ''} onchange="updateMktSummary('inc')">
+                      <span>${s}</span>
+                    </label>`).join('')}
+                </div>
+              </div>
+              <p style="font-size:10px;color:#aaa;margin-top:3px">Match any selected (OR)</p>
             </div>
+            <div>
+              <label style="font-size:11px;color:#888;display:block;margin-bottom:3px">Marketing Result — Exclude</label>
+              <div style="position:relative">
+                <button type="button" id="mkt-exc-btn" onclick="toggleMkt('exc')" style="width:100%;padding:7px 10px;border:1px solid #ddd;border-radius:7px;font-size:13px;font-family:inherit;background:#fff;text-align:left;cursor:pointer">
+                  <span id="mkt-exc-summary">${mktExcludeList.length > 0 ? esc(mktExcludeList.join(', ')) : 'None'}</span>
+                  <span style="float:right;color:#aaa">▾</span>
+                </button>
+                <div id="mkt-exc-pop" style="display:none;position:absolute;top:100%;left:0;right:0;margin-top:4px;background:#fff;border:1px solid #ddd;border-radius:7px;box-shadow:0 4px 12px rgba(0,0,0,.08);z-index:10;max-height:240px;overflow-y:auto;padding:6px 0">
+                  ${['Lead','Not Interested','Do Not Call','Wrong Number','Spanish Speaker','Callback','Voicemail'].map(s => `
+                    <label style="display:flex;align-items:center;gap:8px;padding:6px 12px;cursor:pointer;font-size:13px" onmouseover="this.style.background='#f5f4f0'" onmouseout="this.style.background='transparent'">
+                      <input type="checkbox" name="mkt_exclude" value="${s}" ${mktExcludeList.includes(s) ? 'checked' : ''} onchange="updateMktSummary('exc')">
+                      <span>${s}</span>
+                    </label>`).join('')}
+                </div>
+              </div>
+              <p style="font-size:10px;color:#aaa;margin-top:3px">Hide these results from list</p>
+            </div>
+            ${(() => {
+              const overlap = mktIncludeList.filter(v => mktExcludeList.includes(v));
+              return overlap.length > 0 ? `
+                <div style="grid-column:1/-1;background:#fff8e1;border:1px solid #f5d06b;border-radius:7px;padding:8px 12px;font-size:12px;color:#7a5a00">
+                  ⚠️ <strong>${esc(overlap.join(', '))}</strong> is in both Include and Exclude — this will return 0 results. Remove from one side.
+                </div>` : '';
+            })()}
+            <script>
+              // Toggle dropdown — closes the other one for cleaner UX
+              function toggleMkt(which) {
+                const me    = document.getElementById('mkt-' + which + '-pop');
+                const other = document.getElementById('mkt-' + (which === 'inc' ? 'exc' : 'inc') + '-pop');
+                const opening = me.style.display !== 'block';
+                me.style.display = opening ? 'block' : 'none';
+                if (other) other.style.display = 'none';
+              }
+              function updateMktSummary(which) {
+                const boxes = document.querySelectorAll('input[name="mkt_' + (which==='inc'?'include':'exclude') + '"]:checked');
+                const vals = Array.from(boxes).map(b => b.value);
+                document.getElementById('mkt-' + which + '-summary').textContent = vals.length > 0 ? vals.join(', ') : (which === 'inc' ? 'Any' : 'None');
+              }
+              // Close popovers on outside click
+              document.addEventListener('click', (e) => {
+                ['inc','exc'].forEach(w => {
+                  const pop = document.getElementById('mkt-' + w + '-pop');
+                  const btn = document.getElementById('mkt-' + w + '-btn');
+                  if (pop && btn && !pop.contains(e.target) && !btn.contains(e.target)) {
+                    pop.style.display = 'none';
+                  }
+                });
+              });
+            </script>
             <div>
               <label style="font-size:11px;color:#888;display:block;margin-bottom:3px">Upload Date From</label>
               <input type="date" name="upload_from" value="${upload_from}" style="width:100%;padding:7px 10px;border:1px solid #ddd;border-radius:7px;font-size:13px;font-family:inherit">
@@ -902,6 +985,16 @@ router.post('/export', requireAuth, async (req, res) => {
       if (qv('pipeline'))    { conditions.push(`p.pipeline_stage = $${idx}`);    params.push(qv('pipeline')); idx++; }
       if (qv('prop_status')) { conditions.push(`p.property_status = $${idx}`);   params.push(qv('prop_status')); idx++; }
       if (qv('mkt_result'))  { conditions.push(`p.marketing_result = $${idx}`);  params.push(qv('mkt_result')); idx++; }
+      const mktIncArr = qvAll('mkt_include');
+      const mktExcArr = qvAll('mkt_exclude');
+      if (mktIncArr.length > 0) {
+        conditions.push(`p.marketing_result = ANY($${idx}::text[])`);
+        params.push(mktIncArr); idx++;
+      }
+      if (mktExcArr.length > 0) {
+        conditions.push(`(p.marketing_result IS NULL OR p.marketing_result != ALL($${idx}::text[]))`);
+        params.push(mktExcArr); idx++;
+      }
       if (qv('min_assessed')){ conditions.push(`p.assessed_value >= $${idx}`);   params.push(qv('min_assessed')); idx++; }
       if (qv('max_assessed')){ conditions.push(`p.assessed_value <= $${idx}`);   params.push(qv('max_assessed')); idx++; }
       if (qv('min_equity'))  { conditions.push(`p.equity_percent >= $${idx}`);   params.push(qv('min_equity')); idx++; }
