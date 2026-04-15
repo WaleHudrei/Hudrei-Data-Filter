@@ -45,6 +45,17 @@ router.get('/', requireAuth, async (req, res) => {
     if (!stateList) stateList = [];
     else if (!Array.isArray(stateList)) stateList = [stateList];
     stateList = stateList.filter(v => v !== null && v !== undefined && String(v).trim() !== '').map(s => String(s).toUpperCase());
+
+    // Helper: parse comma- or whitespace-separated values into an array of trimmed strings.
+    // "46218, 46219 46220" => ['46218','46219','46220']
+    function splitCsv(raw) {
+      if (!raw) return [];
+      return String(raw).split(/[,\s]+/).map(s => s.trim()).filter(Boolean);
+    }
+    const cityList   = splitCsv(city);
+    const zipList    = splitCsv(zip);
+    const countyList = splitCsv(county);
+
     const limit = 25;
     const offset = (parseInt(page) - 1) * limit;
 
@@ -61,9 +72,23 @@ router.get('/', requireAuth, async (req, res) => {
       params.push(stateList);
       idx++;
     }
-    if (city)         { conditions.push(`p.city ILIKE $${idx}`);          params.push(`%${city}%`); idx++; }
-    if (zip)          { conditions.push(`p.zip_code ILIKE $${idx}`);      params.push(`%${zip}%`); idx++; }
-    if (county)       { conditions.push(`p.county ILIKE $${idx}`);        params.push(`%${county}%`); idx++; }
+    if (cityList.length > 0) {
+      // ILIKE doesn't work reliably with ANY(array) — build explicit OR chain
+      const orClauses = cityList.map(() => `p.city ILIKE $${idx++}`);
+      conditions.push(`(${orClauses.join(' OR ')})`);
+      cityList.forEach(c => params.push(`%${c}%`));
+    }
+    if (zipList.length > 0) {
+      // Same fix: explicit OR chain for ZIP prefix matches
+      const orClauses = zipList.map(() => `p.zip_code ILIKE $${idx++}`);
+      conditions.push(`(${orClauses.join(' OR ')})`);
+      zipList.forEach(z => params.push(`${z}%`));
+    }
+    if (countyList.length > 0) {
+      const orClauses = countyList.map(() => `p.county ILIKE $${idx++}`);
+      conditions.push(`(${orClauses.join(' OR ')})`);
+      countyList.forEach(c => params.push(`%${c}%`));
+    }
     if (type)         { conditions.push(`p.property_type = $${idx}`);     params.push(type); idx++; }
     if (pipeline)     { conditions.push(`p.pipeline_stage = $${idx}`);    params.push(pipeline); idx++; }
     if (prop_status)  { conditions.push(`p.property_status = $${idx}`);   params.push(prop_status); idx++; }
@@ -264,15 +289,18 @@ router.get('/', requireAuth, async (req, res) => {
             </div>
             <div>
               <label style="font-size:11px;color:#888;display:block;margin-bottom:3px">City</label>
-              <input type="text" name="city" value="${city}" placeholder="e.g. Indianapolis" style="width:100%;padding:7px 10px;border:1px solid #ddd;border-radius:7px;font-size:13px;font-family:inherit">
+              <input type="text" name="city" value="${city}" placeholder="e.g. Indianapolis, Avon" style="width:100%;padding:7px 10px;border:1px solid #ddd;border-radius:7px;font-size:13px;font-family:inherit">
+              <p style="font-size:10px;color:#aaa;margin-top:3px">Comma-separate to match multiple</p>
             </div>
             <div>
               <label style="font-size:11px;color:#888;display:block;margin-bottom:3px">ZIP Code</label>
-              <input type="text" name="zip" value="${zip}" placeholder="e.g. 46218" style="width:100%;padding:7px 10px;border:1px solid #ddd;border-radius:7px;font-size:13px;font-family:inherit">
+              <input type="text" name="zip" value="${zip}" placeholder="e.g. 46218, 46219, 46220" style="width:100%;padding:7px 10px;border:1px solid #ddd;border-radius:7px;font-size:13px;font-family:inherit">
+              <p style="font-size:10px;color:#aaa;margin-top:3px">Comma- or space-separated</p>
             </div>
             <div>
               <label style="font-size:11px;color:#888;display:block;margin-bottom:3px">County</label>
-              <input type="text" name="county" value="${county}" placeholder="e.g. Marion" style="width:100%;padding:7px 10px;border:1px solid #ddd;border-radius:7px;font-size:13px;font-family:inherit">
+              <input type="text" name="county" value="${county}" placeholder="e.g. Marion, Hamilton" style="width:100%;padding:7px 10px;border:1px solid #ddd;border-radius:7px;font-size:13px;font-family:inherit">
+              <p style="font-size:10px;color:#aaa;margin-top:3px">Comma-separate to match multiple</p>
             </div>
 
             <!-- Property -->
@@ -850,9 +878,26 @@ router.post('/export', requireAuth, async (req, res) => {
         params.push(stateArr);
         idx++;
       }
-      if (qv('city'))        { conditions.push(`p.city ILIKE $${idx}`);          params.push(`%${qv('city')}%`); idx++; }
-      if (qv('zip'))         { conditions.push(`p.zip_code ILIKE $${idx}`);      params.push(`%${qv('zip')}%`); idx++; }
-      if (qv('county'))      { conditions.push(`p.county ILIKE $${idx}`);        params.push(`%${qv('county')}%`); idx++; }
+      // Same comma-split logic as the list view (consistency)
+      const splitCsv = (raw) => !raw ? [] : String(raw).split(/[,\s]+/).map(s => s.trim()).filter(Boolean);
+      const cityArr   = splitCsv(qv('city'));
+      const zipArr    = splitCsv(qv('zip'));
+      const countyArr = splitCsv(qv('county'));
+      if (cityArr.length > 0) {
+        const o = cityArr.map(() => `p.city ILIKE $${idx++}`);
+        conditions.push(`(${o.join(' OR ')})`);
+        cityArr.forEach(c => params.push(`%${c}%`));
+      }
+      if (zipArr.length > 0) {
+        const o = zipArr.map(() => `p.zip_code ILIKE $${idx++}`);
+        conditions.push(`(${o.join(' OR ')})`);
+        zipArr.forEach(z => params.push(`${z}%`));
+      }
+      if (countyArr.length > 0) {
+        const o = countyArr.map(() => `p.county ILIKE $${idx++}`);
+        conditions.push(`(${o.join(' OR ')})`);
+        countyArr.forEach(c => params.push(`%${c}%`));
+      }
       if (qv('type'))        { conditions.push(`p.property_type = $${idx}`);     params.push(qv('type')); idx++; }
       if (qv('pipeline'))    { conditions.push(`p.pipeline_stage = $${idx}`);    params.push(qv('pipeline')); idx++; }
       if (qv('prop_status')) { conditions.push(`p.property_status = $${idx}`);   params.push(qv('prop_status')); idx++; }
