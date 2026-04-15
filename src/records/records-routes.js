@@ -1690,9 +1690,12 @@ router.get('/_distress', requireAuth, async (req, res) => {
           <div style="font-size:24px;font-weight:700;letter-spacing:-.3px">Distress Score Audit</div>
           <div style="font-size:13px;color:#888;margin-top:4px">Rule-based scoring engine · Phase 1</div>
         </div>
-        <form method="POST" action="/records/_distress/recompute" onsubmit="return confirm('Recompute distress score for ALL ${total.toLocaleString()} properties? This may take 30-60 seconds.')">
-          <button type="submit" class="btn" style="background:#1a4a9a;color:#fff;border:none">↻ Recompute All Scores</button>
-        </form>
+        <div style="display:flex;gap:8px;align-items:center">
+          <a href="/records/_duplicates" class="btn btn-ghost" style="font-size:13px">🔍 Find Duplicates</a>
+          <form method="POST" action="/records/_distress/recompute" onsubmit="return confirm('Recompute distress score for ALL ${total.toLocaleString()} properties? This may take 30-60 seconds.')" style="margin:0">
+            <button type="submit" class="btn" style="background:#1a4a9a;color:#fff;border:none">↻ Recompute All Scores</button>
+          </form>
+        </div>
       </div>
 
       <div style="display:grid;grid-template-columns:1fr 1fr;gap:1rem;margin-bottom:1.25rem">
@@ -1858,6 +1861,202 @@ router.post('/_distress/recompute', requireAuth, async (req, res) => {
   } catch(e) {
     console.error('[distress/recompute]', e);
     res.status(500).send('Recompute failed: ' + e.message);
+  }
+});
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// DUPLICATE FINDER & MERGE — GET /records/_duplicates
+// Finds property groups with the same normalized (street, city, state, zip-5) key
+// where multiple property rows exist (typically caused by ZIP+4 vs 5-digit
+// inconsistencies before normalizeZip was applied).
+// ═══════════════════════════════════════════════════════════════════════════════
+router.get('/_duplicates', requireAuth, async (req, res) => {
+  try {
+    const msg = req.query.msg || '';
+    const err = req.query.err || '';
+
+    // Group properties by normalized key. SUBSTRING(zip_code, 1, 5) collapses
+    // ZIP+4 to 5-digit; LOWER + TRIM normalize street/city/state casing.
+    const groupsRes = await query(`
+      WITH normalized AS (
+        SELECT
+          id,
+          street,
+          city,
+          state_code,
+          zip_code,
+          LOWER(TRIM(street))                  AS k_street,
+          LOWER(TRIM(city))                    AS k_city,
+          UPPER(TRIM(state_code))              AS k_state,
+          SUBSTRING(TRIM(zip_code) FROM 1 FOR 5) AS k_zip,
+          first_seen_at,
+          updated_at
+        FROM properties
+        WHERE street IS NOT NULL AND street != ''
+          AND city IS NOT NULL AND city != ''
+          AND state_code IS NOT NULL AND state_code != ''
+      ),
+      keyed AS (
+        SELECT
+          k_street, k_city, k_state, k_zip,
+          COUNT(*)                             AS dup_count,
+          ARRAY_AGG(id ORDER BY id ASC)        AS ids,
+          MIN(street || ' • ' || city || ', ' || state_code || ' ' || zip_code) AS sample_label
+        FROM normalized
+        WHERE k_zip IS NOT NULL AND k_zip != ''
+        GROUP BY k_street, k_city, k_state, k_zip
+        HAVING COUNT(*) > 1
+      )
+      SELECT * FROM keyed
+      ORDER BY dup_count DESC, k_state, k_city, k_street
+      LIMIT 200
+    `);
+
+    const totalDupGroups = groupsRes.rows.length;
+    const totalDupRows   = groupsRes.rows.reduce((s, g) => s + g.dup_count, 0);
+    const totalRedundant = groupsRes.rows.reduce((s, g) => s + (g.dup_count - 1), 0);
+
+    // Render each group as a card with a one-click merge form
+    const groupCards = groupsRes.rows.map((g, i) => {
+      const idsList = g.ids.join(',');
+      const keepId = g.ids[0]; // oldest = lowest id
+      const dropIds = g.ids.slice(1);
+      return `
+        <div class="card" style="margin-bottom:14px;padding:16px">
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;flex-wrap:wrap;gap:10px">
+            <div>
+              <div style="font-size:14px;font-weight:600;color:#1a1a1a">${(g.sample_label||'').replace(/</g,'&lt;')}</div>
+              <div style="font-size:12px;color:#888;margin-top:2px">${g.dup_count} records · key: <code style="background:#f0efe9;padding:1px 5px;border-radius:3px;font-size:11px">${(g.k_street||'').slice(0,40)} | ${g.k_city} | ${g.k_state} | ${g.k_zip}</code></div>
+            </div>
+            <form method="POST" action="/records/_duplicates/merge" onsubmit="return confirm('Merge ${g.dup_count} records into the oldest one (#${keepId})?\\n\\nThis will:\\n• Move all lists, contacts, phones to property #${keepId}\\n• Delete property records: #${dropIds.join(', #')}\\n• Cannot be undone');">
+              <input type="hidden" name="keep_id" value="${keepId}">
+              <input type="hidden" name="drop_ids" value="${dropIds.join(',')}">
+              <button type="submit" style="background:#1a1a1a;color:#fff;border:none;padding:7px 14px;border-radius:7px;font-size:12px;font-weight:500;cursor:pointer;font-family:inherit">Merge into #${keepId}</button>
+            </form>
+          </div>
+          <div style="display:flex;gap:8px;flex-wrap:wrap">
+            ${g.ids.map((id, idx) => `
+              <a href="/records/${id}" target="_blank" style="background:${idx===0?'#eaf6ea':'#fff8e1'};border:1px solid ${idx===0?'#9bd09b':'#f5d06b'};border-radius:6px;padding:5px 10px;font-size:12px;color:#1a1a1a;text-decoration:none">
+                ${idx===0?'KEEP ':''}#${id}
+              </a>
+            `).join('')}
+          </div>
+        </div>`;
+    }).join('');
+
+    res.send(shell('Find Duplicates', `
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:1.5rem;flex-wrap:wrap;gap:12px">
+        <div>
+          <div class="page-title">Duplicate Properties</div>
+          <div class="page-sub">Find and merge property records that share the same address (after ZIP normalization)</div>
+        </div>
+        <a href="/records" class="btn btn-ghost" style="font-size:13px">← Back to Records</a>
+      </div>
+
+      ${msg ? `<div class="card" style="margin-bottom:1rem;background:#eaf6ea;border-color:#9bd09b;padding:12px 16px;color:#1a5f1a;font-size:13px">✅ ${msg}</div>` : ''}
+      ${err ? `<div class="card" style="margin-bottom:1rem;background:#fdeaea;border-color:#f5c5c5;padding:12px 16px;color:#8b1f1f;font-size:13px">❌ ${err}</div>` : ''}
+
+      <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin-bottom:1.5rem">
+        <div class="card" style="padding:14px">
+          <div style="font-size:11px;color:#888;text-transform:uppercase;letter-spacing:.05em">Duplicate Groups</div>
+          <div style="font-size:24px;font-weight:600;margin-top:4px">${totalDupGroups}</div>
+        </div>
+        <div class="card" style="padding:14px">
+          <div style="font-size:11px;color:#888;text-transform:uppercase;letter-spacing:.05em">Total Duplicate Rows</div>
+          <div style="font-size:24px;font-weight:600;margin-top:4px">${totalDupRows}</div>
+        </div>
+        <div class="card" style="padding:14px">
+          <div style="font-size:11px;color:#888;text-transform:uppercase;letter-spacing:.05em">Rows To Be Merged Away</div>
+          <div style="font-size:24px;font-weight:600;margin-top:4px;color:#c0392b">${totalRedundant}</div>
+        </div>
+      </div>
+
+      ${totalDupGroups === 0 ? `
+        <div class="card" style="text-align:center;padding:3rem;color:#888">
+          <div style="font-size:32px;margin-bottom:12px">🎉</div>
+          <div style="font-size:15px;font-weight:500;color:#555">No duplicates found</div>
+          <div style="font-size:13px;margin-top:6px">All property addresses are unique after ZIP normalization.</div>
+        </div>
+      ` : `
+        <div style="margin-bottom:14px;font-size:12px;color:#888">
+          Showing top ${groupsRes.rows.length} duplicate groups (capped at 200). The OLDEST record (lowest ID) is kept; others are merged into it.
+        </div>
+        ${groupCards}
+      `}
+    `, 'records'));
+  } catch(e) {
+    console.error('[duplicates] page error:', e);
+    res.status(500).send('Server error: ' + e.message);
+  }
+});
+
+// POST /records/_duplicates/merge — merges drop_ids into keep_id
+router.post('/_duplicates/merge', requireAuth, async (req, res) => {
+  try {
+    const keepId = parseInt(req.body.keep_id);
+    const dropIds = String(req.body.drop_ids || '').split(',').map(s => parseInt(s)).filter(n => !isNaN(n) && n > 0 && n !== keepId);
+
+    if (!keepId || isNaN(keepId)) return res.redirect('/records/_duplicates?err=' + encodeURIComponent('Missing keep_id'));
+    if (dropIds.length === 0)     return res.redirect('/records/_duplicates?err=' + encodeURIComponent('No drop_ids provided'));
+
+    // Verify keep_id exists
+    const keepCheck = await query(`SELECT id FROM properties WHERE id = $1`, [keepId]);
+    if (!keepCheck.rows.length) return res.redirect('/records/_duplicates?err=' + encodeURIComponent('Keep property not found: ' + keepId));
+
+    // Verify all drop_ids exist
+    const dropCheck = await query(`SELECT id FROM properties WHERE id = ANY($1::int[])`, [dropIds]);
+    if (dropCheck.rows.length !== dropIds.length) {
+      return res.redirect('/records/_duplicates?err=' + encodeURIComponent('Some drop_ids not found'));
+    }
+
+    let movedLists = 0, movedContacts = 0;
+
+    // NOTE: This runs as separate queries (no explicit transaction). If a step
+    // fails, re-running the merge is safe — the INSERT...NOT IN is idempotent
+    // and DELETE on already-removed rows is a no-op. Worst-case partial state:
+    // the kept property has the merged children but the dropped properties
+    // still exist (just with no children). User can simply click Merge again.
+
+    // 1) Move list memberships from dropped → kept (skip duplicates that already exist on keep)
+    const listRes = await query(`
+      INSERT INTO property_lists (property_id, list_id, added_at)
+      SELECT $1, list_id, MIN(added_at)
+      FROM property_lists
+      WHERE property_id = ANY($2::int[])
+        AND list_id NOT IN (SELECT list_id FROM property_lists WHERE property_id = $1)
+      GROUP BY list_id
+      RETURNING list_id
+    `, [keepId, dropIds]);
+    movedLists = listRes.rowCount || 0;
+
+    // 2) Move contact relationships (skip those already on keep)
+    const contactRes = await query(`
+      INSERT INTO property_contacts (property_id, contact_id, primary_contact)
+      SELECT $1, contact_id, BOOL_OR(primary_contact)
+      FROM property_contacts
+      WHERE property_id = ANY($2::int[])
+        AND contact_id NOT IN (SELECT contact_id FROM property_contacts WHERE property_id = $1)
+      GROUP BY contact_id
+      RETURNING contact_id
+    `, [keepId, dropIds]);
+    movedContacts = contactRes.rowCount || 0;
+
+    // 3) Delete the dropped properties — distress logs cascade automatically
+    //    property_lists / property_contacts for the drops are no longer needed
+    //    (we copied the unique ones; rest were duplicates already on keep).
+    await query(`DELETE FROM property_lists    WHERE property_id = ANY($1::int[])`, [dropIds]);
+    await query(`DELETE FROM property_contacts WHERE property_id = ANY($1::int[])`, [dropIds]);
+    await query(`DELETE FROM properties        WHERE id = ANY($1::int[])`, [dropIds]);
+
+    // 4) Recompute distress for the kept property since lists may have changed
+    try { await distress.scoreProperty(keepId); } catch(_) {}
+
+    const summary = `Merged ${dropIds.length} record(s) into property #${keepId}. Moved ${movedLists} list(s), ${movedContacts} contact(s). Deleted: #${dropIds.join(', #')}`;
+    console.log('[duplicates/merge]', summary);
+    res.redirect('/records/_duplicates?msg=' + encodeURIComponent(summary));
+  } catch(e) {
+    console.error('[duplicates/merge]', e);
+    res.redirect('/records/_duplicates?err=' + encodeURIComponent('Merge failed: ' + e.message));
   }
 });
 
