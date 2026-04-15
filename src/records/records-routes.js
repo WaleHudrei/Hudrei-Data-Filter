@@ -1101,10 +1101,13 @@ router.get('/:id(\\d+)', requireAuth, async (req, res) => {
     const breakdownIsEmpty = !Array.isArray(currentBreakdown) || currentBreakdown.length === 0;
 
     // Lazy-score this property if:
-    //   - never scored at all (distress_score is null), OR
-    //   - score exists but breakdown is missing (likely set by bulk Recompute All
-    //     which skips breakdown for performance — fill it on demand here)
-    if (p.distress_score == null || breakdownIsEmpty) {
+    //   - never scored at all (distress_scored_at is null), OR
+    //   - has a non-zero score but breakdown is missing (bulk Recompute All
+    //     skips breakdown for performance — fill it on demand here)
+    // Skip clean properties (score=0 with empty breakdown is correct, not a gap).
+    const neverScored  = p.distress_scored_at == null;
+    const breakdownGap = (p.distress_score || 0) > 0 && breakdownIsEmpty;
+    if (neverScored || breakdownGap) {
       try {
         const scored = await distress.scoreProperty(id);
         if (scored) {
