@@ -633,6 +633,14 @@ router.post('/commit', requireAuth, async (req, res) => {
     };
     const toBool = v => { const s = (v||'').toLowerCase(); return s==='yes'||s==='true'||s==='1'||s==='y' ? true : s==='no'||s==='false'||s==='0'||s==='n' ? false : null; };
     const cleanPhone = v => v ? v.replace(/\D/g,'') : '';
+    // Normalize ZIP to 5-digit only — strips ZIP+4 suffixes ("47303-3111" → "47303")
+    // and any whitespace. Prevents duplicates when same property is exported by
+    // different providers (PropStream uses 5-digit, REISift uses ZIP+4, etc.).
+    const normalizeZip = v => {
+      if (!v) return '';
+      const m = String(v).trim().match(/^\d{5}/);
+      return m ? m[0] : String(v).trim().slice(0, 10);
+    };
 
     // ── Bulk upsert properties ───────────────────────────────────────────────
     // Length caps for short VARCHAR columns. Rows exceeding these limits are
@@ -681,7 +689,7 @@ router.post('/commit', requireAuth, async (req, res) => {
         (get(row,'street')||'').toLowerCase().trim(),
         (get(row,'city')||'').toLowerCase().trim(),
         normalizeState(get(row,'state_code')),
-        (get(row,'zip_code')||'').trim(),
+        normalizeZip(get(row,'zip_code')),
       ].join('|');
       if (seenKeysSync.has(key)) {
         errors++;
@@ -707,7 +715,7 @@ router.post('/commit', requireAuth, async (req, res) => {
       streets.push(get(row,'street'));
       cities.push(get(row,'city'));
       states.push(state);
-      zips.push(get(row,'zip_code')||'');
+      zips.push(normalizeZip(get(row,'zip_code')));
       counties.push(get(row,'county')||null);
       mktIds.push(mktMap[state]||null);
       sources.push(get(row,'source')||filename||null);
@@ -782,7 +790,7 @@ router.post('/commit', requireAuth, async (req, res) => {
         const street = get(row,'street');
         const city   = get(row,'city');
         const state  = normalizeState(get(row,'state_code'));
-        const zip    = get(row,'zip_code')||'';
+        const zip    = normalizeZip(get(row,'zip_code'));
         const key    = (street+'|'+city+'|'+state+'|'+zip).toLowerCase();
         const prop   = propMap[key];
         if (!prop) continue;
@@ -926,6 +934,14 @@ async function runBackgroundImport(jobId, allRows, mapping, filename, resolvedLi
     const toDate = v => { if (!v) return null; const d = new Date(v); return isNaN(d) ? null : d.toISOString().split('T')[0]; };
     const toBool = v => { const s=(v||'').toLowerCase(); return s==='yes'||s==='true'||s==='1'||s==='y'?true:s==='no'||s==='false'||s==='0'||s==='n'?false:null; };
     const cleanPhone = v => v ? v.replace(/\D/g,'') : '';
+    // Normalize ZIP to 5-digit only — strips ZIP+4 suffixes ("47303-3111" → "47303")
+    // and any whitespace. Prevents duplicates when same property is exported by
+    // different providers (PropStream uses 5-digit, REISift uses ZIP+4, etc.).
+    const normalizeZip = v => {
+      if (!v) return '';
+      const m = String(v).trim().match(/^\d{5}/);
+      return m ? m[0] : String(v).trim().slice(0, 10);
+    };
     // Normalize state: full name → abbreviation
     const STATE_ABBR = {
       'alabama':'AL','alaska':'AK','arizona':'AZ','arkansas':'AR','california':'CA',
@@ -959,7 +975,7 @@ async function runBackgroundImport(jobId, allRows, mapping, filename, resolvedLi
         const state  = get(row,'state_code');
         if (!street || !city || !state) { errors++; continue; }
         const stateNorm = normalizeState(state);
-        const zip = get(row,'zip_code') || '';
+        const zip = normalizeZip(get(row,'zip_code'));
         if (stateNorm.length > CAP.state_code) {
           errors++;
           allSkipped.push(`Row skipped — state_code too long: "${stateNorm}" (street: ${street})`);
@@ -983,7 +999,7 @@ async function runBackgroundImport(jobId, allRows, mapping, filename, resolvedLi
           (get(row,'street')||'').toLowerCase().trim(),
           (get(row,'city')||'').toLowerCase().trim(),
           normalizeState(get(row,'state_code')),
-          (get(row,'zip_code')||'').trim(),
+          normalizeZip(get(row,'zip_code')),
         ].join('|');
         if (seenKeys.has(key)) {
           errors++;
@@ -1004,7 +1020,7 @@ async function runBackgroundImport(jobId, allRows, mapping, filename, resolvedLi
         for (const row of dedupedRows) {
           const state = normalizeState(get(row,'state_code'));
           streets.push(get(row,'street')); cities.push(get(row,'city')); states.push(state);
-          zips.push(get(row,'zip_code')||''); counties.push(get(row,'county')||null);
+          zips.push(normalizeZip(get(row,'zip_code'))); counties.push(get(row,'county')||null);
           mktIds.push(mktMap[state]||null); sources.push(get(row,'source')||filename||null);
           propTypes.push(get(row,'property_type')||null); yearBuilts.push(toInt(get(row,'year_built')));
           sqfts.push(toInt(get(row,'sqft'))); beds.push(toInt(get(row,'bedrooms')));
@@ -1040,7 +1056,7 @@ async function runBackgroundImport(jobId, allRows, mapping, filename, resolvedLi
         // Contacts + phones
         for (const row of dedupedRows) {
           try {
-            const key = (get(row,'street')+'|'+get(row,'city')+'|'+normalizeState(get(row,'state_code'))+'|'+(get(row,'zip_code')||'')).toLowerCase();
+            const key = (get(row,'street')+'|'+get(row,'city')+'|'+normalizeState(get(row,'state_code'))+'|'+normalizeZip(get(row,'zip_code'))).toLowerCase();
             const prop = propMap[key];
             if (!prop) continue;
             const propertyId = prop.id;
