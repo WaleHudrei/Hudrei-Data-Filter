@@ -986,6 +986,7 @@ async function runBackgroundImport(jobId, allRows, mapping, filename, resolvedLi
           (get(row,'zip_code')||'').trim(),
         ].join('|');
         if (seenKeys.has(key)) {
+          errors++;
           allSkipped.push(`Duplicate skipped — same (street,city,state,zip): "${get(row,'street')}, ${get(row,'city')}"`);
           continue;
         }
