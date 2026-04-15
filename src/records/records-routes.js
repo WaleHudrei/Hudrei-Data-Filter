@@ -1913,8 +1913,10 @@ router.get('/_duplicates', requireAuth, async (req, res) => {
     `);
 
     const totalDupGroups = groupsRes.rows.length;
-    const totalDupRows   = groupsRes.rows.reduce((s, g) => s + g.dup_count, 0);
-    const totalRedundant = groupsRes.rows.reduce((s, g) => s + (g.dup_count - 1), 0);
+    // Postgres COUNT() returns a STRING, not a number. Cast to int to prevent
+    // string-concatenation ("0" + "3" = "03") in reduce.
+    const totalDupRows   = groupsRes.rows.reduce((s, g) => s + parseInt(g.dup_count), 0);
+    const totalRedundant = groupsRes.rows.reduce((s, g) => s + (parseInt(g.dup_count) - 1), 0);
 
     // Render each group as a card with a one-click merge form
     const groupCards = groupsRes.rows.map((g, i) => {
@@ -1978,8 +1980,13 @@ router.get('/_duplicates', requireAuth, async (req, res) => {
           <div style="font-size:13px;margin-top:6px">All property addresses are unique after ZIP normalization.</div>
         </div>
       ` : `
-        <div style="margin-bottom:14px;font-size:12px;color:#888">
-          Showing top ${groupsRes.rows.length} duplicate groups (capped at 200). The OLDEST record (lowest ID) is kept; others are merged into it.
+        <div style="display:flex;justify-content:space-between;align-items:center;gap:12px;margin-bottom:14px;flex-wrap:wrap">
+          <div style="font-size:12px;color:#888">
+            Showing top ${groupsRes.rows.length} duplicate groups (capped at 200). The OLDEST record (lowest ID) is kept; others are merged into it.
+          </div>
+          <form method="POST" action="/records/_duplicates/merge_all" onsubmit="return confirm('Merge ALL ${totalDupGroups} duplicate group(s)?\\n\\nThis will:\\n• Process every group on this page\\n• Keep the oldest record in each group\\n• Delete ${totalRedundant} redundant records\\n• Cannot be undone\\n\\nMay take 30-60 seconds.');" style="margin:0">
+            <button type="submit" style="background:#c0392b;color:#fff;border:none;padding:8px 16px;border-radius:7px;font-size:13px;font-weight:500;cursor:pointer;font-family:inherit">⚡ Merge All ${totalDupGroups} Groups</button>
+          </form>
         </div>
         ${groupCards}
       `}
@@ -2057,6 +2064,93 @@ router.post('/_duplicates/merge', requireAuth, async (req, res) => {
   } catch(e) {
     console.error('[duplicates/merge]', e);
     res.redirect('/records/_duplicates?err=' + encodeURIComponent('Merge failed: ' + e.message));
+  }
+});
+
+// POST /records/_duplicates/merge_all — finds and merges every duplicate group
+// in one shot. Same logic as single merge, just iterated. Capped at 500 groups
+// per request to avoid Express timeouts.
+router.post('/_duplicates/merge_all', requireAuth, async (req, res) => {
+  try {
+    const startedAt = Date.now();
+    const groupsRes = await query(`
+      WITH normalized AS (
+        SELECT
+          id,
+          LOWER(TRIM(street))                  AS k_street,
+          LOWER(TRIM(city))                    AS k_city,
+          UPPER(TRIM(state_code))              AS k_state,
+          SUBSTRING(TRIM(zip_code) FROM 1 FOR 5) AS k_zip
+        FROM properties
+        WHERE street IS NOT NULL AND street != ''
+          AND city IS NOT NULL AND city != ''
+          AND state_code IS NOT NULL AND state_code != ''
+      )
+      SELECT
+        ARRAY_AGG(id ORDER BY id ASC) AS ids
+      FROM normalized
+      WHERE k_zip IS NOT NULL AND k_zip != ''
+      GROUP BY k_street, k_city, k_state, k_zip
+      HAVING COUNT(*) > 1
+      ORDER BY COUNT(*) DESC
+      LIMIT 500
+    `);
+
+    let groupsMerged = 0, totalDropped = 0, totalMovedLists = 0, totalMovedContacts = 0;
+    const errors = [];
+    const recomputeIds = [];
+
+    for (const g of groupsRes.rows) {
+      const keepId = g.ids[0];
+      const dropIds = g.ids.slice(1);
+      try {
+        const lr = await query(`
+          INSERT INTO property_lists (property_id, list_id, added_at)
+          SELECT $1, list_id, MIN(added_at)
+          FROM property_lists
+          WHERE property_id = ANY($2::int[])
+            AND list_id NOT IN (SELECT list_id FROM property_lists WHERE property_id = $1)
+          GROUP BY list_id
+          RETURNING list_id
+        `, [keepId, dropIds]);
+        totalMovedLists += lr.rowCount || 0;
+
+        const cr = await query(`
+          INSERT INTO property_contacts (property_id, contact_id, primary_contact)
+          SELECT $1, contact_id, BOOL_OR(primary_contact)
+          FROM property_contacts
+          WHERE property_id = ANY($2::int[])
+            AND contact_id NOT IN (SELECT contact_id FROM property_contacts WHERE property_id = $1)
+          GROUP BY contact_id
+          RETURNING contact_id
+        `, [keepId, dropIds]);
+        totalMovedContacts += cr.rowCount || 0;
+
+        await query(`DELETE FROM property_lists    WHERE property_id = ANY($1::int[])`, [dropIds]);
+        await query(`DELETE FROM property_contacts WHERE property_id = ANY($1::int[])`, [dropIds]);
+        await query(`DELETE FROM properties        WHERE id = ANY($1::int[])`, [dropIds]);
+
+        groupsMerged++;
+        totalDropped += dropIds.length;
+        recomputeIds.push(keepId);
+      } catch (e) {
+        console.error(`[duplicates/merge_all] failed for keepId=${keepId}:`, e.message);
+        errors.push(`#${keepId}: ${e.message}`);
+      }
+    }
+
+    // Bulk rescore all kept properties at the end
+    try {
+      if (recomputeIds.length > 0) await distress.scoreProperties(recomputeIds);
+    } catch(e) { console.error('[duplicates/merge_all] rescore failed:', e.message); }
+
+    const elapsed = Math.round((Date.now() - startedAt) / 1000);
+    const summary = `Merged ${groupsMerged} group(s) in ${elapsed}s. Deleted ${totalDropped} duplicates. Moved ${totalMovedLists} list link(s), ${totalMovedContacts} contact link(s).${errors.length > 0 ? ' Errors: ' + errors.length : ''}`;
+    console.log('[duplicates/merge_all]', summary);
+    res.redirect('/records/_duplicates?msg=' + encodeURIComponent(summary));
+  } catch(e) {
+    console.error('[duplicates/merge_all]', e);
+    res.redirect('/records/_duplicates?err=' + encodeURIComponent('Bulk merge failed: ' + e.message));
   }
 });
 
