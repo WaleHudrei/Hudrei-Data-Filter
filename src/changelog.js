@@ -3,6 +3,43 @@
 
 const ENTRIES = [
   {
+    date: 'April 14, 2026',
+    title: 'Distress scoring engine, multi-value filters, import crash fixes & source customization',
+    items: [
+      // ── Distress Scoring Engine (Phase 1) ──
+      { tag: 'feature', text: 'Distress Score Engine — rule-based scoring system with 12+ distress signals. Each property receives a cached score (0-100) and band (Cold/Warm/Hot/Burning) based on list membership, equity, out-of-state ownership, stacking depth, and marketing results.' },
+      { tag: 'feature', text: 'Signals: Tax Sale (+20), Pre-Foreclosure (+20), Probate (+20), Code Violation (+15), Vacant (+15), Tax Delinquent (+10), Stack 5+ (+15), Stack 3-4 (+10), Stack 2 (+5), High Equity ≥50% (+10), Out-of-State Owner (+10), Marketing Lead (+5), County-sourced list (+5).' },
+      { tag: 'feature', text: 'Bulk SQL recompute — scores all 41,230 properties in ~2-3 seconds via a single SQL CTE. Skips per-property JSONB breakdown for speed; breakdowns lazy-fill on detail page view.' },
+      { tag: 'feature', text: 'Distress Score column on Records table — colored badge showing score number. Min Distress Score filter input on filter panel (30+ Warm, 55+ Hot, 75+ Burning).' },
+      { tag: 'feature', text: 'Property detail Distress card — shows score, band, scoring date, and itemized Signals Contributing breakdown with point values for each signal.' },
+      { tag: 'feature', text: 'Dashboard Distress Score Snapshot — stacked proportion bar showing band distribution across all properties. Top 5 hottest leads listed with clickable links.' },
+      { tag: 'feature', text: 'Distress Audit page at /records/_distress — Recompute All button, score distribution histogram, current weights table, Closed Deal Score History, Signal Coverage Report, Conversion Rate by Band.' },
+      { tag: 'feature', text: 'Event-driven rescoring — properties are automatically rescored when imported or updated. Outcome logging tracks score changes and lead/contract transitions for future ML training.' },
+      { tag: 'fix', text: 'Distress breakdown empty on detail page — bulk Recompute All populated scores but skipped JSONB breakdowns. Detail page now lazy-fills breakdown when score exists but breakdown is missing.' },
+      { tag: 'improvement', text: 'Distress card moved below Lists section on property detail page for natural reading order: lists → score → campaign history.' },
+
+      // ── Multi-value Filters ──
+      { tag: 'feature', text: 'Multi-value ZIP filter — type comma- or space-separated ZIPs (e.g. "46218, 46219, 46220") to find properties in any of those ZIPs. OR logic, prefix-matching (46218 catches 46218-1234).' },
+      { tag: 'feature', text: 'Multi-value City filter — comma-separated city names with OR logic and substring matching.' },
+      { tag: 'feature', text: 'Multi-value County filter — comma-separated county names with OR logic and substring matching.' },
+      { tag: 'fix', text: 'ILIKE ANY(array) was unreliable in Postgres for multi-value matching. Replaced with explicit OR chain: (p.zip_code ILIKE $1 OR p.zip_code ILIKE $2 OR ...). Applied to both list view and export paths.' },
+      { tag: 'improvement', text: 'Filter inputs updated with helper text showing comma-separate syntax and example placeholders.' },
+
+      // ── Import Improvements ──
+      { tag: 'feature', text: 'Custom source on import — "+ Add custom source…" option in the Source dropdown reveals a text input. Type any source name (e.g. County Records, Cook County Auditor). Validated before upload starts.' },
+      { tag: 'fix', text: 'Import crash: value too long for character varying(10) — rows with oversized state_code or zip_code values now skip cleanly instead of crashing the entire batch at row 5,000. Skip reasons logged to bulk_import_jobs.error_log.' },
+      { tag: 'fix', text: 'Import crash: ON CONFLICT DO UPDATE cannot affect row a second time — duplicate (street,city,state,zip) rows within a single batch now deduplicated in JavaScript before the SQL INSERT. First occurrence kept, duplicates logged.' },
+      { tag: 'improvement', text: 'Activity page error visibility — failed imports now show error details inline under the filename. Red box for crashes, yellow ⚠️ box for completed-with-skips. First 500 chars of error_log displayed.' },
+
+      // ── SMS Filtration ──
+      { tag: 'feature', text: 'SMS Accepted + SMS Results upload channels — campaign_uploads now tracks sms_accepted (green badge) and sms_results (purple badge) separately. Breakdown column is SMS-aware.' },
+
+      // ── State Filter ──
+      { tag: 'feature', text: 'State multi-select dropdown — searchable dropdown with pills for selecting multiple states simultaneously. Pulls DISTINCT state_code values from DB.' },
+      { tag: 'feature', text: 'List stacking multi-select — AND-logic filter to find properties appearing on every selected list simultaneously.' },
+    ],
+  },
+  {
     date: 'April 13, 2026 — Session 2',
     title: 'Records overhaul, Import engine rebuild, Activity page, Lists redesign & 50-state expansion',
     items: [
