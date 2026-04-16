@@ -1066,6 +1066,48 @@ router.get('/', requireAuth, async (req, res) => {
         </div>
       </div>
 
+      <!-- Bulk Tag modal -->
+      <div class="modal-overlay" id="bulk-tag-modal">
+        <div class="modal" style="max-width:480px">
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:1rem">
+            <h3 style="font-size:17px;font-weight:600;margin:0;color:#1a1a1a" id="bulk-tag-title">Add Tags</h3>
+            <button onclick="document.getElementById('bulk-tag-modal').classList.remove('open')" style="background:none;border:none;font-size:22px;cursor:pointer;color:#888;line-height:1">×</button>
+          </div>
+          <div id="bulk-tag-msg" style="font-size:14px;margin-bottom:12px;color:#333;line-height:1.5"></div>
+          <div id="bulk-tag-err" style="display:none;background:#fdeaea;border:1px solid #f5c5c5;border-radius:6px;padding:8px 12px;color:#8b1f1f;font-size:13px;margin-bottom:12px"></div>
+
+          <!-- Add mode: free-text input with suggestions -->
+          <div id="bulk-tag-add-section">
+            <div style="position:relative;margin-bottom:10px">
+              <input type="text" id="bulk-tag-input" placeholder="Type a tag name…" autocomplete="off"
+                style="width:100%;padding:9px 12px;border:1px solid #ddd;border-radius:8px;font-size:14px;font-family:inherit"
+                oninput="bulkTagSuggest(this.value)"
+                onkeydown="if(event.key==='Enter'){event.preventDefault();bulkTagAdd();}"
+              >
+              <div id="bulk-tag-suggestions" style="display:none;position:absolute;top:100%;left:0;right:0;margin-top:4px;background:#fff;border:1px solid #ddd;border-radius:8px;box-shadow:0 4px 16px rgba(0,0,0,.08);max-height:160px;overflow-y:auto;z-index:50"></div>
+            </div>
+            <div id="bulk-tag-selected" style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:14px;min-height:28px"></div>
+          </div>
+
+          <!-- Remove mode: checkboxes of existing tags -->
+          <div id="bulk-tag-remove-section" style="display:none;margin-bottom:14px;max-height:240px;overflow-y:auto">
+            ${allTags.map(t => `
+              <label style="display:flex;align-items:center;gap:8px;padding:6px 0;font-size:13px;cursor:pointer;border-bottom:1px solid #f0efe9">
+                <input type="checkbox" class="bulk-tag-rm-check" value="${t.id}" style="width:14px;height:14px">
+                <span style="width:10px;height:10px;border-radius:50%;background:${escHTML(t.color)}"></span>
+                ${escHTML(t.name)}
+              </label>
+            `).join('')}
+            ${allTags.length === 0 ? '<div style="color:#aaa;font-size:13px;padding:12px 0;text-align:center">No tags exist yet</div>' : ''}
+          </div>
+
+          <div style="display:flex;gap:8px;justify-content:flex-end">
+            <button onclick="document.getElementById('bulk-tag-modal').classList.remove('open')" style="padding:9px 16px;background:#fff;color:#666;border:1px solid #ddd;border-radius:8px;font-size:13px;cursor:pointer;font-family:inherit">Cancel</button>
+            <button onclick="confirmBulkTag()" id="bulk-tag-confirm-btn" style="padding:9px 16px;background:#1a1a1a;color:#fff;border:none;border-radius:8px;font-size:13px;font-weight:600;cursor:pointer;font-family:inherit">Apply</button>
+          </div>
+        </div>
+      </div>
+
       <!-- Export toolbar -->
       <div id="export-toolbar" style="display:none;background:#1a1a1a;color:#fff;border-radius:10px;padding:10px 16px;margin-bottom:8px;align-items:center;justify-content:space-between;gap:12px">
         <div style="font-size:13px"><span id="selected-count">0</span> records selected</div>
@@ -1077,6 +1119,13 @@ router.get('/', requireAuth, async (req, res) => {
           <div id="manage-menu" style="display:none;position:absolute;top:100%;right:0;margin-top:6px;background:#fff;border:1px solid #e0dfd8;border-radius:10px;box-shadow:0 6px 24px rgba(0,0,0,0.12);padding:6px;min-width:220px;z-index:100">
             <button onclick="openExportModalFromMenu()" style="display:flex;align-items:center;gap:10px;width:100%;text-align:left;padding:9px 12px;background:none;border:none;border-radius:7px;font-size:13px;font-family:inherit;color:#1a1a1a;cursor:pointer" onmouseover="this.style.background='#f5f4f0'" onmouseout="this.style.background='none'">
               <span style="font-size:14px">⬇</span><span>Export CSV</span>
+            </button>
+            <div style="height:1px;background:#eee;margin:4px 6px"></div>
+            <button onclick="openBulkTagModal('add')" style="display:flex;align-items:center;gap:10px;width:100%;text-align:left;padding:9px 12px;background:none;border:none;border-radius:7px;font-size:13px;font-family:inherit;color:#1a1a1a;cursor:pointer" onmouseover="this.style.background='#f5f4f0'" onmouseout="this.style.background='none'">
+              <span style="font-size:14px">🏷️</span><span>Add tags</span>
+            </button>
+            <button onclick="openBulkTagModal('remove')" style="display:flex;align-items:center;gap:10px;width:100%;text-align:left;padding:9px 12px;background:none;border:none;border-radius:7px;font-size:13px;font-family:inherit;color:#1a1a1a;cursor:pointer" onmouseover="this.style.background='#f5f4f0'" onmouseout="this.style.background='none'">
+              <span style="font-size:14px">🏷️</span><span>Remove tags</span>
             </button>
             <div style="height:1px;background:#eee;margin:4px 6px"></div>
             <button onclick="openRemoveFromListModal()" style="display:flex;align-items:center;gap:10px;width:100%;text-align:left;padding:9px 12px;background:none;border:none;border-radius:7px;font-size:13px;font-family:inherit;color:#1a1a1a;cursor:pointer" onmouseover="this.style.background='#f5f4f0'" onmouseout="this.style.background='none'">
@@ -1381,6 +1430,171 @@ router.get('/', requireAuth, async (req, res) => {
         el.textContent = msg;
         el.style.display = 'block';
       }
+
+      // ─── Bulk Tag modal ───────────────────────────────────────────────────
+      function _esc(s) {
+        var d = document.createElement('div');
+        d.appendChild(document.createTextNode(s));
+        return d.innerHTML;
+      }
+      var _bulkTagMode = 'add';  // 'add' or 'remove'
+      var _bulkTagQueue = [];    // [{id, name, color}] for add mode
+
+      function openBulkTagModal(mode) {
+        document.getElementById('manage-menu').style.display = 'none';
+        _bulkTagMode = mode;
+        _bulkTagQueue = [];
+        var ids = Object.keys(selectedIds);
+        var count = _allSelected ? _pageTotal : ids.length;
+        if (!_allSelected && !ids.length) { alert('No records selected.'); return; }
+
+        document.getElementById('bulk-tag-title').textContent = mode === 'add' ? 'Add Tags' : 'Remove Tags';
+        document.getElementById('bulk-tag-msg').innerHTML = mode === 'add'
+          ? 'Add tags to <strong>' + count.toLocaleString() + ' selected propert' + (count===1?'y':'ies') + '</strong>. Type a tag name and press Enter — new tags are created automatically.'
+          : 'Remove tags from <strong>' + count.toLocaleString() + ' selected propert' + (count===1?'y':'ies') + '</strong>. Check the tags you want to remove.';
+        document.getElementById('bulk-tag-err').style.display = 'none';
+        document.getElementById('bulk-tag-confirm-btn').textContent = 'Apply';
+        document.getElementById('bulk-tag-confirm-btn').disabled = false;
+
+        // Show/hide sections
+        document.getElementById('bulk-tag-add-section').style.display = mode === 'add' ? 'block' : 'none';
+        document.getElementById('bulk-tag-remove-section').style.display = mode === 'remove' ? 'block' : 'none';
+
+        // Reset add-mode state
+        document.getElementById('bulk-tag-input').value = '';
+        document.getElementById('bulk-tag-selected').innerHTML = '';
+        document.getElementById('bulk-tag-suggestions').style.display = 'none';
+
+        // Reset remove-mode checkboxes
+        var checks = document.querySelectorAll('.bulk-tag-rm-check');
+        for (var i = 0; i < checks.length; i++) checks[i].checked = false;
+
+        document.getElementById('bulk-tag-modal').classList.add('open');
+        if (mode === 'add') setTimeout(function(){ document.getElementById('bulk-tag-input').focus(); }, 50);
+      }
+
+      var _bulkSuggestTimer = null;
+      function bulkTagSuggest(q) {
+        clearTimeout(_bulkSuggestTimer);
+        var box = document.getElementById('bulk-tag-suggestions');
+        if (!q.trim()) { box.style.display = 'none'; return; }
+        _bulkSuggestTimer = setTimeout(async function() {
+          try {
+            var res = await fetch('/records/tags/suggest?q=' + encodeURIComponent(q.trim()));
+            var tags = await res.json();
+            // Filter out already-queued tags
+            var queuedIds = _bulkTagQueue.map(function(t){ return t.id; });
+            tags = tags.filter(function(t){ return queuedIds.indexOf(t.id) === -1; });
+            if (!tags.length) { box.style.display = 'none'; return; }
+            box.innerHTML = tags.map(function(t){
+              return '<div onclick="bulkTagPick(' + t.id + ',' + JSON.stringify(t.name).replace(/"/g,'&quot;') + ',this)" style="padding:8px 12px;cursor:pointer;font-size:13px;display:flex;align-items:center;gap:8px" onmouseover="this.style.background=\'#f5f4f0\'" onmouseout="this.style.background=\'none\'">'
+                + '<span style="width:10px;height:10px;border-radius:50%;background:' + (t.color||'#6b7280') + '"></span>'
+                + '<span>' + _esc(t.name) + '</span></div>';
+            }).join('');
+            box.style.display = 'block';
+          } catch(e) { box.style.display = 'none'; }
+        }, 200);
+      }
+
+      function bulkTagPick(id, name, el) {
+        document.getElementById('bulk-tag-input').value = '';
+        document.getElementById('bulk-tag-suggestions').style.display = 'none';
+        if (_bulkTagQueue.some(function(t){ return t.id === id; })) return;
+        _bulkTagQueue.push({ id: id, name: name, color: '#6b7280' });
+        renderBulkTagQueue();
+        document.getElementById('bulk-tag-input').focus();
+      }
+
+      function bulkTagAdd() {
+        var input = document.getElementById('bulk-tag-input');
+        var name = input.value.trim();
+        if (!name) return;
+        // Check if already queued by name
+        if (_bulkTagQueue.some(function(t){ return t.name.toLowerCase() === name.toLowerCase(); })) {
+          input.value = '';
+          return;
+        }
+        _bulkTagQueue.push({ id: null, name: name, color: '#6b7280' });
+        renderBulkTagQueue();
+        input.value = '';
+        document.getElementById('bulk-tag-suggestions').style.display = 'none';
+      }
+
+      function bulkTagRemoveFromQueue(idx) {
+        _bulkTagQueue.splice(idx, 1);
+        renderBulkTagQueue();
+      }
+
+      function renderBulkTagQueue() {
+        var container = document.getElementById('bulk-tag-selected');
+        container.innerHTML = _bulkTagQueue.map(function(t, i) {
+          return '<span style="display:inline-flex;align-items:center;gap:4px;padding:4px 10px;border-radius:20px;font-size:12px;font-weight:500;background:#6b728020;color:#6b7280;border:1px solid #6b728040">'
+            + _esc(t.name)
+            + ' <button onclick="bulkTagRemoveFromQueue(' + i + ')" style="background:none;border:none;cursor:pointer;font-size:14px;line-height:1;color:inherit;padding:0;margin-left:2px">x</button>'
+            + '</span>';
+        }).join('');
+      }
+
+      async function confirmBulkTag() {
+        var tagNames = [];
+        var tagIds = [];
+
+        if (_bulkTagMode === 'add') {
+          if (!_bulkTagQueue.length) { showBulkTagErr('Add at least one tag.'); return; }
+          tagNames = _bulkTagQueue.map(function(t){ return t.name; });
+        } else {
+          var checks = document.querySelectorAll('.bulk-tag-rm-check:checked');
+          if (!checks.length) { showBulkTagErr('Select at least one tag to remove.'); return; }
+          for (var i = 0; i < checks.length; i++) tagIds.push(parseInt(checks[i].value));
+        }
+
+        var ids = Object.keys(selectedIds);
+        var btn = document.getElementById('bulk-tag-confirm-btn');
+        btn.textContent = 'Applying…';
+        btn.disabled = true;
+
+        try {
+          var res = await fetch('/records/bulk-tag', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              ids: _allSelected ? [] : ids,
+              selectAll: _allSelected,
+              filterParams: window.location.search,
+              mode: _bulkTagMode,
+              tagNames: tagNames,
+              tagIds: tagIds
+            })
+          });
+          var data = await res.json();
+          if (!res.ok || data.error) {
+            showBulkTagErr(data.error || 'Operation failed.');
+            btn.textContent = 'Apply';
+            btn.disabled = false;
+            return;
+          }
+          window.location.reload();
+        } catch(err) {
+          showBulkTagErr('Network error: ' + err.message);
+          btn.textContent = 'Apply';
+          btn.disabled = false;
+        }
+      }
+
+      function showBulkTagErr(msg) {
+        var el = document.getElementById('bulk-tag-err');
+        el.textContent = msg;
+        el.style.display = 'block';
+      }
+
+      // Close bulk-tag suggestions on outside click
+      document.addEventListener('click', function(ev) {
+        var box = document.getElementById('bulk-tag-suggestions');
+        var input = document.getElementById('bulk-tag-input');
+        if (box && !box.contains(ev.target) && ev.target !== input) {
+          box.style.display = 'none';
+        }
+      });
       </script>
     `, 'records'));
   } catch (e) {
@@ -3257,6 +3471,188 @@ router.post('/:id(\\d+)/delete', requireAuth, async (req, res) => {
   } catch (e) {
     console.error('[records/:id/delete]', e);
     res.status(500).json({ error: 'Delete failed: ' + e.message });
+  }
+});
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// BULK TAG — POST /records/bulk-tag
+// Add or remove tags from multiple selected properties at once.
+// ═══════════════════════════════════════════════════════════════════════════════
+router.post('/bulk-tag', requireAuth, async (req, res) => {
+  try {
+    await ensureTagSchema();
+    const { ids, selectAll, filterParams, mode, tagNames, tagIds } = req.body;
+
+    // Resolve property IDs — same selectAll filter-rebuild as other bulk routes
+    let propertyIds = [];
+    if (selectAll) {
+      const qs = new URLSearchParams(filterParams || '');
+      let conditions = [], params = [], idx = 1;
+      const qv = (k) => qs.get(k) || '';
+      const qvAll = (k) => qs.getAll(k).filter(v => v && String(v).trim() !== '');
+
+      if (qv('q')) {
+        conditions.push(`(p.street ILIKE $${idx} OR p.city ILIKE $${idx} OR c.first_name ILIKE $${idx} OR c.last_name ILIKE $${idx})`);
+        params.push(`%${qv('q')}%`); idx++;
+      }
+      const stateArr = qvAll('state').map(s => String(s).toUpperCase());
+      if (stateArr.length > 0) { conditions.push(`p.state_code = ANY($${idx}::text[])`); params.push(stateArr); idx++; }
+      const splitCsv = (raw) => !raw ? [] : String(raw).split(/[,\s]+/).map(s => s.trim()).filter(Boolean);
+      const cityArr = splitCsv(qv('city')), zipArr = splitCsv(qv('zip')), countyArr = splitCsv(qv('county'));
+      if (cityArr.length > 0)   { const o = cityArr.map(() => `p.city ILIKE $${idx++}`); conditions.push(`(${o.join(' OR ')})`); cityArr.forEach(c => params.push(`%${c}%`)); }
+      if (zipArr.length > 0)    { const o = zipArr.map(() => `p.zip_code ILIKE $${idx++}`); conditions.push(`(${o.join(' OR ')})`); zipArr.forEach(z => params.push(`${z}%`)); }
+      if (countyArr.length > 0) { const o = countyArr.map(() => `p.county ILIKE $${idx++}`); conditions.push(`(${o.join(' OR ')})`); countyArr.forEach(c => params.push(`%${c}%`)); }
+      if (qv('type'))        { conditions.push(`p.property_type = $${idx}`);   params.push(qv('type')); idx++; }
+      if (qv('pipeline'))    { conditions.push(`p.pipeline_stage = $${idx}`);  params.push(qv('pipeline')); idx++; }
+      if (qv('prop_status')) { conditions.push(`p.property_status = $${idx}`); params.push(qv('prop_status')); idx++; }
+      if (qv('mkt_result'))  { conditions.push(`p.marketing_result = $${idx}`);params.push(qv('mkt_result')); idx++; }
+      const mktIncArr = qvAll('mkt_include'), mktExcArr = qvAll('mkt_exclude');
+      if (mktIncArr.length > 0) { conditions.push(`p.marketing_result = ANY($${idx}::text[])`); params.push(mktIncArr); idx++; }
+      if (mktExcArr.length > 0) { conditions.push(`(p.marketing_result IS NULL OR p.marketing_result != ALL($${idx}::text[]))`); params.push(mktExcArr); idx++; }
+      if (qv('min_assessed')){ conditions.push(`p.assessed_value >= $${idx}`);   params.push(qv('min_assessed')); idx++; }
+      if (qv('max_assessed')){ conditions.push(`p.assessed_value <= $${idx}`);   params.push(qv('max_assessed')); idx++; }
+      if (qv('min_equity'))  { conditions.push(`p.equity_percent >= $${idx}`);   params.push(qv('min_equity')); idx++; }
+      if (qv('max_equity'))  { conditions.push(`p.equity_percent <= $${idx}`);   params.push(qv('max_equity')); idx++; }
+      if (qv('min_year'))    { conditions.push(`p.year_built >= $${idx}`);       params.push(qv('min_year')); idx++; }
+      if (qv('max_year'))    { conditions.push(`p.year_built <= $${idx}`);       params.push(qv('max_year')); idx++; }
+      if (qv('upload_from')) { conditions.push(`p.created_at >= $${idx}`);       params.push(qv('upload_from')); idx++; }
+      if (qv('upload_to'))   { conditions.push(`p.created_at <= $${idx}`);       params.push(qv('upload_to') + ' 23:59:59'); idx++; }
+      if (qv('list_id'))     { conditions.push(`EXISTS (SELECT 1 FROM property_lists pl2 WHERE pl2.property_id = p.id AND pl2.list_id = $${idx})`); params.push(qv('list_id')); idx++; }
+      const stackArr = qvAll('stack_list').map(v => parseInt(v)).filter(n => !isNaN(n));
+      if (stackArr.length > 0) {
+        conditions.push(`(SELECT COUNT(DISTINCT pl_stack.list_id) FROM property_lists pl_stack WHERE pl_stack.property_id = p.id AND pl_stack.list_id = ANY($${idx}::int[])) = $${idx+1}`);
+        params.push(stackArr); params.push(stackArr.length); idx += 2;
+      }
+      if (qv('min_stack'))   { conditions.push(`(SELECT COUNT(*) FROM property_lists plc WHERE plc.property_id = p.id) >= $${idx}`); params.push(parseInt(qv('min_stack'))); idx++; }
+      if (qv('min_distress')){ conditions.push(`p.distress_score >= $${idx}`);   params.push(parseInt(qv('min_distress'))); idx++; }
+      const phonesBt = qv('phones');
+      if (phonesBt === 'has') { conditions.push(`EXISTS (SELECT 1 FROM phones ph_f JOIN property_contacts pc_f ON pc_f.contact_id = ph_f.contact_id WHERE pc_f.property_id = p.id)`); }
+      else if (phonesBt === 'none') { conditions.push(`NOT EXISTS (SELECT 1 FROM phones ph_f JOIN property_contacts pc_f ON pc_f.contact_id = ph_f.contact_id WHERE pc_f.property_id = p.id)`); }
+
+      // Owner Occupancy — mirror list route
+      const NORM_ADDR_BT = (col) => `
+        REGEXP_REPLACE(REGEXP_REPLACE(REGEXP_REPLACE(REGEXP_REPLACE(REGEXP_REPLACE(REGEXP_REPLACE(
+        REGEXP_REPLACE(REGEXP_REPLACE(REGEXP_REPLACE(REGEXP_REPLACE(REGEXP_REPLACE(REGEXP_REPLACE(REGEXP_REPLACE(
+          LOWER(REGEXP_REPLACE(TRIM(${col}), '[.,]+', '', 'g')),
+          '\\ystreet\\y',  'st',   'g'),
+          '\\yavenue\\y',  'ave',  'g'),
+          '\\ydrive\\y',   'dr',   'g'),
+          '\\yboulevard\\y','blvd', 'g'),
+          '\\yroad\\y',    'rd',   'g'),
+          '\\ylane\\y',    'ln',   'g'),
+          '\\ycourt\\y',   'ct',   'g'),
+          '\\yplace\\y',   'pl',   'g'),
+          '\\ycircle\\y',  'cir',  'g'),
+          '\\yterrace\\y', 'ter',  'g'),
+          '\\yparkway\\y', 'pkwy', 'g'),
+          '\\yhighway\\y', 'hwy',  'g'),
+          '\\s+', ' ', 'g')`;
+      const occBt = qv('occupancy');
+      if (occBt === 'owner_occupied') {
+        conditions.push(`(c.mailing_address IS NOT NULL
+          AND ${NORM_ADDR_BT('p.street')} = ${NORM_ADDR_BT('c.mailing_address')}
+          AND LOWER(TRIM(p.city)) = LOWER(TRIM(c.mailing_city))
+          AND UPPER(TRIM(p.state_code)) = UPPER(TRIM(c.mailing_state))
+          AND SUBSTRING(TRIM(p.zip_code) FROM 1 FOR 5) = SUBSTRING(TRIM(c.mailing_zip) FROM 1 FOR 5))`);
+      } else if (occBt === 'absent_owner') {
+        conditions.push(`(c.mailing_address IS NOT NULL AND TRIM(c.mailing_address) != ''
+          AND NOT (
+            ${NORM_ADDR_BT('p.street')} = ${NORM_ADDR_BT('c.mailing_address')}
+            AND LOWER(TRIM(p.city)) = LOWER(TRIM(c.mailing_city))
+            AND UPPER(TRIM(p.state_code)) = UPPER(TRIM(c.mailing_state))
+            AND SUBSTRING(TRIM(p.zip_code) FROM 1 FOR 5) = SUBSTRING(TRIM(c.mailing_zip) FROM 1 FOR 5)
+          ))`);
+      } else if (occBt === 'unknown') {
+        conditions.push(`(c.mailing_address IS NULL OR TRIM(c.mailing_address) = '')`);
+      }
+      // Properties-owned filter
+      const minOwnedBt = qv('min_owned'), maxOwnedBt = qv('max_owned');
+      if (minOwnedBt || maxOwnedBt) {
+        const ownedSubBt = `
+          CASE WHEN c.mailing_address IS NULL OR TRIM(c.mailing_address) = '' THEN 1
+          ELSE (
+            SELECT COUNT(*)
+            FROM properties p2
+            JOIN property_contacts pc2 ON pc2.property_id = p2.id AND pc2.primary_contact = true
+            JOIN contacts c2 ON c2.id = pc2.contact_id
+            WHERE c2.mailing_address IS NOT NULL AND TRIM(c2.mailing_address) != ''
+              AND ${NORM_ADDR_BT('c2.mailing_address')} = ${NORM_ADDR_BT('c.mailing_address')}
+              AND LOWER(TRIM(c2.mailing_city)) = LOWER(TRIM(c.mailing_city))
+              AND UPPER(TRIM(p2.state_code)) = UPPER(TRIM(p.state_code))
+              AND SUBSTRING(TRIM(c2.mailing_zip) FROM 1 FOR 5) = SUBSTRING(TRIM(c.mailing_zip) FROM 1 FOR 5)
+          ) END`;
+        if (minOwnedBt) { conditions.push(`${ownedSubBt} >= $${idx}`); params.push(parseInt(minOwnedBt)); idx++; }
+        if (maxOwnedBt) { conditions.push(`${ownedSubBt} <= $${idx}`); params.push(parseInt(maxOwnedBt)); idx++; }
+      }
+
+      if (qv('tag')) { conditions.push(`EXISTS (SELECT 1 FROM property_tags pt_f WHERE pt_f.property_id = p.id AND pt_f.tag_id = $${idx})`); params.push(parseInt(qv('tag'))); idx++; }
+      const where = conditions.length ? 'WHERE ' + conditions.join(' AND ') : '';
+      const idsRes = await query(`SELECT DISTINCT p.id FROM properties p LEFT JOIN property_contacts pc ON pc.property_id = p.id AND pc.primary_contact = true LEFT JOIN contacts c ON c.id = pc.contact_id ${where}`, params);
+      propertyIds = idsRes.rows.map(r => r.id);
+    } else {
+      if (!Array.isArray(ids) || ids.length === 0) {
+        return res.status(400).json({ error: 'No records selected.' });
+      }
+      propertyIds = ids.map(n => parseInt(n)).filter(n => !isNaN(n) && n > 0);
+    }
+
+    if (propertyIds.length === 0) {
+      return res.status(400).json({ error: 'No valid properties found.' });
+    }
+
+    let affected = 0;
+
+    if (mode === 'add') {
+      if (!Array.isArray(tagNames) || tagNames.length === 0) {
+        return res.status(400).json({ error: 'No tags specified.' });
+      }
+      // Resolve or create each tag
+      const resolvedTags = [];
+      for (const name of tagNames) {
+        const trimmed = String(name).trim();
+        if (!trimmed || trimmed.length > 100) continue;
+        let tagRes = await query(`SELECT id FROM tags WHERE LOWER(name) = LOWER($1) LIMIT 1`, [trimmed]);
+        if (!tagRes.rows.length) {
+          try {
+            tagRes = await query(`INSERT INTO tags (name) VALUES ($1) RETURNING id`, [trimmed]);
+          } catch (e) {
+            tagRes = await query(`SELECT id FROM tags WHERE LOWER(name) = LOWER($1) LIMIT 1`, [trimmed]);
+          }
+        }
+        if (tagRes.rows.length) resolvedTags.push(tagRes.rows[0].id);
+      }
+      // Bulk insert property_tags via UNNEST
+      for (const tagId of resolvedTags) {
+        const r = await query(
+          `INSERT INTO property_tags (property_id, tag_id)
+           SELECT unnest($1::int[]), $2
+           ON CONFLICT DO NOTHING`,
+          [propertyIds, tagId]
+        );
+        affected += r.rowCount;
+      }
+      console.log(`[bulk-tag] Added ${resolvedTags.length} tag(s) to ${propertyIds.length} properties (${affected} new links)`);
+    } else if (mode === 'remove') {
+      if (!Array.isArray(tagIds) || tagIds.length === 0) {
+        return res.status(400).json({ error: 'No tags specified.' });
+      }
+      const safeTagIds = tagIds.map(n => parseInt(n)).filter(n => !isNaN(n) && n > 0);
+      const r = await query(
+        `DELETE FROM property_tags
+         WHERE property_id = ANY($1::int[])
+           AND tag_id = ANY($2::int[])`,
+        [propertyIds, safeTagIds]
+      );
+      affected = r.rowCount;
+      console.log(`[bulk-tag] Removed ${safeTagIds.length} tag(s) from ${propertyIds.length} properties (${affected} links removed)`);
+    } else {
+      return res.status(400).json({ error: 'Invalid mode. Use "add" or "remove".' });
+    }
+
+    res.json({ ok: true, affected, propertyCount: propertyIds.length });
+  } catch (e) {
+    console.error('[bulk-tag]', e);
+    res.status(500).json({ error: 'Bulk tag failed: ' + e.message });
   }
 });
 
