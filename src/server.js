@@ -763,6 +763,12 @@ app.listen(PORT, async ()=>{
     await distress.ensureDistressSchema();
     console.log('Distress schema ready');
   } catch(e) { console.error('Distress schema init error:', e.message); }
+  // Settings schema — app_settings table + delete code
+  try {
+    const settings = require('./settings');
+    await settings.ensureSettingsSchema();
+    console.log('Settings schema ready');
+  } catch(e) { console.error('Settings schema init error:', e.message); }
 });
 
 // ── DB Write: save filtration run + results + upsert properties/phones ───────
@@ -1293,6 +1299,91 @@ app.get('/nis', requireAuth, async (req, res) => {
 // Changelog page
 app.get('/changelog', requireAuth, (req, res) => {
   res.send(changelogPage());
+});
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// SECURITY SETTINGS — Delete code management
+// Gates all destructive operations (record deletion, bulk merges of 10+).
+// Default code is seeded to 'HudREI2026' on first boot; user should change it
+// immediately via the UI here.
+// ═══════════════════════════════════════════════════════════════════════════════
+app.get('/settings/security', requireAuth, async (req, res) => {
+  const settings = require('./settings');
+  const { shell } = require('./shared-shell');
+  let updatedAt = null;
+  try {
+    await settings.ensureSettingsSchema();
+    updatedAt = await settings.getDeleteCodeUpdatedAt();
+  } catch (e) { console.error('[settings/security] load error:', e.message); }
+  const msg = req.query.msg || '';
+  const err = req.query.err || '';
+  const escHTML = (s) => String(s || '').replace(/[&<>"']/g, ch => (
+    { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[ch]
+  ));
+  const msgSafe = escHTML(msg);
+  const errSafe = escHTML(err);
+  const lastUpdated = updatedAt ? new Date(updatedAt).toLocaleString('en-US') : '—';
+  res.send(shell('Security Settings', `
+    <div style="max-width:640px">
+      <div style="margin-bottom:1rem"><a href="/dashboard" style="font-size:13px;color:#888;text-decoration:none">← Dashboard</a></div>
+      <div style="margin-bottom:1.5rem">
+        <div style="font-size:24px;font-weight:700;letter-spacing:-.3px">Security Settings</div>
+        <div style="font-size:13px;color:#888;margin-top:4px">Control the delete code that gates destructive operations</div>
+      </div>
+
+      ${msgSafe ? `<div class="card" style="margin-bottom:1rem;background:#eaf6ea;border-color:#9bd09b;padding:12px 16px;color:#1a5f1a;font-size:13px">✅ ${msgSafe}</div>` : ''}
+      ${errSafe ? `<div class="card" style="margin-bottom:1rem;background:#fdeaea;border-color:#f5c5c5;padding:12px 16px;color:#8b1f1f;font-size:13px">❌ ${errSafe}</div>` : ''}
+
+      <div class="card" style="padding:20px;margin-bottom:1rem">
+        <div style="font-size:15px;font-weight:600;margin-bottom:8px">Delete Code</div>
+        <div style="font-size:13px;color:#666;margin-bottom:16px;line-height:1.5">
+          This code is required before any property records can be deleted or when bulk-merging 10+ duplicate groups.
+          It is shared across all destructive actions — one code for everything.
+          <br><br>
+          <strong>Last updated:</strong> ${lastUpdated}
+        </div>
+
+        <form method="POST" action="/settings/security/delete-code" style="display:flex;flex-direction:column;gap:12px">
+          <div>
+            <label style="font-size:12px;color:#888;display:block;margin-bottom:4px">Current Code</label>
+            <input type="password" name="old_code" required autocomplete="off" style="width:100%;padding:9px 12px;border:1px solid #ddd;border-radius:8px;font-size:14px;font-family:inherit">
+          </div>
+          <div>
+            <label style="font-size:12px;color:#888;display:block;margin-bottom:4px">New Code (min 6 characters)</label>
+            <input type="password" name="new_code" required minlength="6" autocomplete="new-password" style="width:100%;padding:9px 12px;border:1px solid #ddd;border-radius:8px;font-size:14px;font-family:inherit">
+          </div>
+          <div>
+            <label style="font-size:12px;color:#888;display:block;margin-bottom:4px">Confirm New Code</label>
+            <input type="password" name="confirm_code" required minlength="6" autocomplete="new-password" style="width:100%;padding:9px 12px;border:1px solid #ddd;border-radius:8px;font-size:14px;font-family:inherit">
+          </div>
+          <button type="submit" style="background:#1a1a1a;color:#fff;border:none;padding:10px 16px;border-radius:8px;font-size:14px;font-weight:500;cursor:pointer;font-family:inherit;margin-top:4px">Update Delete Code</button>
+        </form>
+      </div>
+
+      <div class="card" style="padding:16px;background:#fff8e1;border-color:#f5d06b">
+        <div style="font-size:13px;color:#7a5a00;line-height:1.6">
+          <strong>⚠️ Important:</strong> If you forget this code, an admin with database access will need to reset it via SQL:
+          <code style="background:#fff;padding:2px 6px;border-radius:3px;font-size:11px;display:inline-block;margin-top:4px">UPDATE app_settings SET value = 'NewCode' WHERE key = 'delete_code';</code>
+        </div>
+      </div>
+    </div>
+  `, 'setup'));
+});
+
+app.post('/settings/security/delete-code', requireAuth, async (req, res) => {
+  const settings = require('./settings');
+  const { old_code, new_code, confirm_code } = req.body;
+  if (!old_code || !new_code || !confirm_code) {
+    return res.redirect('/settings/security?err=' + encodeURIComponent('All fields required.'));
+  }
+  if (new_code !== confirm_code) {
+    return res.redirect('/settings/security?err=' + encodeURIComponent('New code and confirmation do not match.'));
+  }
+  const result = await settings.updateDeleteCode(old_code, new_code);
+  if (!result.ok) {
+    return res.redirect('/settings/security?err=' + encodeURIComponent(result.error));
+  }
+  res.redirect('/settings/security?msg=' + encodeURIComponent('Delete code updated successfully.'));
 });
 
 // NIS upload POST
