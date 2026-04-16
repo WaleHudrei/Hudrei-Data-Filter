@@ -2,6 +2,7 @@ const express = require('express');
 const router = express.Router();
 const multer = require('multer');
 const Papa = require('papaparse');
+const crypto = require('crypto');
 const { query } = require('../db');
 const { shell } = require('../shared-shell');
 
@@ -11,6 +12,141 @@ function requireAuth(req, res, next) {
   if (req.session && req.session.authenticated) return next();
   res.redirect('/login');
 }
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// MAPPING TEMPLATES — remember CSV column layouts after first manual mapping
+//
+// Concept: every CSV has a set of column headers. We fingerprint those headers
+// (lowercased, trimmed, sorted) into a stable hash. When the same fingerprint
+// shows up again, we auto-apply the previously-saved mapping.
+//
+// Auto-save behaviour: whenever a user clicks "Preview Import" and the
+// fingerprint is new OR the mapping has changed, save it silently. This builds
+// the library organically as users upload real files.
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/**
+ * Normalizes a column name so 'Property Address', 'property_address', and
+ * 'PROPERTY ADDRESS' all match. Case-insensitive, collapses whitespace and
+ * separator characters, trims.
+ */
+function normalizeHeader(h) {
+  if (!h) return '';
+  return String(h).toLowerCase().trim()
+    .replace(/[_\-\.]+/g, ' ')     // separators → space
+    .replace(/\s+/g, ' ');         // collapse whitespace
+}
+
+/**
+ * Generates a stable fingerprint for a set of CSV column headers. Sorts them
+ * so column-order changes don't break the match. Returns a short SHA-256 hex
+ * digest (16 chars is plenty for our scale).
+ */
+function fingerprintHeaders(columns) {
+  const normalized = (columns || [])
+    .map(normalizeHeader)
+    .filter(Boolean)
+    .sort();
+  if (normalized.length === 0) return null;
+  return crypto.createHash('sha256').update(normalized.join('|')).digest('hex').slice(0, 16);
+}
+
+/**
+ * Idempotent schema for mapping_templates. Called before every read/write.
+ */
+async function ensureMappingSchema() {
+  await query(`
+    CREATE TABLE IF NOT EXISTS mapping_templates (
+      id SERIAL PRIMARY KEY,
+      fingerprint VARCHAR(32) NOT NULL UNIQUE,
+      name TEXT,
+      headers JSONB NOT NULL,
+      mapping JSONB NOT NULL,
+      use_count INTEGER NOT NULL DEFAULT 1,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      last_used_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )
+  `);
+  await query(`CREATE INDEX IF NOT EXISTS idx_mapping_templates_fp ON mapping_templates(fingerprint)`);
+}
+
+/**
+ * Looks up a saved mapping by fingerprint. Bumps use_count + last_used_at if
+ * found (so we can see which templates are hot). Returns null if no match.
+ */
+async function lookupMappingByFingerprint(fingerprint) {
+  if (!fingerprint) return null;
+  await ensureMappingSchema();
+  const r = await query(
+    `SELECT id, fingerprint, name, headers, mapping, use_count, created_at, last_used_at
+       FROM mapping_templates WHERE fingerprint = $1 LIMIT 1`,
+    [fingerprint]
+  );
+  return r.rows[0] || null;
+}
+
+/**
+ * Generates a friendly name from headers. Picks 2-3 distinctive ones so users
+ * can identify "PropStream-style" vs "DealMachine-style" vs "county records"
+ * mappings without naming them manually.
+ */
+function autoNameFromHeaders(columns) {
+  const hints = [];
+  const cols = (columns || []).map(c => String(c));
+  // Look for branded / telling headers
+  const brandHints = [
+    { pat: /propstream/i, name: 'PropStream' },
+    { pat: /dealmachine/i, name: 'DealMachine' },
+    { pat: /batch\s*skip/i, name: 'BatchSkipTrace' },
+    { pat: /reisift/i, name: 'REISift' },
+    { pat: /datasift/i, name: 'DataSift' },
+    { pat: /listsource/i, name: 'Listsource' },
+  ];
+  for (const b of brandHints) {
+    if (cols.some(c => b.pat.test(c))) {
+      hints.push(b.name);
+      break;
+    }
+  }
+  // Count phone slots as a differentiator
+  const phoneCount = cols.filter(c => /\bph(one)?\s*\d/i.test(c) || /^phone\s*\d/i.test(c)).length;
+  if (phoneCount > 0) hints.push(`${phoneCount}-phone`);
+  // Total column count
+  hints.push(`${cols.length} cols`);
+  return hints.join(' · ') || 'Custom mapping';
+}
+
+/**
+ * Saves or updates a mapping template. If fingerprint exists, updates the
+ * mapping (so iterative edits get captured) and bumps use_count + timestamp.
+ */
+async function upsertMapping(fingerprint, columns, mapping) {
+  if (!fingerprint) return null;
+  await ensureMappingSchema();
+  const name = autoNameFromHeaders(columns);
+  const r = await query(`
+    INSERT INTO mapping_templates (fingerprint, name, headers, mapping, use_count, last_used_at)
+    VALUES ($1, $2, $3::jsonb, $4::jsonb, 1, NOW())
+    ON CONFLICT (fingerprint) DO UPDATE SET
+      mapping      = EXCLUDED.mapping,
+      headers      = EXCLUDED.headers,
+      use_count    = mapping_templates.use_count + 1,
+      last_used_at = NOW()
+    RETURNING id, fingerprint, name, use_count
+  `, [fingerprint, name, JSON.stringify(columns), JSON.stringify(mapping)]);
+  return r.rows[0];
+}
+
+/**
+ * Deletes a saved mapping by fingerprint. Returns count of rows removed.
+ */
+async function deleteMapping(fingerprint) {
+  if (!fingerprint) return 0;
+  await ensureMappingSchema();
+  const r = await query(`DELETE FROM mapping_templates WHERE fingerprint = $1`, [fingerprint]);
+  return r.rowCount;
+}
+
 
 // ── Loki field definitions ────────────────────────────────────────────────────
 const LOKI_FIELDS = [
@@ -282,6 +418,8 @@ router.get('/', requireAuth, async (req, res) => {
           totalRows:  data.totalRows,
           mapping:    data.mapping,
           filename:   data.filename,
+          fingerprint: data.fingerprint,
+          savedTemplate: data.savedTemplate,
           listName:   newName || document.getElementById('existing-list-id').options[document.getElementById('existing-list-id').selectedIndex]?.dataset?.name || '',
           listId:     existingId || null,
           listType:   listType,
@@ -301,7 +439,7 @@ router.get('/', requireAuth, async (req, res) => {
 });
 
 // ── PARSE ─────────────────────────────────────────────────────────────────────
-router.post('/parse', requireAuth, upload.single('csvfile'), (req, res) => {
+router.post('/parse', requireAuth, upload.single('csvfile'), async (req, res) => {
   try {
     if (!req.file) return res.status(400).json({ error: 'No file uploaded.' });
     const parsed = Papa.parse(req.file.buffer.toString('utf8'), { header: true, skipEmptyLines: true });
@@ -312,12 +450,107 @@ router.post('/parse', requireAuth, upload.single('csvfile'), (req, res) => {
     if (rows.length > MAX_ROWS) {
       return res.status(400).json({ error: `File has ${rows.length.toLocaleString()} rows. Use Bulk Import for files over 100k rows.` });
     }
-    const mapping = autoMap(columns);
+
+    // Generate fingerprint of this CSV's column layout. If we've seen it before,
+    // use the saved mapping. Otherwise, fall back to the heuristic autoMap().
+    const fingerprint = fingerprintHeaders(columns);
+    let mapping = autoMap(columns);
+    let savedTemplate = null;
+    try {
+      const template = await lookupMappingByFingerprint(fingerprint);
+      if (template) {
+        // A saved mapping might reference a column that doesn't exist in this
+        // file (headers drifted slightly). Filter out dead references.
+        const colSet = new Set(columns);
+        const filtered = {};
+        for (const [lokiKey, csvCol] of Object.entries(template.mapping || {})) {
+          if (colSet.has(csvCol)) filtered[lokiKey] = csvCol;
+        }
+        // If after filtering nothing is left (template fully stale), keep
+        // autoMap instead — no point surfacing an empty "saved mapping" badge.
+        if (Object.keys(filtered).length > 0) {
+          mapping = filtered;
+          savedTemplate = {
+            fingerprint: template.fingerprint,
+            name: template.name,
+            use_count: template.use_count,
+          };
+        }
+      }
+    } catch (e) {
+      // Non-fatal — if the lookup fails, we still have autoMap
+      console.error('[import/parse] mapping lookup failed:', e.message);
+    }
+
     // Store full rows in server session — only send preview to browser
     req.session.importRows = rows;
     req.session.save();
-    res.json({ columns, previewRows: rows.slice(0, 10), totalRows: rows.length, mapping, filename: req.file.originalname });
+    res.json({
+      columns,
+      previewRows: rows.slice(0, 10),
+      totalRows: rows.length,
+      mapping,
+      filename: req.file.originalname,
+      fingerprint,
+      savedTemplate,
+    });
   } catch(e) { res.status(500).json({ error: e.message }); }
+});
+
+// ── Save a user-confirmed mapping (called from the Map Columns page) ──────────
+// Fires after the user clicks Preview Import. Silently upserts by fingerprint.
+// If nothing has changed, this is still safe — the ON CONFLICT branch updates
+// use_count and last_used_at, giving us "which templates are hot" telemetry.
+router.post('/save-mapping', requireAuth, async (req, res) => {
+  try {
+    const { columns, mapping, fingerprint } = req.body;
+    if (!fingerprint || !columns || !mapping) {
+      return res.status(400).json({ error: 'Missing fingerprint, columns, or mapping.' });
+    }
+    if (!Array.isArray(columns) || typeof mapping !== 'object') {
+      return res.status(400).json({ error: 'Bad request shape.' });
+    }
+    // Recompute fingerprint server-side; if the client-supplied value doesn't
+    // match, reject. Prevents a client from silently corrupting saved templates
+    // with a mismatched fingerprint/headers pair.
+    const expected = fingerprintHeaders(columns);
+    if (expected !== fingerprint) {
+      return res.status(400).json({ error: 'Fingerprint mismatch — refusing to save.' });
+    }
+    // Defense-in-depth: sanitize the mapping so every value is an actual CSV
+    // column from THIS file. A tampered DOM could otherwise inject arbitrary
+    // strings into saved templates.
+    const colSet = new Set(columns.map(c => String(c)));
+    const cleanMapping = {};
+    for (const [lokiKey, csvCol] of Object.entries(mapping)) {
+      if (typeof lokiKey === 'string' && typeof csvCol === 'string' && colSet.has(csvCol)) {
+        cleanMapping[lokiKey] = csvCol;
+      }
+    }
+    if (Object.keys(cleanMapping).length === 0) {
+      return res.status(400).json({ error: 'No valid mappings to save.' });
+    }
+    const saved = await upsertMapping(fingerprint, columns, cleanMapping);
+    res.json({ ok: true, saved });
+  } catch(e) {
+    console.error('[import/save-mapping]', e);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// ── Delete a saved mapping by fingerprint (called from the badge on Map page) ─
+router.post('/delete-mapping', requireAuth, async (req, res) => {
+  try {
+    const { fingerprint } = req.body;
+    if (!fingerprint || !/^[a-f0-9]{16}$/.test(String(fingerprint))) {
+      return res.status(400).json({ error: 'Invalid fingerprint format.' });
+    }
+    const deleted = await deleteMapping(fingerprint);
+    res.json({ ok: true, deleted });
+  } catch(e) {
+    console.error('[import/delete-mapping]', e);
+    res.status(500).json({ error: e.message });
+  }
 });
 
 // ── STEP 2: Map columns ───────────────────────────────────────────────────────
@@ -368,7 +601,13 @@ router.get('/map', requireAuth, (req, res) => {
         <div>
           <div style="font-size:20px;font-weight:600;margin-bottom:4px">Map Columns</div>
           <div style="font-size:13px;color:#888" id="file-info">Loading…</div>
-          <div id="list-badge" style="display:none;margin-top:6px;display:inline-flex;align-items:center;gap:6px;background:#e8f5ee;color:#1a7a4a;border-radius:6px;padding:4px 10px;font-size:12px;font-weight:600"></div>
+          <div style="display:flex;gap:8px;align-items:center;margin-top:6px;flex-wrap:wrap">
+            <div id="list-badge" style="display:none;align-items:center;gap:6px;background:#e8f5ee;color:#1a7a4a;border-radius:6px;padding:4px 10px;font-size:12px;font-weight:600"></div>
+            <div id="template-badge" style="display:none;align-items:center;gap:8px;background:#eef2fb;color:#2a4a8a;border:1px solid #c5d5f5;border-radius:6px;padding:4px 10px;font-size:12px;font-weight:500">
+              <span id="template-badge-text"></span>
+              <button onclick="deleteTemplate()" title="Delete this saved mapping" style="background:none;border:none;cursor:pointer;color:#2a4a8a;font-size:14px;line-height:1;padding:0;font-family:inherit">🗑</button>
+            </div>
+          </div>
         </div>
         <button onclick="proceed()" class="btn-submit" style="width:auto;padding:9px 24px">Preview Import →</button>
       </div>
@@ -384,6 +623,8 @@ router.get('/map', requireAuth, (req, res) => {
     const importData = JSON.parse(sessionStorage.getItem('loki_import') || '{}');
     const columns = importData.columns || [];
     const mapping = importData.mapping || {};
+    const fingerprint = importData.fingerprint || null;
+    const savedTemplate = importData.savedTemplate || null;
 
     document.getElementById('file-info').textContent =
       (importData.filename || 'Unknown file') + ' — ' + (importData.totalRows || 0).toLocaleString() + ' rows';
@@ -391,6 +632,12 @@ router.get('/map', requireAuth, (req, res) => {
       const badge = document.getElementById('list-badge');
       badge.textContent = '📋 ' + importData.listName;
       badge.style.display = 'inline-flex';
+    }
+    if (savedTemplate && savedTemplate.name) {
+      const tb = document.getElementById('template-badge');
+      const tt = document.getElementById('template-badge-text');
+      tt.textContent = '✨ Using saved mapping: ' + savedTemplate.name + ' (' + savedTemplate.use_count + ' use' + (savedTemplate.use_count===1?'':'s') + ')';
+      tb.style.display = 'inline-flex';
     }
 
     // Populate all dropdowns with CSV columns
@@ -400,12 +647,34 @@ router.get('/map', requireAuth, (req, res) => {
         opt.value = col; opt.textContent = col;
         sel.appendChild(opt);
       });
-      // Apply auto-mapping
+      // Apply auto-mapping (or saved template, already merged into mapping by server)
       const lokiKey = sel.dataset.loki;
       if (mapping[lokiKey]) sel.value = mapping[lokiKey];
     });
 
-    function proceed() {
+    async function deleteTemplate() {
+      if (!fingerprint) return;
+      if (!confirm('Delete this saved mapping? Next time you upload a file with these headers, Loki will fall back to auto-detection.')) return;
+      try {
+        const res = await fetch('/import/property/delete-mapping', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ fingerprint })
+        });
+        if (res.ok) {
+          document.getElementById('template-badge').style.display = 'none';
+          // Clear from session so this page doesn't show stale info on refresh
+          importData.savedTemplate = null;
+          sessionStorage.setItem('loki_import', JSON.stringify(importData));
+        } else {
+          alert('Failed to delete saved mapping.');
+        }
+      } catch(err) {
+        alert('Network error: ' + err.message);
+      }
+    }
+
+    async function proceed() {
       const finalMapping = {};
       document.querySelectorAll('select[data-loki]').forEach(sel => {
         if (sel.value) finalMapping[sel.dataset.loki] = sel.value;
@@ -418,6 +687,19 @@ router.get('/map', requireAuth, (req, res) => {
       }
       importData.finalMapping = finalMapping;
       sessionStorage.setItem('loki_import', JSON.stringify(importData));
+
+      // Fire-and-forget save to the template library. Silent on success; also
+      // silent on failure (user doesn't need to know — auto-save is a bonus).
+      if (fingerprint) {
+        try {
+          fetch('/import/property/save-mapping', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ fingerprint, columns, mapping: finalMapping })
+          }).catch(() => {});
+        } catch(e) { /* non-fatal */ }
+      }
+
       window.location.href = '/import/property/preview';
     }
     </script>
@@ -433,7 +715,7 @@ router.get('/preview', requireAuth, (req, res) => {
         <div>
           <div style="font-size:20px;font-weight:600;margin-bottom:4px">Preview Import</div>
           <div style="font-size:13px;color:#888" id="preview-info">Loading…</div>
-          <div id="list-badge" style="display:none;margin-top:6px;display:inline-flex;align-items:center;gap:6px;background:#e8f5ee;color:#1a7a4a;border-radius:6px;padding:4px 10px;font-size:12px;font-weight:600"></div>
+          <div id="list-badge" style="display:none;margin-top:6px;align-items:center;gap:6px;background:#e8f5ee;color:#1a7a4a;border-radius:6px;padding:4px 10px;font-size:12px;font-weight:600"></div>
         </div>
         <div style="display:flex;gap:8px">
           <button onclick="startImport()" class="btn-submit" style="width:auto;padding:9px 24px" id="import-btn">Import Records</button>
