@@ -1466,34 +1466,60 @@ router.post('/export', requireAuth, async (req, res) => {
     const phoneMap = {};
     if (columns.includes('phones') && allIds.length) {
       const phonePlaceholders = allIds.map((_, i) => `$${i + 1}`).join(',');
+      // LEFT JOIN against nis_numbers so we can mark phones as "dead" even if
+      // the master phones.phone_status wasn't synced from the campaign flow.
+      // is_nis = true for any phone that appears in the NIS registry (any count).
       const phoneRes = await query(`
-        SELECT ph.phone_number, ph.phone_status, ph.phone_index, pc.property_id
+        SELECT
+          ph.phone_number,
+          ph.phone_status,
+          ph.phone_index,
+          ph.wrong_number,
+          pc.property_id,
+          (nis.phone_number IS NOT NULL) AS is_nis
         FROM phones ph
         JOIN property_contacts pc ON pc.contact_id = ph.contact_id
+        LEFT JOIN nis_numbers nis ON nis.phone_number = ph.phone_number
         WHERE pc.property_id IN (${phonePlaceholders})
         ORDER BY ph.phone_index ASC
       `, allIds);
       phoneRes.rows.forEach(ph => {
         if (!phoneMap[ph.property_id]) phoneMap[ph.property_id] = [];
-        phoneMap[ph.property_id].push({ number: ph.phone_number, status: ph.phone_status || '' });
+        phoneMap[ph.property_id].push({
+          number: ph.phone_number,
+          status: ph.phone_status || '',
+          isNis:  !!ph.is_nis,
+          isWrong: !!ph.wrong_number,
+        });
       });
 
       // If "Exclude wrong/dead" is on, filter out bad statuses and shift remaining
       // phones up into the lower slots. This means "Phone 1" in the CSV is always
       // the first dialable number — crucial for Readymode imports to not waste
       // attempts on known-bad slots.
+      //
+      // Three signals that mark a phone as bad:
+      //   1) phone_status (text) — can be 'wrong', 'Wrong', 'dead', 'dead_number'
+      //      depending on which flow wrote the row. Normalized via toLowerCase.
+      //   2) wrong_number (boolean) — set when a campaign disposition flags the
+      //      number as wrong. This is the ONLY signal for wrong numbers that
+      //      never made it into the phone_status text field.
+      //   3) is_nis — the phone appears in the NIS registry. Catches dead numbers
+      //      even when the master phones.phone_status wasn't synced.
       if (excludeBadPhones) {
-        const BAD = new Set(['wrong', 'dead']);
+        const isBadStatus = (s) => {
+          const v = String(s || '').toLowerCase().trim();
+          return v === 'wrong' || v === 'dead' || v === 'dead_number';
+        };
         let removed = 0;
         for (const pid in phoneMap) {
           const before = phoneMap[pid].length;
-          phoneMap[pid] = phoneMap[pid].filter(p => {
-            const s = String(p.status || '').toLowerCase().trim();
-            return !BAD.has(s);
-          });
+          phoneMap[pid] = phoneMap[pid].filter(p =>
+            !isBadStatus(p.status) && !p.isNis && !p.isWrong
+          );
           removed += (before - phoneMap[pid].length);
         }
-        console.log(`[export] Clean-phones mode: removed ${removed} wrong/dead phones, shifted remaining up`);
+        console.log(`[export] Clean-phones mode: removed ${removed} wrong/dead/NIS phones, shifted remaining up`);
       }
 
       console.log(`[export] Fetched ${phoneRes.rows.length} phones across ${Object.keys(phoneMap).length}/${allIds.length} properties`);
