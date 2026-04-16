@@ -223,6 +223,14 @@ router.get('/', requireAuth, async (req, res) => {
     if (max_assessed) { conditions.push(`p.assessed_value <= $${idx}`);   params.push(max_assessed); idx++; }
     if (min_equity)   { conditions.push(`p.equity_percent >= $${idx}`);   params.push(min_equity); idx++; }
     if (max_equity)   { conditions.push(`p.equity_percent <= $${idx}`);   params.push(max_equity); idx++; }
+    // Phones filter: 'has' = property has 1+ phone numbers attached via its contacts,
+    // 'none' = property has zero phones. Uses EXISTS / NOT EXISTS against the phones
+    // table joined through property_contacts for efficiency.
+    if (phones === 'has') {
+      conditions.push(`EXISTS (SELECT 1 FROM phones ph_f JOIN property_contacts pc_f ON pc_f.contact_id = ph_f.contact_id WHERE pc_f.property_id = p.id)`);
+    } else if (phones === 'none') {
+      conditions.push(`NOT EXISTS (SELECT 1 FROM phones ph_f JOIN property_contacts pc_f ON pc_f.contact_id = ph_f.contact_id WHERE pc_f.property_id = p.id)`);
+    }
     if (min_year)     { conditions.push(`p.year_built >= $${idx}`);       params.push(min_year); idx++; }
     if (max_year)     { conditions.push(`p.year_built <= $${idx}`);       params.push(max_year); idx++; }
     if (upload_from)  { conditions.push(`p.created_at >= $${idx}`);       params.push(upload_from); idx++; }
@@ -328,7 +336,7 @@ router.get('/', requireAuth, async (req, res) => {
       add('min_equity', min_equity); add('max_equity', max_equity);
       add('min_year', min_year); add('max_year', max_year);
       add('upload_from', upload_from); add('upload_to', upload_to);
-      add('min_distress', min_distress); add('occupancy', occupancy);
+      add('min_distress', min_distress); add('occupancy', occupancy); add('phones', phones);
       stackList.forEach(sl => parts.push(`stack_list=${encodeURIComponent(sl)}`));
       stateList.forEach(s => parts.push(`state=${encodeURIComponent(s)}`));
       mktIncludeList.forEach(m => parts.push(`mkt_include=${encodeURIComponent(m)}`));
@@ -347,7 +355,7 @@ router.get('/', requireAuth, async (req, res) => {
       </div>` : '';
 
     // Filter count — multi-select filters count as 1 each regardless of how many values
-    const activeFilterCount = [city,zip,county,type,pipeline,prop_status,mkt_result,occupancy,min_assessed,max_assessed,min_equity,max_equity,min_year,max_year,upload_from,upload_to,min_stack,min_distress].filter(Boolean).length + (stackList.length > 0 ? 1 : 0) + (stateList.length > 0 ? 1 : 0) + (mktIncludeList.length > 0 ? 1 : 0) + (mktExcludeList.length > 0 ? 1 : 0);
+    const activeFilterCount = [city,zip,county,type,pipeline,prop_status,mkt_result,occupancy,phones,min_assessed,max_assessed,min_equity,max_equity,min_year,max_year,upload_from,upload_to,min_stack,min_distress].filter(Boolean).length + (stackList.length > 0 ? 1 : 0) + (stateList.length > 0 ? 1 : 0) + (mktIncludeList.length > 0 ? 1 : 0) + (mktExcludeList.length > 0 ? 1 : 0);
 
     res.send(shell('Records', `
       <div class="page-header">
@@ -489,6 +497,14 @@ router.get('/', requireAuth, async (req, res) => {
                 <span style="color:#aaa;font-size:12px">–</span>
                 <input type="number" name="max_equity" value="${max_equity}" placeholder="Max" style="width:100%;padding:7px 8px;border:1px solid #ddd;border-radius:7px;font-size:13px;font-family:inherit">
               </div>
+            </div>
+            <div>
+              <label style="font-size:11px;color:#888;display:block;margin-bottom:3px">Phones</label>
+              <select name="phones" style="width:100%;padding:7px 10px;border:1px solid #ddd;border-radius:7px;font-size:13px;font-family:inherit;background:#fff">
+                <option value="">Any</option>
+                <option value="has"  ${phones==='has' ?'selected':''}>Has phones</option>
+                <option value="none" ${phones==='none'?'selected':''}>No phones</option>
+              </select>
             </div>
 
             <!-- Marketing -->
@@ -1251,6 +1267,13 @@ router.post('/export', requireAuth, async (req, res) => {
       }
       if (qv('min_stack'))   { conditions.push(`(SELECT COUNT(*) FROM property_lists plc WHERE plc.property_id = p.id) >= $${idx}`); params.push(parseInt(qv('min_stack'))); idx++; }
       if (qv('min_distress')){ conditions.push(`p.distress_score >= $${idx}`);   params.push(parseInt(qv('min_distress'))); idx++; }
+      // Phones filter — mirror list route logic
+      const phonesX = qv('phones');
+      if (phonesX === 'has') {
+        conditions.push(`EXISTS (SELECT 1 FROM phones ph_f JOIN property_contacts pc_f ON pc_f.contact_id = ph_f.contact_id WHERE pc_f.property_id = p.id)`);
+      } else if (phonesX === 'none') {
+        conditions.push(`NOT EXISTS (SELECT 1 FROM phones ph_f JOIN property_contacts pc_f ON pc_f.contact_id = ph_f.contact_id WHERE pc_f.property_id = p.id)`);
+      }
       const where = conditions.length ? 'WHERE ' + conditions.join(' AND ') : '';
       props = await query(`
         SELECT DISTINCT ON (p.id)
@@ -2576,6 +2599,14 @@ router.post('/delete', requireAuth, async (req, res) => {
       }
       if (qv('min_stack'))   { conditions.push(`(SELECT COUNT(*) FROM property_lists plc WHERE plc.property_id = p.id) >= $${idx}`); params.push(parseInt(qv('min_stack'))); idx++; }
       if (qv('min_distress')){ conditions.push(`p.distress_score >= $${idx}`);   params.push(parseInt(qv('min_distress'))); idx++; }
+      // Phones filter — mirror list route so a delete targeted at "No phones"
+      // doesn't sweep records that DO have phones.
+      const phonesDel = qv('phones');
+      if (phonesDel === 'has') {
+        conditions.push(`EXISTS (SELECT 1 FROM phones ph_f JOIN property_contacts pc_f ON pc_f.contact_id = ph_f.contact_id WHERE pc_f.property_id = p.id)`);
+      } else if (phonesDel === 'none') {
+        conditions.push(`NOT EXISTS (SELECT 1 FROM phones ph_f JOIN property_contacts pc_f ON pc_f.contact_id = ph_f.contact_id WHERE pc_f.property_id = p.id)`);
+      }
 
       // Owner Occupancy — must match the same logic as the records list route.
       // Without this, a user filtering by "Absent Owner" and clicking Select All
