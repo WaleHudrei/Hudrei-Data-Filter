@@ -11,6 +11,30 @@ function requireAuth(req, res, next) {
 
 const { shell } = require('../shared-shell');
 
+// ── Tag Schema ──────────────────────────────────────────────────────────────
+let _tagSchemaReady = false;
+async function ensureTagSchema() {
+  if (_tagSchemaReady) return;
+  await query(`
+    CREATE TABLE IF NOT EXISTS tags (
+      id SERIAL PRIMARY KEY,
+      name VARCHAR(100) NOT NULL,
+      color VARCHAR(7) DEFAULT '#6b7280',
+      created_at TIMESTAMPTZ DEFAULT NOW()
+    );
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_tags_name_lower ON tags (LOWER(name));
+    CREATE TABLE IF NOT EXISTS property_tags (
+      property_id INTEGER NOT NULL REFERENCES properties(id) ON DELETE CASCADE,
+      tag_id INTEGER NOT NULL REFERENCES tags(id) ON DELETE CASCADE,
+      created_at TIMESTAMPTZ DEFAULT NOW(),
+      PRIMARY KEY (property_id, tag_id)
+    );
+    CREATE INDEX IF NOT EXISTS idx_property_tags_tag ON property_tags(tag_id);
+    CREATE INDEX IF NOT EXISTS idx_property_tags_prop ON property_tags(property_id);
+  `);
+  _tagSchemaReady = true;
+}
+
 function fmt(val, fallback) { return val || fallback || '—'; }
 function fmtDate(val) { if (!val) return '—'; return new Date(val).toLocaleDateString('en-US', { month:'short', day:'numeric', year:'numeric' }); }
 function fmtMoney(val) { if (!val) return '—'; return '$' + Number(val).toLocaleString(); }
@@ -84,6 +108,7 @@ router.get('/', requireAuth, async (req, res) => {
       occupancy = '',
       phones = '',
       min_owned = '', max_owned = '',
+      tag = '',
       msg = '', err = '',
       page = 1
     } = req.query;
@@ -253,6 +278,11 @@ router.get('/', requireAuth, async (req, res) => {
       if (min_owned) { conditions.push(`${ownedSubquery} >= $${idx}`); params.push(parseInt(min_owned)); idx++; }
       if (max_owned) { conditions.push(`${ownedSubquery} <= $${idx}`); params.push(parseInt(max_owned)); idx++; }
     }
+    // Tag filter — show only properties that have a specific tag
+    if (tag) {
+      conditions.push(`EXISTS (SELECT 1 FROM property_tags pt_f WHERE pt_f.property_id = p.id AND pt_f.tag_id = $${idx})`);
+      params.push(parseInt(tag)); idx++;
+    }
     if (min_year)     { conditions.push(`p.year_built >= $${idx}`);       params.push(min_year); idx++; }
     if (max_year)     { conditions.push(`p.year_built <= $${idx}`);       params.push(max_year); idx++; }
     if (upload_from)  { conditions.push(`p.created_at >= $${idx}`);       params.push(upload_from); idx++; }
@@ -320,6 +350,29 @@ router.get('/', requireAuth, async (req, res) => {
       LIMIT $${idx} OFFSET $${idx+1}
     `, [...params, limit, offset]);
 
+    // Batch-fetch tags for displayed properties
+    await ensureTagSchema();
+    const displayedIds = rows.rows.map(r => r.id);
+    const tagMap = {};
+    if (displayedIds.length > 0) {
+      const tagPlaceholders = displayedIds.map((_, i) => `$${i + 1}`).join(',');
+      const tagRows = await query(`
+        SELECT pt.property_id, t.id AS tag_id, t.name, t.color
+        FROM property_tags pt
+        JOIN tags t ON t.id = pt.tag_id
+        WHERE pt.property_id IN (${tagPlaceholders})
+        ORDER BY t.name ASC
+      `, displayedIds);
+      tagRows.rows.forEach(r => {
+        if (!tagMap[r.property_id]) tagMap[r.property_id] = [];
+        tagMap[r.property_id].push(r);
+      });
+    }
+
+    // Fetch all tags for the tag filter dropdown
+    const allTagsRes = await query(`SELECT id, name, color FROM tags ORDER BY name ASC`);
+    const allTags = allTagsRes.rows;
+
     const totalPages = Math.ceil(total / limit);
 
     const tableRows = rows.rows.map(r => {
@@ -341,6 +394,7 @@ router.get('/', requireAuth, async (req, res) => {
         <td style="padding:12px;font-size:13px;color:#555;text-align:left">${fmt(r.property_type)}</td>
         <td style="padding:12px;font-size:13px;text-align:center">${r.phone_count || 0}</td>
         <td style="padding:12px;font-size:13px;text-align:center">${r.list_count || 0}</td>
+        <td style="padding:12px;text-align:left;max-width:160px"><div style="display:flex;flex-wrap:wrap;gap:3px">${(tagMap[r.id] || []).map(t => `<span style="display:inline-block;padding:2px 7px;border-radius:12px;font-size:10px;font-weight:500;background:${escHTML(t.color)}20;color:${escHTML(t.color)};border:1px solid ${escHTML(t.color)}40;white-space:nowrap">${escHTML(t.name)}</span>`).join('')}</div></td>
         <td style="padding:12px;text-align:center">${distressCell}</td>
         <td style="padding:12px;text-align:left"><span style="background:${stageColor};color:${stageText};padding:3px 10px;border-radius:5px;font-size:11px;font-weight:600;text-transform:capitalize">${stage}</span></td>
         <td style="padding:12px;font-size:12px;color:#888;white-space:nowrap;text-align:right">${fmtDate(r.created_at)}</td>
@@ -360,6 +414,7 @@ router.get('/', requireAuth, async (req, res) => {
       add('upload_from', upload_from); add('upload_to', upload_to);
       add('min_distress', min_distress); add('occupancy', occupancy); add('phones', phones);
       add('min_owned', min_owned); add('max_owned', max_owned);
+      add('tag', tag);
       stackList.forEach(sl => parts.push(`stack_list=${encodeURIComponent(sl)}`));
       stateList.forEach(s => parts.push(`state=${encodeURIComponent(s)}`));
       mktIncludeList.forEach(m => parts.push(`mkt_include=${encodeURIComponent(m)}`));
@@ -378,7 +433,7 @@ router.get('/', requireAuth, async (req, res) => {
       </div>` : '';
 
     // Filter count — multi-select filters count as 1 each regardless of how many values
-    const activeFilterCount = [city,zip,county,type,pipeline,prop_status,mkt_result,occupancy,phones,min_assessed,max_assessed,min_equity,max_equity,min_year,max_year,upload_from,upload_to,min_stack,min_distress,min_owned,max_owned].filter(Boolean).length + (stackList.length > 0 ? 1 : 0) + (stateList.length > 0 ? 1 : 0) + (mktIncludeList.length > 0 ? 1 : 0) + (mktExcludeList.length > 0 ? 1 : 0);
+    const activeFilterCount = [city,zip,county,type,pipeline,prop_status,mkt_result,occupancy,phones,min_assessed,max_assessed,min_equity,max_equity,min_year,max_year,upload_from,upload_to,min_stack,min_distress,min_owned,max_owned,tag].filter(Boolean).length + (stackList.length > 0 ? 1 : 0) + (stateList.length > 0 ? 1 : 0) + (mktIncludeList.length > 0 ? 1 : 0) + (mktExcludeList.length > 0 ? 1 : 0);
 
     res.send(shell('Records', `
       <div class="page-header">
@@ -537,6 +592,13 @@ router.get('/', requireAuth, async (req, res) => {
                 <input type="number" name="max_owned" value="${max_owned}" placeholder="Max" min="1" style="width:100%;padding:7px 8px;border:1px solid #ddd;border-radius:7px;font-size:13px;font-family:inherit">
               </div>
               <div style="font-size:10px;color:#aaa;margin-top:2px">By mailing address</div>
+            </div>
+            <div>
+              <label style="font-size:11px;color:#888;display:block;margin-bottom:3px">Tag</label>
+              <select name="tag" style="width:100%;padding:7px 10px;border:1px solid #ddd;border-radius:7px;font-size:13px;font-family:inherit;background:#fff">
+                <option value="">Any</option>
+                ${allTags.map(t => `<option value="${t.id}" ${tag == t.id ? 'selected' : ''}>${escHTML(t.name)}</option>`).join('')}
+              </select>
             </div>
 
             <!-- Marketing -->
@@ -1052,12 +1114,13 @@ router.get('/', requireAuth, async (req, res) => {
             <th style="padding:10px 12px;font-size:11px;font-weight:600;color:#888;text-transform:uppercase;letter-spacing:.05em;text-align:left">Type</th>
             <th style="padding:10px 12px;font-size:11px;font-weight:600;color:#888;text-transform:uppercase;letter-spacing:.05em;text-align:center">Phones</th>
             <th style="padding:10px 12px;font-size:11px;font-weight:600;color:#888;text-transform:uppercase;letter-spacing:.05em;text-align:center">Lists</th>
+            <th style="padding:10px 12px;font-size:11px;font-weight:600;color:#888;text-transform:uppercase;letter-spacing:.05em;text-align:left">Tags</th>
             <th style="padding:10px 12px;font-size:11px;font-weight:600;color:#888;text-transform:uppercase;letter-spacing:.05em;text-align:center">Distress</th>
             <th style="padding:10px 12px;font-size:11px;font-weight:600;color:#888;text-transform:uppercase;letter-spacing:.05em;text-align:left">Stage</th>
             <th style="padding:10px 12px;font-size:11px;font-weight:600;color:#888;text-transform:uppercase;letter-spacing:.05em;text-align:right">Added</th>
           </tr></thead>
           <tbody>
-            ${tableRows || '<tr><td colspan="9" style="text-align:center;padding:40px;color:#aaa;font-size:13px">No records found</td></tr>'}
+            ${tableRows || '<tr><td colspan="10" style="text-align:center;padding:40px;color:#aaa;font-size:13px">No records found</td></tr>'}
           </tbody>
         </table>
       </div>
@@ -1327,6 +1390,97 @@ router.get('/', requireAuth, async (req, res) => {
 });
 
 // ═══════════════════════════════════════════════════════════════════════════════
+// TAGS — API routes for property tagging
+// ═══════════════════════════════════════════════════════════════════════════════
+
+// Auto-suggest: returns existing tags matching a partial query
+router.get('/tags/suggest', requireAuth, async (req, res) => {
+  try {
+    await ensureTagSchema();
+    const q = String(req.query.q || '').trim();
+    if (!q) {
+      // Return all tags (for dropdown initialization)
+      const r = await query(`SELECT id, name, color FROM tags ORDER BY name ASC LIMIT 50`);
+      return res.json(r.rows);
+    }
+    const r = await query(
+      `SELECT id, name, color FROM tags WHERE name ILIKE $1 ORDER BY name ASC LIMIT 20`,
+      [`%${q}%`]
+    );
+    res.json(r.rows);
+  } catch (e) {
+    console.error('[tags/suggest]', e);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// Add tag to a property — creates the tag if it doesn't exist
+router.post('/:id(\\d+)/tags', requireAuth, async (req, res) => {
+  try {
+    await ensureTagSchema();
+    const propertyId = parseInt(req.params.id);
+    const tagName = String(req.body.name || '').trim();
+    if (!tagName || tagName.length > 100) {
+      return res.status(400).json({ error: 'Tag name required (max 100 chars).' });
+    }
+    // Find existing tag by case-insensitive name, or create a new one.
+    // The try/catch handles the rare race condition where two concurrent
+    // requests both pass the SELECT, and the second INSERT hits the unique index.
+    let tagRes = await query(
+      `SELECT id, name, color FROM tags WHERE LOWER(name) = LOWER($1) LIMIT 1`,
+      [tagName]
+    );
+    if (!tagRes.rows.length) {
+      try {
+        tagRes = await query(
+          `INSERT INTO tags (name) VALUES ($1) RETURNING id, name, color`,
+          [tagName]
+        );
+      } catch (dupErr) {
+        // Unique violation — another request created it between our SELECT and INSERT
+        tagRes = await query(
+          `SELECT id, name, color FROM tags WHERE LOWER(name) = LOWER($1) LIMIT 1`,
+          [tagName]
+        );
+      }
+    }
+    const tag = tagRes.rows[0];
+    // Link tag to property (ignore if already linked)
+    await query(
+      `INSERT INTO property_tags (property_id, tag_id)
+       VALUES ($1, $2) ON CONFLICT DO NOTHING`,
+      [propertyId, tag.id]
+    );
+    console.log(`[tags] Added "${tag.name}" to property #${propertyId}`);
+    res.json({ ok: true, tag });
+  } catch (e) {
+    console.error('[tags/add]', e);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// Remove tag from a property
+router.delete('/:id(\\d+)/tags/:tagId(\\d+)', requireAuth, async (req, res) => {
+  try {
+    await ensureTagSchema();
+    const propertyId = parseInt(req.params.id);
+    const tagId = parseInt(req.params.tagId);
+    const r = await query(
+      `DELETE FROM property_tags WHERE property_id = $1 AND tag_id = $2 RETURNING tag_id`,
+      [propertyId, tagId]
+    );
+    if (!r.rowCount) {
+      return res.status(404).json({ error: 'Tag not found on this property.' });
+    }
+    console.log(`[tags] Removed tag #${tagId} from property #${propertyId}`);
+    res.json({ ok: true });
+  } catch (e) {
+    console.error('[tags/remove]', e);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// ═══════════════════════════════════════════════════════════════════════════════
 // EXPORT — POST /records/export
 // ═══════════════════════════════════════════════════════════════════════════════
 router.post('/export', requireAuth, async (req, res) => {
@@ -1468,6 +1622,11 @@ router.post('/export', requireAuth, async (req, res) => {
           ) END`;
         if (minOwnedX) { conditions.push(`${ownedSubX} >= $${idx}`); params.push(parseInt(minOwnedX)); idx++; }
         if (maxOwnedX) { conditions.push(`${ownedSubX} <= $${idx}`); params.push(parseInt(maxOwnedX)); idx++; }
+      }
+      // Tag filter
+      if (qv('tag')) {
+        conditions.push(`EXISTS (SELECT 1 FROM property_tags pt_f WHERE pt_f.property_id = p.id AND pt_f.tag_id = $${idx})`);
+        params.push(parseInt(qv('tag'))); idx++;
       }
       const where = conditions.length ? 'WHERE ' + conditions.join(' AND ') : '';
       props = await query(`
@@ -1697,6 +1856,16 @@ router.get('/:id(\\d+)', requireAuth, async (req, res) => {
       ORDER BY pl.added_at DESC
     `, [id]);
 
+    // Tags
+    await ensureTagSchema();
+    const tagsRes = await query(`
+      SELECT t.id, t.name, t.color
+      FROM property_tags pt
+      JOIN tags t ON t.id = pt.tag_id
+      WHERE pt.property_id = $1
+      ORDER BY t.name ASC
+    `, [id]);
+
     // Compute distress score on detail view if not yet scored
     // (event-driven updates handle most cases; this catches any gaps)
     // Parse current breakdown to check if it's empty
@@ -1899,6 +2068,29 @@ router.get('/:id(\\d+)', requireAuth, async (req, res) => {
         ${listsHTML}
       </div>
 
+      <!-- TAGS CARD -->
+      <div class="card" style="margin-bottom:1.25rem">
+        <div class="sec-lbl">Tags <span class="count-pill" id="tag-count">${tagsRes.rows.length}</span></div>
+        <div id="tag-list" style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:12px;min-height:28px">
+          ${tagsRes.rows.map(t => `
+            <span class="tag-pill" data-tag-id="${t.id}" style="display:inline-flex;align-items:center;gap:4px;padding:4px 10px;border-radius:20px;font-size:12px;font-weight:500;background:${escHTML(t.color)}20;color:${escHTML(t.color)};border:1px solid ${escHTML(t.color)}40">
+              ${escHTML(t.name)}
+              <button onclick="removeTag(${p.id}, ${t.id}, this)" style="background:none;border:none;cursor:pointer;font-size:14px;line-height:1;color:inherit;padding:0;margin-left:2px" title="Remove tag">×</button>
+            </span>
+          `).join('')}
+          ${tagsRes.rows.length === 0 ? '<span style="color:#aaa;font-size:12px">No tags yet</span>' : ''}
+        </div>
+        <div style="display:flex;gap:6px;position:relative">
+          <input type="text" id="tag-input" placeholder="Type to add a tag…" autocomplete="off"
+            style="flex:1;padding:7px 10px;border:1px solid #ddd;border-radius:7px;font-size:13px;font-family:inherit"
+            oninput="suggestTags(this.value)"
+            onkeydown="if(event.key==='Enter'){event.preventDefault();addTagFromInput(${p.id});}"
+          >
+          <button onclick="addTagFromInput(${p.id})" style="padding:7px 14px;background:#1a1a1a;color:#fff;border:none;border-radius:7px;font-size:12px;font-weight:600;cursor:pointer;font-family:inherit">Add</button>
+          <div id="tag-suggestions" style="display:none;position:absolute;top:100%;left:0;right:60px;margin-top:4px;background:#fff;border:1px solid #ddd;border-radius:8px;box-shadow:0 4px 16px rgba(0,0,0,.08);max-height:180px;overflow-y:auto;z-index:50"></div>
+        </div>
+      </div>
+
       <!-- DISTRESS SCORE CARD -->
       ${p.distress_score != null ? (() => {
         const c = distress.BAND_COLORS[p.distress_band] || distress.BAND_COLORS.cold;
@@ -2087,6 +2279,107 @@ router.get('/:id(\\d+)', requireAuth, async (req, res) => {
         el.textContent = msg;
         el.style.display = 'block';
       }
+
+      // ─── Tag management ─────────────────────────────────────────────────
+      function _esc(s) {
+        var d = document.createElement('div');
+        d.appendChild(document.createTextNode(s));
+        return d.innerHTML;
+      }
+      var _suggestTimer = null;
+      function suggestTags(q) {
+        clearTimeout(_suggestTimer);
+        var box = document.getElementById('tag-suggestions');
+        if (!q.trim()) { box.style.display = 'none'; return; }
+        _suggestTimer = setTimeout(async function() {
+          try {
+            var res = await fetch('/records/tags/suggest?q=' + encodeURIComponent(q.trim()));
+            var tags = await res.json();
+            if (!tags.length) { box.style.display = 'none'; return; }
+            // Filter out tags already on this property
+            var existing = Array.from(document.querySelectorAll('.tag-pill')).map(function(el){ return parseInt(el.getAttribute('data-tag-id')); });
+            tags = tags.filter(function(t){ return existing.indexOf(t.id) === -1; });
+            if (!tags.length) { box.style.display = 'none'; return; }
+            box.innerHTML = tags.map(function(t){
+              return '<div onclick="pickSuggestion(' + t.id + ', this)" style="padding:8px 12px;cursor:pointer;font-size:13px;display:flex;align-items:center;gap:8px" onmouseover="this.style.background=\'#f5f4f0\'" onmouseout="this.style.background=\'none\'">'
+                + '<span style="width:10px;height:10px;border-radius:50%;background:' + (t.color||'#6b7280') + '"></span>'
+                + '<span>' + _esc(t.name) + '</span></div>';
+            }).join('');
+            box.style.display = 'block';
+          } catch(e) { box.style.display = 'none'; }
+        }, 200);
+      }
+
+      function pickSuggestion(tagId, el) {
+        var name = el.querySelector('span:last-child').textContent;
+        document.getElementById('tag-input').value = name;
+        document.getElementById('tag-suggestions').style.display = 'none';
+      }
+
+      async function addTagFromInput(propId) {
+        var input = document.getElementById('tag-input');
+        var name = input.value.trim();
+        if (!name) return;
+        input.disabled = true;
+        try {
+          var res = await fetch('/records/' + propId + '/tags', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ name: name })
+          });
+          var data = await res.json();
+          if (!res.ok || data.error) { alert(data.error || 'Failed to add tag.'); return; }
+          var tag = data.tag;
+          var list = document.getElementById('tag-list');
+          // Remove "No tags yet" placeholder
+          var placeholder = list.querySelector('span:not(.tag-pill)');
+          if (placeholder) placeholder.remove();
+          // Check if already present
+          if (list.querySelector('[data-tag-id="' + tag.id + '"]')) { input.value = ''; return; }
+          var pill = document.createElement('span');
+          pill.className = 'tag-pill';
+          pill.setAttribute('data-tag-id', tag.id);
+          pill.style.cssText = 'display:inline-flex;align-items:center;gap:4px;padding:4px 10px;border-radius:20px;font-size:12px;font-weight:500;background:' + tag.color + '20;color:' + tag.color + ';border:1px solid ' + tag.color + '40';
+          pill.innerHTML = _esc(tag.name) + ' <button onclick="removeTag(' + propId + ',' + tag.id + ',this)" style="background:none;border:none;cursor:pointer;font-size:14px;line-height:1;color:inherit;padding:0;margin-left:2px" title="Remove tag">×</button>';
+          list.appendChild(pill);
+          input.value = '';
+          updateTagCount();
+        } catch(e) { alert('Error: ' + e.message); }
+        finally { input.disabled = false; input.focus(); }
+        document.getElementById('tag-suggestions').style.display = 'none';
+      }
+
+      async function removeTag(propId, tagId, btn) {
+        if (!confirm('Remove this tag?')) return;
+        try {
+          var res = await fetch('/records/' + propId + '/tags/' + tagId, { method: 'DELETE' });
+          var data = await res.json();
+          if (!res.ok || data.error) { alert(data.error || 'Failed to remove tag.'); return; }
+          var pill = btn.closest('.tag-pill');
+          if (pill) pill.remove();
+          updateTagCount();
+          // If no tags left, show placeholder
+          var list = document.getElementById('tag-list');
+          if (!list.querySelector('.tag-pill')) {
+            list.innerHTML = '<span style="color:#aaa;font-size:12px">No tags yet</span>';
+          }
+        } catch(e) { alert('Error: ' + e.message); }
+      }
+
+      function updateTagCount() {
+        var count = document.querySelectorAll('.tag-pill').length;
+        var el = document.getElementById('tag-count');
+        if (el) el.textContent = count;
+      }
+
+      // Close suggestions on outside click
+      document.addEventListener('click', function(ev) {
+        var box = document.getElementById('tag-suggestions');
+        var input = document.getElementById('tag-input');
+        if (box && !box.contains(ev.target) && ev.target !== input) {
+          box.style.display = 'none';
+        }
+      });
       </script>
     `, 'records'));
   } catch (e) {
@@ -2905,6 +3198,11 @@ router.post('/delete', requireAuth, async (req, res) => {
         if (minOwnedDel) { conditions.push(`${ownedSubDel} >= $${idx}`); params.push(parseInt(minOwnedDel)); idx++; }
         if (maxOwnedDel) { conditions.push(`${ownedSubDel} <= $${idx}`); params.push(parseInt(maxOwnedDel)); idx++; }
       }
+      // Tag filter
+      if (qv('tag')) {
+        conditions.push(`EXISTS (SELECT 1 FROM property_tags pt_f WHERE pt_f.property_id = p.id AND pt_f.tag_id = $${idx})`);
+        params.push(parseInt(qv('tag'))); idx++;
+      }
 
       const where = conditions.length ? 'WHERE ' + conditions.join(' AND ') : '';
       const idsRes = await query(`
@@ -3131,6 +3429,11 @@ router.post('/remove-from-list', requireAuth, async (req, res) => {
           ) END`;
         if (minOwnedRfl) { conditions.push(`${ownedSubRfl} >= $${idx}`); params.push(parseInt(minOwnedRfl)); idx++; }
         if (maxOwnedRfl) { conditions.push(`${ownedSubRfl} <= $${idx}`); params.push(parseInt(maxOwnedRfl)); idx++; }
+      }
+      // Tag filter
+      if (qv('tag')) {
+        conditions.push(`EXISTS (SELECT 1 FROM property_tags pt_f WHERE pt_f.property_id = p.id AND pt_f.tag_id = $${idx})`);
+        params.push(parseInt(qv('tag'))); idx++;
       }
 
       const where = conditions.length ? 'WHERE ' + conditions.join(' AND ') : '';
