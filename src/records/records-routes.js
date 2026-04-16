@@ -2,6 +2,7 @@ const express = require('express');
 const router = express.Router();
 const { query } = require('../db');
 const distress = require('../scoring/distress');
+const settings = require('../settings');
 
 function requireAuth(req, res, next) {
   if (req.session && req.session.authenticated) return next();
@@ -13,6 +14,56 @@ const { shell } = require('../shared-shell');
 function fmt(val, fallback) { return val || fallback || '—'; }
 function fmtDate(val) { if (!val) return '—'; return new Date(val).toLocaleDateString('en-US', { month:'short', day:'numeric', year:'numeric' }); }
 function fmtMoney(val) { if (!val) return '—'; return '$' + Number(val).toLocaleString(); }
+function escHTML(s) {
+  return String(s == null ? '' : s).replace(/[&<>"']/g, ch => (
+    { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[ch]
+  ));
+}
+
+// Owner Occupancy — derived from comparing property address to mailing address.
+// Returns 'owner_occupied' | 'absent_owner' | 'unknown'.
+// Normalizes case + whitespace + common abbreviations to avoid false negatives
+// like "St" vs "Street". ZIP collapses to 5 digits.
+function normalizeAddrPart(s) {
+  if (!s) return '';
+  return String(s).toLowerCase().trim()
+    .replace(/[.,]/g, '')                  // strip periods + commas
+    .replace(/\s+/g, ' ')                  // collapse whitespace
+    .replace(/\bstreet\b/g, 'st')          // common abbreviations
+    .replace(/\bavenue\b/g, 'ave')
+    .replace(/\bdrive\b/g, 'dr')
+    .replace(/\bboulevard\b/g, 'blvd')
+    .replace(/\broad\b/g, 'rd')
+    .replace(/\blane\b/g, 'ln')
+    .replace(/\bcourt\b/g, 'ct')
+    .replace(/\bplace\b/g, 'pl')
+    .replace(/\bcircle\b/g, 'cir')
+    .replace(/\bterrace\b/g, 'ter')
+    .replace(/\bparkway\b/g, 'pkwy')
+    .replace(/\bhighway\b/g, 'hwy');
+}
+function computeOwnerOccupancy(prop, contact) {
+  if (!contact || !contact.mailing_address) return 'unknown';
+  const propStreet = normalizeAddrPart(prop.street);
+  const propCity   = normalizeAddrPart(prop.city);
+  const propState  = (prop.state_code || '').toUpperCase().trim();
+  const propZip    = (prop.zip_code || '').trim().slice(0, 5);
+  const mailStreet = normalizeAddrPart(contact.mailing_address);
+  const mailCity   = normalizeAddrPart(contact.mailing_city);
+  const mailState  = (contact.mailing_state || '').toUpperCase().trim();
+  const mailZip    = (contact.mailing_zip || '').trim().slice(0, 5);
+  if (!mailStreet) return 'unknown';
+  // Strict match: street + city + state + zip-5 all align
+  if (propStreet === mailStreet && propCity === mailCity && propState === mailState && propZip === mailZip) {
+    return 'owner_occupied';
+  }
+  return 'absent_owner';
+}
+const OCCUPANCY_LABELS = {
+  owner_occupied: 'Owner Occupied',
+  absent_owner:   'Absent Owner',
+  unknown:        'Unknown',
+};
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // RECORDS LIST — GET /records
@@ -30,8 +81,17 @@ router.get('/', requireAuth, async (req, res) => {
       min_year = '', max_year = '',
       upload_from = '', upload_to = '',
       min_distress = '',
+      occupancy = '',
+      msg = '', err = '',
       page = 1
     } = req.query;
+
+    // Escape user-supplied flash messages before rendering into HTML
+    const escHTML = (s) => String(s || '').replace(/[&<>"']/g, ch => (
+      { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[ch]
+    ));
+    const msgSafe = escHTML(msg);
+    const errSafe = escHTML(err);
 
     // stack_list can arrive as a single string, an array (multi-checkbox), or absent.
     // Normalize to an array of non-empty strings.
@@ -103,6 +163,49 @@ router.get('/', requireAuth, async (req, res) => {
     if (type)         { conditions.push(`p.property_type = $${idx}`);     params.push(type); idx++; }
     if (pipeline)     { conditions.push(`p.pipeline_stage = $${idx}`);    params.push(pipeline); idx++; }
     if (prop_status)  { conditions.push(`p.property_status = $${idx}`);   params.push(prop_status); idx++; }
+    // Owner Occupancy filter — SQL logic must match the JS computeOwnerOccupancy()
+    // helper (case-insensitive, strip periods/commas, normalize street suffix
+    // abbreviations so "Main St" matches "Main Street", ZIP collapsed to 5).
+    // This is wrapped in a CTE-style expression: REGEXP_REPLACE chained for each
+    // suffix word boundary. \y is Postgres word-boundary. (?i) is case-insensitive.
+    const NORM_ADDR = (col) => `
+      REGEXP_REPLACE(REGEXP_REPLACE(REGEXP_REPLACE(REGEXP_REPLACE(REGEXP_REPLACE(REGEXP_REPLACE(
+      REGEXP_REPLACE(REGEXP_REPLACE(REGEXP_REPLACE(REGEXP_REPLACE(REGEXP_REPLACE(REGEXP_REPLACE(REGEXP_REPLACE(
+        LOWER(REGEXP_REPLACE(TRIM(${col}), '[.,]+', '', 'g')),
+        '\\ystreet\\y',  'st',   'g'),
+        '\\yavenue\\y',  'ave',  'g'),
+        '\\ydrive\\y',   'dr',   'g'),
+        '\\yboulevard\\y','blvd', 'g'),
+        '\\yroad\\y',    'rd',   'g'),
+        '\\ylane\\y',    'ln',   'g'),
+        '\\ycourt\\y',   'ct',   'g'),
+        '\\yplace\\y',   'pl',   'g'),
+        '\\ycircle\\y',  'cir',  'g'),
+        '\\yterrace\\y', 'ter',  'g'),
+        '\\yparkway\\y', 'pkwy', 'g'),
+        '\\yhighway\\y', 'hwy',  'g'),
+        '\\s+', ' ', 'g')`;
+    if (occupancy === 'owner_occupied') {
+      conditions.push(`(
+        c.mailing_address IS NOT NULL
+        AND ${NORM_ADDR('p.street')} = ${NORM_ADDR('c.mailing_address')}
+        AND LOWER(TRIM(p.city)) = LOWER(TRIM(c.mailing_city))
+        AND UPPER(TRIM(p.state_code)) = UPPER(TRIM(c.mailing_state))
+        AND SUBSTRING(TRIM(p.zip_code) FROM 1 FOR 5) = SUBSTRING(TRIM(c.mailing_zip) FROM 1 FOR 5)
+      )`);
+    } else if (occupancy === 'absent_owner') {
+      conditions.push(`(
+        c.mailing_address IS NOT NULL AND TRIM(c.mailing_address) != ''
+        AND NOT (
+          ${NORM_ADDR('p.street')} = ${NORM_ADDR('c.mailing_address')}
+          AND LOWER(TRIM(p.city)) = LOWER(TRIM(c.mailing_city))
+          AND UPPER(TRIM(p.state_code)) = UPPER(TRIM(c.mailing_state))
+          AND SUBSTRING(TRIM(p.zip_code) FROM 1 FOR 5) = SUBSTRING(TRIM(c.mailing_zip) FROM 1 FOR 5)
+        )
+      )`);
+    } else if (occupancy === 'unknown') {
+      conditions.push(`(c.mailing_address IS NULL OR TRIM(c.mailing_address) = '')`);
+    }
     if (mkt_result)   { conditions.push(`p.marketing_result = $${idx}`);  params.push(mkt_result); idx++; }
     if (mktIncludeList.length > 0) {
       conditions.push(`p.marketing_result = ANY($${idx}::text[])`);
@@ -224,7 +327,7 @@ router.get('/', requireAuth, async (req, res) => {
       add('min_equity', min_equity); add('max_equity', max_equity);
       add('min_year', min_year); add('max_year', max_year);
       add('upload_from', upload_from); add('upload_to', upload_to);
-      add('min_distress', min_distress);
+      add('min_distress', min_distress); add('occupancy', occupancy);
       stackList.forEach(sl => parts.push(`stack_list=${encodeURIComponent(sl)}`));
       stateList.forEach(s => parts.push(`state=${encodeURIComponent(s)}`));
       mktIncludeList.forEach(m => parts.push(`mkt_include=${encodeURIComponent(m)}`));
@@ -243,7 +346,7 @@ router.get('/', requireAuth, async (req, res) => {
       </div>` : '';
 
     // Filter count — multi-select filters count as 1 each regardless of how many values
-    const activeFilterCount = [city,zip,county,type,pipeline,prop_status,mkt_result,min_assessed,max_assessed,min_equity,max_equity,min_year,max_year,upload_from,upload_to,min_stack,min_distress].filter(Boolean).length + (stackList.length > 0 ? 1 : 0) + (stateList.length > 0 ? 1 : 0) + (mktIncludeList.length > 0 ? 1 : 0) + (mktExcludeList.length > 0 ? 1 : 0);
+    const activeFilterCount = [city,zip,county,type,pipeline,prop_status,mkt_result,occupancy,min_assessed,max_assessed,min_equity,max_equity,min_year,max_year,upload_from,upload_to,min_stack,min_distress].filter(Boolean).length + (stackList.length > 0 ? 1 : 0) + (stateList.length > 0 ? 1 : 0) + (mktIncludeList.length > 0 ? 1 : 0) + (mktExcludeList.length > 0 ? 1 : 0);
 
     res.send(shell('Records', `
       <div class="page-header">
@@ -252,6 +355,9 @@ router.get('/', requireAuth, async (req, res) => {
           <div class="page-sub">${list_id ? '<a href="/lists" style="color:#888;font-size:13px;text-decoration:none">← Back to Lists</a> &nbsp;·&nbsp; Filtered by list' : 'All properties across Indiana &amp; Georgia'}</div>
         </div>
       </div>
+
+      ${msgSafe ? `<div style="background:#eaf6ea;border:1px solid #9bd09b;border-radius:8px;padding:10px 14px;color:#1a5f1a;font-size:13px;margin-bottom:12px">✅ ${msgSafe}</div>` : ''}
+      ${errSafe ? `<div style="background:#fdeaea;border:1px solid #f5c5c5;border-radius:8px;padding:10px 14px;color:#8b1f1f;font-size:13px;margin-bottom:12px">❌ ${errSafe}</div>` : ''}
 
       <form method="GET" action="/records" id="filter-form">
         ${list_id ? '<input type="hidden" name="list_id" value="' + list_id + '">' : ''}
@@ -341,6 +447,15 @@ router.get('/', requireAuth, async (req, res) => {
               <select name="prop_status" style="width:100%;padding:7px 10px;border:1px solid #ddd;border-radius:7px;font-size:13px;font-family:inherit;background:#fff">
                 <option value="">Any</option>
                 ${['Off Market','Pending','Sold'].map(s=>`<option value="${s}" ${prop_status===s?'selected':''}>${s}</option>`).join('')}
+              </select>
+            </div>
+            <div>
+              <label style="font-size:11px;color:#888;display:block;margin-bottom:3px">Owner Occupancy</label>
+              <select name="occupancy" style="width:100%;padding:7px 10px;border:1px solid #ddd;border-radius:7px;font-size:13px;font-family:inherit;background:#fff">
+                <option value="">Any</option>
+                <option value="owner_occupied" ${occupancy==='owner_occupied'?'selected':''}>Owner Occupied</option>
+                <option value="absent_owner"   ${occupancy==='absent_owner'?'selected':''}>Absent Owner</option>
+                <option value="unknown"        ${occupancy==='unknown'?'selected':''}>Unknown</option>
               </select>
             </div>
             <div>
@@ -776,7 +891,7 @@ router.get('/', requireAuth, async (req, res) => {
               ['phones','Phones (1–15 separate columns)'],
               ['property_type','Property Type'],['year_built','Year Built'],['sqft','Sq Ft'],['bedrooms','Bedrooms'],['bathrooms','Bathrooms'],
               ['assessed_value','Assessed Value'],['estimated_value','Est. Value'],['equity_percent','Equity %'],
-              ['property_status','Property Status'],['pipeline_stage','Pipeline Stage'],['condition','Condition'],
+              ['property_status','Property Status'],['owner_occupancy','Owner Occupancy'],['pipeline_stage','Pipeline Stage'],['condition','Condition'],
               ['last_sale_date','Last Sale Date'],['last_sale_price','Last Sale Price'],
               ['marketing_result','Marketing Result'],['source','Source'],
               ['list_count','Lists Count'],['created_at','Date Added'],
@@ -789,11 +904,35 @@ router.get('/', requireAuth, async (req, res) => {
         </div>
       </div>
 
+      <!-- Delete modal -->
+      <div class="modal-overlay" id="delete-modal">
+        <div class="modal" style="max-width:480px">
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:1rem">
+            <h3 style="font-size:17px;font-weight:600;margin:0;color:#c0392b">🗑 Delete Records</h3>
+            <button onclick="document.getElementById('delete-modal').classList.remove('open')" style="background:none;border:none;font-size:22px;cursor:pointer;color:#888;line-height:1">×</button>
+          </div>
+          <div id="delete-modal-msg" style="font-size:14px;margin-bottom:16px;color:#333;line-height:1.5"></div>
+          <div id="delete-modal-err" style="display:none;background:#fdeaea;border:1px solid #f5c5c5;border-radius:6px;padding:8px 12px;color:#8b1f1f;font-size:13px;margin-bottom:12px"></div>
+          <div style="margin-bottom:14px">
+            <label style="font-size:12px;color:#888;display:block;margin-bottom:4px">Delete Code</label>
+            <input type="password" id="delete-code-input" autocomplete="off" placeholder="Enter delete code" style="width:100%;padding:9px 12px;border:1px solid #ddd;border-radius:8px;font-size:14px;font-family:inherit" onkeydown="if(event.key==='Enter'){event.preventDefault();confirmDelete();}">
+          </div>
+          <div style="display:flex;gap:8px;justify-content:flex-end">
+            <button onclick="document.getElementById('delete-modal').classList.remove('open')" style="padding:9px 16px;background:#fff;color:#666;border:1px solid #ddd;border-radius:8px;font-size:13px;cursor:pointer;font-family:inherit">Cancel</button>
+            <button onclick="confirmDelete()" id="delete-confirm-btn" style="padding:9px 16px;background:#c0392b;color:#fff;border:none;border-radius:8px;font-size:13px;font-weight:600;cursor:pointer;font-family:inherit">Delete Records</button>
+          </div>
+          <div style="font-size:11px;color:#888;margin-top:12px;line-height:1.4">
+            Forgot the code? <a href="/settings/security" style="color:#666">Update it in Security Settings</a>.
+          </div>
+        </div>
+      </div>
+
       <!-- Export toolbar -->
       <div id="export-toolbar" style="display:none;background:#1a1a1a;color:#fff;border-radius:10px;padding:10px 16px;margin-bottom:8px;align-items:center;justify-content:space-between;gap:12px">
         <div style="font-size:13px"><span id="selected-count">0</span> records selected</div>
         <div style="display:flex;gap:8px">
           <button onclick="clearSelection()" style="padding:6px 12px;background:transparent;color:#aaa;border:1px solid #444;border-radius:7px;font-size:12px;cursor:pointer;font-family:inherit">Clear</button>
+          <button onclick="openDeleteModal()" style="padding:6px 14px;background:#c0392b;color:#fff;border:none;border-radius:7px;font-size:12px;font-weight:600;cursor:pointer;font-family:inherit">🗑 Delete</button>
           <button onclick="openExportModal()" style="padding:6px 14px;background:#fff;color:#1a1a1a;border:none;border-radius:7px;font-size:12px;font-weight:600;cursor:pointer;font-family:inherit">⬇ Export CSV</button>
         </div>
       </div>
@@ -931,6 +1070,63 @@ router.get('/', requireAuth, async (req, res) => {
         } catch(err) { alert('Export failed: ' + err.message); }
         finally { if (btn) { btn.textContent = 'Download CSV'; btn.disabled = false; } }
       }
+
+      function openDeleteModal() {
+        var ids = Object.keys(selectedIds);
+        var count = _allSelected ? _pageTotal : ids.length;
+        if (!_allSelected && !ids.length) { alert('No records selected.'); return; }
+        var msg = _allSelected
+          ? 'You are about to permanently delete <strong>all ' + count.toLocaleString() + ' records</strong> matching your current filter. This cannot be undone.'
+          : 'You are about to permanently delete <strong>' + count + ' record' + (count===1?'':'s') + '</strong>. This cannot be undone.';
+        document.getElementById('delete-modal-msg').innerHTML = msg;
+        document.getElementById('delete-modal-err').style.display = 'none';
+        document.getElementById('delete-code-input').value = '';
+        document.getElementById('delete-modal').classList.add('open');
+        setTimeout(function(){ document.getElementById('delete-code-input').focus(); }, 50);
+      }
+
+      async function confirmDelete() {
+        var code = document.getElementById('delete-code-input').value;
+        if (!code) {
+          showDeleteErr('Delete code required.');
+          return;
+        }
+        var ids = Object.keys(selectedIds);
+        var btn = document.getElementById('delete-confirm-btn');
+        btn.textContent = 'Deleting…';
+        btn.disabled = true;
+        try {
+          var res = await fetch('/records/delete', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              ids: _allSelected ? [] : ids,
+              selectAll: _allSelected,
+              filterParams: window.location.search,
+              code: code
+            })
+          });
+          var data = await res.json();
+          if (!res.ok || data.error) {
+            showDeleteErr(data.error || 'Delete failed.');
+            btn.textContent = 'Delete Records';
+            btn.disabled = false;
+            return;
+          }
+          // Success — reload to show fresh list
+          window.location.href = '/records?msg=' + encodeURIComponent('Deleted ' + data.deleted + ' record' + (data.deleted===1?'':'s') + '.');
+        } catch(err) {
+          showDeleteErr('Network error: ' + err.message);
+          btn.textContent = 'Delete Records';
+          btn.disabled = false;
+        }
+      }
+
+      function showDeleteErr(msg) {
+        var el = document.getElementById('delete-modal-err');
+        el.textContent = msg;
+        el.style.display = 'block';
+      }
       </script>
     `, 'records'));
   } catch (e) {
@@ -984,6 +1180,42 @@ router.post('/export', requireAuth, async (req, res) => {
       if (qv('type'))        { conditions.push(`p.property_type = $${idx}`);     params.push(qv('type')); idx++; }
       if (qv('pipeline'))    { conditions.push(`p.pipeline_stage = $${idx}`);    params.push(qv('pipeline')); idx++; }
       if (qv('prop_status')) { conditions.push(`p.property_status = $${idx}`);   params.push(qv('prop_status')); idx++; }
+      // Owner Occupancy — same NORM_ADDR helper logic as the list view
+      const NORM_ADDR_X = (col) => `
+        REGEXP_REPLACE(REGEXP_REPLACE(REGEXP_REPLACE(REGEXP_REPLACE(REGEXP_REPLACE(REGEXP_REPLACE(
+        REGEXP_REPLACE(REGEXP_REPLACE(REGEXP_REPLACE(REGEXP_REPLACE(REGEXP_REPLACE(REGEXP_REPLACE(REGEXP_REPLACE(
+          LOWER(REGEXP_REPLACE(TRIM(${col}), '[.,]+', '', 'g')),
+          '\\ystreet\\y',  'st',   'g'),
+          '\\yavenue\\y',  'ave',  'g'),
+          '\\ydrive\\y',   'dr',   'g'),
+          '\\yboulevard\\y','blvd', 'g'),
+          '\\yroad\\y',    'rd',   'g'),
+          '\\ylane\\y',    'ln',   'g'),
+          '\\ycourt\\y',   'ct',   'g'),
+          '\\yplace\\y',   'pl',   'g'),
+          '\\ycircle\\y',  'cir',  'g'),
+          '\\yterrace\\y', 'ter',  'g'),
+          '\\yparkway\\y', 'pkwy', 'g'),
+          '\\yhighway\\y', 'hwy',  'g'),
+          '\\s+', ' ', 'g')`;
+      const occX = qv('occupancy');
+      if (occX === 'owner_occupied') {
+        conditions.push(`(c.mailing_address IS NOT NULL
+          AND ${NORM_ADDR_X('p.street')} = ${NORM_ADDR_X('c.mailing_address')}
+          AND LOWER(TRIM(p.city)) = LOWER(TRIM(c.mailing_city))
+          AND UPPER(TRIM(p.state_code)) = UPPER(TRIM(c.mailing_state))
+          AND SUBSTRING(TRIM(p.zip_code) FROM 1 FOR 5) = SUBSTRING(TRIM(c.mailing_zip) FROM 1 FOR 5))`);
+      } else if (occX === 'absent_owner') {
+        conditions.push(`(c.mailing_address IS NOT NULL AND TRIM(c.mailing_address) != ''
+          AND NOT (
+            ${NORM_ADDR_X('p.street')} = ${NORM_ADDR_X('c.mailing_address')}
+            AND LOWER(TRIM(p.city)) = LOWER(TRIM(c.mailing_city))
+            AND UPPER(TRIM(p.state_code)) = UPPER(TRIM(c.mailing_state))
+            AND SUBSTRING(TRIM(p.zip_code) FROM 1 FOR 5) = SUBSTRING(TRIM(c.mailing_zip) FROM 1 FOR 5)
+          ))`);
+      } else if (occX === 'unknown') {
+        conditions.push(`(c.mailing_address IS NULL OR TRIM(c.mailing_address) = '')`);
+      }
       if (qv('mkt_result'))  { conditions.push(`p.marketing_result = $${idx}`);  params.push(qv('mkt_result')); idx++; }
       const mktIncArr = qvAll('mkt_include');
       const mktExcArr = qvAll('mkt_exclude');
@@ -1089,7 +1321,7 @@ router.post('/export', requireAuth, async (req, res) => {
       property_type: 'Property Type', year_built: 'Year Built', sqft: 'Sq Ft',
       bedrooms: 'Bedrooms', bathrooms: 'Bathrooms',
       assessed_value: 'Assessed Value', estimated_value: 'Est. Value', equity_percent: 'Equity %',
-      property_status: 'Property Status', pipeline_stage: 'Pipeline Stage', condition: 'Condition',
+      property_status: 'Property Status', owner_occupancy: 'Owner Occupancy', pipeline_stage: 'Pipeline Stage', condition: 'Condition',
       last_sale_date: 'Last Sale Date', last_sale_price: 'Last Sale Price',
       marketing_result: 'Marketing Result', source: 'Source',
       list_count: 'Lists Count', created_at: 'Date Added',
@@ -1134,6 +1366,13 @@ router.post('/export', requireAuth, async (req, res) => {
           // Render as nice label ("Burning" not "burning")
           const labels = { burning: 'Burning', hot: 'Hot', warm: 'Warm', cold: 'Cold' };
           val = row[col] ? (labels[row[col]] || row[col]) : '';
+        } else if (col === 'owner_occupancy') {
+          // Derive at export time from property + mailing address fields already in row
+          const occ = computeOwnerOccupancy(
+            { street: row.street, city: row.city, state_code: row.state_code, zip_code: row.zip_code },
+            { mailing_address: row.mailing_address, mailing_city: row.mailing_city, mailing_state: row.mailing_state, mailing_zip: row.mailing_zip }
+          );
+          val = OCCUPANCY_LABELS[occ];
         } else {
           val = row[col] !== null && row[col] !== undefined ? String(row[col]) : '';
         }
@@ -1343,6 +1582,7 @@ router.get('/:id(\\d+)', requireAuth, async (req, res) => {
           <div style="display:flex;gap:8px;align-items:center">
             ${p.estimated_value ? `<div style="text-align:right"><div style="font-size:11px;color:#888;text-transform:uppercase;letter-spacing:.06em">Est. Value</div><div style="font-size:22px;font-weight:700;color:#1a7a4a">${fmtMoney(p.estimated_value)}</div></div>` : ''}
             <button class="btn btn-ghost" onclick="document.getElementById('edit-modal').classList.add('open')">✏ Edit</button>
+            <button onclick="deleteThisProperty(${p.id})" style="background:#fff;color:#c0392b;border:1px solid #f0c0b8;padding:6px 14px;border-radius:7px;font-size:13px;font-weight:500;cursor:pointer;font-family:inherit">🗑 Delete</button>
           </div>
         </div>
       </div>
@@ -1372,6 +1612,10 @@ router.get('/:id(\\d+)', requireAuth, async (req, res) => {
             <div class="kv"><div class="kv-label">Lot Size</div><div class="kv-val">${p.lot_size ? Number(p.lot_size).toLocaleString() + ' sf' : '—'}</div></div>
             <div class="kv"><div class="kv-label">Condition</div><div class="kv-val" style="${p.condition==='Fair'?'color:#9a6800':p.condition==='Poor'?'color:#c0392b':''}">${fmt(p.condition)}</div></div>
             <div class="kv"><div class="kv-label">Property Status</div><div class="kv-val" style="${p.property_status==='Sold'?'color:#c0392b':p.property_status==='Pending'?'color:#9a6800':''}">${fmt(p.property_status)}</div></div>
+            ${(() => {
+              const occ = computeOwnerOccupancy(p, primaryContact);
+              return `<div class="kv"><div class="kv-label">Owner Occupancy</div><div class="kv-val">${OCCUPANCY_LABELS[occ]}</div></div>`;
+            })()}
             <div class="kv"><div class="kv-label">Assessed Value</div><div class="kv-val">${fmtMoney(p.assessed_value)}</div></div>
             <div class="kv"><div class="kv-label">Equity %</div><div class="kv-val highlight">${p.equity_percent ? p.equity_percent + '%' : '—'}</div></div>
             <div class="kv"><div class="kv-label">Marketing Result</div><div class="kv-val">${fmt(p.marketing_result)}</div></div>
@@ -1512,6 +1756,73 @@ router.get('/:id(\\d+)', requireAuth, async (req, res) => {
           </form>
         </div>
       </div>
+
+      <!-- Delete modal (single record) -->
+      <div class="modal-overlay" id="delete-modal">
+        <div class="modal" style="max-width:480px">
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:1rem">
+            <h3 style="font-size:17px;font-weight:600;margin:0;color:#c0392b">🗑 Delete Record</h3>
+            <button onclick="document.getElementById('delete-modal').classList.remove('open')" style="background:none;border:none;font-size:22px;cursor:pointer;color:#888;line-height:1">×</button>
+          </div>
+          <div style="font-size:14px;margin-bottom:16px;color:#333;line-height:1.5">
+            You are about to permanently delete <strong>${escHTML(p.street)}, ${escHTML(p.city)}, ${escHTML(p.state_code)}</strong>. This cannot be undone.
+          </div>
+          <div id="delete-modal-err" style="display:none;background:#fdeaea;border:1px solid #f5c5c5;border-radius:6px;padding:8px 12px;color:#8b1f1f;font-size:13px;margin-bottom:12px"></div>
+          <div style="margin-bottom:14px">
+            <label style="font-size:12px;color:#888;display:block;margin-bottom:4px">Delete Code</label>
+            <input type="password" id="delete-code-input" autocomplete="off" placeholder="Enter delete code" style="width:100%;padding:9px 12px;border:1px solid #ddd;border-radius:8px;font-size:14px;font-family:inherit" onkeydown="if(event.key==='Enter'){event.preventDefault();confirmDeleteSingle();}">
+          </div>
+          <div style="display:flex;gap:8px;justify-content:flex-end">
+            <button onclick="document.getElementById('delete-modal').classList.remove('open')" style="padding:9px 16px;background:#fff;color:#666;border:1px solid #ddd;border-radius:8px;font-size:13px;cursor:pointer;font-family:inherit">Cancel</button>
+            <button onclick="confirmDeleteSingle()" id="delete-confirm-btn" style="padding:9px 16px;background:#c0392b;color:#fff;border:none;border-radius:8px;font-size:13px;font-weight:600;cursor:pointer;font-family:inherit">Delete</button>
+          </div>
+          <div style="font-size:11px;color:#888;margin-top:12px;line-height:1.4">
+            Forgot the code? <a href="/settings/security" style="color:#666">Update it in Security Settings</a>.
+          </div>
+        </div>
+      </div>
+
+      <script>
+      var _propId = ${p.id};
+      function deleteThisProperty(id) {
+        _propId = id;
+        document.getElementById('delete-modal-err').style.display = 'none';
+        document.getElementById('delete-code-input').value = '';
+        document.getElementById('delete-modal').classList.add('open');
+        setTimeout(function(){ document.getElementById('delete-code-input').focus(); }, 50);
+      }
+      async function confirmDeleteSingle() {
+        var code = document.getElementById('delete-code-input').value;
+        if (!code) { showDeleteErr('Delete code required.'); return; }
+        var btn = document.getElementById('delete-confirm-btn');
+        btn.textContent = 'Deleting…';
+        btn.disabled = true;
+        try {
+          var res = await fetch('/records/' + _propId + '/delete', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ code: code })
+          });
+          var data = await res.json();
+          if (!res.ok || data.error) {
+            showDeleteErr(data.error || 'Delete failed.');
+            btn.textContent = 'Delete';
+            btn.disabled = false;
+            return;
+          }
+          window.location.href = '/records?msg=' + encodeURIComponent('Record deleted.');
+        } catch(err) {
+          showDeleteErr('Network error: ' + err.message);
+          btn.textContent = 'Delete';
+          btn.disabled = false;
+        }
+      }
+      function showDeleteErr(msg) {
+        var el = document.getElementById('delete-modal-err');
+        el.textContent = msg;
+        el.style.display = 'block';
+      }
+      </script>
     `, 'records'));
   } catch (e) {
     console.error(e);
@@ -1993,7 +2304,8 @@ router.get('/_duplicates', requireAuth, async (req, res) => {
           <div style="font-size:12px;color:#888">
             Showing top ${groupsRes.rows.length} duplicate groups (capped at 200). The OLDEST record (lowest ID) is kept; others are merged into it.
           </div>
-          <form method="POST" action="/records/_duplicates/merge_all" onsubmit="return confirm('Merge ALL ${totalDupGroups} duplicate group(s)?\\n\\nThis will:\\n• Process every group on this page\\n• Keep the oldest record in each group\\n• Delete ${totalRedundant} redundant records\\n• Cannot be undone\\n\\nMay take 30-60 seconds.');" style="margin:0">
+          <form method="POST" action="/records/_duplicates/merge_all" onsubmit="return confirm('Merge ALL ${totalDupGroups} duplicate group(s)?\\n\\nThis will:\\n• Process every group on this page\\n• Keep the oldest record in each group\\n• Delete ${totalRedundant} redundant records\\n• Cannot be undone\\n\\nMay take 30-60 seconds.');" style="margin:0;display:flex;gap:8px;align-items:center">
+            ${totalDupGroups >= 10 ? `<input type="password" name="code" placeholder="Delete code" required autocomplete="off" style="padding:7px 10px;border:1px solid #ddd;border-radius:7px;font-size:12px;font-family:inherit;width:140px" title="Required when merging 10+ groups">` : ''}
             <button type="submit" style="background:#c0392b;color:#fff;border:none;padding:8px 16px;border-radius:7px;font-size:13px;font-weight:500;cursor:pointer;font-family:inherit">⚡ Merge All ${totalDupGroups} Groups</button>
           </form>
         </div>
@@ -2105,6 +2417,14 @@ router.post('/_duplicates/merge_all', requireAuth, async (req, res) => {
       LIMIT 500
     `);
 
+    // Gate: if merging 10+ groups, require the delete code
+    if (groupsRes.rows.length >= 10) {
+      const verified = await settings.verifyDeleteCode(req.body.code);
+      if (!verified) {
+        return res.redirect('/records/_duplicates?err=' + encodeURIComponent(`Delete code required for bulk merge of ${groupsRes.rows.length} groups. Enter code and try again.`));
+      }
+    }
+
     let groupsMerged = 0, totalDropped = 0, totalMovedLists = 0, totalMovedContacts = 0;
     const errors = [];
     const recomputeIds = [];
@@ -2160,6 +2480,193 @@ router.post('/_duplicates/merge_all', requireAuth, async (req, res) => {
   } catch(e) {
     console.error('[duplicates/merge_all]', e);
     res.redirect('/records/_duplicates?err=' + encodeURIComponent('Bulk merge failed: ' + e.message));
+  }
+});
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// DELETE RECORDS — bulk + single
+// Gated by the delete code from app_settings. Required for:
+//   - POST /records/delete              (bulk — any count)
+//   - POST /records/:id(\d+)/delete     (single — to keep flow consistent)
+// Returns JSON so the frontend can show inline errors.
+// ═══════════════════════════════════════════════════════════════════════════════
+router.post('/delete', requireAuth, async (req, res) => {
+  try {
+    const { ids, selectAll, filterParams, code } = req.body;
+
+    // Verify delete code BEFORE touching any data
+    const verified = await settings.verifyDeleteCode(code);
+    if (!verified) {
+      return res.status(403).json({ error: 'Invalid delete code.' });
+    }
+
+    let idsToDelete = [];
+    if (selectAll) {
+      // Rebuild the same filter conditions as the records list, then SELECT
+      // matching IDs. Mirrors the export route's selectAll logic.
+      const qs = new URLSearchParams(filterParams || '');
+      let conditions = [], params = [], idx = 1;
+      const qv = (k) => qs.get(k) || '';
+      const qvAll = (k) => qs.getAll(k).filter(v => v && String(v).trim() !== '');
+
+      if (qv('q')) {
+        conditions.push(`(p.street ILIKE $${idx} OR p.city ILIKE $${idx} OR c.first_name ILIKE $${idx} OR c.last_name ILIKE $${idx})`);
+        params.push(`%${qv('q')}%`); idx++;
+      }
+      const stateArr = qvAll('state').map(s => String(s).toUpperCase());
+      if (stateArr.length > 0) {
+        conditions.push(`p.state_code = ANY($${idx}::text[])`);
+        params.push(stateArr); idx++;
+      }
+      const splitCsv = (raw) => !raw ? [] : String(raw).split(/[,\s]+/).map(s => s.trim()).filter(Boolean);
+      const cityArr   = splitCsv(qv('city'));
+      const zipArr    = splitCsv(qv('zip'));
+      const countyArr = splitCsv(qv('county'));
+      if (cityArr.length > 0) {
+        const o = cityArr.map(() => `p.city ILIKE $${idx++}`);
+        conditions.push(`(${o.join(' OR ')})`);
+        cityArr.forEach(c => params.push(`%${c}%`));
+      }
+      if (zipArr.length > 0) {
+        const o = zipArr.map(() => `p.zip_code ILIKE $${idx++}`);
+        conditions.push(`(${o.join(' OR ')})`);
+        zipArr.forEach(z => params.push(`${z}%`));
+      }
+      if (countyArr.length > 0) {
+        const o = countyArr.map(() => `p.county ILIKE $${idx++}`);
+        conditions.push(`(${o.join(' OR ')})`);
+        countyArr.forEach(c => params.push(`%${c}%`));
+      }
+      if (qv('type'))        { conditions.push(`p.property_type = $${idx}`);     params.push(qv('type')); idx++; }
+      if (qv('pipeline'))    { conditions.push(`p.pipeline_stage = $${idx}`);    params.push(qv('pipeline')); idx++; }
+      if (qv('prop_status')) { conditions.push(`p.property_status = $${idx}`);   params.push(qv('prop_status')); idx++; }
+      if (qv('mkt_result'))  { conditions.push(`p.marketing_result = $${idx}`);  params.push(qv('mkt_result')); idx++; }
+      const mktIncArr = qvAll('mkt_include');
+      const mktExcArr = qvAll('mkt_exclude');
+      if (mktIncArr.length > 0) {
+        conditions.push(`p.marketing_result = ANY($${idx}::text[])`);
+        params.push(mktIncArr); idx++;
+      }
+      if (mktExcArr.length > 0) {
+        conditions.push(`(p.marketing_result IS NULL OR p.marketing_result != ALL($${idx}::text[]))`);
+        params.push(mktExcArr); idx++;
+      }
+      if (qv('min_assessed')){ conditions.push(`p.assessed_value >= $${idx}`);   params.push(qv('min_assessed')); idx++; }
+      if (qv('max_assessed')){ conditions.push(`p.assessed_value <= $${idx}`);   params.push(qv('max_assessed')); idx++; }
+      if (qv('min_equity'))  { conditions.push(`p.equity_percent >= $${idx}`);   params.push(qv('min_equity')); idx++; }
+      if (qv('max_equity'))  { conditions.push(`p.equity_percent <= $${idx}`);   params.push(qv('max_equity')); idx++; }
+      if (qv('min_year'))    { conditions.push(`p.year_built >= $${idx}`);       params.push(qv('min_year')); idx++; }
+      if (qv('max_year'))    { conditions.push(`p.year_built <= $${idx}`);       params.push(qv('max_year')); idx++; }
+      if (qv('upload_from')) { conditions.push(`p.created_at >= $${idx}`);       params.push(qv('upload_from')); idx++; }
+      if (qv('upload_to'))   { conditions.push(`p.created_at <= $${idx}`);       params.push(qv('upload_to') + ' 23:59:59'); idx++; }
+      if (qv('list_id'))     { conditions.push(`EXISTS (SELECT 1 FROM property_lists pl2 WHERE pl2.property_id = p.id AND pl2.list_id = $${idx})`); params.push(qv('list_id')); idx++; }
+      const stackArr = qvAll('stack_list').map(v => parseInt(v)).filter(n => !isNaN(n));
+      if (stackArr.length > 0) {
+        conditions.push(
+          `(SELECT COUNT(DISTINCT pl_stack.list_id)
+              FROM property_lists pl_stack
+             WHERE pl_stack.property_id = p.id
+               AND pl_stack.list_id = ANY($${idx}::int[])) = $${idx+1}`
+        );
+        params.push(stackArr);
+        params.push(stackArr.length);
+        idx += 2;
+      }
+      if (qv('min_stack'))   { conditions.push(`(SELECT COUNT(*) FROM property_lists plc WHERE plc.property_id = p.id) >= $${idx}`); params.push(parseInt(qv('min_stack'))); idx++; }
+      if (qv('min_distress')){ conditions.push(`p.distress_score >= $${idx}`);   params.push(parseInt(qv('min_distress'))); idx++; }
+
+      // Owner Occupancy — must match the same logic as the records list route.
+      // Without this, a user filtering by "Absent Owner" and clicking Select All
+      // would unintentionally delete records across ALL occupancy buckets.
+      const NORM_ADDR_DEL = (col) => `
+        REGEXP_REPLACE(REGEXP_REPLACE(REGEXP_REPLACE(REGEXP_REPLACE(REGEXP_REPLACE(REGEXP_REPLACE(
+        REGEXP_REPLACE(REGEXP_REPLACE(REGEXP_REPLACE(REGEXP_REPLACE(REGEXP_REPLACE(REGEXP_REPLACE(REGEXP_REPLACE(
+          LOWER(REGEXP_REPLACE(TRIM(${col}), '[.,]+', '', 'g')),
+          '\\ystreet\\y',  'st',   'g'),
+          '\\yavenue\\y',  'ave',  'g'),
+          '\\ydrive\\y',   'dr',   'g'),
+          '\\yboulevard\\y','blvd', 'g'),
+          '\\yroad\\y',    'rd',   'g'),
+          '\\ylane\\y',    'ln',   'g'),
+          '\\ycourt\\y',   'ct',   'g'),
+          '\\yplace\\y',   'pl',   'g'),
+          '\\ycircle\\y',  'cir',  'g'),
+          '\\yterrace\\y', 'ter',  'g'),
+          '\\yparkway\\y', 'pkwy', 'g'),
+          '\\yhighway\\y', 'hwy',  'g'),
+          '\\s+', ' ', 'g')`;
+      const occDel = qv('occupancy');
+      if (occDel === 'owner_occupied') {
+        conditions.push(`(c.mailing_address IS NOT NULL
+          AND ${NORM_ADDR_DEL('p.street')} = ${NORM_ADDR_DEL('c.mailing_address')}
+          AND LOWER(TRIM(p.city)) = LOWER(TRIM(c.mailing_city))
+          AND UPPER(TRIM(p.state_code)) = UPPER(TRIM(c.mailing_state))
+          AND SUBSTRING(TRIM(p.zip_code) FROM 1 FOR 5) = SUBSTRING(TRIM(c.mailing_zip) FROM 1 FOR 5))`);
+      } else if (occDel === 'absent_owner') {
+        conditions.push(`(c.mailing_address IS NOT NULL AND TRIM(c.mailing_address) != ''
+          AND NOT (
+            ${NORM_ADDR_DEL('p.street')} = ${NORM_ADDR_DEL('c.mailing_address')}
+            AND LOWER(TRIM(p.city)) = LOWER(TRIM(c.mailing_city))
+            AND UPPER(TRIM(p.state_code)) = UPPER(TRIM(c.mailing_state))
+            AND SUBSTRING(TRIM(p.zip_code) FROM 1 FOR 5) = SUBSTRING(TRIM(c.mailing_zip) FROM 1 FOR 5)
+          ))`);
+      } else if (occDel === 'unknown') {
+        conditions.push(`(c.mailing_address IS NULL OR TRIM(c.mailing_address) = '')`);
+      }
+
+      const where = conditions.length ? 'WHERE ' + conditions.join(' AND ') : '';
+      const idsRes = await query(`
+        SELECT DISTINCT p.id
+        FROM properties p
+        LEFT JOIN property_contacts pc ON pc.property_id = p.id AND pc.primary_contact = true
+        LEFT JOIN contacts c ON c.id = pc.contact_id
+        ${where}
+      `, params);
+      idsToDelete = idsRes.rows.map(r => r.id);
+    } else {
+      if (!Array.isArray(ids) || ids.length === 0) {
+        return res.status(400).json({ error: 'No records selected.' });
+      }
+      idsToDelete = ids.map(n => parseInt(n)).filter(n => !isNaN(n) && n > 0);
+    }
+
+    if (idsToDelete.length === 0) {
+      return res.status(400).json({ error: 'No valid records to delete.' });
+    }
+
+    // Delete in this order — child tables first (distress logs cascade via FK,
+    // so they clean up automatically when properties go)
+    await query(`DELETE FROM property_lists    WHERE property_id = ANY($1::int[])`, [idsToDelete]);
+    await query(`DELETE FROM property_contacts WHERE property_id = ANY($1::int[])`, [idsToDelete]);
+    const result = await query(`DELETE FROM properties WHERE id = ANY($1::int[]) RETURNING id`, [idsToDelete]);
+
+    console.log(`[records/delete] Deleted ${result.rowCount} properties`);
+    res.json({ ok: true, deleted: result.rowCount });
+  } catch (e) {
+    console.error('[records/delete]', e);
+    res.status(500).json({ error: 'Delete failed: ' + e.message });
+  }
+});
+
+router.post('/:id(\\d+)/delete', requireAuth, async (req, res) => {
+  try {
+    const id = parseInt(req.params.id);
+    const { code } = req.body;
+    const verified = await settings.verifyDeleteCode(code);
+    if (!verified) {
+      return res.status(403).json({ error: 'Invalid delete code.' });
+    }
+    await query(`DELETE FROM property_lists    WHERE property_id = $1`, [id]);
+    await query(`DELETE FROM property_contacts WHERE property_id = $1`, [id]);
+    const r = await query(`DELETE FROM properties WHERE id = $1 RETURNING id`, [id]);
+    if (!r.rowCount) {
+      return res.status(404).json({ error: 'Record not found.' });
+    }
+    console.log(`[records/delete] Deleted single property #${id}`);
+    res.json({ ok: true });
+  } catch (e) {
+    console.error('[records/:id/delete]', e);
+    res.status(500).json({ error: 'Delete failed: ' + e.message });
   }
 });
 
