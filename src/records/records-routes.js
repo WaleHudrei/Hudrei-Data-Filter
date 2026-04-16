@@ -917,6 +917,11 @@ router.get('/', requireAuth, async (req, res) => {
               <input type="checkbox" value="${k}" class="col-check" checked style="width:14px;height:14px"> ${l}
             </label>`).join('')}
           </div>
+          <label style="display:flex;align-items:center;gap:8px;font-size:13px;cursor:pointer;padding:10px 12px;margin-bottom:1rem;background:#f5f4f0;border-radius:8px">
+            <input type="checkbox" id="clean-phones-only" checked style="width:14px;height:14px">
+            <span>Exclude wrong/dead phone numbers</span>
+            <span style="font-size:11px;color:#888;margin-left:auto">Recommended for dialer exports</span>
+          </label>
           <button onclick="doExport()" style="width:100%;padding:10px;background:#1a1a1a;color:#fff;border:none;border-radius:8px;font-size:14px;font-weight:500;cursor:pointer;font-family:inherit">Download CSV</button>
         </div>
       </div>
@@ -973,15 +978,18 @@ router.get('/', requireAuth, async (req, res) => {
         <div style="display:flex;gap:8px;position:relative">
           <button onclick="clearSelection()" style="padding:6px 12px;background:transparent;color:#aaa;border:1px solid #444;border-radius:7px;font-size:12px;cursor:pointer;font-family:inherit">Clear</button>
           <button onclick="toggleManageMenu(event)" id="manage-btn" style="padding:6px 14px;background:#fff;color:#1a1a1a;border:none;border-radius:7px;font-size:12px;font-weight:600;cursor:pointer;font-family:inherit;display:flex;align-items:center;gap:4px">Manage <span style="font-size:9px;opacity:.6">▾</span></button>
-          <button onclick="openExportModal()" style="padding:6px 14px;background:#fff;color:#1a1a1a;border:none;border-radius:7px;font-size:12px;font-weight:600;cursor:pointer;font-family:inherit">⬇ Export CSV</button>
 
           <!-- Manage dropdown menu -->
-          <div id="manage-menu" style="display:none;position:absolute;top:100%;right:108px;margin-top:6px;background:#fff;border:1px solid #e0dfd8;border-radius:10px;box-shadow:0 6px 24px rgba(0,0,0,0.12);padding:6px;min-width:220px;z-index:100">
-            <button onclick="openDeleteModal()" style="display:flex;align-items:center;gap:10px;width:100%;text-align:left;padding:9px 12px;background:none;border:none;border-radius:7px;font-size:13px;font-family:inherit;color:#c0392b;cursor:pointer" onmouseover="this.style.background='#fdeaea'" onmouseout="this.style.background='none'">
-              <span style="font-size:14px">🗑</span><span>Delete records</span>
+          <div id="manage-menu" style="display:none;position:absolute;top:100%;right:0;margin-top:6px;background:#fff;border:1px solid #e0dfd8;border-radius:10px;box-shadow:0 6px 24px rgba(0,0,0,0.12);padding:6px;min-width:220px;z-index:100">
+            <button onclick="openExportModalFromMenu()" style="display:flex;align-items:center;gap:10px;width:100%;text-align:left;padding:9px 12px;background:none;border:none;border-radius:7px;font-size:13px;font-family:inherit;color:#1a1a1a;cursor:pointer" onmouseover="this.style.background='#f5f4f0'" onmouseout="this.style.background='none'">
+              <span style="font-size:14px">⬇</span><span>Export CSV</span>
             </button>
+            <div style="height:1px;background:#eee;margin:4px 6px"></div>
             <button onclick="openRemoveFromListModal()" style="display:flex;align-items:center;gap:10px;width:100%;text-align:left;padding:9px 12px;background:none;border:none;border-radius:7px;font-size:13px;font-family:inherit;color:#1a1a1a;cursor:pointer" onmouseover="this.style.background='#f5f4f0'" onmouseout="this.style.background='none'">
               <span style="font-size:14px">📋</span><span>Remove from list</span>
+            </button>
+            <button onclick="openDeleteModal()" style="display:flex;align-items:center;gap:10px;width:100%;text-align:left;padding:9px 12px;background:none;border:none;border-radius:7px;font-size:13px;font-family:inherit;color:#c0392b;cursor:pointer" onmouseover="this.style.background='#fdeaea'" onmouseout="this.style.background='none'">
+              <span style="font-size:14px">🗑</span><span>Delete records</span>
             </button>
             <div style="height:1px;background:#eee;margin:4px 6px"></div>
             <div style="padding:4px 12px;font-size:10px;color:#aaa;text-transform:uppercase;letter-spacing:.08em">Coming soon</div>
@@ -1100,7 +1108,15 @@ router.get('/', requireAuth, async (req, res) => {
       }
 
       function openExportModal() {
+        var m = document.getElementById('manage-menu');
+        if (m) m.style.display = 'none';
         document.getElementById('export-modal').classList.add('open');
+      }
+
+      // Used from the Manage menu (identical to openExportModal — kept as a
+      // separate symbol so the menu code is self-documenting)
+      function openExportModalFromMenu() {
+        openExportModal();
       }
 
       function checkAll(val) {
@@ -1115,13 +1131,14 @@ router.get('/', requireAuth, async (req, res) => {
         if (!cols.length) { alert('Select at least one column.'); return; }
         var ids = Object.keys(selectedIds);
         if (!_allSelected && !ids.length) { alert('No records selected.'); return; }
+        var cleanPhonesOnly = document.getElementById('clean-phones-only')?.checked ?? true;
         var btn = document.querySelector('[onclick="doExport()"]');
         if (btn) { btn.textContent = 'Downloading…'; btn.disabled = true; }
         try {
           var res = await fetch('/records/export', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ ids: _allSelected ? [] : ids, columns: cols, selectAll: _allSelected, filterParams: window.location.search })
+            body: JSON.stringify({ ids: _allSelected ? [] : ids, columns: cols, selectAll: _allSelected, filterParams: window.location.search, cleanPhonesOnly: cleanPhonesOnly })
           });
           if (!res.ok) { alert('Export failed.'); return; }
           var blob = await res.blob();
@@ -1137,6 +1154,8 @@ router.get('/', requireAuth, async (req, res) => {
       }
 
       function openDeleteModal() {
+        var m = document.getElementById('manage-menu');
+        if (m) m.style.display = 'none';
         var ids = Object.keys(selectedIds);
         var count = _allSelected ? _pageTotal : ids.length;
         if (!_allSelected && !ids.length) { alert('No records selected.'); return; }
@@ -1281,8 +1300,10 @@ router.get('/', requireAuth, async (req, res) => {
 router.post('/export', requireAuth, async (req, res) => {
   try {
     await distress.ensureDistressSchema();
-    const { ids, columns, selectAll, filterParams } = req.body;
+    const { ids, columns, selectAll, filterParams, cleanPhonesOnly } = req.body;
     if (!columns || !columns.length) return res.status(400).json({ error: 'No columns selected' });
+    // Default ON if not provided — matches the checkbox default
+    const excludeBadPhones = cleanPhonesOnly !== false;
 
     let props;
     if (selectAll) {
@@ -1456,6 +1477,25 @@ router.post('/export', requireAuth, async (req, res) => {
         if (!phoneMap[ph.property_id]) phoneMap[ph.property_id] = [];
         phoneMap[ph.property_id].push({ number: ph.phone_number, status: ph.phone_status || '' });
       });
+
+      // If "Exclude wrong/dead" is on, filter out bad statuses and shift remaining
+      // phones up into the lower slots. This means "Phone 1" in the CSV is always
+      // the first dialable number — crucial for Readymode imports to not waste
+      // attempts on known-bad slots.
+      if (excludeBadPhones) {
+        const BAD = new Set(['wrong', 'dead']);
+        let removed = 0;
+        for (const pid in phoneMap) {
+          const before = phoneMap[pid].length;
+          phoneMap[pid] = phoneMap[pid].filter(p => {
+            const s = String(p.status || '').toLowerCase().trim();
+            return !BAD.has(s);
+          });
+          removed += (before - phoneMap[pid].length);
+        }
+        console.log(`[export] Clean-phones mode: removed ${removed} wrong/dead phones, shifted remaining up`);
+      }
+
       console.log(`[export] Fetched ${phoneRes.rows.length} phones across ${Object.keys(phoneMap).length}/${allIds.length} properties`);
     }
 
