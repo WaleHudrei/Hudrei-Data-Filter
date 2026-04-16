@@ -944,13 +944,57 @@ router.get('/', requireAuth, async (req, res) => {
         </div>
       </div>
 
+      <!-- Remove from List modal -->
+      <div class="modal-overlay" id="rfl-modal">
+        <div class="modal" style="max-width:480px">
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:1rem">
+            <h3 style="font-size:17px;font-weight:600;margin:0;color:#1a1a1a">📋 Remove from List</h3>
+            <button onclick="document.getElementById('rfl-modal').classList.remove('open')" style="background:none;border:none;font-size:22px;cursor:pointer;color:#888;line-height:1">×</button>
+          </div>
+          <div id="rfl-modal-msg" style="font-size:14px;margin-bottom:16px;color:#333;line-height:1.5"></div>
+          <div id="rfl-modal-err" style="display:none;background:#fdeaea;border:1px solid #f5c5c5;border-radius:6px;padding:8px 12px;color:#8b1f1f;font-size:13px;margin-bottom:12px"></div>
+          <div style="margin-bottom:14px">
+            <label style="font-size:12px;color:#888;display:block;margin-bottom:4px">Delete Code</label>
+            <input type="password" id="rfl-code-input" autocomplete="off" placeholder="Enter delete code" style="width:100%;padding:9px 12px;border:1px solid #ddd;border-radius:8px;font-size:14px;font-family:inherit" onkeydown="if(event.key==='Enter'){event.preventDefault();confirmRemoveFromList();}">
+          </div>
+          <div style="display:flex;gap:8px;justify-content:flex-end">
+            <button onclick="document.getElementById('rfl-modal').classList.remove('open')" style="padding:9px 16px;background:#fff;color:#666;border:1px solid #ddd;border-radius:8px;font-size:13px;cursor:pointer;font-family:inherit">Cancel</button>
+            <button onclick="confirmRemoveFromList()" id="rfl-confirm-btn" style="padding:9px 16px;background:#1a1a1a;color:#fff;border:none;border-radius:8px;font-size:13px;font-weight:600;cursor:pointer;font-family:inherit">Remove from List</button>
+          </div>
+          <div style="font-size:11px;color:#888;margin-top:12px;line-height:1.4">
+            This detaches the selected properties from this list but keeps the property records themselves.
+          </div>
+        </div>
+      </div>
+
       <!-- Export toolbar -->
       <div id="export-toolbar" style="display:none;background:#1a1a1a;color:#fff;border-radius:10px;padding:10px 16px;margin-bottom:8px;align-items:center;justify-content:space-between;gap:12px">
         <div style="font-size:13px"><span id="selected-count">0</span> records selected</div>
-        <div style="display:flex;gap:8px">
+        <div style="display:flex;gap:8px;position:relative">
           <button onclick="clearSelection()" style="padding:6px 12px;background:transparent;color:#aaa;border:1px solid #444;border-radius:7px;font-size:12px;cursor:pointer;font-family:inherit">Clear</button>
-          <button onclick="openDeleteModal()" style="padding:6px 14px;background:#c0392b;color:#fff;border:none;border-radius:7px;font-size:12px;font-weight:600;cursor:pointer;font-family:inherit">🗑 Delete</button>
+          <button onclick="toggleManageMenu(event)" id="manage-btn" style="padding:6px 14px;background:#fff;color:#1a1a1a;border:none;border-radius:7px;font-size:12px;font-weight:600;cursor:pointer;font-family:inherit;display:flex;align-items:center;gap:4px">Manage <span style="font-size:9px;opacity:.6">▾</span></button>
           <button onclick="openExportModal()" style="padding:6px 14px;background:#fff;color:#1a1a1a;border:none;border-radius:7px;font-size:12px;font-weight:600;cursor:pointer;font-family:inherit">⬇ Export CSV</button>
+
+          <!-- Manage dropdown menu -->
+          <div id="manage-menu" style="display:none;position:absolute;top:100%;right:108px;margin-top:6px;background:#fff;border:1px solid #e0dfd8;border-radius:10px;box-shadow:0 6px 24px rgba(0,0,0,0.12);padding:6px;min-width:220px;z-index:100">
+            <button onclick="openDeleteModal()" style="display:flex;align-items:center;gap:10px;width:100%;text-align:left;padding:9px 12px;background:none;border:none;border-radius:7px;font-size:13px;font-family:inherit;color:#c0392b;cursor:pointer" onmouseover="this.style.background='#fdeaea'" onmouseout="this.style.background='none'">
+              <span style="font-size:14px">🗑</span><span>Delete records</span>
+            </button>
+            <button onclick="openRemoveFromListModal()" style="display:flex;align-items:center;gap:10px;width:100%;text-align:left;padding:9px 12px;background:none;border:none;border-radius:7px;font-size:13px;font-family:inherit;color:#1a1a1a;cursor:pointer" onmouseover="this.style.background='#f5f4f0'" onmouseout="this.style.background='none'">
+              <span style="font-size:14px">📋</span><span>Remove from list</span>
+            </button>
+            <div style="height:1px;background:#eee;margin:4px 6px"></div>
+            <div style="padding:4px 12px;font-size:10px;color:#aaa;text-transform:uppercase;letter-spacing:.08em">Coming soon</div>
+            <div style="display:flex;align-items:center;gap:10px;width:100%;padding:9px 12px;font-size:13px;color:#bbb;cursor:not-allowed" title="Coming soon">
+              <span style="font-size:14px">➕</span><span>Add to list</span>
+            </div>
+            <div style="display:flex;align-items:center;gap:10px;width:100%;padding:9px 12px;font-size:13px;color:#bbb;cursor:not-allowed" title="Coming soon">
+              <span style="font-size:14px">🎯</span><span>Change pipeline stage</span>
+            </div>
+            <div style="display:flex;align-items:center;gap:10px;width:100%;padding:9px 12px;font-size:13px;color:#bbb;cursor:not-allowed" title="Coming soon">
+              <span style="font-size:14px">🏷️</span><span>Change property status</span>
+            </div>
+          </div>
         </div>
       </div>
 
@@ -983,6 +1027,7 @@ router.get('/', requireAuth, async (req, res) => {
       var selectedIds = {};
       var _allSelected = false;
       var _pageTotal = parseInt(document.getElementById('select-all-banner')?.getAttribute('data-total') || '0', 10);
+      var _currentListId = ${list_id ? `'${list_id}'` : 'null'};
 
       function updateToolbar() {
         var count = _allSelected ? _pageTotal : Object.keys(selectedIds).length;
@@ -1141,6 +1186,81 @@ router.get('/', requireAuth, async (req, res) => {
 
       function showDeleteErr(msg) {
         var el = document.getElementById('delete-modal-err');
+        el.textContent = msg;
+        el.style.display = 'block';
+      }
+
+      // ─── Manage dropdown ──────────────────────────────────────────────────
+      function toggleManageMenu(ev) {
+        ev.stopPropagation();
+        var m = document.getElementById('manage-menu');
+        m.style.display = (m.style.display === 'none' || !m.style.display) ? 'block' : 'none';
+      }
+      // Close dropdown on outside click
+      document.addEventListener('click', function(ev) {
+        var m = document.getElementById('manage-menu');
+        var btn = document.getElementById('manage-btn');
+        if (m && m.style.display === 'block' && !m.contains(ev.target) && ev.target !== btn && btn && !btn.contains(ev.target)) {
+          m.style.display = 'none';
+        }
+      });
+
+      // ─── Remove from List modal ───────────────────────────────────────────
+      function openRemoveFromListModal() {
+        document.getElementById('manage-menu').style.display = 'none';
+        var ids = Object.keys(selectedIds);
+        var count = _allSelected ? _pageTotal : ids.length;
+        if (!_allSelected && !ids.length) { alert('No records selected.'); return; }
+        if (!_currentListId) {
+          alert('No list selected. Filter by a specific list first (Lists page → click a list) to use Remove from List.');
+          return;
+        }
+        var msg = _allSelected
+          ? 'Remove <strong>all ' + count.toLocaleString() + ' selected properties</strong> from this list? The properties themselves remain in Loki; only their link to this list is removed.'
+          : 'Remove <strong>' + count + ' propert' + (count===1?'y':'ies') + '</strong> from this list? The propert' + (count===1?'y remains':'ies remain') + ' in Loki; only the link to this list is removed.';
+        document.getElementById('rfl-modal-msg').innerHTML = msg;
+        document.getElementById('rfl-modal-err').style.display = 'none';
+        document.getElementById('rfl-code-input').value = '';
+        document.getElementById('rfl-modal').classList.add('open');
+        setTimeout(function(){ document.getElementById('rfl-code-input').focus(); }, 50);
+      }
+
+      async function confirmRemoveFromList() {
+        var code = document.getElementById('rfl-code-input').value;
+        if (!code) { showRflErr('Delete code required.'); return; }
+        var ids = Object.keys(selectedIds);
+        var btn = document.getElementById('rfl-confirm-btn');
+        btn.textContent = 'Removing…';
+        btn.disabled = true;
+        try {
+          var res = await fetch('/records/remove-from-list', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              ids: _allSelected ? [] : ids,
+              selectAll: _allSelected,
+              filterParams: window.location.search,
+              listId: _currentListId,
+              code: code
+            })
+          });
+          var data = await res.json();
+          if (!res.ok || data.error) {
+            showRflErr(data.error || 'Remove failed.');
+            btn.textContent = 'Remove from List';
+            btn.disabled = false;
+            return;
+          }
+          window.location.href = '/records?list_id=' + _currentListId + '&msg=' + encodeURIComponent('Removed ' + data.removed + ' propert' + (data.removed===1?'y':'ies') + ' from this list.');
+        } catch(err) {
+          showRflErr('Network error: ' + err.message);
+          btn.textContent = 'Remove from List';
+          btn.disabled = false;
+        }
+      }
+
+      function showRflErr(msg) {
+        var el = document.getElementById('rfl-modal-err');
         el.textContent = msg;
         el.style.display = 'block';
       }
@@ -2700,6 +2820,158 @@ router.post('/:id(\\d+)/delete', requireAuth, async (req, res) => {
   } catch (e) {
     console.error('[records/:id/delete]', e);
     res.status(500).json({ error: 'Delete failed: ' + e.message });
+  }
+});
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// REMOVE FROM LIST — POST /records/remove-from-list
+// Detaches selected properties from a specific list without deleting the
+// property records themselves. Code-gated. Properties remain in Loki with all
+// their contacts, phones, and other list memberships intact — only the link to
+// the specified list is removed.
+// ═══════════════════════════════════════════════════════════════════════════════
+router.post('/remove-from-list', requireAuth, async (req, res) => {
+  try {
+    const { ids, selectAll, filterParams, listId, code } = req.body;
+
+    // Verify delete code BEFORE touching any data
+    const verified = await settings.verifyDeleteCode(code);
+    if (!verified) {
+      return res.status(403).json({ error: 'Invalid delete code.' });
+    }
+
+    const listIdInt = parseInt(listId);
+    if (!listIdInt || isNaN(listIdInt)) {
+      return res.status(400).json({ error: 'List ID required. Filter by a specific list first.' });
+    }
+
+    // Confirm the list exists — give a clearer error than "0 rows removed"
+    const listCheck = await query(`SELECT id, list_name FROM lists WHERE id = $1`, [listIdInt]);
+    if (!listCheck.rowCount) {
+      return res.status(404).json({ error: 'List not found.' });
+    }
+
+    let idsToRemove = [];
+    if (selectAll) {
+      // Rebuild the same filter conditions as the records list. Mirrors the
+      // delete route's selectAll logic exactly — keep them in sync.
+      const qs = new URLSearchParams(filterParams || '');
+      let conditions = [], params = [], idx = 1;
+      const qv = (k) => qs.get(k) || '';
+      const qvAll = (k) => qs.getAll(k).filter(v => v && String(v).trim() !== '');
+
+      if (qv('q')) {
+        conditions.push(`(p.street ILIKE $${idx} OR p.city ILIKE $${idx} OR c.first_name ILIKE $${idx} OR c.last_name ILIKE $${idx})`);
+        params.push(`%${qv('q')}%`); idx++;
+      }
+      const stateArr = qvAll('state').map(s => String(s).toUpperCase());
+      if (stateArr.length > 0) {
+        conditions.push(`p.state_code = ANY($${idx}::text[])`);
+        params.push(stateArr); idx++;
+      }
+      const splitCsv = (raw) => !raw ? [] : String(raw).split(/[,\s]+/).map(s => s.trim()).filter(Boolean);
+      const cityArr   = splitCsv(qv('city'));
+      const zipArr    = splitCsv(qv('zip'));
+      const countyArr = splitCsv(qv('county'));
+      if (cityArr.length > 0) {
+        const o = cityArr.map(() => `p.city ILIKE $${idx++}`);
+        conditions.push(`(${o.join(' OR ')})`);
+        cityArr.forEach(c => params.push(`%${c}%`));
+      }
+      if (zipArr.length > 0) {
+        const o = zipArr.map(() => `p.zip_code ILIKE $${idx++}`);
+        conditions.push(`(${o.join(' OR ')})`);
+        zipArr.forEach(z => params.push(`${z}%`));
+      }
+      if (countyArr.length > 0) {
+        const o = countyArr.map(() => `p.county ILIKE $${idx++}`);
+        conditions.push(`(${o.join(' OR ')})`);
+        countyArr.forEach(c => params.push(`%${c}%`));
+      }
+      if (qv('type'))        { conditions.push(`p.property_type = $${idx}`);     params.push(qv('type')); idx++; }
+      if (qv('pipeline'))    { conditions.push(`p.pipeline_stage = $${idx}`);    params.push(qv('pipeline')); idx++; }
+      if (qv('prop_status')) { conditions.push(`p.property_status = $${idx}`);   params.push(qv('prop_status')); idx++; }
+      if (qv('mkt_result'))  { conditions.push(`p.marketing_result = $${idx}`);  params.push(qv('mkt_result')); idx++; }
+      const mktIncArr = qvAll('mkt_include');
+      const mktExcArr = qvAll('mkt_exclude');
+      if (mktIncArr.length > 0) {
+        conditions.push(`p.marketing_result = ANY($${idx}::text[])`);
+        params.push(mktIncArr); idx++;
+      }
+      if (mktExcArr.length > 0) {
+        conditions.push(`(p.marketing_result IS NULL OR p.marketing_result != ALL($${idx}::text[]))`);
+        params.push(mktExcArr); idx++;
+      }
+      if (qv('min_assessed')){ conditions.push(`p.assessed_value >= $${idx}`);   params.push(qv('min_assessed')); idx++; }
+      if (qv('max_assessed')){ conditions.push(`p.assessed_value <= $${idx}`);   params.push(qv('max_assessed')); idx++; }
+      if (qv('min_equity'))  { conditions.push(`p.equity_percent >= $${idx}`);   params.push(qv('min_equity')); idx++; }
+      if (qv('max_equity'))  { conditions.push(`p.equity_percent <= $${idx}`);   params.push(qv('max_equity')); idx++; }
+      if (qv('min_year'))    { conditions.push(`p.year_built >= $${idx}`);       params.push(qv('min_year')); idx++; }
+      if (qv('max_year'))    { conditions.push(`p.year_built <= $${idx}`);       params.push(qv('max_year')); idx++; }
+      if (qv('upload_from')) { conditions.push(`p.created_at >= $${idx}`);       params.push(qv('upload_from')); idx++; }
+      if (qv('upload_to'))   { conditions.push(`p.created_at <= $${idx}`);       params.push(qv('upload_to') + ' 23:59:59'); idx++; }
+      // Force-scope to the list being operated on (critical correctness — we
+      // should never remove-from-list for properties that aren't on that list).
+      // The client-side filter already has list_id set, but we belt-and-suspender it.
+      conditions.push(`EXISTS (SELECT 1 FROM property_lists pl2 WHERE pl2.property_id = p.id AND pl2.list_id = $${idx})`);
+      params.push(listIdInt); idx++;
+
+      const stackArr = qvAll('stack_list').map(v => parseInt(v)).filter(n => !isNaN(n));
+      if (stackArr.length > 0) {
+        conditions.push(
+          `(SELECT COUNT(DISTINCT pl_stack.list_id)
+              FROM property_lists pl_stack
+             WHERE pl_stack.property_id = p.id
+               AND pl_stack.list_id = ANY($${idx}::int[])) = $${idx+1}`
+        );
+        params.push(stackArr);
+        params.push(stackArr.length);
+        idx += 2;
+      }
+      if (qv('min_stack'))   { conditions.push(`(SELECT COUNT(*) FROM property_lists plc WHERE plc.property_id = p.id) >= $${idx}`); params.push(parseInt(qv('min_stack'))); idx++; }
+      if (qv('min_distress')){ conditions.push(`p.distress_score >= $${idx}`);   params.push(parseInt(qv('min_distress'))); idx++; }
+      const phonesRfl = qv('phones');
+      if (phonesRfl === 'has') {
+        conditions.push(`EXISTS (SELECT 1 FROM phones ph_f JOIN property_contacts pc_f ON pc_f.contact_id = ph_f.contact_id WHERE pc_f.property_id = p.id)`);
+      } else if (phonesRfl === 'none') {
+        conditions.push(`NOT EXISTS (SELECT 1 FROM phones ph_f JOIN property_contacts pc_f ON pc_f.contact_id = ph_f.contact_id WHERE pc_f.property_id = p.id)`);
+      }
+
+      const where = conditions.length ? 'WHERE ' + conditions.join(' AND ') : '';
+      const idsRes = await query(`
+        SELECT DISTINCT p.id
+        FROM properties p
+        LEFT JOIN property_contacts pc ON pc.property_id = p.id AND pc.primary_contact = true
+        LEFT JOIN contacts c ON c.id = pc.contact_id
+        ${where}
+      `, params);
+      idsToRemove = idsRes.rows.map(r => r.id);
+    } else {
+      if (!Array.isArray(ids) || ids.length === 0) {
+        return res.status(400).json({ error: 'No records selected.' });
+      }
+      idsToRemove = ids.map(n => parseInt(n)).filter(n => !isNaN(n) && n > 0);
+    }
+
+    if (idsToRemove.length === 0) {
+      return res.status(400).json({ error: 'No valid properties to remove.' });
+    }
+
+    // The ONLY thing we delete is the link in property_lists — properties,
+    // contacts, phones, distress scores, campaign history all remain intact.
+    const result = await query(
+      `DELETE FROM property_lists
+         WHERE list_id = $1
+           AND property_id = ANY($2::int[])
+         RETURNING property_id`,
+      [listIdInt, idsToRemove]
+    );
+
+    console.log(`[records/remove-from-list] Removed ${result.rowCount} property-list links from list "${listCheck.rows[0].list_name}" (id=${listIdInt})`);
+    res.json({ ok: true, removed: result.rowCount, listName: listCheck.rows[0].list_name });
+  } catch (e) {
+    console.error('[records/remove-from-list]', e);
+    res.status(500).json({ error: 'Remove failed: ' + e.message });
   }
 });
 
