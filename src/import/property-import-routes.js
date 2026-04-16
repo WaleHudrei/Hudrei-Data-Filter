@@ -475,7 +475,12 @@ router.post('/parse', requireAuth, upload.single('csvfile'), async (req, res) =>
             name: template.name,
             use_count: template.use_count,
           };
+          console.log(`[mapping matched] fingerprint=${fingerprint} name="${template.name}" use_count=${template.use_count} → ${Object.keys(filtered).length} fields auto-mapped`);
+        } else {
+          console.log(`[mapping matched but stale] fingerprint=${fingerprint} — all saved columns missing from this CSV, falling back to autoMap`);
         }
+      } else {
+        console.log(`[mapping not found] fingerprint=${fingerprint} — using autoMap; will save if user completes import`);
       }
     } catch (e) {
       // Non-fatal — if the lookup fails, we still have autoMap
@@ -531,6 +536,7 @@ router.post('/save-mapping', requireAuth, async (req, res) => {
       return res.status(400).json({ error: 'No valid mappings to save.' });
     }
     const saved = await upsertMapping(fingerprint, columns, cleanMapping);
+    console.log(`[mapping saved] fingerprint=${fingerprint} name="${saved?.name}" use_count=${saved?.use_count} cols=${columns.length} mapped=${Object.keys(cleanMapping).length}`);
     res.json({ ok: true, saved });
   } catch(e) {
     console.error('[import/save-mapping]', e);
@@ -688,16 +694,27 @@ router.get('/map', requireAuth, (req, res) => {
       importData.finalMapping = finalMapping;
       sessionStorage.setItem('loki_import', JSON.stringify(importData));
 
-      // Fire-and-forget save to the template library. Silent on success; also
-      // silent on failure (user doesn't need to know — auto-save is a bonus).
+      // Save the mapping to the template library before navigating. The
+      // browser's Beacon API (sendBeacon) is specifically designed for
+      // "POST-then-navigate-away" use cases — it queues the request and
+      // guarantees it completes even after the page unloads. Fall back to a
+      // synchronous-ish fetch+await if sendBeacon isn't available (old browsers).
       if (fingerprint) {
+        const payload = JSON.stringify({ fingerprint, columns, mapping: finalMapping });
         try {
-          fetch('/import/property/save-mapping', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ fingerprint, columns, mapping: finalMapping })
-          }).catch(() => {});
-        } catch(e) { /* non-fatal */ }
+          if (navigator.sendBeacon) {
+            const blob = new Blob([payload], { type: 'application/json' });
+            navigator.sendBeacon('/import/property/save-mapping', blob);
+          } else {
+            await fetch('/import/property/save-mapping', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: payload
+            });
+          }
+        } catch(e) {
+          console.error('[mapping save]', e);
+        }
       }
 
       window.location.href = '/import/property/preview';
