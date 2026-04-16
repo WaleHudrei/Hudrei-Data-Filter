@@ -38,17 +38,21 @@ function normalizeHeader(h) {
 }
 
 /**
- * Generates a stable fingerprint for a set of CSV column headers. Sorts them
- * so column-order changes don't break the match. Returns a short SHA-256 hex
- * digest (16 chars is plenty for our scale).
+ * Generates a stable fingerprint for a set of CSV column headers. DROPS headers
+ * containing any number 11+ (which are overflow columns Loki doesn't map anyway)
+ * before hashing. Rationale: Loki maps only contacts/phones 1-10; anything
+ * numbered 11+ is overflow noise. Dropping them means a mapping saved on a
+ * 14-contact DealMachine file applies to 10-contact and 20-contact files alike.
  */
 function fingerprintHeaders(columns) {
-  const normalized = (columns || [])
+  const HIGH_NUMBER_RE = /\b(1[1-9]|[2-9]\d|\d{3,})\b/;
+  const mappable = (columns || [])
     .map(normalizeHeader)
     .filter(Boolean)
-    .sort();
-  if (normalized.length === 0) return null;
-  return crypto.createHash('sha256').update(normalized.join('|')).digest('hex').slice(0, 16);
+    .filter(h => !HIGH_NUMBER_RE.test(h));  // drop overflow headers
+  if (mappable.length === 0) return null;
+  const unique = Array.from(new Set(mappable)).sort();
+  return crypto.createHash('sha256').update(unique.join('|')).digest('hex').slice(0, 16);
 }
 
 /**
@@ -93,25 +97,33 @@ async function lookupMappingByFingerprint(fingerprint) {
 function autoNameFromHeaders(columns) {
   const hints = [];
   const cols = (columns || []).map(c => String(c));
-  // Look for branded / telling headers
-  const brandHints = [
-    { pat: /propstream/i, name: 'PropStream' },
-    { pat: /dealmachine/i, name: 'DealMachine' },
-    { pat: /batch\s*skip/i, name: 'BatchSkipTrace' },
-    { pat: /reisift/i, name: 'REISift' },
-    { pat: /datasift/i, name: 'DataSift' },
-    { pat: /listsource/i, name: 'Listsource' },
-  ];
-  for (const b of brandHints) {
-    if (cols.some(c => b.pat.test(c))) {
-      hints.push(b.name);
-      break;
-    }
+  const colsLower = cols.map(c => c.toLowerCase());
+  // Brand detection by signature columns (more reliable than string match
+  // against the brand name, which rarely appears in real headers)
+  let brand = null;
+  if (colsLower.some(c => /^contact_\d+_phone\d/.test(c) || /^contact_\d+_name$/.test(c))) {
+    brand = 'DealMachine';
+  } else if (colsLower.some(c => /propstream/.test(c))) {
+    brand = 'PropStream';
+  } else if (colsLower.some(c => /reisift/.test(c))) {
+    brand = 'REISift';
+  } else if (colsLower.some(c => /batch\s*skip/.test(c))) {
+    brand = 'BatchSkipTrace';
+  } else if (colsLower.some(c => /datasift/.test(c))) {
+    brand = 'DataSift';
+  } else if (colsLower.some(c => /listsource/.test(c))) {
+    brand = 'Listsource';
   }
-  // Count phone slots as a differentiator
-  const phoneCount = cols.filter(c => /\bph(one)?\s*\d/i.test(c) || /^phone\s*\d/i.test(c)).length;
-  if (phoneCount > 0) hints.push(`${phoneCount}-phone`);
-  // Total column count
+  if (brand) hints.push(brand);
+  // Count mappable (sub-11) phone slots as a differentiator
+  const phoneCount = cols.filter(c => {
+    const m = c.match(/\b(?:ph(?:one)?|contact)\s*_?(\d+)\b/i);
+    if (!m) return false;
+    const n = parseInt(m[1], 10);
+    return n >= 1 && n <= 10;
+  }).length;
+  if (phoneCount > 0) hints.push(`${phoneCount} phone cols`);
+  // Total column count (raw file width — useful for quick identification)
   hints.push(`${cols.length} cols`);
   return hints.join(' · ') || 'Custom mapping';
 }
@@ -694,26 +706,28 @@ router.get('/map', requireAuth, (req, res) => {
       importData.finalMapping = finalMapping;
       sessionStorage.setItem('loki_import', JSON.stringify(importData));
 
-      // Save the mapping to the template library before navigating. The
-      // browser's Beacon API (sendBeacon) is specifically designed for
-      // "POST-then-navigate-away" use cases — it queues the request and
-      // guarantees it completes even after the page unloads. Fall back to a
-      // synchronous-ish fetch+await if sendBeacon isn't available (old browsers).
+      // Save the mapping to the template library BEFORE navigating away. The
+      // keepalive:true flag tells the browser not to cancel this request
+      // when the page unloads — unlike plain fetch(), which browsers kill
+      // mid-flight on navigation, causing saves to silently fail.
       if (fingerprint) {
-        const payload = JSON.stringify({ fingerprint, columns, mapping: finalMapping });
         try {
-          if (navigator.sendBeacon) {
-            const blob = new Blob([payload], { type: 'application/json' });
-            navigator.sendBeacon('/import/property/save-mapping', blob);
+          const res = await fetch('/import/property/save-mapping', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ fingerprint, columns, mapping: finalMapping }),
+            keepalive: true,
+            credentials: 'same-origin'
+          });
+          if (!res.ok) {
+            const txt = await res.text().catch(() => '');
+            console.error('[mapping save] HTTP', res.status, txt.slice(0, 200));
           } else {
-            await fetch('/import/property/save-mapping', {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: payload
-            });
+            const j = await res.json().catch(() => null);
+            console.log('[mapping save] ok', j);
           }
         } catch(e) {
-          console.error('[mapping save]', e);
+          console.error('[mapping save] error:', e.message);
         }
       }
 
