@@ -83,6 +83,7 @@ router.get('/', requireAuth, async (req, res) => {
       min_distress = '',
       occupancy = '',
       phones = '',
+      min_owned = '', max_owned = '',
       msg = '', err = '',
       page = 1
     } = req.query;
@@ -231,6 +232,27 @@ router.get('/', requireAuth, async (req, res) => {
     } else if (phones === 'none') {
       conditions.push(`NOT EXISTS (SELECT 1 FROM phones ph_f JOIN property_contacts pc_f ON pc_f.contact_id = ph_f.contact_id WHERE pc_f.property_id = p.id)`);
     }
+    // Properties-owned filter: counts how many properties in the DB share the
+    // same normalized mailing address (via the primary contact). This identifies
+    // portfolio landlords (high count) vs individual homeowners (count = 1).
+    // Properties with no mailing address are treated as count 1 (unknowable).
+    if (min_owned || max_owned) {
+      const ownedSubquery = `
+        CASE WHEN c.mailing_address IS NULL OR TRIM(c.mailing_address) = '' THEN 1
+        ELSE (
+          SELECT COUNT(*)
+          FROM properties p2
+          JOIN property_contacts pc2 ON pc2.property_id = p2.id AND pc2.primary_contact = true
+          JOIN contacts c2 ON c2.id = pc2.contact_id
+          WHERE c2.mailing_address IS NOT NULL AND TRIM(c2.mailing_address) != ''
+            AND ${NORM_ADDR('c2.mailing_address')} = ${NORM_ADDR('c.mailing_address')}
+            AND LOWER(TRIM(c2.mailing_city)) = LOWER(TRIM(c.mailing_city))
+            AND UPPER(TRIM(p2.state_code)) = UPPER(TRIM(p.state_code))
+            AND SUBSTRING(TRIM(c2.mailing_zip) FROM 1 FOR 5) = SUBSTRING(TRIM(c.mailing_zip) FROM 1 FOR 5)
+        ) END`;
+      if (min_owned) { conditions.push(`${ownedSubquery} >= $${idx}`); params.push(parseInt(min_owned)); idx++; }
+      if (max_owned) { conditions.push(`${ownedSubquery} <= $${idx}`); params.push(parseInt(max_owned)); idx++; }
+    }
     if (min_year)     { conditions.push(`p.year_built >= $${idx}`);       params.push(min_year); idx++; }
     if (max_year)     { conditions.push(`p.year_built <= $${idx}`);       params.push(max_year); idx++; }
     if (upload_from)  { conditions.push(`p.created_at >= $${idx}`);       params.push(upload_from); idx++; }
@@ -337,6 +359,7 @@ router.get('/', requireAuth, async (req, res) => {
       add('min_year', min_year); add('max_year', max_year);
       add('upload_from', upload_from); add('upload_to', upload_to);
       add('min_distress', min_distress); add('occupancy', occupancy); add('phones', phones);
+      add('min_owned', min_owned); add('max_owned', max_owned);
       stackList.forEach(sl => parts.push(`stack_list=${encodeURIComponent(sl)}`));
       stateList.forEach(s => parts.push(`state=${encodeURIComponent(s)}`));
       mktIncludeList.forEach(m => parts.push(`mkt_include=${encodeURIComponent(m)}`));
@@ -355,7 +378,7 @@ router.get('/', requireAuth, async (req, res) => {
       </div>` : '';
 
     // Filter count — multi-select filters count as 1 each regardless of how many values
-    const activeFilterCount = [city,zip,county,type,pipeline,prop_status,mkt_result,occupancy,phones,min_assessed,max_assessed,min_equity,max_equity,min_year,max_year,upload_from,upload_to,min_stack,min_distress].filter(Boolean).length + (stackList.length > 0 ? 1 : 0) + (stateList.length > 0 ? 1 : 0) + (mktIncludeList.length > 0 ? 1 : 0) + (mktExcludeList.length > 0 ? 1 : 0);
+    const activeFilterCount = [city,zip,county,type,pipeline,prop_status,mkt_result,occupancy,phones,min_assessed,max_assessed,min_equity,max_equity,min_year,max_year,upload_from,upload_to,min_stack,min_distress,min_owned,max_owned].filter(Boolean).length + (stackList.length > 0 ? 1 : 0) + (stateList.length > 0 ? 1 : 0) + (mktIncludeList.length > 0 ? 1 : 0) + (mktExcludeList.length > 0 ? 1 : 0);
 
     res.send(shell('Records', `
       <div class="page-header">
@@ -505,6 +528,15 @@ router.get('/', requireAuth, async (req, res) => {
                 <option value="has"  ${phones==='has' ?'selected':''}>Has phones</option>
                 <option value="none" ${phones==='none'?'selected':''}>No phones</option>
               </select>
+            </div>
+            <div>
+              <label style="font-size:11px;color:#888;display:block;margin-bottom:3px">Properties Owned</label>
+              <div style="display:flex;gap:6px;align-items:center">
+                <input type="number" name="min_owned" value="${min_owned}" placeholder="Min" min="1" style="width:100%;padding:7px 8px;border:1px solid #ddd;border-radius:7px;font-size:13px;font-family:inherit">
+                <span style="color:#aaa;font-size:12px">–</span>
+                <input type="number" name="max_owned" value="${max_owned}" placeholder="Max" min="1" style="width:100%;padding:7px 8px;border:1px solid #ddd;border-radius:7px;font-size:13px;font-family:inherit">
+              </div>
+              <div style="font-size:10px;color:#aaa;margin-top:2px">By mailing address</div>
             </div>
 
             <!-- Marketing -->
@@ -1417,6 +1449,25 @@ router.post('/export', requireAuth, async (req, res) => {
         conditions.push(`EXISTS (SELECT 1 FROM phones ph_f JOIN property_contacts pc_f ON pc_f.contact_id = ph_f.contact_id WHERE pc_f.property_id = p.id)`);
       } else if (phonesX === 'none') {
         conditions.push(`NOT EXISTS (SELECT 1 FROM phones ph_f JOIN property_contacts pc_f ON pc_f.contact_id = ph_f.contact_id WHERE pc_f.property_id = p.id)`);
+      }
+      // Properties-owned filter — mirror list route logic
+      const minOwnedX = qv('min_owned'), maxOwnedX = qv('max_owned');
+      if (minOwnedX || maxOwnedX) {
+        const ownedSubX = `
+          CASE WHEN c.mailing_address IS NULL OR TRIM(c.mailing_address) = '' THEN 1
+          ELSE (
+            SELECT COUNT(*)
+            FROM properties p2
+            JOIN property_contacts pc2 ON pc2.property_id = p2.id AND pc2.primary_contact = true
+            JOIN contacts c2 ON c2.id = pc2.contact_id
+            WHERE c2.mailing_address IS NOT NULL AND TRIM(c2.mailing_address) != ''
+              AND ${NORM_ADDR_X('c2.mailing_address')} = ${NORM_ADDR_X('c.mailing_address')}
+              AND LOWER(TRIM(c2.mailing_city)) = LOWER(TRIM(c.mailing_city))
+              AND UPPER(TRIM(p2.state_code)) = UPPER(TRIM(p.state_code))
+              AND SUBSTRING(TRIM(c2.mailing_zip) FROM 1 FOR 5) = SUBSTRING(TRIM(c.mailing_zip) FROM 1 FOR 5)
+          ) END`;
+        if (minOwnedX) { conditions.push(`${ownedSubX} >= $${idx}`); params.push(parseInt(minOwnedX)); idx++; }
+        if (maxOwnedX) { conditions.push(`${ownedSubX} <= $${idx}`); params.push(parseInt(maxOwnedX)); idx++; }
       }
       const where = conditions.length ? 'WHERE ' + conditions.join(' AND ') : '';
       props = await query(`
@@ -2835,6 +2886,25 @@ router.post('/delete', requireAuth, async (req, res) => {
       } else if (occDel === 'unknown') {
         conditions.push(`(c.mailing_address IS NULL OR TRIM(c.mailing_address) = '')`);
       }
+      // Properties-owned filter — mirror list route logic
+      const minOwnedDel = qv('min_owned'), maxOwnedDel = qv('max_owned');
+      if (minOwnedDel || maxOwnedDel) {
+        const ownedSubDel = `
+          CASE WHEN c.mailing_address IS NULL OR TRIM(c.mailing_address) = '' THEN 1
+          ELSE (
+            SELECT COUNT(*)
+            FROM properties p2
+            JOIN property_contacts pc2 ON pc2.property_id = p2.id AND pc2.primary_contact = true
+            JOIN contacts c2 ON c2.id = pc2.contact_id
+            WHERE c2.mailing_address IS NOT NULL AND TRIM(c2.mailing_address) != ''
+              AND ${NORM_ADDR_DEL('c2.mailing_address')} = ${NORM_ADDR_DEL('c.mailing_address')}
+              AND LOWER(TRIM(c2.mailing_city)) = LOWER(TRIM(c.mailing_city))
+              AND UPPER(TRIM(p2.state_code)) = UPPER(TRIM(p.state_code))
+              AND SUBSTRING(TRIM(c2.mailing_zip) FROM 1 FOR 5) = SUBSTRING(TRIM(c.mailing_zip) FROM 1 FOR 5)
+          ) END`;
+        if (minOwnedDel) { conditions.push(`${ownedSubDel} >= $${idx}`); params.push(parseInt(minOwnedDel)); idx++; }
+        if (maxOwnedDel) { conditions.push(`${ownedSubDel} <= $${idx}`); params.push(parseInt(maxOwnedDel)); idx++; }
+      }
 
       const where = conditions.length ? 'WHERE ' + conditions.join(' AND ') : '';
       const idsRes = await query(`
@@ -3042,6 +3112,25 @@ router.post('/remove-from-list', requireAuth, async (req, res) => {
           ))`);
       } else if (occRfl === 'unknown') {
         conditions.push(`(c.mailing_address IS NULL OR TRIM(c.mailing_address) = '')`);
+      }
+      // Properties-owned filter — mirror list route logic
+      const minOwnedRfl = qv('min_owned'), maxOwnedRfl = qv('max_owned');
+      if (minOwnedRfl || maxOwnedRfl) {
+        const ownedSubRfl = `
+          CASE WHEN c.mailing_address IS NULL OR TRIM(c.mailing_address) = '' THEN 1
+          ELSE (
+            SELECT COUNT(*)
+            FROM properties p2
+            JOIN property_contacts pc2 ON pc2.property_id = p2.id AND pc2.primary_contact = true
+            JOIN contacts c2 ON c2.id = pc2.contact_id
+            WHERE c2.mailing_address IS NOT NULL AND TRIM(c2.mailing_address) != ''
+              AND ${NORM_ADDR_RFL('c2.mailing_address')} = ${NORM_ADDR_RFL('c.mailing_address')}
+              AND LOWER(TRIM(c2.mailing_city)) = LOWER(TRIM(c.mailing_city))
+              AND UPPER(TRIM(p2.state_code)) = UPPER(TRIM(p.state_code))
+              AND SUBSTRING(TRIM(c2.mailing_zip) FROM 1 FOR 5) = SUBSTRING(TRIM(c.mailing_zip) FROM 1 FOR 5)
+          ) END`;
+        if (minOwnedRfl) { conditions.push(`${ownedSubRfl} >= $${idx}`); params.push(parseInt(minOwnedRfl)); idx++; }
+        if (maxOwnedRfl) { conditions.push(`${ownedSubRfl} <= $${idx}`); params.push(parseInt(maxOwnedRfl)); idx++; }
       }
 
       const where = conditions.length ? 'WHERE ' + conditions.join(' AND ') : '';
