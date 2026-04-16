@@ -1027,7 +1027,10 @@ router.get('/', requireAuth, async (req, res) => {
       var selectedIds = {};
       var _allSelected = false;
       var _pageTotal = parseInt(document.getElementById('select-all-banner')?.getAttribute('data-total') || '0', 10);
-      var _currentListId = ${list_id ? `'${list_id}'` : 'null'};
+      var _currentListId = ${(() => {
+        const n = parseInt(list_id, 10);
+        return (!isNaN(n) && n > 0) ? n : 'null';
+      })()};
 
       function updateToolbar() {
         var count = _allSelected ? _pageTotal : Object.keys(selectedIds).length;
@@ -2935,6 +2938,44 @@ router.post('/remove-from-list', requireAuth, async (req, res) => {
         conditions.push(`EXISTS (SELECT 1 FROM phones ph_f JOIN property_contacts pc_f ON pc_f.contact_id = ph_f.contact_id WHERE pc_f.property_id = p.id)`);
       } else if (phonesRfl === 'none') {
         conditions.push(`NOT EXISTS (SELECT 1 FROM phones ph_f JOIN property_contacts pc_f ON pc_f.contact_id = ph_f.contact_id WHERE pc_f.property_id = p.id)`);
+      }
+
+      // Owner Occupancy — mirror list route so a user filtering by "Absent Owner"
+      // doesn't sweep owner-occupied properties off the list too.
+      const NORM_ADDR_RFL = (col) => `
+        REGEXP_REPLACE(REGEXP_REPLACE(REGEXP_REPLACE(REGEXP_REPLACE(REGEXP_REPLACE(REGEXP_REPLACE(
+        REGEXP_REPLACE(REGEXP_REPLACE(REGEXP_REPLACE(REGEXP_REPLACE(REGEXP_REPLACE(REGEXP_REPLACE(REGEXP_REPLACE(
+          LOWER(REGEXP_REPLACE(TRIM(${col}), '[.,]+', '', 'g')),
+          '\\ystreet\\y',  'st',   'g'),
+          '\\yavenue\\y',  'ave',  'g'),
+          '\\ydrive\\y',   'dr',   'g'),
+          '\\yboulevard\\y','blvd', 'g'),
+          '\\yroad\\y',    'rd',   'g'),
+          '\\ylane\\y',    'ln',   'g'),
+          '\\ycourt\\y',   'ct',   'g'),
+          '\\yplace\\y',   'pl',   'g'),
+          '\\ycircle\\y',  'cir',  'g'),
+          '\\yterrace\\y', 'ter',  'g'),
+          '\\yparkway\\y', 'pkwy', 'g'),
+          '\\yhighway\\y', 'hwy',  'g'),
+          '\\s+', ' ', 'g')`;
+      const occRfl = qv('occupancy');
+      if (occRfl === 'owner_occupied') {
+        conditions.push(`(c.mailing_address IS NOT NULL
+          AND ${NORM_ADDR_RFL('p.street')} = ${NORM_ADDR_RFL('c.mailing_address')}
+          AND LOWER(TRIM(p.city)) = LOWER(TRIM(c.mailing_city))
+          AND UPPER(TRIM(p.state_code)) = UPPER(TRIM(c.mailing_state))
+          AND SUBSTRING(TRIM(p.zip_code) FROM 1 FOR 5) = SUBSTRING(TRIM(c.mailing_zip) FROM 1 FOR 5))`);
+      } else if (occRfl === 'absent_owner') {
+        conditions.push(`(c.mailing_address IS NOT NULL AND TRIM(c.mailing_address) != ''
+          AND NOT (
+            ${NORM_ADDR_RFL('p.street')} = ${NORM_ADDR_RFL('c.mailing_address')}
+            AND LOWER(TRIM(p.city)) = LOWER(TRIM(c.mailing_city))
+            AND UPPER(TRIM(p.state_code)) = UPPER(TRIM(c.mailing_state))
+            AND SUBSTRING(TRIM(p.zip_code) FROM 1 FOR 5) = SUBSTRING(TRIM(c.mailing_zip) FROM 1 FOR 5)
+          ))`);
+      } else if (occRfl === 'unknown') {
+        conditions.push(`(c.mailing_address IS NULL OR TRIM(c.mailing_address) = '')`);
       }
 
       const where = conditions.length ? 'WHERE ' + conditions.join(' AND ') : '';
