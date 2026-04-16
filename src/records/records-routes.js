@@ -82,6 +82,7 @@ router.get('/', requireAuth, async (req, res) => {
       upload_from = '', upload_to = '',
       min_distress = '',
       occupancy = '',
+      phones = '',
       msg = '', err = '',
       page = 1
     } = req.query;
@@ -1249,6 +1250,7 @@ router.post('/export', requireAuth, async (req, res) => {
         idx += 2;
       }
       if (qv('min_stack'))   { conditions.push(`(SELECT COUNT(*) FROM property_lists plc WHERE plc.property_id = p.id) >= $${idx}`); params.push(parseInt(qv('min_stack'))); idx++; }
+      if (qv('min_distress')){ conditions.push(`p.distress_score >= $${idx}`);   params.push(parseInt(qv('min_distress'))); idx++; }
       const where = conditions.length ? 'WHERE ' + conditions.join(' AND ') : '';
       props = await query(`
         SELECT DISTINCT ON (p.id)
