@@ -47,6 +47,9 @@ app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ extended: true, limit: '50mb' }));
 app.use(session({ secret: SESSION_SECRET, resave: false, saveUninitialized: false, cookie: { secure: false, maxAge: 8 * 60 * 60 * 1000 } }));
 
+// Serve static files (client JS, CSS, images) from /public
+app.use(express.static('public'));
+
 // expose helpers to upload router
 app.locals.processCSV = processCSV;
 app.locals.loadMemory = loadMemory;
