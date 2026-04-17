@@ -73,10 +73,10 @@ function autoMap(sourceCols, targetFields) {
 // Step 1: Choose upload type
 function uploadChoosePage() {
   return shell('Upload', `
-    <div style="max-width:680px">
+    <div style="max-width:960px">
       <div style="font-size:20px;font-weight:600;margin-bottom:4px">Upload</div>
       <p style="font-size:13px;color:#888;margin-bottom:2rem">What are you uploading today?</p>
-      <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px">
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:16px">
         <a href="/upload/filter" style="text-decoration:none;display:block;background:#fff;border:1px solid #e0dfd8;border-radius:12px;padding:28px 24px;transition:all .15s" onmouseover="this.style.borderColor='#1a1a1a';this.style.boxShadow='0 4px 16px rgba(0,0,0,.08)'" onmouseout="this.style.borderColor='#e0dfd8';this.style.boxShadow='none'">
           <div style="width:40px;height:40px;background:#f5f4f0;border-radius:8px;display:flex;align-items:center;justify-content:center;margin-bottom:14px">
             <svg width="20" height="20" fill="none" stroke="#1a1a1a" stroke-width="2" viewBox="0 0 24 24"><path d="M3 4h18M3 8h18M3 12h12M3 16h8"/></svg>
@@ -90,6 +90,13 @@ function uploadChoosePage() {
           </div>
           <div style="font-size:15px;font-weight:600;color:#1a1a1a;margin-bottom:6px">Import Property List</div>
           <div style="font-size:13px;color:#888;line-height:1.5">Upload a CSV from PropStream, DealMachine or any data source. Map columns and import into Records.</div>
+        </a>
+        <a href="/import/bulk" style="text-decoration:none;display:block;background:#fff;border:1px solid #e0dfd8;border-radius:12px;padding:28px 24px;transition:all .15s" onmouseover="this.style.borderColor='#1a1a1a';this.style.boxShadow='0 4px 16px rgba(0,0,0,.08)'" onmouseout="this.style.borderColor='#e0dfd8';this.style.boxShadow='none'">
+          <div style="width:40px;height:40px;background:#f5f4f0;border-radius:8px;display:flex;align-items:center;justify-content:center;margin-bottom:14px">
+            <svg width="20" height="20" fill="none" stroke="#1a1a1a" stroke-width="2" viewBox="0 0 24 24"><path d="M3 17l-6-6 6-6M21 17l-6-6 6-6"/><line x1="9" y1="12" x2="21" y2="12"/></svg>
+          </div>
+          <div style="font-size:15px;font-weight:600;color:#1a1a1a;margin-bottom:6px">Bulk Import <span style="font-size:11px;background:#e8f5ee;color:#1a7a4a;padding:2px 7px;border-radius:4px;margin-left:6px">REISift</span></div>
+          <div style="font-size:13px;color:#888;line-height:1.5">Import your full REISift export. No row limit — streams from disk, handles 700k+ records with live progress.</div>
         </a>
       </div>
     </div>
