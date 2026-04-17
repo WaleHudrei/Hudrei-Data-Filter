@@ -1,9 +1,18 @@
 // ═══════════════════════════════════════════════════════════════
 // Loki Records List — Client-side JS
+// Handles: filter panel dropdowns, row selection, Manage actions,
+//          bulk export/delete/tag/remove-from-list flows.
+//
+// ⚠ 2026-04-17 audit fix: selectRow / selectAllRecords / clearSelection in
+// shared-shell.js used to overwrite the globals here (writing to _selIds
+// instead of selectedIds), so individual-row selections never triggered
+// bulk actions. That block was deleted from shared-shell.js. The three
+// debug statements that helped track it down (console.log in selectRow,
+// and the "debug: selectedIds={...}" alert in openBulkTagModal) have
+// also been removed.
 // ═══════════════════════════════════════════════════════════════
 
 // ── Marketing multi-select dropdowns ──
-// Toggle dropdown — closes the other one for cleaner UX
 function toggleMkt(which) {
   const me    = document.getElementById('mkt-' + which + '-pop');
   const other = document.getElementById('mkt-' + (which === 'inc' ? 'exc' : 'inc') + '-pop');
@@ -136,8 +145,7 @@ function toggleMsOption(ev, id, name) {
 function removeMsPill(ev, id) {
   ev.stopPropagation();
   const sid = String(id);
-  const container = document.getElementById('ms-hidden-inputs');
-  const existing = container.querySelector('input[value="' + sid + '"]');
+  const existing = document.querySelector('#ms-hidden-inputs input[value="' + sid + '"]');
   if (existing) existing.remove();
   const opt = document.querySelector('#ms-options .ms-option[data-id="' + sid + '"]');
   if (opt) {
@@ -150,7 +158,7 @@ function removeMsPill(ev, id) {
   renderMsPills();
 }
 
-// ── Multi-select dropdown for STATE ──────────────────────────────────
+// ── Multi-select dropdown for State (mirrors list stacking pattern) ────
 function toggleStateMsDropdown(ev) {
   ev.stopPropagation();
   const dd = document.getElementById('state-ms-dropdown');
@@ -174,8 +182,8 @@ function filterStateMsOptions() {
   const q = document.getElementById('state-ms-search').value.toLowerCase();
   const opts = document.querySelectorAll('#state-ms-options .state-ms-option');
   opts.forEach(o => {
-    const term = o.getAttribute('data-search') || '';
-    o.style.display = term.includes(q) ? 'flex' : 'none';
+    const s = o.getAttribute('data-search') || '';
+    o.style.display = s.includes(q) ? 'flex' : 'none';
   });
 }
 
@@ -190,7 +198,6 @@ function renderStateMsPills() {
   const countEl = document.getElementById('state-count-label');
   if (countEl) countEl.textContent = codes.length > 0 ? '(' + codes.length + ' selected)' : '';
 
-  // Clear and rebuild via DOM (avoids quote-escaping nightmares)
   pillsEl.innerHTML = '';
   if (codes.length === 0) {
     const ph = document.createElement('span');
@@ -218,10 +225,9 @@ function renderStateMsPills() {
 
 function toggleStateMsOption(ev, code, name) {
   ev.stopPropagation();
-  const sid = String(code);
   const container = document.getElementById('state-ms-hidden-inputs');
-  const existing = container.querySelector('input[value="' + sid + '"]');
-  const opt = document.querySelector('#state-ms-options .state-ms-option[data-id="' + sid + '"]');
+  const existing = container.querySelector('input[value="' + code + '"]');
+  const opt = document.querySelector('#state-ms-options .state-ms-option[data-id="' + code + '"]');
 
   if (existing) {
     existing.remove();
@@ -236,7 +242,7 @@ function toggleStateMsOption(ev, code, name) {
     const input = document.createElement('input');
     input.type = 'hidden';
     input.name = 'state';
-    input.value = sid;
+    input.value = code;
     container.appendChild(input);
     if (opt) {
       opt.classList.add('state-ms-selected');
@@ -251,11 +257,9 @@ function toggleStateMsOption(ev, code, name) {
 
 function removeStateMsPill(ev, code) {
   ev.stopPropagation();
-  const sid = String(code);
-  const container = document.getElementById('state-ms-hidden-inputs');
-  const existing = container.querySelector('input[value="' + sid + '"]');
+  const existing = document.querySelector('#state-ms-hidden-inputs input[value="' + code + '"]');
   if (existing) existing.remove();
-  const opt = document.querySelector('#state-ms-options .state-ms-option[data-id="' + sid + '"]');
+  const opt = document.querySelector('#state-ms-options .state-ms-option[data-id="' + code + '"]');
   if (opt) {
     opt.classList.remove('state-ms-selected');
     opt.style.background = '';
@@ -290,7 +294,6 @@ function selectRow(cb, checked) {
   if (banner) banner.style.display = 'none';
 
   var id = cb.getAttribute('data-id');
-  console.log('[selectRow] id:', id, 'checked:', checked, 'total after:', Object.keys(selectedIds).length + (checked ? 1 : -1));
   if (!id) return;
   cb.checked = checked;
   var tr = cb.parentNode.parentNode;
@@ -311,7 +314,6 @@ function selectAllOnPage(checked) {
   }
   var banner = document.getElementById('select-all-banner');
   if (banner) {
-    // Show banner only if the total exceeds the current page AND user just checked all
     var onPage = boxes.length;
     if (checked && _pageTotal > onPage) {
       banner.style.display = 'flex';
@@ -350,8 +352,6 @@ function openExportModal() {
   document.getElementById('export-modal').classList.add('open');
 }
 
-// Used from the Manage menu (identical to openExportModal — kept as a
-// separate symbol so the menu code is self-documenting)
 function openExportModalFromMenu() {
   openExportModal();
 }
@@ -434,7 +434,6 @@ async function confirmDelete() {
       btn.disabled = false;
       return;
     }
-    // Success — reload to show fresh list
     window.location.href = '/records?msg=' + encodeURIComponent('Deleted ' + data.deleted + ' record' + (data.deleted===1?'':'s') + '.');
   } catch(err) {
     showDeleteErr('Network error: ' + err.message);
@@ -455,7 +454,6 @@ function toggleManageMenu(ev) {
   var m = document.getElementById('manage-menu');
   m.style.display = (m.style.display === 'none' || !m.style.display) ? 'block' : 'none';
 }
-// Close dropdown on outside click
 document.addEventListener('click', function(ev) {
   var m = document.getElementById('manage-menu');
   var btn = document.getElementById('manage-btn');
@@ -530,8 +528,8 @@ function _esc(s) {
   d.appendChild(document.createTextNode(s));
   return d.innerHTML;
 }
-var _bulkTagMode = 'add';  // 'add' or 'remove'
-var _bulkTagQueue = [];    // [{id, name, color}] for add mode
+var _bulkTagMode = 'add';
+var _bulkTagQueue = [];
 
 function openBulkTagModal(mode) {
   document.getElementById('manage-menu').style.display = 'none';
@@ -539,8 +537,7 @@ function openBulkTagModal(mode) {
   _bulkTagQueue = [];
   var ids = Object.keys(selectedIds);
   var count = _allSelected ? _pageTotal : ids.length;
-  console.log('[bulk-tag] _allSelected:', _allSelected, 'selectedIds keys:', ids.length, 'ids:', ids.slice(0, 5));
-  if (!_allSelected && !ids.length) { alert('No records selected. (debug: selectedIds=' + JSON.stringify(selectedIds) + ')'); return; }
+  if (!_allSelected && !ids.length) { alert('No records selected.'); return; }
 
   document.getElementById('bulk-tag-title').textContent = mode === 'add' ? 'Add Tags' : 'Remove Tags';
   document.getElementById('bulk-tag-msg').innerHTML = mode === 'add'
@@ -550,38 +547,38 @@ function openBulkTagModal(mode) {
   document.getElementById('bulk-tag-confirm-btn').textContent = 'Apply';
   document.getElementById('bulk-tag-confirm-btn').disabled = false;
 
-  // Show/hide sections
-  document.getElementById('bulk-tag-add-section').style.display = mode === 'add' ? 'block' : 'none';
-  document.getElementById('bulk-tag-remove-section').style.display = mode === 'remove' ? 'block' : 'none';
-
-  // Reset add-mode state
-  document.getElementById('bulk-tag-input').value = '';
-  document.getElementById('bulk-tag-selected').innerHTML = '';
-  document.getElementById('bulk-tag-suggestions').style.display = 'none';
-
-  // Reset remove-mode checkboxes
-  var checks = document.querySelectorAll('.bulk-tag-rm-check');
-  for (var i = 0; i < checks.length; i++) checks[i].checked = false;
-
+  // Toggle add vs remove sections
+  var addSec = document.getElementById('bulk-tag-add-section');
+  var rmSec  = document.getElementById('bulk-tag-remove-section');
+  if (mode === 'add') {
+    addSec.style.display = '';
+    rmSec.style.display = 'none';
+    document.getElementById('bulk-tag-input').value = '';
+    document.getElementById('bulk-tag-selected').innerHTML = '';
+    setTimeout(function() { document.getElementById('bulk-tag-input').focus(); }, 100);
+  } else {
+    addSec.style.display = 'none';
+    rmSec.style.display = 'block';
+    // Clear any previously-checked boxes
+    document.querySelectorAll('.bulk-tag-rm-check').forEach(function(cb) { cb.checked = false; });
+  }
   document.getElementById('bulk-tag-modal').classList.add('open');
-  if (mode === 'add') setTimeout(function(){ document.getElementById('bulk-tag-input').focus(); }, 50);
 }
 
-var _bulkSuggestTimer = null;
+var _bulkTagSuggestTimer = null;
 function bulkTagSuggest(q) {
-  clearTimeout(_bulkSuggestTimer);
+  clearTimeout(_bulkTagSuggestTimer);
   var box = document.getElementById('bulk-tag-suggestions');
-  if (!q.trim()) { box.style.display = 'none'; return; }
-  _bulkSuggestTimer = setTimeout(async function() {
+  if (!q || !q.trim()) { box.style.display = 'none'; return; }
+  _bulkTagSuggestTimer = setTimeout(async function() {
     try {
       var res = await fetch('/records/tags/suggest?q=' + encodeURIComponent(q.trim()));
       var tags = await res.json();
-      // Filter out already-queued tags
-      var queuedIds = _bulkTagQueue.map(function(t){ return t.id; });
-      tags = tags.filter(function(t){ return queuedIds.indexOf(t.id) === -1; });
+      var queued = _bulkTagQueue.map(function(t){ return t.id; });
+      tags = tags.filter(function(t){ return queued.indexOf(t.id) === -1; });
       if (!tags.length) { box.style.display = 'none'; return; }
       box.innerHTML = tags.map(function(t){
-        return '<div onclick="bulkTagPick(' + t.id + ',' + JSON.stringify(t.name).replace(/"/g,'&quot;') + ',this)" style="padding:8px 12px;cursor:pointer;font-size:13px;display:flex;align-items:center;gap:8px" onmouseover="this.style.background=\'#f5f4f0\'" onmouseout="this.style.background=\'none\'">'
+        return '<div onclick="bulkTagPick(' + t.id + ', \'' + _esc(t.name).replace(/'/g,"\\'") + '\', \'' + (t.color||'#6b7280') + '\')" style="padding:8px 12px;cursor:pointer;font-size:13px;display:flex;align-items:center;gap:8px" onmouseover="this.style.background=\'#f5f4f0\'" onmouseout="this.style.background=\'none\'">'
           + '<span style="width:10px;height:10px;border-radius:50%;background:' + (t.color||'#6b7280') + '"></span>'
           + '<span>' + _esc(t.name) + '</span></div>';
       }).join('');
@@ -590,12 +587,12 @@ function bulkTagSuggest(q) {
   }, 200);
 }
 
-function bulkTagPick(id, name, el) {
+function bulkTagPick(id, name, color) {
+  if (_bulkTagQueue.some(function(t){ return t.id === id; })) return;
+  _bulkTagQueue.push({ id: id, name: name, color: color });
+  bulkTagRenderSelected();
   document.getElementById('bulk-tag-input').value = '';
   document.getElementById('bulk-tag-suggestions').style.display = 'none';
-  if (_bulkTagQueue.some(function(t){ return t.id === id; })) return;
-  _bulkTagQueue.push({ id: id, name: name, color: '#6b7280' });
-  renderBulkTagQueue();
   document.getElementById('bulk-tag-input').focus();
 }
 
@@ -603,50 +600,52 @@ function bulkTagAdd() {
   var input = document.getElementById('bulk-tag-input');
   var name = input.value.trim();
   if (!name) return;
-  // Check if already queued by name
+  // Queue new tag (server will create or reuse by name on commit)
   if (_bulkTagQueue.some(function(t){ return t.name.toLowerCase() === name.toLowerCase(); })) {
     input.value = '';
     return;
   }
   _bulkTagQueue.push({ id: null, name: name, color: '#6b7280' });
-  renderBulkTagQueue();
+  bulkTagRenderSelected();
   input.value = '';
   document.getElementById('bulk-tag-suggestions').style.display = 'none';
+  input.focus();
 }
 
-function bulkTagRemoveFromQueue(idx) {
-  _bulkTagQueue.splice(idx, 1);
-  renderBulkTagQueue();
-}
-
-function renderBulkTagQueue() {
-  var container = document.getElementById('bulk-tag-selected');
-  container.innerHTML = _bulkTagQueue.map(function(t, i) {
-    return '<span style="display:inline-flex;align-items:center;gap:4px;padding:4px 10px;border-radius:20px;font-size:12px;font-weight:500;background:#6b728020;color:#6b7280;border:1px solid #6b728040">'
+function bulkTagRenderSelected() {
+  var el = document.getElementById('bulk-tag-selected');
+  el.innerHTML = _bulkTagQueue.map(function(t, i){
+    return '<span style="display:inline-flex;align-items:center;gap:6px;padding:4px 10px;border-radius:16px;font-size:12px;font-weight:500;background:' + t.color + '20;color:' + t.color + ';border:1px solid ' + t.color + '40">'
       + _esc(t.name)
-      + ' <button onclick="bulkTagRemoveFromQueue(' + i + ')" style="background:none;border:none;cursor:pointer;font-size:14px;line-height:1;color:inherit;padding:0;margin-left:2px">x</button>'
-      + '</span>';
+      + ' <button onclick="bulkTagRemoveQueued(' + i + ')" style="background:none;border:none;cursor:pointer;font-size:14px;line-height:1;color:inherit;padding:0">×</button></span>';
   }).join('');
 }
 
-async function confirmBulkTag() {
-  var tagNames = [];
-  var tagIds = [];
+function bulkTagRemoveQueued(idx) {
+  _bulkTagQueue.splice(idx, 1);
+  bulkTagRenderSelected();
+}
 
+function showBulkTagErr(msg) {
+  var el = document.getElementById('bulk-tag-err');
+  el.textContent = msg;
+  el.style.display = 'block';
+}
+
+async function confirmBulkTag() {
+  var btn = document.getElementById('bulk-tag-confirm-btn');
+  var ids = Object.keys(selectedIds);
+  var tagNames = [], tagIds = [];
   if (_bulkTagMode === 'add') {
-    if (!_bulkTagQueue.length) { showBulkTagErr('Add at least one tag.'); return; }
+    if (_bulkTagQueue.length === 0) { showBulkTagErr('Add at least one tag first.'); return; }
     tagNames = _bulkTagQueue.map(function(t){ return t.name; });
   } else {
-    var checks = document.querySelectorAll('.bulk-tag-rm-check:checked');
-    if (!checks.length) { showBulkTagErr('Select at least one tag to remove.'); return; }
-    for (var i = 0; i < checks.length; i++) tagIds.push(parseInt(checks[i].value));
+    var checked = document.querySelectorAll('.bulk-tag-rm-check:checked');
+    if (checked.length === 0) { showBulkTagErr('Check at least one tag to remove.'); return; }
+    tagIds = Array.from(checked).map(function(cb){ return parseInt(cb.value); });
   }
-
-  var ids = Object.keys(selectedIds);
-  var btn = document.getElementById('bulk-tag-confirm-btn');
   btn.textContent = 'Applying…';
   btn.disabled = true;
-
   try {
     var res = await fetch('/records/bulk-tag', {
       method: 'POST',
@@ -673,12 +672,6 @@ async function confirmBulkTag() {
     btn.textContent = 'Apply';
     btn.disabled = false;
   }
-}
-
-function showBulkTagErr(msg) {
-  var el = document.getElementById('bulk-tag-err');
-  el.textContent = msg;
-  el.style.display = 'block';
 }
 
 // Close bulk-tag suggestions on outside click
