@@ -5,6 +5,11 @@
 
 const { query } = require('../db');
 
+// Module-level idempotency flag — ensureDistressSchema pays DDL cost at most
+// once per process. Prior code called it at the top of every exported function,
+// paying the cost on every single property view. (Audit issue #16.)
+let _distressSchemaReady = false;
+
 // ── WEIGHTS (single source of truth — tune here, recompute, done) ──────────
 const WEIGHTS = {
   list_tax_sale:        20,
@@ -18,7 +23,7 @@ const WEIGHTS = {
   stack_2:              5,
   high_equity:          10,   // equity_percent >= 50
   out_of_state:         10,   // mailing_state != property state_code
-  marketing_lead:       5,    // marketing_result = 'Lead'
+  marketing_lead:       5,    // pipeline_stage IN ('lead','contract','closed')
   county_source:        5,    // on at least one list whose source contains "county"
 };
 
@@ -100,9 +105,12 @@ function computeScore(ctx) {
   const ms = String(ctx.mailing_state || '').trim().toUpperCase();
   if (ps && ms && ps !== ms) add('out_of_state', WEIGHTS.out_of_state, 'Out-of-state owner');
 
-  // Marketing already engaged
-  if (String(ctx.marketing_result || '').toLowerCase() === 'lead') {
-    add('marketing_lead', WEIGHTS.marketing_lead, 'Already a Lead');
+  // Marketing already engaged — property has advanced beyond "prospect" in the
+  // pipeline. Uses pipeline_stage (set by filtration.js on transfer) rather
+  // than marketing_result (which was never populated). (Audit issue #12.)
+  const stage = String(ctx.pipeline_stage || '').toLowerCase().trim();
+  if (stage === 'lead' || stage === 'contract' || stage === 'closed') {
+    add('marketing_lead', WEIGHTS.marketing_lead, 'Already engaged (' + stage + ')');
   }
 
   // County-sourced data (more authoritative than third-party scrapes)
@@ -119,14 +127,22 @@ function computeScore(ctx) {
   };
 }
 
-// ── Schema migration (idempotent) ──────────────────────────────────────────
+// ── Scoring version — bump when the scoring logic changes ──────────────────
+// Rows with distress_scoring_version < SCORING_VERSION are stale and need a
+// rescore. Bumped to 2 in the 2026-04-17 audit when marketing_lead moved from
+// p.marketing_result='lead' to p.pipeline_stage IN ('lead','contract','closed').
+const SCORING_VERSION = 2;
+
+// ── Schema migration (idempotent — runs at most once per process) ──────────
 async function ensureDistressSchema() {
+  if (_distressSchemaReady) return;
   await query(`
     ALTER TABLE properties
       ADD COLUMN IF NOT EXISTS distress_score INTEGER DEFAULT NULL,
       ADD COLUMN IF NOT EXISTS distress_band  VARCHAR(16) DEFAULT NULL,
       ADD COLUMN IF NOT EXISTS distress_breakdown JSONB DEFAULT NULL,
-      ADD COLUMN IF NOT EXISTS distress_scored_at TIMESTAMP DEFAULT NULL
+      ADD COLUMN IF NOT EXISTS distress_scored_at TIMESTAMP DEFAULT NULL,
+      ADD COLUMN IF NOT EXISTS distress_scoring_version INTEGER DEFAULT 1
   `);
   await query(`CREATE INDEX IF NOT EXISTS idx_properties_distress_score ON properties(distress_score)`);
   await query(`
@@ -155,6 +171,28 @@ async function ensureDistressSchema() {
     )
   `);
   await query(`CREATE INDEX IF NOT EXISTS idx_outcome_log_property ON distress_outcome_log(property_id)`);
+
+  // Stale-score detection — count rows scored under an older scoring_version.
+  // Does NOT rescore automatically (that's a potentially expensive operation
+  // on 100k+ rows that we don't want happening as a side effect of boot).
+  // Instead, log a loud warning telling the operator to run the rescore
+  // endpoint. (Audit gap — pipeline_stage logic change in 2026-04-17.)
+  try {
+    const stale = await query(
+      `SELECT COUNT(*) AS n FROM properties
+        WHERE distress_score IS NOT NULL
+          AND COALESCE(distress_scoring_version, 1) < $1`,
+      [SCORING_VERSION]
+    );
+    const n = parseInt(stale.rows[0]?.n || 0);
+    if (n > 0) {
+      console.log(`[distress] ${n.toLocaleString()} properties have scores from an older scoring version (v${SCORING_VERSION} current).`);
+      console.log(`[distress] Trigger a full rescore by POSTing to /records/_distress/recompute, or call distress.scoreAllProperties() from code.`);
+      console.log(`[distress] Until rescored, the Records page will mix old and new scores.`);
+    }
+  } catch (e) { /* non-fatal */ }
+
+  _distressSchemaReady = true;
 }
 
 // ── Score one property by ID ───────────────────────────────────────────────
@@ -163,7 +201,7 @@ async function scoreProperty(propertyId) {
   await ensureDistressSchema();
 
   const propRes = await query(
-    `SELECT p.id, p.state_code, p.equity_percent, p.marketing_result,
+    `SELECT p.id, p.state_code, p.equity_percent, p.pipeline_stage,
             c.mailing_state
        FROM properties p
        LEFT JOIN property_contacts pc ON pc.property_id = p.id AND pc.primary_contact = true
@@ -197,7 +235,7 @@ async function scoreProperty(propertyId) {
     property_state_code: p.state_code,
     mailing_state:       p.mailing_state,
     equity_percent:      p.equity_percent,
-    marketing_result:    p.marketing_result,
+    pipeline_stage:      p.pipeline_stage,
     list_signals,
     list_count,
     has_county_source,
@@ -212,7 +250,8 @@ async function scoreProperty(propertyId) {
         SET distress_score      = $1,
             distress_band       = $2,
             distress_breakdown  = $3::jsonb,
-            distress_scored_at  = NOW()
+            distress_scored_at  = NOW(),
+            distress_scoring_version = ${SCORING_VERSION}
       WHERE id = $4`,
     [result.score, result.band, JSON.stringify(result.breakdown), propertyId]
   );
@@ -284,7 +323,11 @@ async function scoreProperties(propertyIds) {
                      AND UPPER(TRIM(COALESCE(pc.mailing_state,''))) <> ''
                      AND UPPER(TRIM(p.state_code)) <> UPPER(TRIM(pc.mailing_state))
                     THEN ${w.out_of_state} ELSE 0 END +
-               CASE WHEN LOWER(COALESCE(p.marketing_result,'')) = 'lead' THEN ${w.marketing_lead} ELSE 0 END
+               -- Already engaged: pipeline_stage ∈ {lead, contract, closed}.
+               -- Was marketing_result='lead' before, but that column is never
+               -- populated by filtration.js (Audit #12). pipeline_stage is.
+               CASE WHEN LOWER(COALESCE(p.pipeline_stage,'')) IN ('lead','contract','closed')
+                    THEN ${w.marketing_lead} ELSE 0 END
              ) AS score
         FROM properties p
         LEFT JOIN list_flags lf ON lf.property_id = p.id
@@ -299,7 +342,8 @@ async function scoreProperties(propertyIds) {
              WHEN s.score >= 30 THEN 'warm'
              ELSE 'cold'
            END,
-           distress_scored_at = NOW()
+           distress_scored_at = NOW(),
+           distress_scoring_version = ${SCORING_VERSION}
       FROM scored s
      WHERE p.id = s.id;
   `;
@@ -361,7 +405,8 @@ async function scoreAllProperties(progressCb) {
                      AND UPPER(TRIM(COALESCE(pc.mailing_state,''))) <> ''
                      AND UPPER(TRIM(p.state_code)) <> UPPER(TRIM(pc.mailing_state))
                     THEN ${w.out_of_state} ELSE 0 END +
-               CASE WHEN LOWER(COALESCE(p.marketing_result,'')) = 'lead' THEN ${w.marketing_lead} ELSE 0 END
+               CASE WHEN LOWER(COALESCE(p.pipeline_stage,'')) IN ('lead','contract','closed')
+                    THEN ${w.marketing_lead} ELSE 0 END
              ) AS score
         FROM properties p
         LEFT JOIN list_flags lf ON lf.property_id = p.id
@@ -375,7 +420,8 @@ async function scoreAllProperties(progressCb) {
              WHEN s.score >= 30 THEN 'warm'
              ELSE 'cold'
            END,
-           distress_scored_at = NOW()
+           distress_scored_at = NOW(),
+           distress_scoring_version = ${SCORING_VERSION}
       FROM scored s
      WHERE p.id = s.id;
   `;
@@ -395,8 +441,12 @@ async function scoreAllProperties(progressCb) {
 // ── Full per-property rescore including breakdown (for smaller batches) ────
 async function scoreAllPropertiesWithBreakdown(progressCb, limit) {
   await ensureDistressSchema();
-  const lim = limit ? ` LIMIT ${parseInt(limit)}` : '';
-  const idsRes = await query(`SELECT id FROM properties ORDER BY id ASC${lim}`);
+  // Cap user-provided limit defensively at 250k and drop any non-integer.
+  // Parameterized rather than interpolated to eliminate any injection vector.
+  let lim = parseInt(limit, 10);
+  if (isNaN(lim) || lim < 1) lim = 250_000;
+  if (lim > 250_000) lim = 250_000;
+  const idsRes = await query(`SELECT id FROM properties ORDER BY id ASC LIMIT $1`, [lim]);
   const ids = idsRes.rows.map(r => r.id);
   let done = 0;
   for (const id of ids) {
@@ -577,6 +627,7 @@ async function getConversionRateByBand() {
 
 module.exports = {
   WEIGHTS,
+  SCORING_VERSION,
   BAND_COLORS,
   bandFor,
   classifyList,
