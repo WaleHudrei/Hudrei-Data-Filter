@@ -1,7 +1,16 @@
 /**
  * shared-shell.js
  * Single source of truth for Loki's sidebar + HTML shell.
- * All route files import this — update once, applies everywhere.
+ *
+ * NOTE (2026-04-17 audit): The inline <script> that used to live at the bottom
+ * of this template was DELETED. It redefined selectRow/clearSelection/
+ * selectAllRecords as globals that overwrote the implementations in
+ * /public/js/records-list.js, writing to a different state object (_selIds
+ * instead of selectedIds). Effect: individual-row selections never populated
+ * records-list.js's selectedIds object, so Manage → Export/Delete/Tag/RFL
+ * always alerted "No records selected" unless "Select all N records" (the
+ * banner button that toggles _allSelected) was used. The Records page is the
+ * only page with checkbox selection, and records-list.js handles it entirely.
  */
 
 function shell(title, body, activePage) {
@@ -106,6 +115,7 @@ tr.row-selected:hover td{background:#e4edff !important}
 .alert{padding:10px 14px;border-radius:8px;font-size:13px;margin-bottom:1rem}
 .alert-success{background:#e8f5ee;color:#1a7a4a;border:1px solid #c3e6cc}
 .alert-error{background:#fdf0f0;color:#c0392b;border:1px solid #f5c5c5}
+.alert-warn{background:#fff8e1;color:#7a5a00;border:1px solid #f5d06b}
 .kv-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(160px,1fr));gap:14px 20px}
 .kv{display:flex;flex-direction:column;gap:3px}
 .kv-label{font-size:11px;text-transform:uppercase;letter-spacing:.08em;color:#888;font-weight:600}
@@ -120,28 +130,20 @@ tr.row-selected:hover td{background:#e4edff !important}
 .ps-dead{background:#fdf0f0;color:#c0392b}
 .timeline-item{display:grid;grid-template-columns:130px 1fr;gap:16px;padding:13px 0;border-bottom:1px solid #f5f4f0}
 .timeline-item:last-child{border-bottom:none}
-.timeline-date{font-family:monospace;font-size:12px;color:#aaa;padding-top:2px}
-.timeline-source{font-size:13px;font-weight:600;margin-bottom:3px}
-.timeline-detail{font-size:12px;color:#888}
-.timeline-detail .added{color:#1a7a4a;font-weight:600}
-.timeline-detail .updated{color:#9a6800;font-weight:600}
-.chip{display:inline-block;padding:2px 8px;border-radius:4px;font-size:11px;font-weight:600}
-.chip-call{background:#e8f5ee;color:#1a7a4a}
-.chip-sms{background:#e8f0ff;color:#2c5cc5}
-.chip-email{background:#fff8e1;color:#9a6800}
-.tag{display:inline-block;padding:2px 8px;border-radius:4px;font-size:11px;background:#f5f4f0;color:#555;margin-right:4px}
-.grid-2{display:grid;grid-template-columns:1fr 1fr;gap:1.25rem}
-.grid-3{display:grid;grid-template-columns:1fr 1fr 1fr;gap:1.25rem}
-</style></head><body>
+.timeline-date{font-size:11px;color:#888;text-transform:uppercase;letter-spacing:.08em;font-weight:600;padding-top:2px}
+.timeline-content{font-size:13px}
+.timeline-title{font-weight:500;color:#1a1a1a;margin-bottom:2px}
+.timeline-sub{font-size:12px;color:#888}
+</style></head>
+<body>
 <div class="sidebar">
   <div class="sidebar-logo">
     <div class="sidebar-logo-title">Loki</div>
-    <div class="sidebar-logo-sub">Developed by HudREI</div>
+    <div class="sidebar-logo-sub">OOJ Acquisitions</div>
   </div>
   <div class="sidebar-nav">
-    <div class="sidebar-section">Tools</div>
     <a href="/dashboard" class="sidebar-link ${activePage==='dashboard'?'active':''}">
-      <svg fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg>
+      <svg fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="9" rx="1"/><rect x="14" y="3" width="7" height="5" rx="1"/><rect x="14" y="12" width="7" height="9" rx="1"/><rect x="3" y="16" width="7" height="5" rx="1"/></svg>
       Dashboard
     </a>
     <a href="/records" class="sidebar-link ${activePage==='records'?'active':''}">
@@ -189,75 +191,6 @@ tr.row-selected:hover td{background:#e4edff !important}
 <div class="page-wrap">
 <div class="main">${body}</div>
 </div>
-<script>
-// Records page checkbox logic — runs at true bottom of DOM
-if (document.getElementById('select-all')) {
-  var _selIds = {};
-  var _allSelected = false;
-
-  function _upd() {
-    var count = Object.keys(_selIds).length;
-    var toolbar = document.getElementById('export-toolbar');
-    var counter = document.getElementById('selected-count');
-    var banner = document.getElementById('select-all-banner');
-    var pageChecks = document.querySelectorAll('.row-check');
-    if (toolbar) toolbar.style.display = count > 0 ? 'flex' : 'none';
-    if (counter) {
-      if (_allSelected && banner) {
-        var tot = banner.getAttribute('data-total');
-        counter.textContent = Number(tot).toLocaleString();
-      } else {
-        counter.textContent = count.toLocaleString();
-      }
-    }
-    if (banner) {
-      var allPageChecked = count > 0 && count >= pageChecks.length;
-      banner.style.display = (allPageChecked && !_allSelected) ? 'flex' : 'none';
-    }
-  }
-
-  function selectRow(cb, on) {
-    var id = cb.getAttribute('data-id'); if (!id) return;
-    cb.checked = on;
-    var tr = cb.closest ? cb.closest('tr') : cb.parentNode.parentNode;
-    if (tr) { if (on) tr.classList.add('row-selected'); else tr.classList.remove('row-selected'); }
-    if (on) _selIds[id] = 1; else delete _selIds[id];
-    _allSelected = false;
-    _upd();
-  }
-
-  function clearSelection() {
-    _selIds = {};
-    _allSelected = false;
-    document.querySelectorAll('.row-check').forEach(function(cb) {
-      cb.checked = false;
-      var tr = cb.closest ? cb.closest('tr') : cb.parentNode.parentNode;
-      if (tr) tr.classList.remove('row-selected');
-    });
-    document.getElementById('select-all').checked = false;
-    var banner = document.getElementById('select-all-banner');
-    if (banner) banner.style.display = 'none';
-    _upd();
-  }
-
-  function selectAllRecords() {
-    _allSelected = true;
-    var banner = document.getElementById('select-all-banner');
-    if (banner) banner.style.display = 'none';
-    _upd();
-  }
-
-  document.getElementById('select-all').addEventListener('change', function() {
-    var on = this.checked;
-    _allSelected = false;
-    document.querySelectorAll('.row-check').forEach(function(cb) { selectRow(cb, on); });
-  });
-
-  document.querySelectorAll('.row-check').forEach(function(cb) {
-    cb.addEventListener('change', function() { selectRow(cb, cb.checked); });
-  });
-}
-</script>
 </body></html>`;
 }
 
