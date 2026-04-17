@@ -75,11 +75,22 @@ app.use(express.urlencoded({ extended: true, limit: '50mb' }));
 let sessionStore;
 if (REDIS_URL) {
   try {
-    const { RedisStore } = require('connect-redis');
+    // connect-redis v7+ exports { RedisStore } (named), but earlier 7.x
+    // minor versions and all of v6 export the class as the default export.
+    // Also some bundlers expose it as .default. Try all three shapes.
+    const mod = require('connect-redis');
+    const RedisStore =
+      (mod && mod.RedisStore) ||
+      (typeof mod === 'function' ? mod : null) ||
+      (mod && mod.default && (mod.default.RedisStore || mod.default));
+
+    if (typeof RedisStore !== 'function') {
+      throw new Error('RedisStore export not found in connect-redis module. Got keys: ' + Object.keys(mod || {}).join(','));
+    }
     sessionStore = new RedisStore({ client: redis, prefix: 'loki:sess:' });
     console.log('Session store: Redis');
   } catch (e) {
-    console.error('connect-redis not installed — falling back to MemoryStore.', e.message);
+    console.error('connect-redis failed to initialize — falling back to MemoryStore.', e.message);
     sessionStore = undefined;
   }
 } else if (IS_PROD) {
