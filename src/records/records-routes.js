@@ -890,7 +890,7 @@ router.get('/', requireAuth, async (req, res) => {
         </table>
       </div>
       ${pagination}
-      <script src="/js/records-list.js"></script>
+      <script src="/js/records-list.js?v=2"></script>
 
     `, 'records'));
   } catch (e) {
@@ -1749,7 +1749,7 @@ router.get('/:id(\\d+)', requireAuth, async (req, res) => {
         </div>
       </div>
 
-      <script src="/js/records-detail.js"></script>
+      <script src="/js/records-detail.js?v=2"></script>
     `, 'records'));
   } catch (e) {
     console.error(e);
