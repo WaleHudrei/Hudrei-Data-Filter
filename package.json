@@ -1,7 +1,7 @@
 {
   "name": "hudrei-filtration-bot",
   "version": "1.0.0",
-  "description": "HudREI List Filtration Bot",
+  "description": "HudREI List Filtration Bot (Loki)",
   "main": "src/server.js",
   "scripts": {
     "start": "node src/server.js",
@@ -10,6 +10,7 @@
   "dependencies": {
     "express": "^4.18.2",
     "express-session": "^1.17.3",
+    "connect-redis": "^7.1.0",
     "multer": "^1.4.5-lts.1",
     "papaparse": "^5.4.1",
     "connect-flash": "^0.1.1",
