@@ -5,6 +5,17 @@ const Papa = require('papaparse');
 const crypto = require('crypto');
 const { query } = require('../db');
 const { shell } = require('../shared-shell');
+const { normalizeState: sharedNormalizeState } = require('./state');
+
+// Wrapper: callers rely on string truthiness (empty string = skip). The
+// shared helper returns null for garbage — we normalize that to '' here
+// so existing `if (!state)` branches behave the same. Uppercase valid codes
+// pass through untouched. This replaces the three older in-file copies that
+// used raw .slice(0,2) fallback (which poisoned the markets table with "46"
+// from ZIP codes that landed in the State column). (Audit #3.)
+function normalizeState(v) {
+  return sharedNormalizeState(v) || '';
+}
 
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 50 * 1024 * 1024 } });
 
@@ -499,13 +510,22 @@ router.post('/parse', requireAuth, upload.single('csvfile'), async (req, res) =>
       console.error('[import/parse] mapping lookup failed:', e.message);
     }
 
-    // Store full rows in server session — only send preview to browser
-    req.session.importRows = rows;
+    // Cap rows stored in session at 50k (Audit #8). Huge REISift exports can
+    // pin 500+ MB in Express session memory otherwise. User is told the count
+    // and can use /import/bulk for bigger files. Preview always shows first 10.
+    const ROW_CAP = 50_000;
+    const rowsToStore = rows.length > ROW_CAP ? rows.slice(0, ROW_CAP) : rows;
+    const wasCapped = rows.length > ROW_CAP;
+
+    req.session.importRows = rowsToStore;
     req.session.save();
     res.json({
       columns,
-      previewRows: rows.slice(0, 10),
-      totalRows: rows.length,
+      previewRows: rowsToStore.slice(0, 10),
+      totalRows: rowsToStore.length,
+      originalRows: rows.length,
+      wasCapped,
+      capNote: wasCapped ? `File has ${rows.length.toLocaleString()} rows — importing first ${ROW_CAP.toLocaleString()}. For larger imports, use the REISift Bulk Import flow at /import/bulk which streams from disk.` : null,
       mapping,
       filename: req.file.originalname,
       fingerprint,
@@ -1255,27 +1275,11 @@ async function runBackgroundImport(jobId, allRows, mapping, filename, resolvedLi
       const m = String(v).trim().match(/^\d{5}/);
       return m ? m[0] : String(v).trim().slice(0, 10);
     };
-    // Normalize state: full name → abbreviation
-    const STATE_ABBR = {
-      'alabama':'AL','alaska':'AK','arizona':'AZ','arkansas':'AR','california':'CA',
-      'colorado':'CO','connecticut':'CT','delaware':'DE','florida':'FL','georgia':'GA',
-      'hawaii':'HI','idaho':'ID','illinois':'IL','indiana':'IN','iowa':'IA',
-      'kansas':'KS','kentucky':'KY','louisiana':'LA','maine':'ME','maryland':'MD',
-      'massachusetts':'MA','michigan':'MI','minnesota':'MN','mississippi':'MS','missouri':'MO',
-      'montana':'MT','nebraska':'NE','nevada':'NV','new hampshire':'NH','new jersey':'NJ',
-      'new mexico':'NM','new york':'NY','north carolina':'NC','north dakota':'ND','ohio':'OH',
-      'oklahoma':'OK','oregon':'OR','pennsylvania':'PA','rhode island':'RI','south carolina':'SC',
-      'south dakota':'SD','tennessee':'TN','texas':'TX','utah':'UT','vermont':'VT',
-      'virginia':'VA','washington':'WA','west virginia':'WV','wisconsin':'WI','wyoming':'WY',
-      'district of columbia':'DC','washington dc':'DC',
-    };
-    const VALID_STATES = new Set(['AL','AK','AZ','AR','CA','CO','CT','DE','FL','GA','HI','ID','IL','IN','IA','KS','KY','LA','ME','MD','MA','MI','MN','MS','MO','MT','NE','NV','NH','NJ','NM','NY','NC','ND','OH','OK','OR','PA','RI','SC','SD','TN','TX','UT','VT','VA','WA','WV','WI','WY','DC']);
-    const normalizeState = v => {
-      if (!v) return '';
-      const up = v.trim().toUpperCase();
-      if (VALID_STATES.has(up)) return up;
-      return STATE_ABBR[v.trim().toLowerCase()] || up.slice(0,2);
-    };
+    // normalizeState used here is the module-level wrapper at the top of
+    // this file; delegates to the shared helper in ./state.js. The local
+    // copies (STATE_ABBR, VALID_STATES, and the slice(0,2) fallback) used
+    // to live inline here — deleted in the 2026-04-17 audit because they
+    // drifted from the shared source of truth.
     // Length caps for short VARCHAR columns — skip rows exceeding these
     const CAP = { state_code: 10, zip_code: 10 };
     // Normalize state: full name → abbreviation
@@ -1361,45 +1365,161 @@ async function runBackgroundImport(jobId, allRows, mapping, filename, resolvedLi
         `, [streets,cities,states,zips,counties,mktIds,sources,propTypes,yearBuilts,sqfts,beds,baths,lots,assessed,estVals,equity,propStatus,conds,lastSaleDates,lastSalePrices,vacants]);
 
         const propMap = {};
+        const propIds = [];
         for (const p of propRes.rows) {
           propMap[(p.street+'|'+p.city+'|'+p.state_code+'|'+p.zip_code).toLowerCase()] = { id: p.id, wasInsert: p.xmax==='0' };
+          propIds.push(p.id);
           if (p.xmax==='0') inserted++; else updated++;
         }
 
-        // Contacts + phones
+        // ─────────────────────────────────────────────────────────────────
+        // Contacts + phones + list-links — UNNEST rewrite (2026-04-17 gap 4)
+        //
+        // Was: per-row loop issuing 12+ queries per property (500 rows/batch
+        // × 12 = 6000 queries per batch). Now: 5 bulk queries per batch, same
+        // semantics. A 50k-row import drops from ~3-4 min to ~10-15 s.
+        // ─────────────────────────────────────────────────────────────────
+
+        // Build row → property_id lookup keyed by the same composite we used
+        // for dedup. We'll walk dedupedRows and assemble per-phase arrays.
+        const rowKey = (r) => (
+          get(r,'street').toLowerCase() + '|' +
+          get(r,'city').toLowerCase() + '|' +
+          normalizeState(get(r,'state_code')) + '|' +
+          normalizeZip(get(r,'zip_code'))
+        );
+
+        // Collect rows that have owner data, keyed by property_id
+        const rowByPropId = new Map();    // propId → row
         for (const row of dedupedRows) {
-          try {
-            const key = (get(row,'street')+'|'+get(row,'city')+'|'+normalizeState(get(row,'state_code'))+'|'+normalizeZip(get(row,'zip_code'))).toLowerCase();
-            const prop = propMap[key];
-            if (!prop) continue;
-            const propertyId = prop.id;
-            const firstName = get(row,'first_name'), lastName = get(row,'last_name');
-            if (firstName || lastName) {
-              const existPC = await query(`SELECT contact_id FROM property_contacts WHERE property_id=$1 AND primary_contact=true LIMIT 1`,[propertyId]);
-              let contactId;
-              if (existPC.rows.length) {
-                contactId = existPC.rows[0].contact_id;
-                await query(`UPDATE contacts SET first_name=COALESCE(NULLIF($1,''),first_name),last_name=COALESCE(NULLIF($2,''),last_name),mailing_address=COALESCE(NULLIF($3,''),mailing_address),mailing_city=COALESCE(NULLIF($4,''),mailing_city),mailing_state=COALESCE(NULLIF($5,''),mailing_state),mailing_zip=COALESCE(NULLIF($6,''),mailing_zip),email_1=COALESCE(NULLIF($7,''),email_1),email_2=COALESCE(NULLIF($8,''),email_2),updated_at=NOW() WHERE id=$9`,
-                  [firstName,lastName,get(row,'mailing_address'),get(row,'mailing_city'),get(row,'mailing_state'),get(row,'mailing_zip'),get(row,'email_1')||'',get(row,'email_2')||'',contactId]);
-              } else {
-                const cr = await query(`INSERT INTO contacts (first_name,last_name,mailing_address,mailing_city,mailing_state,mailing_zip,email_1,email_2) VALUES ($1,$2,$3,$4,$5,$6,$7,$8) RETURNING id`,
-                  [firstName,lastName,get(row,'mailing_address'),get(row,'mailing_city'),get(row,'mailing_state'),get(row,'mailing_zip'),get(row,'email_1')||null,get(row,'email_2')||null]);
-                contactId = cr.rows[0].id;
-                await query(`INSERT INTO property_contacts (property_id,contact_id,primary_contact) VALUES ($1,$2,true) ON CONFLICT DO NOTHING`,[propertyId,contactId]);
-              }
-              for (let i=1;i<=10;i++) {
-                const phoneRaw = cleanPhone(get(row,`phone_${i}`));
-                if (!phoneRaw||phoneRaw.length<7) continue;
-                const pType=(get(row,`phone_type_${i}`)||'unknown').toLowerCase().trim();
-                const pStatus=(get(row,`phone_status_${i}`)||'unknown').toLowerCase().trim();
-                await query(`INSERT INTO phones (contact_id,phone_number,phone_index,phone_type,phone_status) VALUES ($1,$2,$3,$4,$5) ON CONFLICT (contact_id,phone_number) DO UPDATE SET phone_type=CASE WHEN EXCLUDED.phone_type!='unknown' THEN EXCLUDED.phone_type ELSE phones.phone_type END,phone_status=CASE WHEN EXCLUDED.phone_status!='unknown' THEN EXCLUDED.phone_status ELSE phones.phone_status END`,
-                  [contactId,phoneRaw,i,pType,pStatus]);
-              }
-            }
-            if (resolvedListId) {
-              await query(`INSERT INTO property_lists (property_id,list_id,added_at) VALUES ($1,$2,NOW()) ON CONFLICT DO NOTHING`,[propertyId,resolvedListId]);
-            }
-          } catch(rowErr) { errors++; }
+          const prop = propMap[rowKey(row)];
+          if (!prop) continue;
+          const fn = get(row,'first_name'), ln = get(row,'last_name');
+          if (!fn && !ln) continue;
+          // If multiple rows landed on the same property_id (same address),
+          // last-row-wins — matches old per-row loop behavior.
+          rowByPropId.set(prop.id, row);
+        }
+
+        // Pre-load existing primary contacts for this batch's properties
+        const batchPropIds = Array.from(rowByPropId.keys());
+        const existingPC = new Map();
+        if (batchPropIds.length > 0) {
+          const ex = await query(
+            `SELECT property_id, contact_id FROM property_contacts
+              WHERE property_id = ANY($1::int[]) AND primary_contact = true`,
+            [batchPropIds]
+          );
+          for (const r of ex.rows) existingPC.set(r.property_id, r.contact_id);
+        }
+
+        // Split into update-existing vs insert-new
+        const updIds=[], updFns=[], updLns=[], updMaddr=[], updMcity=[], updMstate=[], updMzip=[], updE1=[], updE2=[];
+        const newPropIds=[], newFns=[], newLns=[], newMaddr=[], newMcity=[], newMstate=[], newMzip=[], newE1=[], newE2=[];
+        const contactIdByProp = new Map();
+
+        for (const [propId, row] of rowByPropId) {
+          if (existingPC.has(propId)) {
+            const cid = existingPC.get(propId);
+            contactIdByProp.set(propId, cid);
+            updIds.push(cid);
+            updFns.push(get(row,'first_name') || '');
+            updLns.push(get(row,'last_name') || '');
+            updMaddr.push(get(row,'mailing_address') || '');
+            updMcity.push(get(row,'mailing_city') || '');
+            updMstate.push(get(row,'mailing_state') || '');
+            updMzip.push(get(row,'mailing_zip') || '');
+            updE1.push(get(row,'email_1') || '');
+            updE2.push(get(row,'email_2') || '');
+          } else {
+            newPropIds.push(propId);
+            newFns.push(get(row,'first_name') || '');
+            newLns.push(get(row,'last_name') || '');
+            newMaddr.push(get(row,'mailing_address') || '');
+            newMcity.push(get(row,'mailing_city') || '');
+            newMstate.push(get(row,'mailing_state') || '');
+            newMzip.push(get(row,'mailing_zip') || '');
+            newE1.push(get(row,'email_1') || null);
+            newE2.push(get(row,'email_2') || null);
+          }
+        }
+
+        // Bulk UPDATE existing contacts (COALESCE preserves prior non-empty values)
+        if (updIds.length > 0) {
+          await query(`
+            UPDATE contacts SET
+              first_name      = COALESCE(NULLIF(t.first_name,''),      contacts.first_name),
+              last_name       = COALESCE(NULLIF(t.last_name,''),       contacts.last_name),
+              mailing_address = COALESCE(NULLIF(t.mailing_address,''), contacts.mailing_address),
+              mailing_city    = COALESCE(NULLIF(t.mailing_city,''),    contacts.mailing_city),
+              mailing_state   = COALESCE(NULLIF(t.mailing_state,''),   contacts.mailing_state),
+              mailing_zip     = COALESCE(NULLIF(t.mailing_zip,''),     contacts.mailing_zip),
+              email_1         = COALESCE(NULLIF(t.email_1,''),         contacts.email_1),
+              email_2         = COALESCE(NULLIF(t.email_2,''),         contacts.email_2),
+              updated_at      = NOW()
+            FROM UNNEST(
+              $1::int[], $2::text[], $3::text[], $4::text[], $5::text[],
+              $6::text[], $7::text[], $8::text[], $9::text[]
+            ) AS t(id, first_name, last_name, mailing_address, mailing_city,
+                   mailing_state, mailing_zip, email_1, email_2)
+            WHERE contacts.id = t.id
+          `, [updIds, updFns, updLns, updMaddr, updMcity, updMstate, updMzip, updE1, updE2]);
+        }
+
+        // Bulk INSERT new contacts + property_contacts links
+        if (newPropIds.length > 0) {
+          const nr = await query(`
+            INSERT INTO contacts (first_name,last_name,mailing_address,mailing_city,mailing_state,mailing_zip,email_1,email_2)
+            SELECT * FROM UNNEST(
+              $1::text[],$2::text[],$3::text[],$4::text[],$5::text[],$6::text[],$7::text[],$8::text[]
+            ) AS t(first_name,last_name,mailing_address,mailing_city,mailing_state,mailing_zip,email_1,email_2)
+            RETURNING id
+          `, [newFns, newLns, newMaddr, newMcity, newMstate, newMzip, newE1, newE2]);
+          const newIds = nr.rows.map(r => r.id);
+          await query(`
+            INSERT INTO property_contacts (property_id, contact_id, primary_contact)
+            SELECT property_id, contact_id, true
+              FROM UNNEST($1::int[], $2::int[]) AS t(property_id, contact_id)
+            ON CONFLICT DO NOTHING
+          `, [newPropIds, newIds]);
+          for (let i = 0; i < newPropIds.length; i++) contactIdByProp.set(newPropIds[i], newIds[i]);
+        }
+
+        // Bulk UPSERT phones — walk every row × 10 slots, emit one array
+        const phCids=[], phNums=[], phIdxs=[], phTypes=[], phStats=[];
+        for (const [propId, row] of rowByPropId) {
+          const cid = contactIdByProp.get(propId);
+          if (!cid) continue;
+          for (let i = 1; i <= 10; i++) {
+            const phoneRaw = cleanPhone(get(row, `phone_${i}`));
+            if (!phoneRaw || phoneRaw.length < 7) continue;
+            phCids.push(cid);
+            phNums.push(phoneRaw);
+            phIdxs.push(i);
+            phTypes.push((get(row, `phone_type_${i}`) || 'unknown').toLowerCase().trim());
+            phStats.push((get(row, `phone_status_${i}`) || 'unknown').toLowerCase().trim());
+          }
+        }
+        if (phCids.length > 0) {
+          await query(`
+            INSERT INTO phones (contact_id, phone_number, phone_index, phone_type, phone_status)
+            SELECT * FROM UNNEST($1::int[], $2::text[], $3::int[], $4::text[], $5::text[])
+              AS t(contact_id, phone_number, phone_index, phone_type, phone_status)
+            ON CONFLICT (contact_id, phone_number) DO UPDATE SET
+              phone_type   = CASE WHEN EXCLUDED.phone_type   != 'unknown' THEN EXCLUDED.phone_type   ELSE phones.phone_type   END,
+              phone_status = CASE WHEN EXCLUDED.phone_status != 'unknown' THEN EXCLUDED.phone_status ELSE phones.phone_status END,
+              updated_at   = NOW()
+          `, [phCids, phNums, phIdxs, phTypes, phStats]);
+        }
+
+        // Bulk INSERT property_lists links for every property in the batch
+        if (resolvedListId && propIds.length > 0) {
+          await query(`
+            INSERT INTO property_lists (property_id, list_id, added_at)
+            SELECT property_id, $2, NOW()
+              FROM UNNEST($1::int[]) AS t(property_id)
+            ON CONFLICT DO NOTHING
+          `, [propIds, resolvedListId]);
         }
       }
 
