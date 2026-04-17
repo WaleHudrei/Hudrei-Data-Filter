@@ -5,11 +5,17 @@ const { query } = require('./db');
 
 const DEFAULT_DELETE_CODE = 'HudREI2026';
 
+// Module-level idempotency flag — ensureSettingsSchema only pays DDL cost
+// once per process, not every time verifyDeleteCode runs. (Audit issue #16.)
+let _settingsSchemaReady = false;
+
 /**
  * Idempotent schema init. Creates app_settings table and seeds the delete_code
- * row if it doesn't exist. Called at app startup.
+ * row if it doesn't exist. Called at app startup and defensively before any
+ * destructive operation.
  */
 async function ensureSettingsSchema() {
+  if (_settingsSchemaReady) return;
   await query(`
     CREATE TABLE IF NOT EXISTS app_settings (
       key TEXT PRIMARY KEY,
@@ -17,21 +23,35 @@ async function ensureSettingsSchema() {
       updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     )
   `);
-  // Seed default delete_code if not set. Never overwrites an existing value.
   await query(
     `INSERT INTO app_settings (key, value) VALUES ('delete_code', $1)
      ON CONFLICT (key) DO NOTHING`,
     [DEFAULT_DELETE_CODE]
   );
+  _settingsSchemaReady = true;
 }
 
 /**
- * Returns the current delete code. Falls back to default if not set (shouldn't
- * happen once ensureSettingsSchema runs at boot, but defensive).
+ * Returns the current delete code. Falls back to default if not set.
  */
 async function getDeleteCode() {
   const r = await query(`SELECT value FROM app_settings WHERE key = 'delete_code' LIMIT 1`);
   return r.rows.length ? r.rows[0].value : DEFAULT_DELETE_CODE;
+}
+
+/**
+ * Returns true if the delete code is still the default shipped in the repo.
+ * Used by the dashboard to render a warning banner. (Audit issue #32.)
+ */
+async function isUsingDefaultCode() {
+  try {
+    await ensureSettingsSchema();
+    const stored = await getDeleteCode();
+    return constantTimeEquals(stored.trim(), DEFAULT_DELETE_CODE);
+  } catch (e) {
+    // If we can't even check, render the banner — it's safer.
+    return true;
+  }
 }
 
 /**
@@ -49,15 +69,11 @@ function constantTimeEquals(a, b) {
 }
 
 /**
- * Verifies a user-provided code against the stored value. Returns true/false.
- * Never throws — wraps DB errors and returns false.
+ * Verifies a user-provided code against the stored value.
  */
 async function verifyDeleteCode(providedCode) {
   if (!providedCode || typeof providedCode !== 'string') return false;
   try {
-    // Defensive — if a delete request lands before app.listen's async schema
-    // init completes (cold boot race window), ensure the table + seeded row
-    // exist before comparing. Idempotent so safe to call every time.
     await ensureSettingsSchema();
     const stored = await getDeleteCode();
     return constantTimeEquals(providedCode.trim(), stored.trim());
@@ -69,8 +85,6 @@ async function verifyDeleteCode(providedCode) {
 
 /**
  * Updates the delete code. Requires the OLD code to authenticate the change.
- * Returns { ok: true } or { ok: false, error: 'message' }.
- * Enforces min length 6 on the new code.
  */
 async function updateDeleteCode(oldCode, newCode) {
   if (!newCode || typeof newCode !== 'string') {
@@ -105,4 +119,5 @@ module.exports = {
   verifyDeleteCode,
   updateDeleteCode,
   getDeleteCodeUpdatedAt,
+  isUsingDefaultCode,
 };
