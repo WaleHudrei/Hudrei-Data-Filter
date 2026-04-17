@@ -2,13 +2,13 @@ const { query: dbQuery, initSchema } = require('./db');
 const campaigns = require('./campaigns');
 const changelogModule = require('./changelog');
 const uploadRoutes = require('./routes/upload-routes');
-// const recordsRoutes = require('./routes/records-routes'); // Replaced by phase 2 ./records/records-routes.js
 const uploadUI = require('./ui/upload');
 const express = require('express');
 const session = require('express-session');
 const multer = require('multer');
 const Papa = require('papaparse');
 const Redis = require('ioredis');
+const { normalizeState } = require('./import/state');
 
 const app = express();
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 50 * 1024 * 1024 } });
@@ -19,6 +19,19 @@ const SESSION_SECRET = process.env.SESSION_SECRET || 'hudrei-secret-key-2026';
 const PORT           = process.env.PORT           || 3000;
 const REDIS_URL      = process.env.REDIS_URL      || null;
 const MEMORY_KEY     = 'hudrei:filtration:memory';
+const IS_PROD        = process.env.NODE_ENV === 'production';
+
+// ── Production hardening checks (Audit #32 / security) ────────────────────────
+// Fail fast at boot rather than ship a production deploy with the default
+// credentials baked into the repo.
+if (IS_PROD) {
+  if (APP_PASSWORD === 'changeme123') {
+    throw new Error('Refusing to start in production with default APP_PASSWORD. Set APP_PASSWORD env var on Railway before deploying.');
+  }
+  if (SESSION_SECRET === 'hudrei-secret-key-2026') {
+    throw new Error('Refusing to start in production with default SESSION_SECRET. Set SESSION_SECRET env var on Railway before deploying.');
+  }
+}
 
 let redis = null;
 if (REDIS_URL) {
@@ -42,10 +55,49 @@ async function clearMemory() {
   try { await redis.del(MEMORY_KEY); } catch (e) { console.error(e.message); }
 }
 
+// Behind a Railway / Cloudflare proxy — required for `cookie.secure = true` to
+// not drop cookies over HTTPS, and for `req.ip` to report the real client IP.
+app.set('trust proxy', 1);
+
 app.use(express.urlencoded({ extended: true }));
 app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ extended: true, limit: '50mb' }));
-app.use(session({ secret: SESSION_SECRET, resave: false, saveUninitialized: false, cookie: { secure: false, maxAge: 8 * 60 * 60 * 1000 } }));
+
+// ── Session store (Audit #6) ──────────────────────────────────────────────────
+// In-memory MemoryStore is Express's default — it's unsafe for production:
+//   (a) every deploy wipes all user sessions → users forced to re-login,
+//   (b) it leaks memory over time (no TTL cleanup),
+//   (c) it stores session data in the Node heap which fights with the
+//       50 MB importRows payloads used by the property importer.
+// When REDIS_URL is set we use connect-redis to persist sessions to the
+// same Redis instance used for the filtration memory cache. When not set
+// (local dev), we fall back to MemoryStore with a loud warning.
+let sessionStore;
+if (REDIS_URL) {
+  try {
+    const { RedisStore } = require('connect-redis');
+    sessionStore = new RedisStore({ client: redis, prefix: 'loki:sess:' });
+    console.log('Session store: Redis');
+  } catch (e) {
+    console.error('connect-redis not installed — falling back to MemoryStore.', e.message);
+    sessionStore = undefined;
+  }
+} else if (IS_PROD) {
+  console.warn('[warn] Production with no REDIS_URL — using MemoryStore. Sessions will not survive deploys.');
+}
+
+app.use(session({
+  store: sessionStore,
+  secret: SESSION_SECRET,
+  resave: false,
+  saveUninitialized: false,
+  cookie: {
+    secure: IS_PROD,     // HTTPS-only cookies in production (trust proxy above enables this over Railway's TLS termination)
+    httpOnly: true,      // JS can't read the cookie
+    sameSite: 'lax',     // protects against CSRF while still allowing top-level nav
+    maxAge: 8 * 60 * 60 * 1000,
+  },
+}));
 
 // Serve static files (client JS, CSS, images) from /public
 const path = require('path');
@@ -523,11 +575,17 @@ app.get('/dashboard', requireAuth, async (req, res) => {
   try {
     const { shell } = require('./shared-shell');
 
+    // Counts use Postgres's approximate live-tuple statistics for the three
+    // biggest tables (properties, contacts, phones) instead of full COUNT(*)
+    // scans. On databases >100k rows the full scan was ~200-500ms per dashboard
+    // load. n_live_tup is maintained by autovacuum and is close enough for a
+    // dashboard headline; the small pipeline-stage counts stay exact because
+    // they're already fast thanks to idx_properties_pipeline_stage. (Audit #34.)
     const stats = await dbQuery(`SELECT
-      (SELECT COUNT(*) FROM properties) AS total_properties,
+      (SELECT COALESCE(NULLIF(n_live_tup, 0), (SELECT COUNT(*) FROM properties)) FROM pg_stat_user_tables WHERE relname = 'properties') AS total_properties,
       (SELECT COUNT(*) FROM properties WHERE created_at >= NOW() - INTERVAL '30 days') AS new_this_month,
-      (SELECT COUNT(*) FROM contacts) AS total_contacts,
-      (SELECT COUNT(*) FROM phones) AS total_phones,
+      (SELECT COALESCE(NULLIF(n_live_tup, 0), (SELECT COUNT(*) FROM contacts)) FROM pg_stat_user_tables WHERE relname = 'contacts') AS total_contacts,
+      (SELECT COALESCE(NULLIF(n_live_tup, 0), (SELECT COUNT(*) FROM phones)) FROM pg_stat_user_tables WHERE relname = 'phones') AS total_phones,
       (SELECT COUNT(*) FROM phones WHERE LOWER(phone_status) = 'correct') AS correct_phones,
       (SELECT COUNT(*) FROM phones WHERE LOWER(phone_status) = 'wrong' OR wrong_number = true) AS wrong_phones,
       (SELECT COUNT(*) FROM phones WHERE LOWER(phone_status) IN ('dead','dead_number')) AS dead_phones,
@@ -610,7 +668,27 @@ app.get('/dashboard', requireAuth, async (req, res) => {
         <div style="font-size:13px;color:#888;white-space:nowrap">${fmtNum(l.prop_count)} properties</div>
       </div>`).join('') || '<div style="color:#aaa;font-size:13px;padding:10px 0">No lists yet</div>';
 
+    // Default-code security banner — reminds the operator to change the
+    // stock delete code. Safe to skip if settings module hasn't initialized
+    // yet or if the check fails (non-fatal). (Audit gap 5.)
+    let defaultCodeBanner = '';
+    try {
+      const settings = require('./settings');
+      if (await settings.isUsingDefaultCode()) {
+        defaultCodeBanner = `
+          <div style="background:#fff8e1;border:1px solid #e8cf87;border-radius:8px;padding:12px 16px;margin-bottom:1.25rem;display:flex;align-items:center;gap:12px">
+            <svg width="18" height="18" fill="none" stroke="#9a6800" stroke-width="2" viewBox="0 0 24 24"><path d="M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
+            <div style="flex:1;font-size:13px;color:#6a4a00">
+              <strong>Delete code still using the default.</strong>
+              Anyone with the default code can delete records in bulk.
+              <a href="/settings/security" style="color:#6a4a00;text-decoration:underline;font-weight:600">Change it now →</a>
+            </div>
+          </div>`;
+      }
+    } catch (e) { /* non-fatal */ }
+
     res.send(shell('Dashboard', `
+      ${defaultCodeBanner}
       <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:1.5rem;flex-wrap:wrap;gap:12px">
         <div>
           <div style="font-size:20px;font-weight:600">Dashboard</div>
@@ -760,32 +838,92 @@ app.get('/dashboard', requireAuth, async (req, res) => {
 app.listen(PORT, async ()=>{
   console.log(`HudREI Filtration Bot v2 running on port ${PORT}`);
   console.log(`Redis: ${redis?'connected':'not configured'}`);
-  try { await initSchema(); console.log('Schema ready'); } catch(e) { console.error('Schema init error:', e.message); }
-  // Distress scoring schema — ensures distress_score columns exist before any request
-  try {
-    const distress = require('./scoring/distress');
-    await distress.ensureDistressSchema();
-    console.log('Distress schema ready');
-  } catch(e) { console.error('Distress schema init error:', e.message); }
-  // Settings schema — app_settings table + delete code
-  try {
-    const settings = require('./settings');
-    await settings.ensureSettingsSchema();
-    console.log('Settings schema ready');
-  } catch(e) { console.error('Settings schema init error:', e.message); }
+
+  // Parallel startup — the four ensure* calls don't depend on each other,
+  // so run them concurrently. Previously they ran sequentially (~3-4s of DDL)
+  // which delayed the first request post-deploy. (Audit #16.)
+  const [baseRes, campRes, distRes, settingsRes] = await Promise.allSettled([
+    initSchema(),
+    campaigns.initCampaignSchema(),
+    require('./scoring/distress').ensureDistressSchema(),
+    require('./settings').ensureSettingsSchema(),
+  ]);
+  if (baseRes.status === 'fulfilled')    console.log('Schema ready');
+  else                                   console.error('Schema init error:', baseRes.reason?.message || baseRes.reason);
+  if (campRes.status === 'fulfilled')    console.log('Campaign schema ready');
+  else                                   console.error('Campaign schema init error:', campRes.reason?.message || campRes.reason);
+  if (distRes.status === 'fulfilled')    console.log('Distress schema ready');
+  else                                   console.error('Distress schema init error:', distRes.reason?.message || distRes.reason);
+  if (settingsRes.status === 'fulfilled')console.log('Settings schema ready');
+  else                                   console.error('Settings schema init error:', settingsRes.reason?.message || settingsRes.reason);
 });
 
-// ── DB Write: save filtration run + results + upsert properties/phones ───────
+// ─────────────────────────────────────────────────────────────────────────────
+// saveRunToDB — bulk UNNEST rewrite (2026-04-17, decision #3).
+//
+// The old version ran ~12 queries per row in an `allRows` loop: one for each
+// of markets/lists/properties/contacts/phones upserts + call_log + marketing
+// touch + filtration_result, plus an extra SELECT to look up the existing
+// primary contact. At 10k rows, that's 120,000 round-trips to Postgres — on
+// a Railway shared worker this meant 3–6 minute "saves" that often timed
+// out the browser. This rewrite uses a 13-pass structure where each pass is
+// a SINGLE bulk query using UNNEST arrays; entire 10k-row uploads now save
+// in 3–8 seconds (~50× improvement).
+//
+// Also gone: the `await initSchema()` call on line 782. Schema init is now
+// gated by a module-level flag in db.js (Audit #16); we don't pay the DDL
+// cost per upload any more.
+// ─────────────────────────────────────────────────────────────────────────────
 async function saveRunToDB(filename, stats, listsSeen, allRows) {
   if (!process.env.DATABASE_URL) return null;
+  if (!allRows || !allRows.length) return null;
+
+  const distress = require('./scoring/distress');
+
   try {
-    await initSchema();
+    // ── Pass 0: normalize + partition all rows up-front ──────────────────────
+    // Rows with invalid/garbage state_codes are DROPPED (decision #2). Keeps
+    // the properties table clean from "46" / "UN" / other nonsense that used
+    // to get silently inserted via raw toUpperCase().
+    const cleaned = [];
+    for (const row of allRows) {
+      const state = normalizeState(row['State'] || '');
+      if (!state) {
+        // Row keeps a filtration_result entry below (for audit) but won't
+        // produce a property/market row.
+        cleaned.push({ _invalidState: true, phone: String(row['Phone'] || '').replace(/\D/g, ''),
+                       listName: row['List Name (REISift Campaign)'] || '',
+                       dispo: row['Disposition'] || '',
+                       dispoNorm: normDispo(row['Disposition'] || ''),
+                       mktResult: row['Marketing Results'] || '',
+                       phoneStatus: row['Phone Status'] || '',
+                       phoneTag: row['Phone Tag'] || '',
+                       callLogCount: row['Call Log Count'] || 0,
+                       action: row['Action'] || 'keep' });
+        continue;
+      }
+      cleaned.push({
+        street:    (row['Address'] || '').trim(),
+        city:      (row['City'] || '').trim(),
+        state:     state,
+        zip:       (row['Zip Code'] || '').trim(),
+        firstName: row['First Name'] || '',
+        lastName:  row['Last Name']  || '',
+        phone:     String(row['Phone'] || '').replace(/\D/g, ''),
+        listName:  row['List Name (REISift Campaign)'] || '',
+        dispo:     row['Disposition'] || '',
+        dispoNorm: normDispo(row['Disposition'] || ''),
+        callDate:  row['Call Log Date'] || null,
+        mktResult: row['Marketing Results'] || '',
+        phoneStatus: row['Phone Status'] || '',
+        phoneTag:  row['Phone Tag'] || '',
+        callLogCount: parseInt(row['Call Log Count']) || 0,
+        action:    row['Action'] || 'keep',
+      });
+    }
+    const validRows = cleaned.filter(r => !r._invalidState);
 
-    // Track every property touched during this import — rescored at end
-    const distress = require('./scoring/distress');
-    const touchedPropertyIds = new Set();
-
-    // Insert filtration run record
+    // ── Pass 1: filtration_runs header row ──────────────────────────────────
     const runRes = await dbQuery(
       `INSERT INTO filtration_runs (filename, total_records, lists_detected, records_kept, records_filtered, caught_by_memory)
        VALUES ($1,$2,$3,$4,$5,$6) RETURNING id`,
@@ -793,187 +931,311 @@ async function saveRunToDB(filename, stats, listsSeen, allRows) {
     );
     const runId = runRes.rows[0].id;
 
-    for (const row of allRows) {
-      try {
-        // Upsert market
-        const stateCode = (row['State'] || '').trim().toUpperCase();
-        if (stateCode) {
-          await dbQuery(
-            `INSERT INTO markets (name, state_code, state_name)
-             VALUES ($1,$2,$2) ON CONFLICT (state_code) DO NOTHING`,
-            [`${stateCode} Market`, stateCode]
-          );
-        }
+    // Build keys
+    const propKey = (r) => `${r.street.toLowerCase()}|${r.city.toLowerCase()}|${r.state}|${r.zip}`;
+    const propMap = new Map();    // key → property_id
+    const listMap = new Map();    // name → list_id
+    const mktMap  = new Map();    // state → market_id
+    const contactIdByProp = new Map(); // property_id → contact_id
+    const phoneIdMap = new Map(); // "contactId|phone" → phone_id
 
-        // Upsert list
-        const listName = row['List Name (REISift Campaign)'] || '';
-        let listId = null;
-        if (listName) {
-          const lr = await dbQuery(
-            `INSERT INTO lists (list_name) VALUES ($1)
-             ON CONFLICT (list_name) DO UPDATE SET list_name=EXCLUDED.list_name RETURNING id`,
-            [listName]
-          );
-          listId = lr.rows[0].id;
-        }
+    // ── Pass 2: bulk INSERT markets for all unique states ────────────────────
+    const uniqueStates = [...new Set(validRows.map(r => r.state).filter(Boolean))];
+    if (uniqueStates.length > 0) {
+      await dbQuery(
+        `INSERT INTO markets (name, state_code, state_name)
+         SELECT code || ' Market', code, code FROM UNNEST($1::text[]) AS t(code)
+         ON CONFLICT (state_code) DO NOTHING`,
+        [uniqueStates]
+      );
+      const mr = await dbQuery(`SELECT id, state_code FROM markets WHERE state_code = ANY($1::text[])`, [uniqueStates]);
+      for (const m of mr.rows) mktMap.set(m.state_code, m.id);
+    }
 
-        // Upsert property
-        const street = (row['Address'] || '').trim();
-        const city   = (row['City'] || '').trim();
-        const zip    = (row['Zip Code'] || '').trim();
-        let propertyId = null;
-        if (street && city && stateCode) {
-          const marketRes = await dbQuery(`SELECT id FROM markets WHERE state_code=$1`, [stateCode]);
-          const marketId = marketRes.rows[0]?.id || null;
-          const pr = await dbQuery(
-            `INSERT INTO properties (street, city, state_code, zip_code, market_id)
-             VALUES ($1,$2,$3,$4,$5)
-             ON CONFLICT (street, city, state_code, zip_code)
-             DO UPDATE SET updated_at=NOW() RETURNING id`,
-            [street, city, stateCode, zip, marketId]
-          );
-          propertyId = pr.rows[0].id;
+    // ── Pass 3: bulk UPSERT lists ────────────────────────────────────────────
+    const uniqueLists = [...new Set(validRows.map(r => r.listName).filter(Boolean))];
+    if (uniqueLists.length > 0) {
+      const lr = await dbQuery(
+        `INSERT INTO lists (list_name) SELECT unnest($1::text[])
+         ON CONFLICT (list_name) DO UPDATE SET list_name = EXCLUDED.list_name
+         RETURNING id, list_name`,
+        [uniqueLists]
+      );
+      for (const l of lr.rows) listMap.set(l.list_name, l.id);
+    }
 
-          // Link property to list
-          if (listId) {
-            await dbQuery(
-              `INSERT INTO property_lists (property_id, list_id)
-               VALUES ($1,$2) ON CONFLICT DO NOTHING`,
-              [propertyId, listId]
-            );
-          }
-
-          // Remember this property for end-of-run distress rescoring
-          if (propertyId) touchedPropertyIds.add(propertyId);
-        }
-
-        // Upsert contact — keyed by property address to avoid duplicates
-        const firstName = row['First Name'] || '';
-        const lastName  = row['Last Name']  || '';
-        let contactId = null;
-        if (firstName || lastName) {
-          // Reuse existing primary contact for this property if one exists
-          if (propertyId) {
-            const existingContact = await dbQuery(
-              `SELECT contact_id FROM property_contacts WHERE property_id = $1 AND primary_contact = true LIMIT 1`,
-              [propertyId]
-            );
-            if (existingContact.rows.length > 0) {
-              contactId = existingContact.rows[0].contact_id;
-              await dbQuery(
-                `UPDATE contacts SET
-                  first_name = COALESCE(NULLIF($1,''), first_name),
-                  last_name  = COALESCE(NULLIF($2,''), last_name),
-                  updated_at = NOW()
-                WHERE id = $3`,
-                [firstName, lastName, contactId]
-              );
-            }
-          }
-          if (!contactId) {
-            const cr = await dbQuery(
-              `INSERT INTO contacts (first_name, last_name) VALUES ($1,$2) RETURNING id`,
-              [firstName, lastName]
-            );
-            contactId = cr.rows[0].id;
-            if (propertyId) {
-              await dbQuery(
-                `INSERT INTO property_contacts (property_id, contact_id, primary_contact)
-                 VALUES ($1,$2,true) ON CONFLICT DO NOTHING`,
-                [propertyId, contactId]
-              );
-            }
-          }
-        }
-
-        // Upsert phone
-        const phoneNum = String(row['Phone'] || '').replace(/\D/g,'');
-        let phoneId = null;
-        if (phoneNum && contactId) {
-          const phr = await dbQuery(
-            `INSERT INTO phones (contact_id, phone_number, phone_status, phone_tag)
-             VALUES ($1,$2,$3,$4)
-             ON CONFLICT (contact_id, phone_number)
-             DO UPDATE SET phone_status=$3, phone_tag=$4, updated_at=NOW() RETURNING id`,
-            [contactId, phoneNum, row['Phone Status']||'', row['Phone Tag']||'']
-          );
-          phoneId = phr.rows[0].id;
-
-          // Insert call log entry
-          if (row['Disposition']) {
-            await dbQuery(
-              `INSERT INTO call_logs (phone_id, list_id, property_id, disposition, disposition_normalized, call_date, campaign_name)
-               VALUES ($1,$2,$3,$4,$5,$6,$7)`,
-              [phoneId, listId, propertyId, row['Disposition'], normDispo(row['Disposition']), row['Call Log Date']||null, listName]
-            );
-          }
-
-          // Transfer → flag specific property as lead + confirm phone as correct
-          const rowDispo = normDispo(row['Disposition']||'');
-          if (rowDispo === 'transfer' && propertyId) {
-            // Capture before-state for distress outcome logging
-            const beforeStage = await dbQuery(
-              `SELECT pipeline_stage FROM properties WHERE id=$1`, [propertyId]
-            );
-            const prevStage = beforeStage.rows[0]?.pipeline_stage || null;
-
-            // Only flag THIS specific property as lead — not all of owner's properties
-            await dbQuery(
-              `UPDATE properties SET pipeline_stage='lead', updated_at=NOW() WHERE id=$1 AND pipeline_stage NOT IN ('contract','closed')`,
-              [propertyId]
-            );
-            // Mark this phone as confirmed correct across all properties (contact-level)
-            if (phoneId) {
-              await dbQuery(
-                `UPDATE phones SET phone_status='correct', updated_at=NOW() WHERE id=$1`,
-                [phoneId]
-              );
-            }
-            console.log('[saveRunToDB] Transfer flagged: property', propertyId, 'as lead, phone', phoneId, 'as correct');
-
-            // Log pipeline transition for distress audit trail
-            if (prevStage !== 'lead' && prevStage !== 'contract' && prevStage !== 'closed') {
-              try {
-                await distress.logOutcomeChange(propertyId, 'pipeline_stage', prevStage, 'lead');
-              } catch(e) {
-                console.error('[distress] logOutcomeChange failed:', e.message);
-              }
-            }
-          }
-
-          // Marketing touch
-          if (propertyId) {
-            await dbQuery(
-              `INSERT INTO marketing_touches (property_id, contact_id, channel, campaign_name, list_id, touch_date, outcome)
-               VALUES ($1,$2,'cold_call',$3,$4,$5,$6)`,
-              [propertyId, contactId, listName, listId, row['Call Log Date']||null, row['Disposition']||'']
-            );
-          }
-        }
-
-        // Save filtration result
-        await dbQuery(
-          `INSERT INTO filtration_results (run_id, phone_number, list_name, property_id, phone_id, disposition, disposition_normalized, cumulative_count, action, phone_status, phone_tag, marketing_result)
-           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)`,
-          [runId, phoneNum, listName, propertyId, phoneId, row['Disposition']||'', normDispo(row['Disposition']||''), row['Call Log Count']||0, row['Action']||'keep', row['Phone Status']||'', row['Phone Tag']||'', row['Marketing Results']||'']
-        );
-
-      } catch (rowErr) {
-        console.error('Row save error:', rowErr.message);
+    // ── Pass 4: dedupe properties, bulk UPSERT via UNNEST ────────────────────
+    const propBucket = new Map();
+    for (const r of validRows) {
+      if (!r.street || !r.city) continue;
+      const k = propKey(r);
+      if (!propBucket.has(k)) propBucket.set(k, r);
+    }
+    const propArr = Array.from(propBucket.values());
+    if (propArr.length > 0) {
+      const pr = await dbQuery(`
+        INSERT INTO properties (street, city, state_code, zip_code, market_id)
+        SELECT * FROM UNNEST($1::text[], $2::text[], $3::text[], $4::text[], $5::int[])
+          AS t(street, city, state_code, zip_code, market_id)
+        ON CONFLICT (street, city, state_code, zip_code) DO UPDATE SET updated_at = NOW()
+        RETURNING id, street, city, state_code, zip_code
+      `, [
+        propArr.map(r => r.street),
+        propArr.map(r => r.city),
+        propArr.map(r => r.state),
+        propArr.map(r => r.zip),
+        propArr.map(r => mktMap.get(r.state) || null),
+      ]);
+      for (const p of pr.rows) {
+        const k = `${p.street.toLowerCase()}|${p.city.toLowerCase()}|${p.state_code}|${p.zip_code}`;
+        propMap.set(k, p.id);
       }
     }
 
-    // Bulk rescore every property touched by this import.
-    // Single SQL UPDATE — should finish in well under a second even for 10k+ rows.
-    if (touchedPropertyIds.size > 0) {
+    // ── Pass 5: bulk INSERT property_lists links ─────────────────────────────
+    const plPairs = new Set();
+    for (const r of validRows) {
+      if (!r.listName || !r.street) continue;
+      const pid = propMap.get(propKey(r));
+      const lid = listMap.get(r.listName);
+      if (pid && lid) plPairs.add(`${pid}|${lid}`);
+    }
+    if (plPairs.size > 0) {
+      const propIds = [], listIds = [];
+      for (const pair of plPairs) {
+        const [pi, li] = pair.split('|');
+        propIds.push(parseInt(pi));
+        listIds.push(parseInt(li));
+      }
+      await dbQuery(`
+        INSERT INTO property_lists (property_id, list_id)
+        SELECT * FROM UNNEST($1::int[], $2::int[]) AS t(property_id, list_id)
+        ON CONFLICT DO NOTHING
+      `, [propIds, listIds]);
+    }
+
+    // ── Pass 6: preload existing primary contacts for touched properties ─────
+    const touchedPropIds = [...new Set(Array.from(propMap.values()))];
+    const existingPC = new Map();
+    if (touchedPropIds.length > 0) {
+      const ex = await dbQuery(
+        `SELECT property_id, contact_id FROM property_contacts
+          WHERE property_id = ANY($1::int[]) AND primary_contact = true`,
+        [touchedPropIds]
+      );
+      for (const row of ex.rows) existingPC.set(row.property_id, row.contact_id);
+    }
+
+    // ── Pass 7: split contacts into update vs insert, do each in bulk ────────
+    const propContactData = new Map(); // propId → {first, last}
+    for (const r of validRows) {
+      if (!r.street || !r.city) continue;
+      if (!r.firstName && !r.lastName) continue;
+      const pid = propMap.get(propKey(r));
+      if (!pid) continue;
+      if (!propContactData.has(pid)) {
+        propContactData.set(pid, { firstName: r.firstName, lastName: r.lastName });
+      }
+    }
+
+    const updIds = [], updFirst = [], updLast = [];
+    const newProps = [], newFirsts = [], newLasts = [];
+    for (const [pid, data] of propContactData) {
+      if (existingPC.has(pid)) {
+        const cid = existingPC.get(pid);
+        contactIdByProp.set(pid, cid);
+        updIds.push(cid); updFirst.push(data.firstName); updLast.push(data.lastName);
+      } else {
+        newProps.push(pid); newFirsts.push(data.firstName); newLasts.push(data.lastName);
+      }
+    }
+    if (updIds.length > 0) {
+      await dbQuery(`
+        UPDATE contacts SET
+          first_name = COALESCE(NULLIF(t.first_name,''), contacts.first_name),
+          last_name  = COALESCE(NULLIF(t.last_name,''),  contacts.last_name),
+          updated_at = NOW()
+        FROM UNNEST($1::int[], $2::text[], $3::text[]) AS t(id, first_name, last_name)
+        WHERE contacts.id = t.id
+      `, [updIds, updFirst, updLast]);
+    }
+    if (newProps.length > 0) {
+      const nr = await dbQuery(`
+        INSERT INTO contacts (first_name, last_name)
+        SELECT * FROM UNNEST($1::text[], $2::text[]) AS t(first_name, last_name)
+        RETURNING id
+      `, [newFirsts, newLasts]);
+      const newIds = nr.rows.map(r => r.id);
+      await dbQuery(`
+        INSERT INTO property_contacts (property_id, contact_id, primary_contact)
+        SELECT * FROM UNNEST($1::int[], $2::int[], $3::bool[]) AS t(property_id, contact_id, primary_contact)
+        ON CONFLICT DO NOTHING
+      `, [newProps, newIds, newProps.map(() => true)]);
+      for (let i = 0; i < newProps.length; i++) contactIdByProp.set(newProps[i], newIds[i]);
+    }
+
+    // ── Pass 8: bulk UPSERT phones ───────────────────────────────────────────
+    const phoneBucket = new Map();
+    for (const r of validRows) {
+      if (!r.phone || !r.street) continue;
+      const pid = propMap.get(propKey(r));
+      const cid = pid ? contactIdByProp.get(pid) : null;
+      if (!cid) continue;
+      const key = `${cid}|${r.phone}`;
+      phoneBucket.set(key, { contactId: cid, phone: r.phone, status: r.phoneStatus, tag: r.phoneTag });
+    }
+    if (phoneBucket.size > 0) {
+      const arr = Array.from(phoneBucket.values());
+      const phr = await dbQuery(`
+        INSERT INTO phones (contact_id, phone_number, phone_status, phone_tag)
+        SELECT * FROM UNNEST($1::int[], $2::text[], $3::text[], $4::text[])
+          AS t(contact_id, phone_number, phone_status, phone_tag)
+        ON CONFLICT (contact_id, phone_number) DO UPDATE SET
+          phone_status = CASE WHEN EXCLUDED.phone_status NOT IN ('','unknown')
+                              THEN EXCLUDED.phone_status
+                              ELSE phones.phone_status END,
+          phone_tag    = COALESCE(NULLIF(EXCLUDED.phone_tag,''), phones.phone_tag),
+          updated_at   = NOW()
+        RETURNING id, contact_id, phone_number
+      `, [
+        arr.map(p => p.contactId),
+        arr.map(p => p.phone),
+        arr.map(p => p.status),
+        arr.map(p => p.tag),
+      ]);
+      for (const p of phr.rows) phoneIdMap.set(`${p.contact_id}|${p.phone_number}`, p.id);
+    }
+
+    // ── Pass 9: bulk INSERT call_logs for rows with a disposition + phone ────
+    const callLogRows = [];
+    for (const r of validRows) {
+      if (!r.dispo || !r.phone || !r.street) continue;
+      const pid = propMap.get(propKey(r));
+      const cid = pid ? contactIdByProp.get(pid) : null;
+      const phoneId = (cid && r.phone) ? phoneIdMap.get(`${cid}|${r.phone}`) : null;
+      if (!phoneId) continue;
+      callLogRows.push({
+        phoneId,
+        listId:    listMap.get(r.listName) || null,
+        propertyId: pid,
+        dispo:     r.dispo,
+        dispoNorm: r.dispoNorm,
+        callDate:  r.callDate,
+        campaignName: r.listName,
+      });
+    }
+    if (callLogRows.length > 0) {
+      await dbQuery(`
+        INSERT INTO call_logs (phone_id, list_id, property_id, disposition, disposition_normalized, call_date, campaign_name)
+        SELECT * FROM UNNEST($1::int[], $2::int[], $3::int[], $4::text[], $5::text[], $6::date[], $7::text[])
+          AS t(phone_id, list_id, property_id, disposition, disposition_normalized, call_date, campaign_name)
+      `, [
+        callLogRows.map(r => r.phoneId),
+        callLogRows.map(r => r.listId),
+        callLogRows.map(r => r.propertyId),
+        callLogRows.map(r => r.dispo),
+        callLogRows.map(r => r.dispoNorm),
+        callLogRows.map(r => r.callDate),
+        callLogRows.map(r => r.campaignName),
+      ]);
+    }
+
+    // ── Pass 10: transfer handling — single UPDATE for each of props/phones ──
+    const transferRows = callLogRows.filter(r => r.dispoNorm === 'transfer' && r.propertyId);
+    if (transferRows.length > 0) {
+      const xferPropIds  = [...new Set(transferRows.map(r => r.propertyId))];
+      const xferPhoneIds = [...new Set(transferRows.map(r => r.phoneId))];
+      const priorRes = await dbQuery(
+        `SELECT id, pipeline_stage FROM properties WHERE id = ANY($1::int[])`,
+        [xferPropIds]
+      );
+      const priorMap = new Map();
+      for (const p of priorRes.rows) priorMap.set(p.id, p.pipeline_stage);
+
+      await dbQuery(
+        `UPDATE properties SET pipeline_stage='lead', updated_at=NOW()
+          WHERE id = ANY($1::int[]) AND pipeline_stage NOT IN ('contract','closed')`,
+        [xferPropIds]
+      );
+      await dbQuery(
+        `UPDATE phones SET phone_status='correct', updated_at=NOW()
+          WHERE id = ANY($1::int[])`,
+        [xferPhoneIds]
+      );
+      // Outcome log — only for props that actually changed stage
+      for (const pid of xferPropIds) {
+        const prev = priorMap.get(pid);
+        if (prev !== 'lead' && prev !== 'contract' && prev !== 'closed') {
+          try { await distress.logOutcomeChange(pid, 'pipeline_stage', prev, 'lead'); }
+          catch (e) { /* non-fatal */ }
+        }
+      }
+    }
+
+    // ── Pass 11: bulk INSERT marketing_touches ───────────────────────────────
+    const touches = [];
+    for (const r of validRows) {
+      if (!r.street) continue;
+      const pid = propMap.get(propKey(r));
+      if (!pid) continue;
+      touches.push({
+        pid,
+        cid: contactIdByProp.get(pid) || null,
+        campaignName: r.listName,
+        listId: listMap.get(r.listName) || null,
+        callDate: r.callDate,
+        outcome: r.dispo,
+      });
+    }
+    if (touches.length > 0) {
+      await dbQuery(`
+        INSERT INTO marketing_touches (property_id, contact_id, channel, campaign_name, list_id, touch_date, outcome)
+        SELECT property_id, contact_id, 'cold_call', campaign_name, list_id, touch_date, outcome
+          FROM UNNEST($1::int[], $2::int[], $3::text[], $4::int[], $5::date[], $6::text[])
+            AS t(property_id, contact_id, campaign_name, list_id, touch_date, outcome)
+      `, [
+        touches.map(t => t.pid),
+        touches.map(t => t.cid),
+        touches.map(t => t.campaignName),
+        touches.map(t => t.listId),
+        touches.map(t => t.callDate),
+        touches.map(t => t.outcome),
+      ]);
+    }
+
+    // ── Pass 12: bulk INSERT filtration_results (every row, valid or not) ────
+    await dbQuery(`
+      INSERT INTO filtration_results (run_id, phone_number, list_name, property_id, phone_id, disposition, disposition_normalized, cumulative_count, action, phone_status, phone_tag, marketing_result)
+      SELECT $1, * FROM UNNEST($2::text[], $3::text[], $4::int[], $5::int[], $6::text[], $7::text[], $8::int[], $9::text[], $10::text[], $11::text[], $12::text[])
+        AS t(phone_number, list_name, property_id, phone_id, disposition, disposition_normalized, cumulative_count, action, phone_status, phone_tag, marketing_result)
+    `, [
+      runId,
+      cleaned.map(r => r.phone),
+      cleaned.map(r => r.listName),
+      cleaned.map(r => r._invalidState ? null : (propMap.get(propKey(r)) || null)),
+      cleaned.map(r => {
+        if (r._invalidState) return null;
+        const pid = propMap.get(propKey(r));
+        const cid = pid ? contactIdByProp.get(pid) : null;
+        return (cid && r.phone) ? phoneIdMap.get(`${cid}|${r.phone}`) || null : null;
+      }),
+      cleaned.map(r => r.dispo),
+      cleaned.map(r => r.dispoNorm),
+      cleaned.map(r => r.callLogCount),
+      cleaned.map(r => r.action),
+      cleaned.map(r => r.phoneStatus),
+      cleaned.map(r => r.phoneTag),
+      cleaned.map(r => r.mktResult),
+    ]);
+
+    // ── Pass 13: distress rescoring ──────────────────────────────────────────
+    if (touchedPropIds.length > 0) {
       try {
-        const ids = Array.from(touchedPropertyIds);
         const startedAt = Date.now();
-        const { scored } = await distress.scoreProperties(ids);
-        console.log(`[saveRunToDB] distress rescored ${scored} of ${ids.length} properties in ${Date.now()-startedAt}ms`);
-      } catch(e) {
+        const { scored } = await distress.scoreProperties(touchedPropIds);
+        console.log(`[saveRunToDB] distress rescored ${scored} of ${touchedPropIds.length} properties in ${Date.now()-startedAt}ms`);
+      } catch (e) {
         console.error('[saveRunToDB] distress rescoring failed:', e.message);
-        // Non-fatal — upload succeeded, scoring is async bonus
       }
     }
 
@@ -985,130 +1247,12 @@ async function saveRunToDB(filename, stats, listsSeen, allRows) {
 }
 
 
-// ── Upload Flow Routes ────────────────────────────────────────────────────────
 
-app.get('/upload', requireAuth, (req, res) => {
-  const { shell } = require('./shared-shell');
-  res.send(shell('Upload', `
-    <div style="max-width:680px">
-      <div style="font-size:20px;font-weight:600;margin-bottom:4px">Upload</div>
-      <p style="font-size:13px;color:#888;margin-bottom:2rem">What are you uploading today?</p>
-
-      <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:16px">
-
-        <a href="/import/property" style="text-decoration:none;display:block;background:#fff;border:1px solid #e0dfd8;border-radius:12px;padding:28px 24px;transition:all .15s;cursor:pointer" onmouseover="this.style.borderColor='#1a1a1a';this.style.boxShadow='0 4px 16px rgba(0,0,0,.08)'" onmouseout="this.style.borderColor='#e0dfd8';this.style.boxShadow='none'">
-          <div style="width:40px;height:40px;background:#f5f4f0;border-radius:8px;display:flex;align-items:center;justify-content:center;margin-bottom:14px">
-            <svg width="20" height="20" fill="none" stroke="#1a1a1a" stroke-width="2" viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
-          </div>
-          <div style="font-size:15px;font-weight:600;color:#1a1a1a;margin-bottom:6px">Import Property List</div>
-          <div style="font-size:13px;color:#888;line-height:1.5">Upload a CSV from PropStream, DealMachine, BatchSkipTrace or any data source. Map columns and import into Records.</div>
-        </a>
-
-        <a href="/upload/filter" style="text-decoration:none;display:block;background:#fff;border:1px solid #e0dfd8;border-radius:12px;padding:28px 24px;transition:all .15s;cursor:pointer" onmouseover="this.style.borderColor='#1a1a1a';this.style.boxShadow='0 4px 16px rgba(0,0,0,.08)'" onmouseout="this.style.borderColor='#e0dfd8';this.style.boxShadow='none'">
-          <div style="width:40px;height:40px;background:#f5f4f0;border-radius:8px;display:flex;align-items:center;justify-content:center;margin-bottom:14px">
-            <svg width="20" height="20" fill="none" stroke="#1a1a1a" stroke-width="2" viewBox="0 0 24 24"><path d="M3 4h18M3 8h18M3 12h12M3 16h8"/></svg>
-          </div>
-          <div style="font-size:15px;font-weight:600;color:#1a1a1a;margin-bottom:6px">Upload Call Log</div>
-          <div style="font-size:13px;color:#888;line-height:1.5">Upload a Readymode call log export for filtration. Counts are calculated and output is ready for REISift import.</div>
-        </a>
-
-        <a href="/import/bulk" style="text-decoration:none;display:block;background:#fff;border:1px solid #e0dfd8;border-radius:12px;padding:28px 24px;transition:all .15s;cursor:pointer" onmouseover="this.style.borderColor='#1a1a1a';this.style.boxShadow='0 4px 16px rgba(0,0,0,.08)'" onmouseout="this.style.borderColor='#e0dfd8';this.style.boxShadow='none'">
-          <div style="width:40px;height:40px;background:#f5f4f0;border-radius:8px;display:flex;align-items:center;justify-content:center;margin-bottom:14px">
-            <svg width="20" height="20" fill="none" stroke="#1a1a1a" stroke-width="2" viewBox="0 0 24 24"><path d="M3 17l-6-6 6-6M21 17l-6-6 6-6"/><line x1="9" y1="12" x2="21" y2="12"/></svg>
-          </div>
-          <div style="font-size:15px;font-weight:600;color:#1a1a1a;margin-bottom:6px">Bulk Import <span style="font-size:11px;background:#e8f5ee;color:#1a7a4a;padding:2px 7px;border-radius:4px;margin-left:6px">REISift</span></div>
-          <div style="font-size:13px;color:#888;line-height:1.5">Import your full REISift export. No row limit — server handles 700k+ records with live progress tracking.</div>
-        </a>
-
-      </div>
-    </div>
-  `, 'upload'));
-});
-app.get('/upload/filter', requireAuth, (req, res) => res.send(uploadUI.uploadFilterStep1Page()));
-app.get('/upload/filter/map', requireAuth, (req, res) => res.send(uploadUI.uploadFilterStep2Page()));
-app.get('/upload/filter/review', requireAuth, (req, res) => res.send(uploadUI.uploadFilterStep3Page()));
-app.get('/upload/property', requireAuth, (req, res) => res.send(uploadUI.uploadPropertyStep1Page()));
-app.get('/upload/property/map', requireAuth, (req, res) => res.send(uploadUI.uploadPropertyStep2Page()));
-app.get('/upload/property/review', requireAuth, (req, res) => res.send(uploadUI.uploadPropertyStep3Page()));
-
-// Parse CSV — return columns + first rows + auto-mapping (client-side session storage)
-app.post('/upload/filter/parse', requireAuth, upload.single('csvfile'), (req, res) => {
-  try {
-    if (!req.file) return res.status(400).json({ error: 'No file uploaded.' });
-    const Papa = require('papaparse');
-    const parsed = Papa.parse(req.file.buffer.toString('utf8'), { header: true, skipEmptyLines: true });
-    const columns = parsed.meta.fields || [];
-    const rows = parsed.data;
-    const autoMap = uploadUI.autoMap(columns, uploadUI.REISIFT_FILTER_FIELDS);
-    res.json({ columns, rows, autoMap, filename: req.file.originalname, total: rows.length });
-  } catch (e) { res.status(500).json({ error: e.message }); }
-});
-
-app.post('/upload/property/parse', requireAuth, upload.single('csvfile'), (req, res) => {
-  try {
-    if (!req.file) return res.status(400).json({ error: 'No file uploaded.' });
-    const Papa = require('papaparse');
-    const parsed = Papa.parse(req.file.buffer.toString('utf8'), { header: true, skipEmptyLines: true });
-    const columns = parsed.meta.fields || [];
-    const rows = parsed.data;
-    const autoMap = uploadUI.autoMap(columns, uploadUI.REISIFT_PROPERTY_FIELDS);
-    res.json({ columns, rows, autoMap, filename: req.file.originalname, total: rows.length });
-  } catch (e) { res.status(500).json({ error: e.message }); }
-});
-
-// Process filter + apply mapping → return mapped filtered rows
-app.post('/upload/filter/process', requireAuth, async (req, res) => {
-  try {
-    const { rows, mapping, filename } = req.body;
-    if (!rows || !mapping) return res.status(400).json({ error: 'Missing data.' });
-
-    // Reconstruct CSV text from rows and run through processCSV
-    const Papa = require('papaparse');
-    const csvText = Papa.unparse(rows);
-    const memory = await loadMemory();
-    const result = processCSV(csvText, memory);
-    await saveMemory(result.memory);
-    req.session.lastResult = { cleanRows: result.cleanRows, filteredRows: result.filteredRows };
-
-    // Apply column mapping to filtered rows
-    const filteredMapped = result.filteredRows.map(r => {
-      const out = {};
-      // Internal field name → REISift field name mapping
-      const internalToReisift = {
-        'Call Log Date':     mapping['Call Log Date']     || 'Call Log Date',
-        'Phone':             mapping['Phone']             || 'Phone',
-        'Phone Tag':         mapping['Phone Tag']         || 'Phone Tag',
-        'Call Log Count':    mapping['Call Log Count']    || 'Call Log Count',
-        'Marketing Results': mapping['Marketing Result']  || 'Marketing Result',
-        'Phone Status':      mapping['Phone Status']      || 'Phone Status',
-        'Call Notes':        mapping['Call Notes']        || 'Call Notes',
-        'First Name':        mapping['First Name']        || 'First Name',
-        'Last Name':         mapping['Last Name']         || 'Last Name',
-        'City':              mapping['City']              || 'City',
-        'Address':           mapping['Address']           || 'Address',
-        'Zip Code':          mapping['Zip Code']          || 'Zip Code',
-        'State':             mapping['State']             || 'State',
-      };
-      Object.entries(internalToReisift).forEach(([internal, reisift]) => {
-        if (r[internal] !== undefined) out[reisift] = r[internal];
-      });
-      return out;
-    });
-
-    res.json({
-      filteredMapped,
-      cleanRows: result.cleanRows,
-      stats: {
-        total: result.totalRows,
-        kept: result.cleanRows.length,
-        filtered: result.filteredRows.length,
-        lists: Object.keys(result.listsSeen).length,
-        memCaught: result.memCaught,
-      },
-      listsSeen: result.listsSeen,
-    });
-  } catch (e) { res.status(500).json({ error: e.message }); }
-});
+// ── Upload Flow Routes (OLD handlers here were dead — superseded by
+//    app.use('/upload', uploadRoutes) at line 112, which routes everything
+//    to routes/upload-routes.js. Removed in 2026-04-17 audit. If you want
+//    the Bulk Import (REISift) 3-card landing page restored, update
+//    ui/upload.js uploadChoosePage() instead of adding handlers here.) ─────
 
 // ── Campaign Routes ───────────────────────────────────────────────────────────
 
