@@ -1,7 +1,32 @@
 const { query } = require('./db');
 const filtration = require('./filtration');
 
+// ─────────────────────────────────────────────────────────────────────────────
+// 2026-04-17 audit changes:
+//   • importContactList uses MERGE semantics on re-upload (UPSERT by
+//     (campaign_id, row_index) and (contact_id, slot_index)). The old
+//     `DELETE FROM campaign_contacts WHERE campaign_id=$1` destroyed all
+//     filter history (filtered/wrong_number/last_disposition/nis_flagged_at)
+//     every time a user re-uploaded the list. (Decision #5.)
+//   • BATCH bumped from 20 → 500. Contacts are ~150 bytes each; 500/batch
+//     stays well under Postgres's 64k parameter limit (500*13 = 6500 params)
+//     and cuts the number of round-trips 25×. (Audit issue #20.)
+//   • Three locally-defined functions deleted — applyFiltrationToContacts,
+//     generateCleanExport, and getContactStats were shadowed by the re-exports
+//     from filtration.js at the bottom of the module (and those re-exports win
+//     when external modules do `campaigns.getContactStats(...)`). The local
+//     copies had drifted and were pure dead code. (Audit issue #11.)
+//   • NIS auto-flag now scoped to active campaigns implicitly by the call
+//     site (only fires for the campaign being imported, which is always the
+//     active one); global NIS spread lives in filtration.importNisFile and is
+//     scoped there too. (Decision #4.)
+// ─────────────────────────────────────────────────────────────────────────────
+
+// Module-level flag so initCampaignSchema runs DDL at most once per process.
+let _campaignSchemaReady = false;
+
 async function initCampaignSchema() {
+  if (_campaignSchemaReady) return;
   await query(`
     CREATE TABLE IF NOT EXISTS campaigns (
       id SERIAL PRIMARY KEY,
@@ -136,7 +161,6 @@ async function initCampaignSchema() {
     CREATE INDEX IF NOT EXISTS idx_nis_last_seen ON nis_numbers(last_seen_nis);
   `);
 
-  // Safe migrations — add columns if they don't exist
   const migrations = [
     `ALTER TABLE campaigns ADD COLUMN IF NOT EXISTS start_date DATE DEFAULT CURRENT_DATE`,
     `ALTER TABLE campaign_contacts ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ DEFAULT NOW()`,
@@ -152,6 +176,7 @@ async function initCampaignSchema() {
   for (const m of migrations) {
     try { await query(m); } catch(e) { console.error('Migration error:', e.message); }
   }
+  _campaignSchemaReady = true;
 }
 
 async function getCampaigns() {
@@ -164,8 +189,9 @@ async function getCampaign(id) {
   if (!c.rows.length) return null;
   const uploads = await query(`SELECT * FROM campaign_uploads WHERE campaign_id=$1 ORDER BY uploaded_at DESC LIMIT 30`, [id]);
   // Union call-log dispositions (from campaign_numbers) with SMS labels
-  // (from campaign_contact_phones.last_disposition). Cleans any legacy raw
-  // "C2|Label 📞" values on the fly so they roll up properly.
+  // (from campaign_contact_phones.last_disposition). Legacy raw "C2|Label 📞"
+  // values are cleaned on the fly. After filtration.js's write-time-normalize
+  // fix is deployed, the REGEXP_REPLACE is only needed for historical rows.
   const disposition_breakdown = await query(`
     SELECT disposition, SUM(count)::int AS count FROM (
       SELECT last_disposition_normalized AS disposition, COUNT(*) AS count
@@ -228,19 +254,16 @@ async function updateCampaignChannel(id, channel) {
 
 // ── Contact list management ───────────────────────────────────────────────────
 
-// Detect phone columns from CSV headers
+// Detect phone columns from CSV headers.
+// Kept local (not imported from filtration.js) so this module can stay
+// self-contained for the importContactList flow below.
 function detectPhoneColumns(headers) {
   const phones = [];
-  // Exclude columns that CONTAIN phone-related words but aren't the number itself
   const excludePatterns = [
     /type/i, /status/i, /tag/i, /connected/i, /score/i, /representative/i,
     /dnc/i, /do\s*not\s*call/i, /litigator/i, /carrier/i, /line\s*type/i,
     /last\s*call/i, /call\s*count/i, /disposition/i
   ];
-  // Include: anything that looks like a phone number slot
-  // Matches: Phone, Phone1, Phone 1, Phone_1, Phone #1, Ph1, Ph#1,
-  //          Phone 1 Number, Phone Number 1, Wireless 1, Mobile 1,
-  //          Landline 1, Cell 1, Alt Phone, Owner Phone 1, etc.
   const includePatterns = [
     /^(owner\s+)?(alt\.?\s+)?ph(one)?[\s_#]*\d*(\s+number)?$/i,
     /^phone\s+number\s*\d*$/i,
@@ -255,11 +278,20 @@ function detectPhoneColumns(headers) {
       phones.push({ col, idx });
     }
   });
-  console.log('[detectPhoneColumns] headers:', headers.length, 'detected phone cols:', phones.map(p => p.col));
   return phones;
 }
 
-// Import original contact list CSV into campaign
+// ─────────────────────────────────────────────────────────────────────────────
+// importContactList — MERGE semantics (decision #5).
+//
+// Rows are upserted by (campaign_id, row_index). Phones are upserted by
+// (contact_id, slot_index); EXISTING history columns — filtered, wrong_number,
+// last_disposition, phone_status=='Correct' or 'dead_number', cumulative_count,
+// *_flagged_at timestamps — are PRESERVED unless the new CSV provides a strong
+// signal to overwrite. "Unknown" coming from a re-upload never overwrites a
+// stored known status. This eliminates the data loss that used to happen
+// every time a user re-uploaded the same list.
+// ─────────────────────────────────────────────────────────────────────────────
 async function importContactList(campaignId, rows, headers, customMapping) {
   if (!rows.length) return { total: 0 };
 
@@ -285,7 +317,6 @@ async function importContactList(campaignId, rows, headers, customMapping) {
     pstate:   find(['property state']),
     pzip:     find(['property zip', 'property zip code']),
   };
-  // Use custom mapping if provided, fall back to auto-detected
   const COL = customMapping ? {
     fname:   customMapping.fname   || autoDetect.fname,
     lname:   customMapping.lname   || autoDetect.lname,
@@ -302,16 +333,21 @@ async function importContactList(campaignId, rows, headers, customMapping) {
 
   const phoneCols = detectPhoneColumns(headers);
 
-  // Clear existing contacts for this campaign
-  await query(`DELETE FROM campaign_contacts WHERE campaign_id=$1`, [campaignId]);
+  // ──────────────────────────────────────────────────────────────────────────
+  // MERGE: no DELETE FROM campaign_contacts. Every row is UPSERTed by
+  // (campaign_id, row_index). Missing row_indices from a shorter re-upload
+  // are left in place (they might have filter history worth keeping). If the
+  // operator genuinely wants a "wipe" they can do it in the DB — this import
+  // defaults to safe.
+  // ──────────────────────────────────────────────────────────────────────────
 
   let imported = 0;
-  const BATCH = 20;
+  const BATCH = 500;   // was 20. 500 × 13 params = 6500, well under PG's 64k limit.
 
   for (let i = 0; i < rows.length; i += BATCH) {
     const batch = rows.slice(i, i + BATCH);
-    
-    // Build batch insert for contacts
+
+    // Build batch UPSERT for contacts
     const vals = [];
     const params = [];
     let p = 1;
@@ -319,30 +355,46 @@ async function importContactList(campaignId, rows, headers, customMapping) {
       const r = batch[j];
       const idx = i + j;
       vals.push(`($${p},$${p+1},$${p+2},$${p+3},$${p+4},$${p+5},$${p+6},$${p+7},$${p+8},$${p+9},$${p+10},$${p+11},$${p+12})`);
-      params.push(campaignId, r[COL.fname]||'', r[COL.lname]||'',
+      params.push(
+        campaignId,
+        r[COL.fname]||'', r[COL.lname]||'',
         r[COL.maddr]||'', r[COL.mcity]||'', r[COL.mstate]||'', r[COL.mzip]||'', r[COL.mcounty]||'',
-        r[COL.paddr]||'', r[COL.pcity]||'', r[COL.pstate]||'', r[COL.pzip]||'', idx);
+        r[COL.paddr]||'', r[COL.pcity]||'', r[COL.pstate]||'', r[COL.pzip]||'',
+        idx
+      );
       p += 13;
     }
 
     const contactRes = await query(
       `INSERT INTO campaign_contacts
-       (campaign_id, first_name, last_name, mailing_address, mailing_city, mailing_state, mailing_zip, mailing_county, property_address, property_city, property_state, property_zip, row_index)
+         (campaign_id, first_name, last_name, mailing_address, mailing_city,
+          mailing_state, mailing_zip, mailing_county, property_address,
+          property_city, property_state, property_zip, row_index)
        VALUES ${vals.join(',')}
        ON CONFLICT (campaign_id, row_index) DO UPDATE SET
-         first_name=EXCLUDED.first_name, last_name=EXCLUDED.last_name,
-         property_address=EXCLUDED.property_address
+         first_name       = COALESCE(NULLIF(EXCLUDED.first_name,''),       campaign_contacts.first_name),
+         last_name        = COALESCE(NULLIF(EXCLUDED.last_name,''),        campaign_contacts.last_name),
+         mailing_address  = COALESCE(NULLIF(EXCLUDED.mailing_address,''),  campaign_contacts.mailing_address),
+         mailing_city     = COALESCE(NULLIF(EXCLUDED.mailing_city,''),     campaign_contacts.mailing_city),
+         mailing_state    = COALESCE(NULLIF(EXCLUDED.mailing_state,''),    campaign_contacts.mailing_state),
+         mailing_zip      = COALESCE(NULLIF(EXCLUDED.mailing_zip,''),      campaign_contacts.mailing_zip),
+         mailing_county   = COALESCE(NULLIF(EXCLUDED.mailing_county,''),   campaign_contacts.mailing_county),
+         property_address = COALESCE(NULLIF(EXCLUDED.property_address,''), campaign_contacts.property_address),
+         property_city    = COALESCE(NULLIF(EXCLUDED.property_city,''),    campaign_contacts.property_city),
+         property_state   = COALESCE(NULLIF(EXCLUDED.property_state,''),   campaign_contacts.property_state),
+         property_zip     = COALESCE(NULLIF(EXCLUDED.property_zip,''),     campaign_contacts.property_zip),
+         updated_at       = NOW()
        RETURNING id, row_index`,
       params
     );
 
-    // Build batch insert for phones
+    // Build batch UPSERT for phones
     const phoneVals = [];
     const phoneParams = [];
     let pp = 1;
-
     for (const cRow of contactRes.rows) {
       const r = batch[cRow.row_index - i];
+      if (!r) continue;
       for (let s = 0; s < phoneCols.length; s++) {
         const phone = String(r[phoneCols[s].col]||'').replace(/\D/g,'');
         if (!phone || phone === '0' || phone.length < 7) continue;
@@ -352,218 +404,71 @@ async function importContactList(campaignId, rows, headers, customMapping) {
       }
     }
 
-    if (i === 0) {
-      const sampleRow = batch[0] || {};
-      console.log('[importContactList] phoneCols:', phoneCols.map(p => p.col));
-      console.log('[importContactList] sample row phone values:',
-        phoneCols.map(p => ({ col: p.col, val: sampleRow[p.col] })));
-      console.log('[importContactList] phones extracted in first batch:', phoneVals.length);
-      console.log('[importContactList] contactRes.rows sample:', contactRes.rows.slice(0, 3));
-      console.log('[importContactList] phoneParams first 12:', phoneParams.slice(0, 12));
-    }
-
     if (phoneVals.length > 0) {
-      try {
-        const phoneInsertRes = await query(
-          `INSERT INTO campaign_contact_phones (campaign_id, contact_id, phone_number, slot_index)
-           VALUES ${phoneVals.join(',')}
-           ON CONFLICT (contact_id, slot_index) DO NOTHING
-           RETURNING id`,
-          phoneParams
-        );
-        if (i === 0) {
-          console.log('[importContactList] PHONE INSERT SUCCESS — rows returned:', phoneInsertRes.rows.length, 'of', phoneVals.length, 'attempted');
-        }
-      } catch(phoneErr) {
-        console.error('[importContactList] PHONE INSERT ERROR:', phoneErr.message);
-        console.error('[importContactList] error code:', phoneErr.code, 'detail:', phoneErr.detail);
-        console.error('[importContactList] first phoneVals:', phoneVals.slice(0, 2), 'first phoneParams:', phoneParams.slice(0, 8));
-        throw phoneErr;
-      }
-    } else if (i === 0) {
-      console.error('[importContactList] NO PHONES extracted from first batch');
+      // MERGE for phones: only overwrite phone_number (the number at this slot
+      // may legitimately change between uploads). NEVER overwrite phone_status,
+      // wrong_number, filtered, last_disposition, cumulative_count, or the
+      // *_flagged_at timestamps — those are outcomes from filtration, not
+      // import data. They stay until filtration updates them.
+      await query(
+        `INSERT INTO campaign_contact_phones
+           (campaign_id, contact_id, phone_number, slot_index)
+         VALUES ${phoneVals.join(',')}
+         ON CONFLICT (contact_id, slot_index) DO UPDATE SET
+           phone_number = EXCLUDED.phone_number,
+           updated_at   = NOW()`,
+        phoneParams
+      );
     }
 
     imported += batch.length;
   }
 
-  // Auto-flag any phones that are already in the NIS database
-  // Rule: times_reported >= 3 overrides everything including Correct
-  //       times_reported < 3 only flags unknown/non-Correct phones
+  // Auto-flag any phones that are already in the NIS database.
+  // Scoped by campaign_id so only THIS campaign is touched (not a global
+  // cross-campaign spread — that's decision #4, handled in filtration.js
+  // for the explicit NIS upload flow).
+  //   times_reported >= 3 → overrides any non-dead status
+  //   times_reported  < 3 → only flags if current status is unknown/non-Correct
   await query(
     `UPDATE campaign_contact_phones
-     SET phone_status = 'dead_number', nis_flagged_at = NOW()
-     WHERE campaign_id = $1
-       AND phone_status != 'dead_number'
-       AND (
-         phone_number IN (SELECT phone_number FROM nis_numbers WHERE times_reported >= 3)
-         OR (
-           phone_number IN (SELECT phone_number FROM nis_numbers WHERE times_reported < 3)
-           AND (phone_status IS NULL OR phone_status != 'Correct')
-         )
-       )`,
+        SET phone_status = 'dead_number', nis_flagged_at = NOW()
+      WHERE campaign_id = $1
+        AND phone_status != 'dead_number'
+        AND (
+          phone_number IN (SELECT phone_number FROM nis_numbers WHERE times_reported >= 3)
+          OR (
+            phone_number IN (SELECT phone_number FROM nis_numbers WHERE times_reported < 3)
+            AND (phone_status IS NULL OR phone_status != 'Correct')
+          )
+        )`,
     [campaignId]
   );
 
-  // Update campaign total_properties count
-  await query(`UPDATE campaigns SET total_unique_numbers=$1, updated_at=NOW() WHERE id=$2`, [imported, campaignId]);
+  // Update campaign total_unique_numbers — count the distinct phones actually
+  // in the contact list, not just imported rows (rows may have no phones).
+  await query(`
+    UPDATE campaigns SET
+      total_unique_numbers = (
+        SELECT COUNT(DISTINCT phone_number)
+          FROM campaign_contact_phones
+         WHERE campaign_id = $1
+      ),
+      updated_at = NOW()
+    WHERE id = $1`,
+    [campaignId]
+  );
 
   return { total: imported };
 }
 
-// Apply filtration results to contact phones
-async function applyFiltrationToContacts(campaignId, allRows) {
-  for (const row of allRows) {
-    const phone = String(row.Phone||'').replace(/\D/g,'');
-    if (!phone) continue;
-    const dispo = row._normDispo || '';
-    const isWrong = dispo === 'wrong_number';
-    const wasRemoved = row.Action === 'remove';
-    const status = row['Phone Status'] || '';
-    const tag = row['Phone Tag'] || '';
-    const count = parseInt(row['Call Log Count']) || 1;
-
-    await query(
-      `UPDATE campaign_contact_phones SET
-         phone_status = CASE WHEN phone_status = 'dead_number' THEN phone_status ELSE $1 END,
-         phone_tag=$2,
-         wrong_number = wrong_number OR $3,
-         filtered = filtered OR $4,
-         cumulative_count=$5, last_disposition=$6, updated_at=NOW()
-       WHERE campaign_id=$7 AND phone_number=$8`,
-      [status||'unknown', tag, isWrong, wasRemoved, count, row.Disposition||'', campaignId, phone]
-    );
-  }
-}
-
-// Generate clean export file — one row per contact, blanked wrong/filtered phones
-async function generateCleanExport(campaignId) {
-  const contacts = await query(
-    `SELECT cc.*, array_agg(
-       json_build_object(
-         'phone', ccp.phone_number,
-         'slot', ccp.slot_index,
-         'status', ccp.phone_status,
-         'wrong', ccp.wrong_number,
-         'filtered', ccp.filtered,
-         'tag', ccp.phone_tag
-       ) ORDER BY ccp.slot_index
-     ) as phones
-     FROM campaign_contacts cc
-     LEFT JOIN campaign_contact_phones ccp ON ccp.contact_id = cc.id
-     WHERE cc.campaign_id = $1
-     GROUP BY cc.id
-     ORDER BY cc.row_index`,
-    [campaignId]
-  );
-
-  const rows = [];
-  let callable = 0, dead = 0;
-
-  // Determine global max slot across ALL contacts so the header is consistent
-  let globalMaxSlot = 1;
-  for (const c of contacts.rows) {
-    const phones = (c.phones||[]).filter(p => p && p.phone);
-    for (const p of phones) {
-      if (p.slot > globalMaxSlot) globalMaxSlot = p.slot;
-    }
-  }
-  // Cap at 10 — Readymode only accepts Ph#1..Ph#10
-  if (globalMaxSlot > 10) globalMaxSlot = 10;
-
-  for (const c of contacts.rows) {
-    const phones = (c.phones||[]).filter(p => p && p.phone);
-    const callablePhones = phones.filter(p => !p.wrong && !p.filtered && p.status !== 'dead_number');
-
-    if (callablePhones.length === 0) { dead++; continue; } // all phones dead — skip row
-    callable++;
-
-    const row = {
-      'First Name': c.first_name,
-      'Last Name': c.last_name,
-      'Mailing Address': c.mailing_address,
-      'Mailing City': c.mailing_city,
-      'Mailing State': c.mailing_state,
-      'Mailing Zip': c.mailing_zip,
-      'Mailing County': c.mailing_county,
-      'Property Address': c.property_address,
-      'Property City': c.property_city,
-      'Property State': c.property_state,
-      'Property Zip': c.property_zip,
-    };
-
-    // Fill every phone slot 1..globalMaxSlot for EVERY row — ensures consistent columns
-    for (let s = 1; s <= globalMaxSlot; s++) {
-      const ph = phones.find(p => p.slot === s);
-      if (ph && !ph.wrong && !ph.filtered && ph.status !== 'dead_number') {
-        row[`Ph#${s}`] = ph.phone;
-      } else {
-        row[`Ph#${s}`] = '';
-      }
-    }
-
-    rows.push(row);
-  }
-
-  // Update campaign callable count
-  await query(
-    `UPDATE campaigns SET total_callable=$1, updated_at=NOW() WHERE id=$2`,
-    [callable, campaignId]
-  );
-
-  return { rows, callable, dead };
-}
-
-// Get contact list stats for campaign
-async function getContactStats(campaignId) {
-  const res = await query(`
-    SELECT
-      COUNT(DISTINCT cc.id) as total_contacts,
-      COUNT(DISTINCT CASE WHEN ccp.wrong_number = true THEN ccp.id END) as wrong_phones,
-      COUNT(DISTINCT CASE WHEN ccp.phone_status = 'dead_number' THEN ccp.id END) as nis_phones,
-      COUNT(DISTINCT CASE WHEN ccp.filtered = true AND ccp.wrong_number = false THEN ccp.id END) as filtered_phones,
-      COUNT(DISTINCT CASE WHEN ccp.phone_status = 'Correct' THEN ccp.id END) as correct_phones,
-      COUNT(DISTINCT ccp.id) as total_phones
-    FROM campaign_contacts cc
-    LEFT JOIN campaign_contact_phones ccp ON ccp.contact_id = cc.id
-    WHERE cc.campaign_id = $1`, [campaignId]);
-
-  // Count contacts where at least one phone has a live-pickup disposition
-  const LIVE_PICKUPS = ['not_interested','transfer','callback','hung_up','spanish_speaker','do_not_call','completed','disqualified'];
-  const reached = await query(`
-    SELECT COUNT(DISTINCT cc.id) as reached_contacts
-    FROM campaign_contacts cc
-    JOIN campaign_contact_phones ccp ON ccp.contact_id = cc.id
-    JOIN campaign_numbers cn ON cn.phone_number = ccp.phone_number AND cn.campaign_id = cc.campaign_id
-    WHERE cc.campaign_id = $1
-      AND cn.last_disposition_normalized = ANY($2::text[])`,
-    [campaignId, LIVE_PICKUPS]);
-
-  // Count contacts where at least one phone converted to a lead (transfer)
-  const leads = await query(`
-    SELECT COUNT(DISTINCT cc.id) as lead_contacts
-    FROM campaign_contacts cc
-    JOIN campaign_contact_phones ccp ON ccp.contact_id = cc.id
-    JOIN campaign_numbers cn ON cn.phone_number = ccp.phone_number AND cn.campaign_id = cc.campaign_id
-    WHERE cc.campaign_id = $1
-      AND cn.last_disposition_normalized = 'transfer'`,
-    [campaignId]);
-
-  return {
-    ...res.rows[0],
-    reached_contacts: parseInt(reached.rows[0]?.reached_contacts||0),
-    lead_contacts: parseInt(leads.rows[0]?.lead_contacts||0)
-  };
-}
-
-// Get all custom list types (saved by users) merged with defaults
+// Get all custom list types merged with defaults
 const DEFAULT_LIST_TYPES = ['Vacant Property','Pre-Foreclosure','Active Liens','2+ Mortgages','Absentee Owner','Tax Delinquent','Probate','Code Violation','Pre-Probate','Other'];
 
 async function getListTypes() {
   try {
     const res = await query(`SELECT name FROM custom_list_types ORDER BY name ASC`);
     const custom = res.rows.map(r => r.name);
-    // Merge: defaults first, then custom ones not already in defaults
     const seen = new Set(DEFAULT_LIST_TYPES.map(t => t.toLowerCase()));
     const merged = [...DEFAULT_LIST_TYPES];
     for (const c of custom) {
@@ -572,7 +477,6 @@ async function getListTypes() {
         seen.add(c.toLowerCase());
       }
     }
-    // Put 'Other' at the end if present
     const other = merged.filter(t => t === 'Other');
     const rest = merged.filter(t => t !== 'Other');
     return [...rest, ...other];
@@ -585,7 +489,6 @@ async function getListTypes() {
 async function addListType(name) {
   const clean = String(name || '').trim();
   if (!clean || clean.length > 100) return false;
-  // Don't save defaults as custom
   if (DEFAULT_LIST_TYPES.some(t => t.toLowerCase() === clean.toLowerCase())) return true;
   try {
     await query(`INSERT INTO custom_list_types (name) VALUES ($1) ON CONFLICT (name) DO NOTHING`, [clean]);
@@ -600,7 +503,7 @@ module.exports = {
   initCampaignSchema, getCampaigns, getCampaign, createCampaign,
   updateCampaignStatus, updateCampaignChannel, closeCampaign, cloneCampaign,
   importContactList, getListTypes, addListType,
-  // Re-exported from filtration.js
+  // Re-exported from filtration.js (the authoritative implementations)
   recordUpload:              filtration.recordUpload,
   applyFiltrationToContacts: filtration.applyFiltrationToContacts,
   generateCleanExport:       filtration.generateCleanExport,
