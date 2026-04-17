@@ -290,6 +290,7 @@ function selectRow(cb, checked) {
   if (banner) banner.style.display = 'none';
 
   var id = cb.getAttribute('data-id');
+  console.log('[selectRow] id:', id, 'checked:', checked, 'total after:', Object.keys(selectedIds).length + (checked ? 1 : -1));
   if (!id) return;
   cb.checked = checked;
   var tr = cb.parentNode.parentNode;
@@ -538,7 +539,8 @@ function openBulkTagModal(mode) {
   _bulkTagQueue = [];
   var ids = Object.keys(selectedIds);
   var count = _allSelected ? _pageTotal : ids.length;
-  if (!_allSelected && !ids.length) { alert('No records selected.'); return; }
+  console.log('[bulk-tag] _allSelected:', _allSelected, 'selectedIds keys:', ids.length, 'ids:', ids.slice(0, 5));
+  if (!_allSelected && !ids.length) { alert('No records selected. (debug: selectedIds=' + JSON.stringify(selectedIds) + ')'); return; }
 
   document.getElementById('bulk-tag-title').textContent = mode === 'add' ? 'Add Tags' : 'Remove Tags';
   document.getElementById('bulk-tag-msg').innerHTML = mode === 'add'
