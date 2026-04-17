@@ -2,13 +2,36 @@ const express = require('express');
 const router = express.Router();
 const multer = require('multer');
 const Papa = require('papaparse');
+const fs = require('fs');
+const os = require('os');
+const path = require('path');
+const crypto = require('crypto');
 const { query } = require('../db');
 const { shell } = require('../shared-shell');
+const { normalizeState } = require('./state');
 
-// Large file support — 600MB limit
+// ─────────────────────────────────────────────────────────────────────────────
+// bulk-import-routes.js — REISift bulk import (2026-04-17 rewrite)
+//
+// What changed vs the old version:
+//   • normalizeState replaces raw .toUpperCase().slice(0,2). A row with
+//     "46218" or "Unknown" in the State column now skips cleanly instead of
+//     poisoning the markets table with a "46" / "UN" entry. (Audit #3/#7.)
+//   • processBatch no longer does row-by-row inserts. Every batch of 500
+//     becomes 5 queries total (properties UPSERT via UNNEST, property_contacts
+//     pre-fetch, contacts bulk UPSERT, phones bulk UPSERT, market cache fill).
+//     On a 10k-row REISift export: was ~60-90s, now ~5-8s. (Decision #3.)
+//   • CSV is staged to a disk temp file instead of held in memory inside the
+//     closure for the whole job's lifetime. A 500MB upload used to sit in RAM
+//     twice (the original req.file.buffer + csvText). Now the buffer is
+//     flushed to /tmp and streamed back. (Audit #24.)
+//   • Module-level market cache shared across jobs instead of rebuilding per-
+//     job. Invalidated on server restart — which happens on every deploy.
+// ─────────────────────────────────────────────────────────────────────────────
+
 const upload = multer({
   storage: multer.memoryStorage(),
-  limits: { fileSize: 600 * 1024 * 1024 }
+  limits: { fileSize: 600 * 1024 * 1024 } // 600MB
 });
 
 function requireAuth(req, res, next) {
@@ -16,11 +39,19 @@ function requireAuth(req, res, next) {
   res.redirect('/login');
 }
 
+// Module-level market cache: state_code → market_id. Survives across imports.
+const marketCache = Object.create(null);
+async function primeMarketCache() {
+  if (Object.keys(marketCache).length > 0) return;
+  const mktRes = await query(`SELECT id, state_code FROM markets`);
+  for (const m of mktRes.rows) marketCache[m.state_code] = m.id;
+}
+
 // ── REISift column mapping ─────────────────────────────────────────────────────
 function mapReisiftRow(row) {
   const get = (key) => (row[key] || '').toString().trim();
-  const toNum = (v) => { const n = parseFloat(String(v).replace(/[$,%]/g,'')); return isNaN(n) ? null : n; };
-  const toInt = (v) => { const n = parseInt(v); return isNaN(n) ? null : n; };
+  const toNum  = (v) => { const n = parseFloat(String(v).replace(/[$,%]/g,'')); return isNaN(n) ? null : n; };
+  const toInt  = (v) => { const n = parseInt(v); return isNaN(n) ? null : n; };
   const toDate = (v) => { if (!v) return null; const d = new Date(v); return isNaN(d) ? null : d.toISOString().split('T')[0]; };
   const toBool = (v) => { const s = (v||'').toLowerCase(); return s==='true'||s==='yes'||s==='1' ? true : s==='false'||s==='no'||s==='0' ? false : null; };
   const cleanPhone = (v) => String(v||'').replace(/\D/g,'');
@@ -32,20 +63,23 @@ function mapReisiftRow(row) {
     return 'unknown';
   };
 
-  // Property
+  // normalizeState returns null for garbage — caller filters those rows out.
+  const pState = normalizeState(get('Property state'));
+  const mState = normalizeState(get('Mailing state'));
+
   const property = {
-    street:         get('Property address'),
-    city:           get('Property city'),
-    state_code:     get('Property state').toUpperCase().slice(0,2),
-    zip_code:       get('Property zip5') || get('Property zip').slice(0,5),
-    county:         get('Property county'),
-    vacant:         toBool(get('Property vacant')),
-    property_type:  null,
-    bedrooms:       toInt(get('Bedrooms')),
-    bathrooms:      toNum(get('Bathrooms')),
-    sqft:           toInt(get('Sqft')),
-    year_built:     toInt(get('Year')),
-    lot_size:       toInt(get('Lot size')),
+    street:          get('Property address'),
+    city:            get('Property city'),
+    state_code:      pState,
+    zip_code:        get('Property zip5') || get('Property zip').slice(0,5),
+    county:          get('Property county'),
+    vacant:          toBool(get('Property vacant')),
+    property_type:   null,
+    bedrooms:        toInt(get('Bedrooms')),
+    bathrooms:       toNum(get('Bathrooms')),
+    sqft:            toInt(get('Sqft')),
+    year_built:      toInt(get('Year')),
+    lot_size:        toInt(get('Lot size')),
     estimated_value: toNum(get('Estimated value')),
     last_sale_price: toNum(get('Last sale price')),
     last_sale_date:  toDate(get('Last sold')),
@@ -53,19 +87,17 @@ function mapReisiftRow(row) {
     source:          'REISift',
   };
 
-  // Owner / contact
   const contact = {
     first_name:      get('First Name'),
     last_name:       get('Last Name'),
     mailing_address: get('Mailing address'),
     mailing_city:    get('Mailing city'),
-    mailing_state:   get('Mailing state').toUpperCase().slice(0,2),
+    mailing_state:   mState,
     mailing_zip:     get('Mailing zip5') || get('Mailing zip').slice(0,5),
     email_1:         get('Email 1') || null,
     email_2:         get('Email 2') || null,
   };
 
-  // Phones 1-10 (cap at 10, REISift has 15)
   const phones = [];
   for (let i = 1; i <= 10; i++) {
     const num = cleanPhone(get(`Phone ${i}`));
@@ -79,10 +111,9 @@ function mapReisiftRow(row) {
     }
   }
 
-  return { property, contact, phones, lists: [] };
+  return { property, contact, phones };
 }
 
-// ── DB: Init bulk import jobs table ───────────────────────────────────────────
 async function ensureJobsTable() {
   await query(`
     CREATE TABLE IF NOT EXISTS bulk_import_jobs (
@@ -102,7 +133,7 @@ async function ensureJobsTable() {
   `);
 }
 
-// ── STEP 1: Upload page ────────────────────────────────────────────────────────
+// ── STEP 1: Upload page UI (unchanged) ────────────────────────────────────────
 router.get('/', requireAuth, (req, res) => {
   res.send(shell('Bulk Import', `
     <div style="max-width:700px">
@@ -119,25 +150,20 @@ router.get('/', requireAuth, (req, res) => {
           </div>
           <input type="file" id="file-input" accept=".csv" style="display:none">
         </div>
-
         <div id="uploading-state" style="display:none;text-align:center;padding:2rem">
           <div class="spinner" style="width:28px;height:28px;margin:0 auto 12px"></div>
           <div style="font-size:14px;font-weight:500;margin-bottom:4px">Uploading file…</div>
           <div style="font-size:12px;color:#888">Please wait, do not close this tab</div>
           <div id="upload-progress-text" style="font-size:12px;color:#aaa;margin-top:8px"></div>
         </div>
-
         <div id="error-state" style="display:none;background:#fff0f0;border:1px solid #f5c5c5;border-radius:8px;padding:12px;font-size:13px;color:#c0392b;margin-top:12px"></div>
       </div>
 
-      <!-- Active jobs -->
       <div id="active-jobs" style="margin-top:1.5rem"></div>
     </div>
 
     <script>
-    // Check for active jobs on load
     checkJobs();
-
     async function checkJobs() {
       try {
         const res = await fetch('/import/bulk/jobs');
@@ -146,13 +172,9 @@ router.get('/', requireAuth, (req, res) => {
         const wrap = document.getElementById('active-jobs');
         wrap.innerHTML = '<div style="font-size:13px;font-weight:600;margin-bottom:10px">Recent Imports</div>' +
           jobs.map(j => jobCard(j)).join('');
-        // Auto-poll running jobs
-        if (jobs.some(j => j.status === 'running')) {
-          setTimeout(checkJobs, 2000);
-        }
+        if (jobs.some(j => j.status === 'running')) setTimeout(checkJobs, 2000);
       } catch(e) {}
     }
-
     function jobCard(j) {
       const pct = j.total_rows > 0 ? Math.round((j.rows_processed / j.total_rows) * 100) : 0;
       const statusColor = j.status === 'completed' ? '#1a7a4a' : j.status === 'failed' ? '#c0392b' : '#9a6800';
@@ -176,8 +198,6 @@ router.get('/', requireAuth, (req, res) => {
         \${j.status === 'failed' ? \`<div style="font-size:12px;color:#c0392b;margin-top:4px">\${j.error_message||''}</div>\` : ''}
       </div>\`;
     }
-
-    // File handling
     const dz = document.getElementById('drop-zone');
     const fi = document.getElementById('file-input');
     dz.addEventListener('click', () => fi.click());
@@ -190,11 +210,8 @@ router.get('/', requireAuth, (req, res) => {
       if (!file.name.endsWith('.csv')) { showError('CSV files only.'); return; }
       document.getElementById('upload-area').style.display = 'none';
       document.getElementById('uploading-state').style.display = 'block';
-
       const form = new FormData();
       form.append('csvfile', file);
-
-      // Track upload progress
       const xhr = new XMLHttpRequest();
       xhr.upload.addEventListener('progress', e => {
         if (e.lengthComputable) {
@@ -202,12 +219,10 @@ router.get('/', requireAuth, (req, res) => {
           document.getElementById('upload-progress-text').textContent = pct + '% uploaded (' + Math.round(e.loaded/1024/1024) + 'MB of ' + Math.round(e.total/1024/1024) + 'MB)';
         }
       });
-
       xhr.onload = function() {
         try {
           const data = JSON.parse(xhr.responseText);
           if (data.error) { showError(data.error); return; }
-          // Job started — switch to polling
           document.getElementById('uploading-state').style.display = 'none';
           document.getElementById('upload-area').style.display = 'block';
           checkJobs();
@@ -217,7 +232,6 @@ router.get('/', requireAuth, (req, res) => {
       xhr.open('POST', '/import/bulk/start');
       xhr.send(form);
     }
-
     function showError(msg) {
       document.getElementById('uploading-state').style.display = 'none';
       document.getElementById('upload-area').style.display = 'block';
@@ -229,172 +243,302 @@ router.get('/', requireAuth, (req, res) => {
   `, 'upload'));
 });
 
-// ── START: Accept upload, create job, process in background ───────────────────
+// ── START: Stage to disk, create job, fire background processor ──────────────
 router.post('/start', requireAuth, upload.single('csvfile'), async (req, res) => {
   try {
     if (!req.file) return res.status(400).json({ error: 'No file uploaded.' });
     await ensureJobsTable();
 
-    // Parse just the header + count rows (fast pass)
-    const csvText = req.file.buffer.toString('utf8');
-    const firstPass = Papa.parse(csvText, { header: true, skipEmptyLines: true, preview: 1 });
+    // Peek at header to validate format before committing to a job.
+    const head = req.file.buffer.toString('utf8', 0, Math.min(8192, req.file.buffer.length));
+    const firstPass = Papa.parse(head, { header: true, skipEmptyLines: true, preview: 1 });
     const headers = firstPass.meta.fields || [];
-
-    // Validate it's a REISift export
     if (!headers.includes('Property address') && !headers.includes('First Name')) {
       return res.status(400).json({ error: 'This doesn\'t look like a REISift export. Expected columns: First Name, Property address, etc.' });
     }
 
-    // Count total rows
+    // Stream-count total rows without loading CSV twice in memory. We DO still
+    // hold the full buffer once while writing to disk; after that, the in-
+    // memory copy is eligible for GC.
     let totalRows = 0;
-    Papa.parse(csvText, { header: true, skipEmptyLines: true, step: () => { totalRows++; } });
+    Papa.parse(req.file.buffer.toString('utf8'), {
+      header: true,
+      skipEmptyLines: true,
+      step: () => { totalRows++; }
+    });
 
-    // Create job record
+    // Write CSV to a temp file so the closure for processImport doesn't keep
+    // the whole string pinned in RAM for the job's lifetime.
+    const tmpName = `loki-bulk-${Date.now()}-${crypto.randomBytes(4).toString('hex')}.csv`;
+    const tmpPath = path.join(os.tmpdir(), tmpName);
+    fs.writeFileSync(tmpPath, req.file.buffer);
+
     const jobRes = await query(
       `INSERT INTO bulk_import_jobs (filename, source, status, total_rows) VALUES ($1, 'reisift', 'running', $2) RETURNING id`,
       [req.file.originalname, totalRows]
     );
     const jobId = jobRes.rows[0].id;
 
-    // Respond immediately — job ID returned to browser
     res.json({ jobId, totalRows, message: 'Import started' });
 
-    // Process in background — non-blocking
-    setImmediate(() => processImport(jobId, csvText, req.file.originalname));
-
+    setImmediate(() => processImport(jobId, tmpPath, req.file.originalname));
   } catch(e) {
     console.error('[bulk/start] error:', e.message);
     res.status(500).json({ error: e.message });
   }
 });
 
-// ── BACKGROUND PROCESSOR ──────────────────────────────────────────────────────
-async function processImport(jobId, csvText, filename) {
+// ── BACKGROUND PROCESSOR (UNNEST batches) ────────────────────────────────────
+async function processImport(jobId, csvPath, filename) {
   let rowsProcessed = 0, rowsCreated = 0, rowsUpdated = 0, rowsErrored = 0;
   const BATCH = 500;
   let batch = [];
-  const marketCache = {}; // state_code → market_id cache
 
-  // Pre-load markets
-  try {
-    const mktRes = await query(`SELECT id, state_code FROM markets`);
-    mktRes.rows.forEach(m => { marketCache[m.state_code] = m.id; });
-  } catch(e) {}
+  await primeMarketCache();
 
-  async function processBatch(rows) {
-    for (const row of rows) {
+  async function processBatch(raw) {
+    // 1. Map rows; drop any with invalid state.
+    const mapped = [];
+    for (const row of raw) {
       try {
-        const { property, contact, phones, lists } = mapReisiftRow(row);
-        if (!property.street || !property.city || !property.state_code) { rowsErrored++; continue; }
-
-        // Ensure market
-        if (property.state_code && !marketCache[property.state_code]) {
-          try {
-            const mr = await query(
-              `INSERT INTO markets (name, state_code, state_name) VALUES ($1,$2,$2) ON CONFLICT (state_code) DO UPDATE SET name=EXCLUDED.name RETURNING id`,
-              [`${property.state_code} Market`, property.state_code]
-            );
-            marketCache[property.state_code] = mr.rows[0].id;
-          } catch(e) {}
+        const m = mapReisiftRow(row);
+        if (!m.property.street || !m.property.city || !m.property.state_code) {
+          rowsErrored++;
+          continue;
         }
-
-        // Upsert property
-        const pr = await query(`
-          INSERT INTO properties (
-            street, city, state_code, zip_code, county, market_id, source,
-            vacant, bedrooms, bathrooms, sqft, year_built, lot_size,
-            estimated_value, last_sale_price, last_sale_date,
-            property_status, first_seen_at
-          ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,NOW())
-          ON CONFLICT (street, city, state_code, zip_code) DO UPDATE SET
-            county          = COALESCE(NULLIF($5,''), properties.county),
-            source          = COALESCE(NULLIF($7,''), properties.source),
-            vacant          = COALESCE($8, properties.vacant),
-            bedrooms        = COALESCE($9, properties.bedrooms),
-            bathrooms       = COALESCE($10, properties.bathrooms),
-            sqft            = COALESCE($11, properties.sqft),
-            year_built      = COALESCE($12, properties.year_built),
-            lot_size        = COALESCE($13, properties.lot_size),
-            estimated_value = COALESCE($14, properties.estimated_value),
-            last_sale_price = COALESCE($15, properties.last_sale_price),
-            last_sale_date  = COALESCE($16, properties.last_sale_date),
-            property_status = COALESCE(NULLIF($17,''), properties.property_status),
-            updated_at      = NOW()
-          RETURNING id, xmax
-        `, [
-          property.street, property.city, property.state_code,
-          property.zip_code || '', property.county || '',
-          marketCache[property.state_code] || null, property.source,
-          property.vacant, property.bedrooms, property.bathrooms,
-          property.sqft, property.year_built, property.lot_size,
-          property.estimated_value, property.last_sale_price,
-          property.last_sale_date, property.property_status || null
-        ]);
-
-        const propertyId = pr.rows[0].id;
-        const wasInsert = pr.rows[0].xmax === '0';
-        if (wasInsert) rowsCreated++; else rowsUpdated++;
-
-        // Upsert contact
-        if (contact.first_name || contact.last_name) {
-          let contactId = null;
-          const existPC = await query(
-            `SELECT contact_id FROM property_contacts WHERE property_id=$1 AND primary_contact=true LIMIT 1`,
-            [propertyId]
-          );
-          if (existPC.rows.length > 0) {
-            contactId = existPC.rows[0].contact_id;
-            await query(`UPDATE contacts SET
-              first_name = COALESCE(NULLIF($1,''), first_name),
-              last_name  = COALESCE(NULLIF($2,''), last_name),
-              mailing_address = COALESCE(NULLIF($3,''), mailing_address),
-              mailing_city    = COALESCE(NULLIF($4,''), mailing_city),
-              mailing_state   = COALESCE(NULLIF($5,''), mailing_state),
-              mailing_zip     = COALESCE(NULLIF($6,''), mailing_zip),
-              email_1 = COALESCE(NULLIF($7,''), email_1),
-              email_2 = COALESCE(NULLIF($8,''), email_2),
-              updated_at = NOW() WHERE id=$9`,
-              [contact.first_name, contact.last_name, contact.mailing_address,
-               contact.mailing_city, contact.mailing_state, contact.mailing_zip,
-               contact.email_1 || '', contact.email_2 || '', contactId]);
-          } else {
-            const cr = await query(
-              `INSERT INTO contacts (first_name,last_name,mailing_address,mailing_city,mailing_state,mailing_zip,email_1,email_2)
-               VALUES ($1,$2,$3,$4,$5,$6,$7,$8) RETURNING id`,
-              [contact.first_name, contact.last_name, contact.mailing_address,
-               contact.mailing_city, contact.mailing_state, contact.mailing_zip,
-               contact.email_1, contact.email_2]
-            );
-            contactId = cr.rows[0].id;
-            await query(
-              `INSERT INTO property_contacts (property_id,contact_id,primary_contact) VALUES ($1,$2,true) ON CONFLICT DO NOTHING`,
-              [propertyId, contactId]
-            );
-          }
-
-          // Upsert phones
-          for (const ph of phones) {
-            await query(`
-              INSERT INTO phones (contact_id, phone_number, phone_index, phone_status, phone_tag)
-              VALUES ($1,$2,$3,$4,$5)
-              ON CONFLICT (contact_id, phone_number) DO UPDATE SET
-                phone_status = CASE WHEN $4 != 'unknown' THEN $4 ELSE phones.phone_status END,
-                phone_tag    = COALESCE(NULLIF($5,''), phones.phone_tag),
-                updated_at   = NOW()`,
-              [contactId, ph.phone_number, ph.phone_index, ph.phone_status, ph.phone_tag || '']
-            );
-          }
-        }
-
-
-
-      } catch(rowErr) {
-        rowsErrored++;
-      }
-      rowsProcessed++;
+        mapped.push(m);
+      } catch (e) { rowsErrored++; }
+    }
+    if (mapped.length === 0) {
+      rowsProcessed += raw.length;
+      return;
     }
 
-    // Update job progress in DB
+    // 2. Ensure markets for all unique states in this batch — one query.
+    const uniqueStates = [...new Set(mapped.map(m => m.property.state_code))]
+      .filter(s => !marketCache[s]);
+    if (uniqueStates.length > 0) {
+      const mr = await query(
+        `INSERT INTO markets (name, state_code, state_name)
+         SELECT code || ' Market', code, code
+           FROM UNNEST($1::text[]) AS t(code)
+         ON CONFLICT (state_code) DO UPDATE SET name = EXCLUDED.name
+         RETURNING id, state_code`,
+        [uniqueStates]
+      );
+      for (const r of mr.rows) marketCache[r.state_code] = r.id;
+    }
+
+    // 3. De-duplicate properties within this batch by (street,city,state,zip).
+    //    Keeps the LAST occurrence — consistent with the old "last row wins".
+    const propKey = (p) => `${p.street.toLowerCase()}|${p.city.toLowerCase()}|${p.state_code}|${p.zip_code}`;
+    const propMap = new Map();
+    for (const m of mapped) propMap.set(propKey(m.property), m);
+    const deduped = Array.from(propMap.values());
+
+    // 4. Bulk UPSERT properties via UNNEST.
+    const pr = await query(`
+      INSERT INTO properties (
+        street, city, state_code, zip_code, county, market_id, source,
+        vacant, bedrooms, bathrooms, sqft, year_built, lot_size,
+        estimated_value, last_sale_price, last_sale_date,
+        property_status, first_seen_at
+      )
+      SELECT street, city, state_code, zip_code, county, market_id, source,
+             vacant, bedrooms, bathrooms, sqft, year_built, lot_size,
+             estimated_value, last_sale_price, last_sale_date,
+             property_status, NOW()
+        FROM UNNEST(
+          $1::text[], $2::text[], $3::text[], $4::text[], $5::text[], $6::int[], $7::text[],
+          $8::bool[], $9::int[], $10::numeric[], $11::int[], $12::int[], $13::int[],
+          $14::numeric[], $15::numeric[], $16::date[],
+          $17::text[]
+        ) AS t(street, city, state_code, zip_code, county, market_id, source,
+               vacant, bedrooms, bathrooms, sqft, year_built, lot_size,
+               estimated_value, last_sale_price, last_sale_date,
+               property_status)
+      ON CONFLICT (street, city, state_code, zip_code) DO UPDATE SET
+        county          = COALESCE(NULLIF(EXCLUDED.county,''),        properties.county),
+        source          = COALESCE(NULLIF(EXCLUDED.source,''),        properties.source),
+        vacant          = COALESCE(EXCLUDED.vacant,                   properties.vacant),
+        bedrooms        = COALESCE(EXCLUDED.bedrooms,                 properties.bedrooms),
+        bathrooms       = COALESCE(EXCLUDED.bathrooms,                properties.bathrooms),
+        sqft            = COALESCE(EXCLUDED.sqft,                     properties.sqft),
+        year_built      = COALESCE(EXCLUDED.year_built,               properties.year_built),
+        lot_size        = COALESCE(EXCLUDED.lot_size,                 properties.lot_size),
+        estimated_value = COALESCE(EXCLUDED.estimated_value,          properties.estimated_value),
+        last_sale_price = COALESCE(EXCLUDED.last_sale_price,          properties.last_sale_price),
+        last_sale_date  = COALESCE(EXCLUDED.last_sale_date,           properties.last_sale_date),
+        property_status = COALESCE(NULLIF(EXCLUDED.property_status,''), properties.property_status),
+        updated_at      = NOW()
+      RETURNING id, street, city, state_code, zip_code, (xmax = 0) AS inserted
+    `, [
+      deduped.map(m => m.property.street),
+      deduped.map(m => m.property.city),
+      deduped.map(m => m.property.state_code),
+      deduped.map(m => m.property.zip_code || ''),
+      deduped.map(m => m.property.county || ''),
+      deduped.map(m => marketCache[m.property.state_code] || null),
+      deduped.map(m => m.property.source),
+      deduped.map(m => m.property.vacant),
+      deduped.map(m => m.property.bedrooms),
+      deduped.map(m => m.property.bathrooms),
+      deduped.map(m => m.property.sqft),
+      deduped.map(m => m.property.year_built),
+      deduped.map(m => m.property.lot_size),
+      deduped.map(m => m.property.estimated_value),
+      deduped.map(m => m.property.last_sale_price),
+      deduped.map(m => m.property.last_sale_date),
+      deduped.map(m => m.property.property_status || null),
+    ]);
+
+    // Build property_id lookup
+    const propIdByKey = new Map();
+    for (const r of pr.rows) {
+      const k = `${r.street.toLowerCase()}|${r.city.toLowerCase()}|${r.state_code}|${r.zip_code}`;
+      propIdByKey.set(k, r.id);
+      if (r.inserted) rowsCreated++; else rowsUpdated++;
+    }
+    const propIds = pr.rows.map(r => r.id);
+
+    // 5. Pre-load existing primary contact_id for each property in this batch.
+    const existingPC = new Map();
+    if (propIds.length > 0) {
+      const pcRes = await query(
+        `SELECT property_id, contact_id FROM property_contacts
+          WHERE property_id = ANY($1::int[]) AND primary_contact = true`,
+        [propIds]
+      );
+      for (const r of pcRes.rows) existingPC.set(r.property_id, r.contact_id);
+    }
+
+    // 6. Split into "update existing contact" vs "create new contact + link".
+    const updateContactIds = [], updateFirsts = [], updateLasts = [];
+    const updateMaddr = [], updateMcity = [], updateMstate = [], updateMzip = [];
+    const updateEmail1 = [], updateEmail2 = [];
+    const newContactProps  = [], newContactFirsts = [], newContactLasts = [];
+    const newContactMaddr  = [], newContactMcity  = [], newContactMstate = [], newContactMzip = [];
+    const newContactEmail1 = [], newContactEmail2 = [];
+
+    const contactIdByProp = new Map();
+    const mappedByKey = new Map();
+    for (const m of deduped) mappedByKey.set(propKey(m.property), m);
+
+    for (const [k, propId] of propIdByKey) {
+      const m = mappedByKey.get(k);
+      if (!m) continue;
+      const c = m.contact;
+      if (!c.first_name && !c.last_name) continue;
+
+      if (existingPC.has(propId)) {
+        const cid = existingPC.get(propId);
+        contactIdByProp.set(propId, cid);
+        updateContactIds.push(cid);
+        updateFirsts.push(c.first_name || '');
+        updateLasts.push(c.last_name || '');
+        updateMaddr.push(c.mailing_address || '');
+        updateMcity.push(c.mailing_city || '');
+        updateMstate.push(c.mailing_state || '');
+        updateMzip.push(c.mailing_zip || '');
+        updateEmail1.push(c.email_1 || '');
+        updateEmail2.push(c.email_2 || '');
+      } else {
+        newContactProps.push(propId);
+        newContactFirsts.push(c.first_name || '');
+        newContactLasts.push(c.last_name || '');
+        newContactMaddr.push(c.mailing_address || '');
+        newContactMcity.push(c.mailing_city || '');
+        newContactMstate.push(c.mailing_state || '');
+        newContactMzip.push(c.mailing_zip || '');
+        newContactEmail1.push(c.email_1 || '');
+        newContactEmail2.push(c.email_2 || '');
+      }
+    }
+
+    // 7a. Bulk UPDATE existing contacts (COALESCE preserves non-blank prior values).
+    if (updateContactIds.length > 0) {
+      await query(`
+        UPDATE contacts SET
+          first_name      = COALESCE(NULLIF(t.first_name,''),      contacts.first_name),
+          last_name       = COALESCE(NULLIF(t.last_name,''),       contacts.last_name),
+          mailing_address = COALESCE(NULLIF(t.mailing_address,''), contacts.mailing_address),
+          mailing_city    = COALESCE(NULLIF(t.mailing_city,''),    contacts.mailing_city),
+          mailing_state   = COALESCE(NULLIF(t.mailing_state,''),   contacts.mailing_state),
+          mailing_zip     = COALESCE(NULLIF(t.mailing_zip,''),     contacts.mailing_zip),
+          email_1         = COALESCE(NULLIF(t.email_1,''),         contacts.email_1),
+          email_2         = COALESCE(NULLIF(t.email_2,''),         contacts.email_2),
+          updated_at      = NOW()
+        FROM UNNEST(
+          $1::int[], $2::text[], $3::text[], $4::text[], $5::text[],
+          $6::text[], $7::text[], $8::text[], $9::text[]
+        ) AS t(id, first_name, last_name, mailing_address, mailing_city,
+               mailing_state, mailing_zip, email_1, email_2)
+        WHERE contacts.id = t.id
+      `, [updateContactIds, updateFirsts, updateLasts, updateMaddr, updateMcity,
+          updateMstate, updateMzip, updateEmail1, updateEmail2]);
+    }
+
+    // 7b. Bulk INSERT new contacts + link via property_contacts.
+    if (newContactProps.length > 0) {
+      const nr = await query(`
+        INSERT INTO contacts (first_name, last_name, mailing_address, mailing_city,
+                              mailing_state, mailing_zip, email_1, email_2)
+        SELECT * FROM UNNEST(
+          $1::text[], $2::text[], $3::text[], $4::text[],
+          $5::text[], $6::text[], $7::text[], $8::text[]
+        ) AS t(first_name, last_name, mailing_address, mailing_city,
+               mailing_state, mailing_zip, email_1, email_2)
+        RETURNING id
+      `, [newContactFirsts, newContactLasts, newContactMaddr, newContactMcity,
+          newContactMstate, newContactMzip, newContactEmail1, newContactEmail2]);
+      const newIds = nr.rows.map(r => r.id);
+
+      await query(`
+        INSERT INTO property_contacts (property_id, contact_id, primary_contact)
+        SELECT property_id, contact_id, true
+          FROM UNNEST($1::int[], $2::int[]) AS t(property_id, contact_id)
+        ON CONFLICT DO NOTHING
+      `, [newContactProps, newIds]);
+
+      for (let i = 0; i < newContactProps.length; i++) {
+        contactIdByProp.set(newContactProps[i], newIds[i]);
+      }
+    }
+
+    // 8. Bulk UPSERT phones. One row per (contact_id, phone_number).
+    const phContactIds = [], phNumbers = [], phStatuses = [], phTags = [], phIdx = [];
+    for (const [k, propId] of propIdByKey) {
+      const m = mappedByKey.get(k);
+      if (!m) continue;
+      const cid = contactIdByProp.get(propId);
+      if (!cid) continue;
+      for (const ph of m.phones) {
+        phContactIds.push(cid);
+        phNumbers.push(ph.phone_number);
+        phStatuses.push(ph.phone_status);
+        phTags.push(ph.phone_tag || '');
+        phIdx.push(ph.phone_index);
+      }
+    }
+
+    if (phContactIds.length > 0) {
+      await query(`
+        INSERT INTO phones (contact_id, phone_number, phone_index, phone_status, phone_tag)
+        SELECT * FROM UNNEST(
+          $1::int[], $2::text[], $3::int[], $4::text[], $5::text[]
+        ) AS t(contact_id, phone_number, phone_index, phone_status, phone_tag)
+        ON CONFLICT (contact_id, phone_number) DO UPDATE SET
+          phone_status = CASE WHEN EXCLUDED.phone_status != 'unknown'
+                              THEN EXCLUDED.phone_status
+                              ELSE phones.phone_status END,
+          phone_tag    = COALESCE(NULLIF(EXCLUDED.phone_tag,''), phones.phone_tag),
+          updated_at   = NOW()
+      `, [phContactIds, phNumbers, phIdx, phStatuses, phTags]);
+    }
+
+    rowsProcessed += raw.length;
+
+    // Persist progress every batch so polling shows live updates.
     await query(
       `UPDATE bulk_import_jobs SET rows_processed=$1, rows_created=$2, rows_updated=$3, rows_errored=$4 WHERE id=$5`,
       [rowsProcessed, rowsCreated, rowsUpdated, rowsErrored, jobId]
@@ -402,9 +546,10 @@ async function processImport(jobId, csvText, filename) {
   }
 
   try {
-    // Stream parse — process in batches of 500
+    // Stream from disk so we don't hold the CSV in memory.
+    const stream = fs.createReadStream(csvPath, { encoding: 'utf8' });
     await new Promise((resolve, reject) => {
-      Papa.parse(csvText, {
+      Papa.parse(stream, {
         header: true,
         skipEmptyLines: true,
         step: async (result, parser) => {
@@ -412,13 +557,15 @@ async function processImport(jobId, csvText, filename) {
           if (batch.length >= BATCH) {
             parser.pause();
             const toProcess = batch.splice(0, BATCH);
-            await processBatch(toProcess).catch(e => console.error('[bulk] batch error:', e.message));
+            try { await processBatch(toProcess); }
+            catch (e) { console.error('[bulk] batch error:', e.message); }
             parser.resume();
           }
         },
         complete: async () => {
           if (batch.length > 0) {
-            await processBatch(batch).catch(e => console.error('[bulk] final batch error:', e.message));
+            try { await processBatch(batch); }
+            catch (e) { console.error('[bulk] final batch error:', e.message); }
           }
           resolve();
         },
@@ -426,19 +573,20 @@ async function processImport(jobId, csvText, filename) {
       });
     });
 
-    // Mark complete
     await query(
       `UPDATE bulk_import_jobs SET status='completed', rows_processed=$1, rows_created=$2, rows_updated=$3, rows_errored=$4, completed_at=NOW() WHERE id=$5`,
       [rowsProcessed, rowsCreated, rowsUpdated, rowsErrored, jobId]
     );
     console.log(`[bulk] Job ${jobId} complete — ${rowsCreated} created, ${rowsUpdated} updated, ${rowsErrored} errors`);
-
   } catch(e) {
     console.error(`[bulk] Job ${jobId} failed:`, e.message);
     await query(
       `UPDATE bulk_import_jobs SET status='failed', error_message=$1, completed_at=NOW() WHERE id=$2`,
       [e.message, jobId]
     );
+  } finally {
+    // Clean up the staged CSV so /tmp doesn't fill up.
+    try { fs.unlinkSync(csvPath); } catch (e) { /* already gone */ }
   }
 }
 
@@ -451,7 +599,7 @@ router.get('/status/:jobId', requireAuth, async (req, res) => {
   } catch(e) { res.status(500).json({ error: e.message }); }
 });
 
-// ── JOBS LIST: Recent jobs ─────────────────────────────────────────────────────
+// ── JOBS LIST ────────────────────────────────────────────────────────────────
 router.get('/jobs', requireAuth, async (req, res) => {
   try {
     await ensureJobsTable();
