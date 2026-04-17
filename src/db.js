@@ -1,10 +1,15 @@
 const { Pool } = require('pg');
+const { allValidStates } = require('./import/state');
 
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
   ssl: process.env.DATABASE_URL && process.env.DATABASE_URL.includes('railway')
     ? { rejectUnauthorized: false }
     : false,
+  // Tuned for Railway shared workers — keep at or below Railway's default cap.
+  max: 20,
+  idleTimeoutMillis: 30_000,
+  connectionTimeoutMillis: 5_000,
 });
 
 async function query(text, params) {
@@ -16,7 +21,17 @@ async function query(text, params) {
   }
 }
 
+// Module-level flag so initSchema runs AT MOST ONCE per process. Previous code
+// called initSchema inside saveRunToDB for every filtration upload, which made
+// every upload pay 2-3 seconds of DDL + migration overhead. Routes that need
+// to "ensure" schema exists before serving can just call initSchema(); it's
+// a no-op after first success. (Audit issue #16.)
+let _schemaReady = false;
+
 async function initSchema() {
+  if (_schemaReady) return;
+
+  // ── Core tables (idempotent — CREATE TABLE IF NOT EXISTS) ───────────────────
   await query(`
     CREATE TABLE IF NOT EXISTS markets (
       id SERIAL PRIMARY KEY,
@@ -204,20 +219,20 @@ async function initSchema() {
       notes TEXT
     );
 
-    CREATE INDEX IF NOT EXISTS idx_phones_number ON phones(phone_number);
-    CREATE INDEX IF NOT EXISTS idx_phones_contact ON phones(contact_id);
-    CREATE INDEX IF NOT EXISTS idx_call_logs_phone ON call_logs(phone_id);
-    CREATE INDEX IF NOT EXISTS idx_call_logs_date ON call_logs(call_date);
-    CREATE INDEX IF NOT EXISTS idx_call_logs_list ON call_logs(list_id);
-    CREATE INDEX IF NOT EXISTS idx_properties_address ON properties(street, city, state_code, zip_code);
-    CREATE INDEX IF NOT EXISTS idx_properties_state ON properties(state_code);
-    CREATE INDEX IF NOT EXISTS idx_filtration_results_run ON filtration_results(run_id);
-    CREATE INDEX IF NOT EXISTS idx_filtration_results_phone ON filtration_results(phone_number);
-    CREATE INDEX IF NOT EXISTS idx_deals_property ON deals(property_id);
-    CREATE INDEX IF NOT EXISTS idx_deals_stage ON deals(stage);
-    CREATE INDEX IF NOT EXISTS idx_marketing_touches_property ON marketing_touches(property_id);
-    CREATE INDEX IF NOT EXISTS idx_marketing_touches_channel ON marketing_touches(channel);
-    CREATE INDEX IF NOT EXISTS idx_import_history_property ON import_history(property_id);
+    CREATE INDEX IF NOT EXISTS idx_phones_number                ON phones(phone_number);
+    CREATE INDEX IF NOT EXISTS idx_phones_contact               ON phones(contact_id);
+    CREATE INDEX IF NOT EXISTS idx_call_logs_phone              ON call_logs(phone_id);
+    CREATE INDEX IF NOT EXISTS idx_call_logs_date               ON call_logs(call_date);
+    CREATE INDEX IF NOT EXISTS idx_call_logs_list               ON call_logs(list_id);
+    CREATE INDEX IF NOT EXISTS idx_properties_address           ON properties(street, city, state_code, zip_code);
+    CREATE INDEX IF NOT EXISTS idx_properties_state             ON properties(state_code);
+    CREATE INDEX IF NOT EXISTS idx_filtration_results_run       ON filtration_results(run_id);
+    CREATE INDEX IF NOT EXISTS idx_filtration_results_phone     ON filtration_results(phone_number);
+    CREATE INDEX IF NOT EXISTS idx_deals_property               ON deals(property_id);
+    CREATE INDEX IF NOT EXISTS idx_deals_stage                  ON deals(stage);
+    CREATE INDEX IF NOT EXISTS idx_marketing_touches_property   ON marketing_touches(property_id);
+    CREATE INDEX IF NOT EXISTS idx_marketing_touches_channel    ON marketing_touches(channel);
+    CREATE INDEX IF NOT EXISTS idx_import_history_property      ON import_history(property_id);
   `);
 
   await query(`CREATE TABLE IF NOT EXISTS bulk_import_jobs (
@@ -235,10 +250,9 @@ async function initSchema() {
     created_at TIMESTAMPTZ DEFAULT NOW(),
     updated_at TIMESTAMPTZ DEFAULT NOW()
   )`);
-  // Migration: add list_id if missing
   await query(`ALTER TABLE bulk_import_jobs ADD COLUMN IF NOT EXISTS list_id INTEGER REFERENCES lists(id) ON DELETE SET NULL`);
 
-  // ── Seed all 50 state markets ─────────────────────────────────────────────────
+  // ── Seed all 50 state markets (+ DC) ────────────────────────────────────────
   await query(`INSERT INTO markets (name,state_code,state_name) VALUES
     ('AL','AL','Alabama'),('AK','AK','Alaska'),('AZ','AZ','Arizona'),('AR','AR','Arkansas'),('CA','CA','California'),
     ('CO','CO','Colorado'),('CT','CT','Connecticut'),('DE','DE','Delaware'),('FL','FL','Florida'),('GA','GA','Georgia'),
@@ -249,18 +263,16 @@ async function initSchema() {
     ('NM','NM','New Mexico'),('NY','NY','New York'),('NC','NC','North Carolina'),('ND','ND','North Dakota'),('OH','OH','Ohio'),
     ('OK','OK','Oklahoma'),('OR','OR','Oregon'),('PA','PA','Pennsylvania'),('RI','RI','Rhode Island'),('SC','SC','South Carolina'),
     ('SD','SD','South Dakota'),('TN','TN','Tennessee'),('TX','TX','Texas'),('UT','UT','Utah'),('VT','VT','Vermont'),
-    ('VA','VA','Virginia'),('WA','WA','Washington'),('WV','WV','West Virginia'),('WI','WI','Wisconsin'),('WY','WY','Wyoming')
+    ('VA','VA','Virginia'),('WA','WA','Washington'),('WV','WV','West Virginia'),('WI','WI','Wisconsin'),('WY','WY','Wyoming'),
+    ('DC','DC','District of Columbia')
     ON CONFLICT (state_code) DO UPDATE SET name=EXCLUDED.name, state_name=EXCLUDED.state_name`);
 
-  // ── Migration: add new columns if they don't exist yet ──────────────────────
+  // ── Column migrations ───────────────────────────────────────────────────────
   const migrations = [
-
-    // properties — filter fields
     `ALTER TABLE properties ADD COLUMN IF NOT EXISTS assessed_value NUMERIC(12,2)`,
     `ALTER TABLE properties ADD COLUMN IF NOT EXISTS property_status VARCHAR(50)`,
     `ALTER TABLE properties ADD COLUMN IF NOT EXISTS equity_percent NUMERIC(5,2)`,
     `ALTER TABLE properties ADD COLUMN IF NOT EXISTS marketing_result VARCHAR(100)`,
-    // properties — detail fields
     `ALTER TABLE properties ADD COLUMN IF NOT EXISTS source VARCHAR(100)`,
     `ALTER TABLE properties ADD COLUMN IF NOT EXISTS bedrooms SMALLINT`,
     `ALTER TABLE properties ADD COLUMN IF NOT EXISTS bathrooms NUMERIC(3,1)`,
@@ -273,7 +285,6 @@ async function initSchema() {
     `ALTER TABLE properties ADD COLUMN IF NOT EXISTS last_sale_price NUMERIC(12,2)`,
     `ALTER TABLE properties ADD COLUMN IF NOT EXISTS first_seen_at TIMESTAMPTZ DEFAULT NOW()`,
 
-    // contacts — mailing address fields
     `ALTER TABLE contacts ADD COLUMN IF NOT EXISTS mailing_address VARCHAR(255)`,
     `ALTER TABLE contacts ADD COLUMN IF NOT EXISTS email_1 VARCHAR(255)`,
     `ALTER TABLE contacts ADD COLUMN IF NOT EXISTS email_2 VARCHAR(255)`,
@@ -281,28 +292,181 @@ async function initSchema() {
     `ALTER TABLE contacts ADD COLUMN IF NOT EXISTS mailing_state CHAR(2)`,
     `ALTER TABLE contacts ADD COLUMN IF NOT EXISTS mailing_zip VARCHAR(10)`,
 
-    // lists — source field
     `ALTER TABLE lists ADD COLUMN IF NOT EXISTS source VARCHAR(100)`,
-
-    // phones — type field
     `ALTER TABLE phones ADD COLUMN IF NOT EXISTS phone_type VARCHAR(50) DEFAULT 'unknown'`,
   ];
 
   for (const sql of migrations) {
-    try {
-      await query(sql);
-    } catch (e) {
-      // Column may already exist on older Railway instances — safe to ignore
-      if (!e.message.includes('already exists')) {
-        console.error('Migration warning:', e.message);
+    try { await query(sql); }
+    catch (e) { if (!e.message.includes('already exists')) console.error('Migration warning:', e.message); }
+  }
+
+  // ── Fix: garbage state_codes (Audit issue #3 / decision #2) ────────────────
+  // The old normalizeState fell back to raw.slice(0,2).toUpperCase() for any
+  // unrecognized value, which silently inserted "46" (from "46218" zip code
+  // that landed in the State column), "UN", etc. into the properties and
+  // markets tables. Those rows are unreachable via the filter UI (which uses
+  // a whitelist) and add only noise to counts.
+  //
+  // SAFETY: this used to DELETE unconditionally on every startup. That's scary
+  // because there's no way to preview the blast radius before it runs, and FK
+  // cascades could take real data with the garbage. It now runs in one of
+  // three modes, controlled by the LOKI_CLEANUP env var:
+  //   unset or 'report'  → count-only. Logs how many rows WOULD be deleted.
+  //                        This is the safe default on every boot.
+  //   'confirm'          → executes the DELETE. One-time operation; after the
+  //                        first successful run you can unset this env var.
+  //   'skip'             → no-op. Use if you've already cleaned up manually
+  //                        and want to silence the report on boot.
+  try {
+    const mode = (process.env.LOKI_CLEANUP || 'report').toLowerCase();
+    if (mode === 'skip') {
+      // explicit opt-out — no log noise
+    } else {
+      const validStatesSql = allValidStates().map(s => `'${s}'`).join(',');
+
+      // Always run the count so we have visibility
+      const propCount = await query(
+        `SELECT COUNT(*) AS n, ARRAY_AGG(DISTINCT state_code) FILTER (WHERE state_code IS NOT NULL) AS codes
+           FROM properties
+          WHERE state_code IS NULL OR state_code NOT IN (${validStatesSql})`
+      );
+      const mktCount = await query(
+        `SELECT COUNT(*) AS n FROM markets
+          WHERE state_code IS NULL OR state_code NOT IN (${validStatesSql})`
+      );
+      const propN = parseInt(propCount.rows[0]?.n || 0);
+      const mktN  = parseInt(mktCount.rows[0]?.n || 0);
+      const codes = propCount.rows[0]?.codes || [];
+
+      if (propN === 0 && mktN === 0) {
+        // Nothing to do — silently skip the whole block.
+      } else if (mode !== 'confirm') {
+        console.log(`[db] garbage-state cleanup — REPORT ONLY (set LOKI_CLEANUP=confirm to execute):`);
+        console.log(`[db]   ${propN.toLocaleString()} properties with invalid state_code`);
+        console.log(`[db]   ${mktN} markets with invalid state_code`);
+        console.log(`[db]   Offending codes sample: ${codes.slice(0, 20).join(', ')}${codes.length > 20 ? ` (+${codes.length - 20} more)` : ''}`);
+      } else {
+        // Mode === 'confirm' — actually delete. Check FK CASCADE behavior first:
+        // if property_contacts, phones, call_logs, etc. have ON DELETE RESTRICT,
+        // the DELETE will fail and roll back. Abort with a clear message so the
+        // operator knows rather than silently catching the error.
+        const fkCheck = await query(`
+          SELECT conname, conrelid::regclass::text AS table_name, confdeltype
+            FROM pg_constraint
+           WHERE confrelid = 'properties'::regclass AND contype = 'f'
+        `);
+        const restrictors = fkCheck.rows.filter(r => r.confdeltype === 'r' || r.confdeltype === 'a');
+        if (restrictors.length > 0) {
+          console.error(`[db] cleanup ABORTED: ${restrictors.length} FK constraint(s) on properties use ON DELETE RESTRICT/NO ACTION. Deleting garbage properties would fail. Offending constraints:`);
+          for (const r of restrictors) console.error(`  - ${r.table_name}: ${r.conname}`);
+          console.error(`[db] Options: (a) change those FKs to ON DELETE CASCADE or SET NULL, (b) manually delete dependent rows first, or (c) leave LOKI_CLEANUP unset to skip.`);
+        } else {
+          console.log(`[db] garbage-state cleanup — EXECUTING (LOKI_CLEANUP=confirm)`);
+          const delProps = await query(
+            `DELETE FROM properties WHERE state_code IS NULL OR state_code NOT IN (${validStatesSql})`
+          );
+          const delMarkets = await query(
+            `DELETE FROM markets WHERE state_code IS NULL OR state_code NOT IN (${validStatesSql})`
+          );
+          console.log(`[db] cleanup complete: removed ${delProps.rowCount} properties, ${delMarkets.rowCount} markets. You can now unset LOKI_CLEANUP.`);
+        }
+      }
+    }
+  } catch (e) {
+    console.error('[db] garbage-state cleanup warning:', e.message);
+  }
+
+  // ── Generated columns for normalized address matching (Audit issue #4) ──────
+  // The records filter used to run a 13-layer REGEXP_REPLACE chain on every
+  // properties.street and contacts.mailing_address on every request. A STORED
+  // generated column computes the normalized form once at write time, and
+  // indexes cover the common lookups.
+  const genCols = [
+    `ALTER TABLE properties ADD COLUMN IF NOT EXISTS street_normalized TEXT
+       GENERATED ALWAYS AS (
+         LOWER(REGEXP_REPLACE(REGEXP_REPLACE(TRIM(COALESCE(street,'')), '[.,]+', '', 'g'), '\\s+', ' ', 'g'))
+       ) STORED`,
+    `ALTER TABLE contacts ADD COLUMN IF NOT EXISTS mailing_address_normalized TEXT
+       GENERATED ALWAYS AS (
+         LOWER(REGEXP_REPLACE(REGEXP_REPLACE(TRIM(COALESCE(mailing_address,'')), '[.,]+', '', 'g'), '\\s+', ' ', 'g'))
+       ) STORED`,
+  ];
+  for (const sql of genCols) {
+    try { await query(sql); }
+    catch (e) {
+      // Older Postgres (<12) doesn't support generated columns. Filter helper
+      // falls back to inline LOWER+TRIM if the column isn't present.
+      if (!e.message.includes('already exists') && !e.message.includes('generated')) {
+        console.error('Generated-column migration warning:', e.message);
       }
     }
   }
 
-  // Seed base markets
-  // Legacy market seed removed — all 50 states seeded above
+  // ── Additional indexes for the new filter / campaigns / distress paths ──────
+  const extraIndexes = [
+    `CREATE INDEX IF NOT EXISTS idx_properties_street_norm   ON properties(street_normalized)`,
+    `CREATE INDEX IF NOT EXISTS idx_contacts_mail_norm       ON contacts(mailing_address_normalized)`,
+    `CREATE INDEX IF NOT EXISTS idx_properties_distress_score ON properties(distress_score) WHERE distress_score IS NOT NULL`,
+    `CREATE INDEX IF NOT EXISTS idx_properties_pipeline_stage ON properties(pipeline_stage)`,
+    `CREATE INDEX IF NOT EXISTS idx_property_lists_list      ON property_lists(list_id)`,
+    `CREATE INDEX IF NOT EXISTS idx_property_contacts_primary ON property_contacts(property_id) WHERE primary_contact = true`,
+    `CREATE INDEX IF NOT EXISTS idx_cc_property_address_state ON campaign_contacts (LOWER(property_address), UPPER(property_state))`,
+    `CREATE INDEX IF NOT EXISTS idx_cc_marketing_result      ON campaign_contacts (marketing_result) WHERE marketing_result IS NOT NULL`,
+    `CREATE INDEX IF NOT EXISTS idx_cn_marketing_result      ON campaign_numbers (marketing_result) WHERE marketing_result IS NOT NULL`,
+    `CREATE INDEX IF NOT EXISTS idx_cn_phone_number          ON campaign_numbers (phone_number)`,
+    `CREATE INDEX IF NOT EXISTS idx_ccp_campaign_phone       ON campaign_contact_phones (campaign_id, phone_number)`,
+  ];
+  for (const sql of extraIndexes) {
+    try { await query(sql); }
+    catch (e) {
+      // Indexes referencing tables created by campaigns.js ensureSchema will
+      // fail if that runs later — safe to ignore; campaigns.js recreates them.
+      if (!e.message.includes('does not exist') && !e.message.includes('already exists')) {
+        console.error('Index migration warning:', e.message);
+      }
+    }
+  }
 
+  // ── Owner portfolio counts MV (Audit issue #4c / min-owned filter) ──────────
+  try {
+    await query(`
+      CREATE MATERIALIZED VIEW IF NOT EXISTS owner_portfolio_counts AS
+      SELECT
+        COALESCE(c.mailing_address_normalized, LOWER(TRIM(c.mailing_address))) AS mailing_address_normalized,
+        LOWER(TRIM(c.mailing_city))                                           AS mailing_city_normalized,
+        UPPER(TRIM(c.mailing_state))                                          AS mailing_state,
+        SUBSTRING(TRIM(c.mailing_zip) FROM 1 FOR 5)                           AS zip5,
+        COUNT(*)                                                              AS owned_count
+      FROM properties p
+      JOIN property_contacts pc ON pc.property_id = p.id AND pc.primary_contact = true
+      JOIN contacts c           ON c.id = pc.contact_id
+      WHERE c.mailing_address IS NOT NULL AND TRIM(c.mailing_address) != ''
+      GROUP BY 1, 2, 3, 4
+    `);
+    await query(`CREATE UNIQUE INDEX IF NOT EXISTS idx_opc_key
+                   ON owner_portfolio_counts(mailing_address_normalized, mailing_city_normalized, mailing_state, zip5)`);
+  } catch (e) {
+    if (!e.message.includes('already exists')) {
+      console.error('MV migration warning:', e.message);
+    }
+  }
+
+  _schemaReady = true;
   console.log('Database schema initialized + migrations applied');
 }
 
-module.exports = { query, initSchema, pool };
+/**
+ * Refresh the owner-portfolio MV. Call after big imports or on a nightly cron.
+ * Non-fatal if it fails (filter code falls back to the correlated subquery).
+ */
+async function refreshOwnerPortfolioMv() {
+  try {
+    await query(`REFRESH MATERIALIZED VIEW CONCURRENTLY owner_portfolio_counts`);
+  } catch (e) {
+    try { await query(`REFRESH MATERIALIZED VIEW owner_portfolio_counts`); }
+    catch (ee) { console.error('[db] MV refresh failed:', ee.message); }
+  }
+}
+
+module.exports = { query, initSchema, refreshOwnerPortfolioMv, pool };
