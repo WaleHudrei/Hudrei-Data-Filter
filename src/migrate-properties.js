@@ -2,13 +2,34 @@
  * migrate-properties.js
  * ─────────────────────
  * One-time script: builds property records from existing filtration_results data.
- * Run once on Railway via: node src/migrate-properties.js
+ * Run once on Railway via: CONFIRM_MIGRATION=yes node src/migrate-properties.js
  *
- * Safe to run multiple times — all inserts use ON CONFLICT DO NOTHING.
+ * GUARD: Won't run without CONFIRM_MIGRATION=yes in the environment.
+ * Even though individual inserts use ON CONFLICT DO NOTHING, this script does a
+ * full-table scan of filtration_results and issues thousands of upserts. You
+ * don't want that running automatically in a deploy pipeline.
  */
 
 require('dotenv').config();
 const { Pool } = require('pg');
+
+if (process.env.CONFIRM_MIGRATION !== 'yes') {
+  console.error('═══════════════════════════════════════════════════════════');
+  console.error('  migrate-properties.js — PROTECTED');
+  console.error('═══════════════════════════════════════════════════════════');
+  console.error('');
+  console.error('  This script rebuilds the properties/contacts/phones tables');
+  console.error('  from filtration_results. It is a ONE-TIME bootstrap script');
+  console.error('  and should not run in a deploy pipeline.');
+  console.error('');
+  console.error('  To run it intentionally:');
+  console.error('');
+  console.error('    CONFIRM_MIGRATION=yes node src/migrate-properties.js');
+  console.error('');
+  console.error('  Exiting without action.');
+  console.error('═══════════════════════════════════════════════════════════');
+  process.exit(1);
+}
 
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
