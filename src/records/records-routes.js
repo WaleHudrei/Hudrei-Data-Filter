@@ -233,15 +233,36 @@ router.get('/', requireAuth, async (req, res) => {
     } else if (occupancy === 'unknown') {
       conditions.push(`(c.mailing_address IS NULL OR TRIM(c.mailing_address) = '')`);
     }
-    if (mkt_result)   { conditions.push(`p.marketing_result = $${idx}`);  params.push(mkt_result); idx++; }
+    // ── Marketing Result (PER-CAMPAIGN source — decision #1, Audit #1) ──────
+    // A property matches if ANY of its campaign appearances (SMS via
+    // campaign_contacts OR cold-call via campaign_numbers) has the given
+    // marketing_result value (list suffix " — ListName" stripped on compare).
+    // Was `p.marketing_result` — that column is almost never populated and
+    // returned 0 rows for every filter choice.
+    const mktCampaignMatch = (paramIdx) => `(
+      EXISTS (
+        SELECT 1 FROM campaign_contacts cc_mkt
+        WHERE LOWER(TRIM(cc_mkt.property_address)) = LOWER(TRIM(p.street))
+          AND UPPER(TRIM(cc_mkt.property_state)) = UPPER(TRIM(p.state_code))
+          AND cc_mkt.marketing_result IS NOT NULL
+          AND split_part(cc_mkt.marketing_result, ' — ', 1) = ANY($${paramIdx}::text[])
+      )
+      OR EXISTS (
+        SELECT 1 FROM campaign_numbers cn_mkt
+        JOIN phones ph_mkt ON ph_mkt.phone_number = cn_mkt.phone_number
+        JOIN property_contacts pc_mkt ON pc_mkt.contact_id = ph_mkt.contact_id AND pc_mkt.property_id = p.id
+        WHERE cn_mkt.marketing_result IS NOT NULL
+          AND split_part(cn_mkt.marketing_result, ' — ', 1) = ANY($${paramIdx}::text[])
+      )
+    )`;
+    if (mkt_result)   { conditions.push(mktCampaignMatch(idx));  params.push([mkt_result]); idx++; }
     if (mktIncludeList.length > 0) {
-      conditions.push(`p.marketing_result = ANY($${idx}::text[])`);
+      conditions.push(mktCampaignMatch(idx));
       params.push(mktIncludeList);
       idx++;
     }
     if (mktExcludeList.length > 0) {
-      // Exclude: not in the list, AND not null (treat null as "no result yet" — exclude only explicit values)
-      conditions.push(`(p.marketing_result IS NULL OR p.marketing_result != ALL($${idx}::text[]))`);
+      conditions.push(`NOT ${mktCampaignMatch(idx)}`);
       params.push(mktExcludeList);
       idx++;
     }
@@ -420,7 +441,7 @@ router.get('/', requireAuth, async (req, res) => {
       <div class="page-header">
         <div>
           <div class="page-title">Records <span class="count-pill">${total.toLocaleString()}</span></div>
-          <div class="page-sub">${list_id ? '<a href="/lists" style="color:#888;font-size:13px;text-decoration:none">← Back to Lists</a> &nbsp;·&nbsp; Filtered by list' : 'All properties across Indiana &amp; Georgia'}</div>
+          <div class="page-sub">${list_id ? '<a href="/lists" style="color:#888;font-size:13px;text-decoration:none">← Back to Lists</a> &nbsp;·&nbsp; Filtered by list' : 'All properties'}</div>
         </div>
       </div>
 
@@ -592,7 +613,7 @@ router.get('/', requireAuth, async (req, res) => {
                   <span style="float:right;color:#aaa">▾</span>
                 </button>
                 <div id="mkt-inc-pop" style="display:none;position:absolute;top:100%;left:0;right:0;margin-top:4px;background:#fff;border:1px solid #ddd;border-radius:7px;box-shadow:0 4px 12px rgba(0,0,0,.08);z-index:10;max-height:240px;overflow-y:auto;padding:6px 0">
-                  ${['Lead','Not Interested','Do Not Call','Wrong Number','Spanish Speaker','Callback','Voicemail'].map(s => `
+                  ${['Lead','Not Interested','Spanish Speaker','Potential Lead','Sold','Listed'].map(s => `
                     <label style="display:flex;align-items:center;gap:8px;padding:6px 12px;cursor:pointer;font-size:13px" onmouseover="this.style.background='#f5f4f0'" onmouseout="this.style.background='transparent'">
                       <input type="checkbox" name="mkt_include" value="${s}" ${mktIncludeList.includes(s) ? 'checked' : ''} onchange="updateMktSummary('inc')">
                       <span>${s}</span>
@@ -609,7 +630,7 @@ router.get('/', requireAuth, async (req, res) => {
                   <span style="float:right;color:#aaa">▾</span>
                 </button>
                 <div id="mkt-exc-pop" style="display:none;position:absolute;top:100%;left:0;right:0;margin-top:4px;background:#fff;border:1px solid #ddd;border-radius:7px;box-shadow:0 4px 12px rgba(0,0,0,.08);z-index:10;max-height:240px;overflow-y:auto;padding:6px 0">
-                  ${['Lead','Not Interested','Do Not Call','Wrong Number','Spanish Speaker','Callback','Voicemail'].map(s => `
+                  ${['Lead','Not Interested','Spanish Speaker','Potential Lead','Sold','Listed'].map(s => `
                     <label style="display:flex;align-items:center;gap:8px;padding:6px 12px;cursor:pointer;font-size:13px" onmouseover="this.style.background='#f5f4f0'" onmouseout="this.style.background='transparent'">
                       <input type="checkbox" name="mkt_exclude" value="${s}" ${mktExcludeList.includes(s) ? 'checked' : ''} onchange="updateMktSummary('exc')">
                       <span>${s}</span>
@@ -1073,15 +1094,32 @@ router.post('/export', requireAuth, async (req, res) => {
       } else if (occX === 'unknown') {
         conditions.push(`(c.mailing_address IS NULL OR TRIM(c.mailing_address) = '')`);
       }
-      if (qv('mkt_result'))  { conditions.push(`p.marketing_result = $${idx}`);  params.push(qv('mkt_result')); idx++; }
+      // Marketing Result — per-campaign (decision #1)
+      const mktMatchExp_export = (paramIdx) => `(
+        EXISTS (
+          SELECT 1 FROM campaign_contacts cc_mkt
+          WHERE LOWER(TRIM(cc_mkt.property_address)) = LOWER(TRIM(p.street))
+            AND UPPER(TRIM(cc_mkt.property_state)) = UPPER(TRIM(p.state_code))
+            AND cc_mkt.marketing_result IS NOT NULL
+            AND split_part(cc_mkt.marketing_result, ' — ', 1) = ANY($${paramIdx}::text[])
+        )
+        OR EXISTS (
+          SELECT 1 FROM campaign_numbers cn_mkt
+          JOIN phones ph_mkt ON ph_mkt.phone_number = cn_mkt.phone_number
+          JOIN property_contacts pc_mkt ON pc_mkt.contact_id = ph_mkt.contact_id AND pc_mkt.property_id = p.id
+          WHERE cn_mkt.marketing_result IS NOT NULL
+            AND split_part(cn_mkt.marketing_result, ' — ', 1) = ANY($${paramIdx}::text[])
+        )
+      )`;
+      if (qv('mkt_result'))  { conditions.push(mktMatchExp_export(idx)); params.push([qv('mkt_result')]); idx++; }
       const mktIncArr = qvAll('mkt_include');
       const mktExcArr = qvAll('mkt_exclude');
       if (mktIncArr.length > 0) {
-        conditions.push(`p.marketing_result = ANY($${idx}::text[])`);
+        conditions.push(mktMatchExp_export(idx));
         params.push(mktIncArr); idx++;
       }
       if (mktExcArr.length > 0) {
-        conditions.push(`(p.marketing_result IS NULL OR p.marketing_result != ALL($${idx}::text[]))`);
+        conditions.push(`NOT ${mktMatchExp_export(idx)}`);
         params.push(mktExcArr); idx++;
       }
       if (qv('min_assessed')){ conditions.push(`p.assessed_value >= $${idx}`);   params.push(qv('min_assessed')); idx++; }
@@ -1693,7 +1731,7 @@ router.get('/:id(\\d+)', requireAuth, async (req, res) => {
               <div class="form-field" style="margin:0"><label>Marketing Result</label>
                 <select name="marketing_result">
                   <option value="">—</option>
-                  ${['Lead','Not Interested','Do Not Call','Wrong Number','Callback','Voicemail'].map(t=>`<option value="${t}" ${p.marketing_result===t?'selected':''}>${t}</option>`).join('')}
+                  ${['Lead','Not Interested','Spanish Speaker','Potential Lead','Sold','Listed'].map(t=>`<option value="${t}" ${p.marketing_result===t?'selected':''}>${t}</option>`).join('')}
                 </select>
               </div>
               <div class="form-field" style="margin:0"><label>Pipeline Stage</label>
@@ -2467,15 +2505,60 @@ router.post('/delete', requireAuth, async (req, res) => {
       if (qv('type'))        { conditions.push(`p.property_type = $${idx}`);     params.push(qv('type')); idx++; }
       if (qv('pipeline'))    { conditions.push(`p.pipeline_stage = $${idx}`);    params.push(qv('pipeline')); idx++; }
       if (qv('prop_status')) { conditions.push(`p.property_status = $${idx}`);   params.push(qv('prop_status')); idx++; }
-      if (qv('mkt_result'))  { conditions.push(`p.marketing_result = $${idx}`);  params.push(qv('mkt_result')); idx++; }
+      if (qv('mkt_result'))  { conditions.push(`(
+        EXISTS (
+          SELECT 1 FROM campaign_contacts cc_mkt
+          WHERE LOWER(TRIM(cc_mkt.property_address)) = LOWER(TRIM(p.street))
+            AND UPPER(TRIM(cc_mkt.property_state)) = UPPER(TRIM(p.state_code))
+            AND cc_mkt.marketing_result IS NOT NULL
+            AND split_part(cc_mkt.marketing_result, ' — ', 1) = ANY($${idx}::text[])
+        )
+        OR EXISTS (
+          SELECT 1 FROM campaign_numbers cn_mkt
+          JOIN phones ph_mkt ON ph_mkt.phone_number = cn_mkt.phone_number
+          JOIN property_contacts pc_mkt ON pc_mkt.contact_id = ph_mkt.contact_id AND pc_mkt.property_id = p.id
+          WHERE cn_mkt.marketing_result IS NOT NULL
+            AND split_part(cn_mkt.marketing_result, ' — ', 1) = ANY($${idx}::text[])
+        )
+      )`); params.push([qv('mkt_result')]); idx++; }
       const mktIncArr = qvAll('mkt_include');
       const mktExcArr = qvAll('mkt_exclude');
       if (mktIncArr.length > 0) {
-        conditions.push(`p.marketing_result = ANY($${idx}::text[])`);
+        conditions.push(`(
+        EXISTS (
+          SELECT 1 FROM campaign_contacts cc_mkt
+          WHERE LOWER(TRIM(cc_mkt.property_address)) = LOWER(TRIM(p.street))
+            AND UPPER(TRIM(cc_mkt.property_state)) = UPPER(TRIM(p.state_code))
+            AND cc_mkt.marketing_result IS NOT NULL
+            AND split_part(cc_mkt.marketing_result, ' — ', 1) = ANY($${idx}::text[])
+        )
+        OR EXISTS (
+          SELECT 1 FROM campaign_numbers cn_mkt
+          JOIN phones ph_mkt ON ph_mkt.phone_number = cn_mkt.phone_number
+          JOIN property_contacts pc_mkt ON pc_mkt.contact_id = ph_mkt.contact_id AND pc_mkt.property_id = p.id
+          WHERE cn_mkt.marketing_result IS NOT NULL
+            AND split_part(cn_mkt.marketing_result, ' — ', 1) = ANY($${idx}::text[])
+        )
+      )`);
         params.push(mktIncArr); idx++;
       }
       if (mktExcArr.length > 0) {
-        conditions.push(`(p.marketing_result IS NULL OR p.marketing_result != ALL($${idx}::text[]))`);
+        conditions.push(`NOT (
+        EXISTS (
+          SELECT 1 FROM campaign_contacts cc_mkt
+          WHERE LOWER(TRIM(cc_mkt.property_address)) = LOWER(TRIM(p.street))
+            AND UPPER(TRIM(cc_mkt.property_state)) = UPPER(TRIM(p.state_code))
+            AND cc_mkt.marketing_result IS NOT NULL
+            AND split_part(cc_mkt.marketing_result, ' — ', 1) = ANY($${idx}::text[])
+        )
+        OR EXISTS (
+          SELECT 1 FROM campaign_numbers cn_mkt
+          JOIN phones ph_mkt ON ph_mkt.phone_number = cn_mkt.phone_number
+          JOIN property_contacts pc_mkt ON pc_mkt.contact_id = ph_mkt.contact_id AND pc_mkt.property_id = p.id
+          WHERE cn_mkt.marketing_result IS NOT NULL
+            AND split_part(cn_mkt.marketing_result, ' — ', 1) = ANY($${idx}::text[])
+        )
+      )`);
         params.push(mktExcArr); idx++;
       }
       if (qv('min_assessed')){ conditions.push(`p.assessed_value >= $${idx}`);   params.push(qv('min_assessed')); idx++; }
@@ -2660,10 +2743,55 @@ router.post('/bulk-tag', requireAuth, async (req, res) => {
       if (qv('type'))        { conditions.push(`p.property_type = $${idx}`);   params.push(qv('type')); idx++; }
       if (qv('pipeline'))    { conditions.push(`p.pipeline_stage = $${idx}`);  params.push(qv('pipeline')); idx++; }
       if (qv('prop_status')) { conditions.push(`p.property_status = $${idx}`); params.push(qv('prop_status')); idx++; }
-      if (qv('mkt_result'))  { conditions.push(`p.marketing_result = $${idx}`);params.push(qv('mkt_result')); idx++; }
+      if (qv('mkt_result'))  { conditions.push(`(
+        EXISTS (
+          SELECT 1 FROM campaign_contacts cc_mkt
+          WHERE LOWER(TRIM(cc_mkt.property_address)) = LOWER(TRIM(p.street))
+            AND UPPER(TRIM(cc_mkt.property_state)) = UPPER(TRIM(p.state_code))
+            AND cc_mkt.marketing_result IS NOT NULL
+            AND split_part(cc_mkt.marketing_result, ' — ', 1) = ANY($${idx}::text[])
+        )
+        OR EXISTS (
+          SELECT 1 FROM campaign_numbers cn_mkt
+          JOIN phones ph_mkt ON ph_mkt.phone_number = cn_mkt.phone_number
+          JOIN property_contacts pc_mkt ON pc_mkt.contact_id = ph_mkt.contact_id AND pc_mkt.property_id = p.id
+          WHERE cn_mkt.marketing_result IS NOT NULL
+            AND split_part(cn_mkt.marketing_result, ' — ', 1) = ANY($${idx}::text[])
+        )
+      )`);params.push([qv('mkt_result')]); idx++; }
       const mktIncArr = qvAll('mkt_include'), mktExcArr = qvAll('mkt_exclude');
-      if (mktIncArr.length > 0) { conditions.push(`p.marketing_result = ANY($${idx}::text[])`); params.push(mktIncArr); idx++; }
-      if (mktExcArr.length > 0) { conditions.push(`(p.marketing_result IS NULL OR p.marketing_result != ALL($${idx}::text[]))`); params.push(mktExcArr); idx++; }
+      if (mktIncArr.length > 0) { conditions.push(`(
+        EXISTS (
+          SELECT 1 FROM campaign_contacts cc_mkt
+          WHERE LOWER(TRIM(cc_mkt.property_address)) = LOWER(TRIM(p.street))
+            AND UPPER(TRIM(cc_mkt.property_state)) = UPPER(TRIM(p.state_code))
+            AND cc_mkt.marketing_result IS NOT NULL
+            AND split_part(cc_mkt.marketing_result, ' — ', 1) = ANY($${idx}::text[])
+        )
+        OR EXISTS (
+          SELECT 1 FROM campaign_numbers cn_mkt
+          JOIN phones ph_mkt ON ph_mkt.phone_number = cn_mkt.phone_number
+          JOIN property_contacts pc_mkt ON pc_mkt.contact_id = ph_mkt.contact_id AND pc_mkt.property_id = p.id
+          WHERE cn_mkt.marketing_result IS NOT NULL
+            AND split_part(cn_mkt.marketing_result, ' — ', 1) = ANY($${idx}::text[])
+        )
+      )`); params.push(mktIncArr); idx++; }
+      if (mktExcArr.length > 0) { conditions.push(`NOT (
+        EXISTS (
+          SELECT 1 FROM campaign_contacts cc_mkt
+          WHERE LOWER(TRIM(cc_mkt.property_address)) = LOWER(TRIM(p.street))
+            AND UPPER(TRIM(cc_mkt.property_state)) = UPPER(TRIM(p.state_code))
+            AND cc_mkt.marketing_result IS NOT NULL
+            AND split_part(cc_mkt.marketing_result, ' — ', 1) = ANY($${idx}::text[])
+        )
+        OR EXISTS (
+          SELECT 1 FROM campaign_numbers cn_mkt
+          JOIN phones ph_mkt ON ph_mkt.phone_number = cn_mkt.phone_number
+          JOIN property_contacts pc_mkt ON pc_mkt.contact_id = ph_mkt.contact_id AND pc_mkt.property_id = p.id
+          WHERE cn_mkt.marketing_result IS NOT NULL
+            AND split_part(cn_mkt.marketing_result, ' — ', 1) = ANY($${idx}::text[])
+        )
+      )`); params.push(mktExcArr); idx++; }
       if (qv('min_assessed')){ conditions.push(`p.assessed_value >= $${idx}`);   params.push(qv('min_assessed')); idx++; }
       if (qv('max_assessed')){ conditions.push(`p.assessed_value <= $${idx}`);   params.push(qv('max_assessed')); idx++; }
       if (qv('min_equity'))  { conditions.push(`p.equity_percent >= $${idx}`);   params.push(qv('min_equity')); idx++; }
@@ -2879,15 +3007,60 @@ router.post('/remove-from-list', requireAuth, async (req, res) => {
       if (qv('type'))        { conditions.push(`p.property_type = $${idx}`);     params.push(qv('type')); idx++; }
       if (qv('pipeline'))    { conditions.push(`p.pipeline_stage = $${idx}`);    params.push(qv('pipeline')); idx++; }
       if (qv('prop_status')) { conditions.push(`p.property_status = $${idx}`);   params.push(qv('prop_status')); idx++; }
-      if (qv('mkt_result'))  { conditions.push(`p.marketing_result = $${idx}`);  params.push(qv('mkt_result')); idx++; }
+      if (qv('mkt_result'))  { conditions.push(`(
+        EXISTS (
+          SELECT 1 FROM campaign_contacts cc_mkt
+          WHERE LOWER(TRIM(cc_mkt.property_address)) = LOWER(TRIM(p.street))
+            AND UPPER(TRIM(cc_mkt.property_state)) = UPPER(TRIM(p.state_code))
+            AND cc_mkt.marketing_result IS NOT NULL
+            AND split_part(cc_mkt.marketing_result, ' — ', 1) = ANY($${idx}::text[])
+        )
+        OR EXISTS (
+          SELECT 1 FROM campaign_numbers cn_mkt
+          JOIN phones ph_mkt ON ph_mkt.phone_number = cn_mkt.phone_number
+          JOIN property_contacts pc_mkt ON pc_mkt.contact_id = ph_mkt.contact_id AND pc_mkt.property_id = p.id
+          WHERE cn_mkt.marketing_result IS NOT NULL
+            AND split_part(cn_mkt.marketing_result, ' — ', 1) = ANY($${idx}::text[])
+        )
+      )`); params.push([qv('mkt_result')]); idx++; }
       const mktIncArr = qvAll('mkt_include');
       const mktExcArr = qvAll('mkt_exclude');
       if (mktIncArr.length > 0) {
-        conditions.push(`p.marketing_result = ANY($${idx}::text[])`);
+        conditions.push(`(
+        EXISTS (
+          SELECT 1 FROM campaign_contacts cc_mkt
+          WHERE LOWER(TRIM(cc_mkt.property_address)) = LOWER(TRIM(p.street))
+            AND UPPER(TRIM(cc_mkt.property_state)) = UPPER(TRIM(p.state_code))
+            AND cc_mkt.marketing_result IS NOT NULL
+            AND split_part(cc_mkt.marketing_result, ' — ', 1) = ANY($${idx}::text[])
+        )
+        OR EXISTS (
+          SELECT 1 FROM campaign_numbers cn_mkt
+          JOIN phones ph_mkt ON ph_mkt.phone_number = cn_mkt.phone_number
+          JOIN property_contacts pc_mkt ON pc_mkt.contact_id = ph_mkt.contact_id AND pc_mkt.property_id = p.id
+          WHERE cn_mkt.marketing_result IS NOT NULL
+            AND split_part(cn_mkt.marketing_result, ' — ', 1) = ANY($${idx}::text[])
+        )
+      )`);
         params.push(mktIncArr); idx++;
       }
       if (mktExcArr.length > 0) {
-        conditions.push(`(p.marketing_result IS NULL OR p.marketing_result != ALL($${idx}::text[]))`);
+        conditions.push(`NOT (
+        EXISTS (
+          SELECT 1 FROM campaign_contacts cc_mkt
+          WHERE LOWER(TRIM(cc_mkt.property_address)) = LOWER(TRIM(p.street))
+            AND UPPER(TRIM(cc_mkt.property_state)) = UPPER(TRIM(p.state_code))
+            AND cc_mkt.marketing_result IS NOT NULL
+            AND split_part(cc_mkt.marketing_result, ' — ', 1) = ANY($${idx}::text[])
+        )
+        OR EXISTS (
+          SELECT 1 FROM campaign_numbers cn_mkt
+          JOIN phones ph_mkt ON ph_mkt.phone_number = cn_mkt.phone_number
+          JOIN property_contacts pc_mkt ON pc_mkt.contact_id = ph_mkt.contact_id AND pc_mkt.property_id = p.id
+          WHERE cn_mkt.marketing_result IS NOT NULL
+            AND split_part(cn_mkt.marketing_result, ' — ', 1) = ANY($${idx}::text[])
+        )
+      )`);
         params.push(mktExcArr); idx++;
       }
       if (qv('min_assessed')){ conditions.push(`p.assessed_value >= $${idx}`);   params.push(qv('min_assessed')); idx++; }
