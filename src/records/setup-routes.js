@@ -1,13 +1,14 @@
 const express = require('express');
 const router = express.Router();
 const { query } = require('../db');
+const { normalizeState } = require('../import/state');
+const { isUsingDefaultCode } = require('../settings');
+const { shell } = require('../shared-shell');
 
 function requireAuth(req, res, next) {
   if (req.session && req.session.authenticated) return next();
   res.redirect('/login');
 }
-
-const { shell } = require('../shared-shell');
 
 function fmtDate(val) { if (!val) return '—'; return new Date(val).toLocaleDateString('en-US', { month:'short', day:'numeric', year:'numeric' }); }
 
@@ -15,6 +16,7 @@ function fmtDate(val) { if (!val) return '—'; return new Date(val).toLocaleDat
 router.get('/', requireAuth, async (req, res) => {
   try {
     const msg = req.query.msg || '';
+    const errMsg = req.query.err || '';
     const marketsRes = await query(`SELECT * FROM markets ORDER BY state_name ASC`);
     const statsRes = await query(`
       SELECT
@@ -26,6 +28,9 @@ router.get('/', requireAuth, async (req, res) => {
         (SELECT COUNT(*) FROM sms_logs) AS total_sms_logs
     `);
     const stats = statsRes.rows[0];
+
+    // Warn if delete code is still the default (Audit issue #32)
+    const defaultCode = await isUsingDefaultCode();
 
     const marketsHTML = marketsRes.rows.map(m => `
       <div style="display:flex;align-items:center;justify-content:space-between;padding:12px 0;border-bottom:1px solid #f0efe9">
@@ -42,8 +47,10 @@ router.get('/', requireAuth, async (req, res) => {
       </div>`).join('');
 
     res.send(shell('Setup', `
-      ${msg==='saved'?'<div style="background:#e8f5ee;border:1px solid #c3e6cc;border-radius:8px;padding:10px 14px;font-size:13px;color:#1a7a4a;margin-bottom:1rem">✓ Changes saved</div>':''}
-      ${msg==='error'?'<div style="background:#fdf0f0;border:1px solid #f5c5c5;border-radius:8px;padding:10px 14px;font-size:13px;color:#c0392b;margin-bottom:1rem">Something went wrong</div>':''}
+      ${msg==='saved'?'<div class="alert alert-success">✓ Changes saved</div>':''}
+      ${errMsg?`<div class="alert alert-error">${String(errMsg).replace(/</g,'&lt;')}</div>`:''}
+      ${msg==='error'?'<div class="alert alert-error">Something went wrong</div>':''}
+      ${defaultCode?'<div class="alert alert-warn">⚠ Default delete code still in use. Change it at <a href="/settings/security" style="color:#7a5a00;text-decoration:underline">/settings/security</a> before shipping.</div>':''}
 
       <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:1.5rem;flex-wrap:wrap;gap:12px">
         <div>
@@ -140,11 +147,22 @@ router.get('/', requireAuth, async (req, res) => {
 router.post('/markets/add', requireAuth, async (req, res) => {
   try {
     const { name, state_code, state_name } = req.body;
+
+    // Validate state_code against the VALID_STATES whitelist from state.js.
+    // Rejects "46" / "UN" / other garbage that previously crept in via raw
+    // toUpperCase(). (Audit issue #3.)
+    const normalized = normalizeState(state_code);
+    if (!normalized) {
+      return res.redirect('/setup?err=' + encodeURIComponent(
+        `Invalid state code "${state_code}". Use a valid USPS 2-letter code (AL, CA, NY, etc).`
+      ));
+    }
+
     await query(`
       INSERT INTO markets (name, state_code, state_name)
       VALUES ($1, $2, $3)
       ON CONFLICT (state_code) DO UPDATE SET name = EXCLUDED.name, state_name = EXCLUDED.state_name
-    `, [name, state_code.toUpperCase(), state_name]);
+    `, [name, normalized, state_name]);
     res.redirect('/setup?msg=saved');
   } catch(e) {
     console.error(e);
