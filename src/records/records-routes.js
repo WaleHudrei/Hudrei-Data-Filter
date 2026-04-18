@@ -1968,8 +1968,15 @@ router.get('/_distress', requireAuth, async (req, res) => {
         </div>`;
     }).join('');
 
+    const flashMsg = req.query.msg || '';
     res.send(shell('Distress Score Audit', `
       <div style="margin-bottom:1rem"><a href="/records" style="font-size:13px;color:#888;text-decoration:none">← Records</a></div>
+
+      ${flashMsg ? `<div id="flash-msg" style="background:#e8f0ff;border:1px solid #b5ccf0;border-radius:8px;padding:12px 16px;margin-bottom:1rem;font-size:13px;color:#1a4a9a">${flashMsg}</div>` : ''}
+
+      <!-- Job status banner (populated by the poller below) -->
+      <div id="distress-job-status" style="display:none;margin-bottom:1rem"></div>
+
       <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:16px;flex-wrap:wrap;margin-bottom:1.5rem">
         <div>
           <div style="font-size:24px;font-weight:700;letter-spacing:-.3px">Distress Score Audit</div>
@@ -1977,11 +1984,60 @@ router.get('/_distress', requireAuth, async (req, res) => {
         </div>
         <div style="display:flex;gap:8px;align-items:center">
           <a href="/records/_duplicates" class="btn btn-ghost" style="font-size:13px">🔍 Find Duplicates</a>
-          <form method="POST" action="/records/_distress/recompute" onsubmit="return confirm('Recompute distress score for ALL ${total.toLocaleString()} properties? This may take 30-60 seconds.')" style="margin:0">
-            <button type="submit" class="btn" style="background:#1a4a9a;color:#fff;border:none">↻ Recompute All Scores</button>
+          <form method="POST" action="/records/_distress/recompute" onsubmit="return confirm('Recompute distress score for ALL ${total.toLocaleString()} properties? This runs in the background and typically takes 2-5 minutes for 75k properties. You can close this tab; the rescore will continue on the server.')" style="margin:0">
+            <button type="submit" id="recompute-btn" class="btn" style="background:#1a4a9a;color:#fff;border:none">↻ Recompute All Scores</button>
           </form>
         </div>
       </div>
+
+      <script>
+      // Poll job status every 3 seconds. Show banner with progress / completion.
+      async function checkDistressJob() {
+        try {
+          const r = await fetch('/records/_distress/status');
+          if (!r.ok) return;
+          const j = await r.json();
+          const el = document.getElementById('distress-job-status');
+          const btn = document.getElementById('recompute-btn');
+
+          if (j.running) {
+            el.style.display = 'block';
+            const elapsedMin = Math.floor((j.elapsed_seconds||0) / 60);
+            const elapsedSec = (j.elapsed_seconds||0) % 60;
+            const timeStr = elapsedMin > 0 ? elapsedMin + 'm ' + elapsedSec + 's' : elapsedSec + 's';
+            el.innerHTML = '<div style="background:#fff8e1;border:1px solid #e8cf87;border-radius:8px;padding:12px 16px;font-size:13px;color:#6a4a00;display:flex;align-items:center;gap:10px">' +
+              '<div class="spinner" style="width:14px;height:14px;border:2px solid #e8cf87;border-top-color:#6a4a00;border-radius:50%;animation:spin 0.8s linear infinite"></div>' +
+              '<div><b>Rescore running…</b> elapsed ' + timeStr + '. Safe to navigate away — it\\'ll finish on the server.</div>' +
+              '</div>';
+            if (btn) { btn.disabled = true; btn.style.opacity = '0.5'; btn.textContent = '⏳ Running…'; }
+            setTimeout(checkDistressJob, 3000);
+          } else if (j.error) {
+            el.style.display = 'block';
+            el.innerHTML = '<div style="background:#fdecec;border:1px solid #f5c5c5;border-radius:8px;padding:12px 16px;font-size:13px;color:#c0392b"><b>Rescore failed:</b> ' + j.error.replace(/</g, '&lt;') + '</div>';
+          } else if (j.finishedAt) {
+            // Job finished — show a success banner, prompt reload to see new numbers
+            const ago = Math.round((Date.now() - j.finishedAt) / 1000);
+            // Only show the banner if it finished recently (within last 2 minutes)
+            if (ago < 120) {
+              el.style.display = 'block';
+              el.innerHTML = '<div style="background:#e8f5ee;border:1px solid #8dcaa3;border-radius:8px;padding:12px 16px;font-size:13px;color:#1a7a4a;display:flex;align-items:center;justify-content:space-between;gap:10px">' +
+                '<div>✓ <b>Rescore complete.</b> Scored ' + (j.scored||0).toLocaleString() + ' properties.</div>' +
+                '<button onclick="location.reload()" style="background:#1a7a4a;color:#fff;border:none;padding:6px 14px;border-radius:6px;cursor:pointer;font-size:12px;font-weight:600">Reload to see new scores</button>' +
+                '</div>';
+            }
+          }
+        } catch(e) { /* swallow — retry on next interval */ }
+      }
+      // Start polling on page load — cheap even if no job is running
+      checkDistressJob();
+      // Add spinner keyframes if not already present
+      if (!document.getElementById('spinner-style')) {
+        const s = document.createElement('style');
+        s.id = 'spinner-style';
+        s.textContent = '@keyframes spin{to{transform:rotate(360deg)}}';
+        document.head.appendChild(s);
+      }
+      </script>
 
       <div style="display:grid;grid-template-columns:1fr 1fr;gap:1rem;margin-bottom:1.25rem">
         <div class="card">
@@ -2133,20 +2189,81 @@ router.get('/_distress', requireAuth, async (req, res) => {
   }
 });
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Distress recompute — background job pattern (2026-04-18 fix).
+//
+// The old synchronous handler blocked the HTTP request for the entire 3-10 min
+// UPDATE query, which Railway's edge proxy timed out at ~100s — so the UI
+// showed "nothing happening" even when the backend was still working.
+//
+// Now: start a background job, return immediately, let the UI poll for status.
+// ─────────────────────────────────────────────────────────────────────────────
+
+// Module-level job state (single running job at a time is fine for this use)
+let distressJob = {
+  running: false,
+  startedAt: null,
+  finishedAt: null,
+  scored: 0,
+  total: 0,
+  error: null,
+};
+
 router.post('/_distress/recompute', requireAuth, async (req, res) => {
-  try {
-    const startedAt = Date.now();
-    console.log('[distress/recompute] starting…');
-    const result = await distress.scoreAllProperties((p) => {
-      if (p.finished) console.log(`[distress/recompute] done: ${p.done}/${p.total}`);
-      else console.log(`[distress/recompute] progress: ${p.done}/${p.total}`);
-    });
-    console.log(`[distress/recompute] finished in ${Math.round((Date.now()-startedAt)/1000)}s — scored ${result.scored} of ${result.total}`);
-    res.redirect('/records/_distress');
-  } catch(e) {
-    console.error('[distress/recompute]', e);
-    res.status(500).send('Recompute failed: ' + e.message);
+  if (distressJob.running) {
+    return res.redirect('/records/_distress?msg=' + encodeURIComponent('A rescore is already running. Check back in a minute.'));
   }
+
+  // Mark job as started BEFORE responding so the next poll sees running=true
+  distressJob = {
+    running: true,
+    startedAt: Date.now(),
+    finishedAt: null,
+    scored: 0,
+    total: 0,
+    error: null,
+  };
+
+  // Respond immediately — browser won't hang
+  res.redirect('/records/_distress?msg=' + encodeURIComponent('Rescore started. This runs in the background (typically 2-5 minutes for 75k properties). The Score Distribution numbers will update when it finishes — refresh this page to check.'));
+
+  // Fire the actual work in the background, no await on the response path
+  setImmediate(async () => {
+    try {
+      console.log('[distress/recompute] starting background rescore…');
+      const result = await distress.scoreAllProperties((p) => {
+        if (p.finished) {
+          console.log(`[distress/recompute] done: ${p.done}/${p.total}`);
+        }
+      });
+      distressJob.scored = result.scored;
+      distressJob.total = result.total;
+      distressJob.finishedAt = Date.now();
+      distressJob.running = false;
+      const secs = Math.round((distressJob.finishedAt - distressJob.startedAt) / 1000);
+      console.log(`[distress/recompute] finished in ${secs}s — scored ${result.scored} of ${result.total}`);
+    } catch (e) {
+      console.error('[distress/recompute] FAILED:', e);
+      distressJob.error = e.message;
+      distressJob.finishedAt = Date.now();
+      distressJob.running = false;
+    }
+  });
+});
+
+// Status endpoint — lets the UI poll without doing any work
+router.get('/_distress/status', requireAuth, (req, res) => {
+  const now = Date.now();
+  const elapsed = distressJob.startedAt ? Math.round((now - distressJob.startedAt) / 1000) : 0;
+  res.json({
+    running: distressJob.running,
+    startedAt: distressJob.startedAt,
+    finishedAt: distressJob.finishedAt,
+    elapsed_seconds: distressJob.running ? elapsed : null,
+    scored: distressJob.scored,
+    total: distressJob.total,
+    error: distressJob.error,
+  });
 });
 
 // ═══════════════════════════════════════════════════════════════════════════════
