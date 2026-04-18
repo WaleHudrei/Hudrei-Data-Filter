@@ -1,6 +1,7 @@
 const express = require('express');
 const router = express.Router();
 const { query } = require('../db');
+const settings = require('../settings');
 
 function requireAuth(req, res, next) {
   if (req.session && req.session.authenticated) return next();
@@ -169,6 +170,10 @@ router.get('/', requireAuth, async (req, res) => {
           <p style="font-size:14px;color:#555;margin-bottom:1.25rem">Are you sure you want to delete <strong id="delete-name"></strong>? This cannot be undone.</p>
           <form method="POST" action="/lists/delete" id="delete-form">
             <input type="hidden" name="id" id="delete-id">
+            <div style="margin-bottom:1rem">
+              <label style="font-size:12px;font-weight:600;color:#666;display:block;margin-bottom:4px">Delete code</label>
+              <input type="password" name="code" required autocomplete="off" style="width:100%;padding:8px 10px;border:1px solid #ddd;border-radius:7px;font-size:14px;font-family:inherit" placeholder="Enter delete code">
+            </div>
             <div class="btn-row">
               <button type="submit" class="btn-primary" style="background:#c0392b">Delete</button>
               <button type="button" class="btn-ghost" onclick="closeDelete()">Cancel</button>
@@ -234,7 +239,16 @@ router.post('/edit', requireAuth, async (req, res) => {
 // ═══════════════════════════════════════════════════════════════════════════════
 router.post('/delete', requireAuth, async (req, res) => {
   try {
-    const { id } = req.body;
+    const { id, code } = req.body;
+    // 2026-04-18 audit fix #41: lists delete was ungated. The records delete,
+    // bulk merges ≥10 groups, and single property delete all require the
+    // delete code (see settings.verifyDeleteCode). Deleting a list wipes
+    // every property→list membership row for that list, a similarly
+    // destructive operation. Now gated the same way for consistency.
+    const verified = await settings.verifyDeleteCode(code);
+    if (!verified) {
+      return res.redirect('/lists?msg=error&err=' + encodeURIComponent('Invalid delete code.'));
+    }
     await query(`DELETE FROM property_lists WHERE list_id=$1`, [id]);
     await query(`DELETE FROM lists WHERE id=$1`, [id]);
     res.redirect('/lists?msg=deleted');
