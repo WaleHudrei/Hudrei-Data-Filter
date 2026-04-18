@@ -3,6 +3,15 @@
 
 const ENTRIES = [
   {
+    date: 'April 18, 2026 (Pass 7)',
+    title: 'merge_all consistency fix + owner-portfolio MV refresh',
+    items: [
+      { tag: 'fix', text: 'Merge All Duplicates was grouping by old LOWER(TRIM(street)) while the duplicate-finder page (fix #22) shows groups based on normalized addresses. Users would see N groups on the page but the Merge All button could process a different set. Both now use street_normalized with a defensive COALESCE fallback — what you see is what gets merged.' },
+      { tag: 'fix', text: 'Merge All was silently failing for groups where both the kept and dropped properties had primary_contact=true. The partial unique index added by fix #17 (at most one primary per property) was rejecting the INSERT with BOOL_OR(primary_contact). Errors were caught and logged per-group, but the dropped records stayed as orphan duplicates and lists didn\'t get moved. Now mirrors the single-merge path: checks whether the kept property already has a primary and assigns primary_contact=false for all incoming contacts if it does.' },
+      { tag: 'fix', text: 'owner_portfolio_counts materialized view was created once at boot and never refreshed. The Min/Max Owned filter (fix #8) relied on it, so the owned-count numbers became increasingly stale as new properties got imported. Now refreshed after every bulk import, every property import, and every Merge All — wrapped in try/catch so a refresh failure never blocks the import itself. Look for [bulk-import] refreshed owner_portfolio_counts MV in the logs on the next import to confirm it\'s running.' },
+    ],
+  },
+  {
     date: 'April 18, 2026 (Pass 6 — cold-call)',
     title: 'Cold-call filtration bulk path — same feature flag as SMS',
     items: [
