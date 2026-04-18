@@ -397,8 +397,30 @@ async function getContactStats(campaignId) {
 }
 
 // ── Import NIS file (Readymode Detailed NIS export) ───────────────────────────
+// 2026-04-18 audit fix #23: previously the UPSERT did
+// `times_reported = nis_numbers.times_reported + EXCLUDED.times_reported` which
+// means re-uploading the same file DOUBLED every phone's count. The 3-strike
+// rule (times_reported >= 3 overrides even Correct) could then falsely kill
+// legitimate phones. Now idempotent: we track (phone_number, event_day) in a
+// nis_events table. Each (phone, day) tuple only counts once, so uploading
+// the same file twice is a no-op.
+async function ensureNisEventsSchema() {
+  try {
+    await query(`
+      CREATE TABLE IF NOT EXISTS nis_events (
+        phone_number VARCHAR(20) NOT NULL,
+        event_day    DATE        NOT NULL,
+        created_at   TIMESTAMPTZ DEFAULT NOW(),
+        PRIMARY KEY (phone_number, event_day)
+      )
+    `);
+    await query(`CREATE INDEX IF NOT EXISTS idx_nis_events_phone ON nis_events(phone_number)`);
+  } catch (e) { console.error('nis_events schema warning:', e.message); }
+}
+
 async function importNisFile(rows) {
-  let inserted = 0, updated = 0, flagged = 0;
+  await ensureNisEventsSchema();
+  let inserted = 0, updated = 0, flagged = 0, duplicateEvents = 0;
   const BATCH = 500;
 
   const phoneMap = new Map();
@@ -412,10 +434,10 @@ async function importNisFile(rows) {
       if (!isNaN(parsed)) day = parsed.toISOString().split('T')[0];
     }
     if (!phoneMap.has(phone)) {
-      phoneMap.set(phone, { phone, first: day, last: day, count: 1 });
+      phoneMap.set(phone, { phone, first: day, last: day, days: new Set(day ? [day] : []) });
     } else {
       const e = phoneMap.get(phone);
-      e.count++;
+      if (day) e.days.add(day);
       if (day && (!e.first || day < e.first)) e.first = day;
       if (day && (!e.last  || day > e.last))  e.last  = day;
     }
@@ -423,14 +445,51 @@ async function importNisFile(rows) {
 
   const entries = Array.from(phoneMap.values());
 
+  // Pass 1: Insert (phone, day) tuples. ON CONFLICT DO NOTHING — duplicates
+  // from re-uploads are silently skipped. The number of actually-inserted rows
+  // per phone is the true "new times_reported to add."
+  const perPhoneNewCounts = new Map();
   for (let i = 0; i < entries.length; i += BATCH) {
     const batch = entries.slice(i, i + BATCH);
+    const eventVals = [];
+    const eventParams = [];
+    let ep = 1;
+    // Unroll each phone's day-set into individual (phone, day) tuples
+    for (const e of batch) {
+      for (const day of e.days) {
+        eventVals.push(`($${ep},$${ep+1})`);
+        eventParams.push(e.phone, day);
+        ep += 2;
+      }
+    }
+    if (eventVals.length === 0) continue;
+    const eventRes = await query(
+      `INSERT INTO nis_events (phone_number, event_day)
+       VALUES ${eventVals.join(',')}
+       ON CONFLICT (phone_number, event_day) DO NOTHING
+       RETURNING phone_number`,
+      eventParams
+    );
+    for (const row of eventRes.rows) {
+      perPhoneNewCounts.set(row.phone_number, (perPhoneNewCounts.get(row.phone_number) || 0) + 1);
+    }
+    duplicateEvents += (eventVals.length - eventRes.rowCount);
+  }
+
+  // Pass 2: For phones that had truly-new events, upsert nis_numbers with
+  // the new-event count. Phones whose events were all duplicates don't get
+  // their times_reported inflated — that's the whole point of the fix.
+  const phonesToUpsert = entries.filter(e => perPhoneNewCounts.has(e.phone));
+
+  for (let i = 0; i < phonesToUpsert.length; i += BATCH) {
+    const batch = phonesToUpsert.slice(i, i + BATCH);
     const vals = [];
     const params = [];
     let p = 1;
     for (const e of batch) {
+      const newCount = perPhoneNewCounts.get(e.phone) || 0;
       vals.push(`($${p},$${p+1},$${p+2},$${p+3})`);
-      params.push(e.phone, e.first, e.last, e.count);
+      params.push(e.phone, e.first, e.last, newCount);
       p += 4;
     }
     const res = await query(
@@ -447,6 +506,10 @@ async function importNisFile(rows) {
     for (const row of res.rows) {
       if (row.inserted) inserted++; else updated++;
     }
+  }
+
+  if (duplicateEvents > 0) {
+    console.log(`[nis] skipped ${duplicateEvents} duplicate (phone, day) event(s) — likely a re-upload of a previously processed file`);
   }
 
   // Retroactively flag matching phones — scoped to ACTIVE campaigns only.
@@ -517,17 +580,34 @@ function stripSmsLabelPrefix(rawLabel) {
 }
 
 // Label → normalized disposition
+// 2026-04-18 audit fix #19: previously used exact string equality after
+// lowercase+trim, so "Not Interested." (trailing period) or "Wrong  Number"
+// (double space) silently fell through to no_action — a compliance hole for
+// "Do Not Call". Fix: strip trailing punctuation and collapse internal
+// whitespace before matching. Also added missing cases: do_not_call and
+// spanish_speaker. Previously SMS-labeled DNCs were silently ignored (TCPA
+// compliance risk); SMS-labeled Spanish speakers stayed callable with no flag.
 function normSmsLabel(label) {
   const cleaned = stripSmsLabelPrefix(label);
-  const l = cleaned.toLowerCase().trim();
-  if (l === 'wrong number')   return 'wrong_number';
-  if (l === 'not interested') return 'not_interested';
-  if (l === 'lead')           return 'transfer';
-  if (l === 'appointment')    return 'transfer';
-  if (l === 'disqualified')   return 'disqualified';
-  if (l === 'potential lead') return 'potential_lead';
-  if (l === 'sold')           return 'sold';
-  if (l === 'listed')         return 'listed';
+  // Tolerant normalization:
+  //   1. lowercase
+  //   2. strip trailing punctuation (., !, ?, ;, :)
+  //   3. collapse runs of whitespace (including tabs/newlines) to single space
+  //   4. trim
+  const l = cleaned
+    .toLowerCase()
+    .replace(/[.!?;:]+$/g, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+  if (l === 'wrong number')                        return 'wrong_number';
+  if (l === 'not interested')                      return 'not_interested';
+  if (l === 'lead' || l === 'appointment')         return 'transfer';
+  if (l === 'disqualified')                        return 'disqualified';
+  if (l === 'potential lead')                      return 'potential_lead';
+  if (l === 'sold')                                return 'sold';
+  if (l === 'listed')                              return 'listed';
+  if (l === 'do not call' || l === 'dnc')          return 'do_not_call';
+  if (l === 'spanish speaker' || l === 'spanish')  return 'spanish_speaker';
   // CRM Transferred, No answer, New, Left voicemail → no action
   return 'no_action';
 }
@@ -576,7 +656,8 @@ async function importSmarterContactFile(campaignId, rows, headers, filename) {
   }
 
   // ── Step 3: Process rows ──────────────────────────────────────────────────
-  const tally = { total: 0, wrong: 0, ni: 0, transfer: 0, disqualified: 0, potential_lead: 0, sold: 0, listed: 0, no_action: 0, unmatched: 0 };
+  // 2026-04-18 audit fix #19: added dnc + spanish_speaker tally buckets
+  const tally = { total: 0, wrong: 0, ni: 0, transfer: 0, disqualified: 0, potential_lead: 0, sold: 0, listed: 0, dnc: 0, spanish: 0, no_action: 0, unmatched: 0 };
 
   for (const row of rows) {
     tally.total++;
@@ -735,6 +816,59 @@ async function importSmarterContactFile(campaignId, rows, headers, filename) {
       await query(
         `UPDATE campaign_contacts SET marketing_result = 'Listed'
          WHERE id = $1`,
+        [phoneRow.contact_id]
+      );
+    }
+
+    // 2026-04-18 audit fix #19: SMS "Do Not Call" was silently ignored. No
+    // normalizer match, no handler branch, so DNC-labeled contacts stayed
+    // callable — a TCPA compliance hole. Now treated the same as cold-call DNC:
+    // phone filtered (never called again) + contact-level marketing_result.
+    if (dispo === 'do_not_call') {
+      tally.dnc++;
+      await query(
+        `UPDATE campaign_contact_phones SET
+           filtered = true,
+           phone_status = 'Correct',
+           correct_flagged_at = NOW(),
+           last_disposition = $1,
+           updated_at = NOW()
+         WHERE id = $2`,
+        [cleanedLabel, phoneRow.id]
+      );
+      await query(
+        `UPDATE campaign_contacts SET marketing_result = 'Do Not Call'
+         WHERE id = $1`,
+        [phoneRow.contact_id]
+      );
+      // Also update the global phones table so the dashboard reflects DNC
+      // across campaigns (parity with wrong-number sync added in fix #16).
+      await query(
+        `UPDATE phones SET phone_status = 'dnc', updated_at = NOW()
+         WHERE phone_number = (SELECT phone_number FROM campaign_contact_phones WHERE id = $1)`,
+        [phoneRow.id]
+      );
+    }
+
+    // 2026-04-18 audit fix #19: SMS "Spanish Speaker" was silently ignored.
+    // Now matches the cold-call treatment — phone filtered (real conversation,
+    // don't text again) + contact-level marketing_result so the filter dropdown
+    // can surface these properties.
+    if (dispo === 'spanish_speaker') {
+      tally.spanish++;
+      await query(
+        `UPDATE campaign_contact_phones SET
+           filtered = true,
+           phone_status = 'Correct',
+           correct_flagged_at = NOW(),
+           last_disposition = $1,
+           updated_at = NOW()
+         WHERE id = $2`,
+        [cleanedLabel, phoneRow.id]
+      );
+      await query(
+        `UPDATE campaign_contacts SET marketing_result = 'Spanish Speaker'
+         WHERE id = $1 AND (marketing_result IS NULL OR marketing_result = '')`,
         [phoneRow.contact_id]
       );
     }
