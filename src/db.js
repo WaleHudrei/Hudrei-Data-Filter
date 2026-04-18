@@ -391,6 +391,17 @@ async function initSchema() {
        GENERATED ALWAYS AS (
          LOWER(REGEXP_REPLACE(REGEXP_REPLACE(TRIM(COALESCE(mailing_address,'')), '[.,]+', '', 'g'), '\\s+', ' ', 'g'))
        ) STORED`,
+    // 2026-04-18 audit fix #3: add matching normalized column on campaign_contacts
+    // so the Marketing Result filter can JOIN by normalized address (matches
+    // properties.street_normalized semantics). Without this, "123 Main St." in
+    // the SMS CSV never matches "123 Main St" in the properties table — the
+    // silent cause of "Marketing Results Filter Not Triggering" for many values.
+    // Wrapped in try/catch in the loop below because campaign_contacts may not
+    // exist yet on first boot (campaigns.js creates it).
+    `ALTER TABLE campaign_contacts ADD COLUMN IF NOT EXISTS property_address_normalized TEXT
+       GENERATED ALWAYS AS (
+         LOWER(REGEXP_REPLACE(REGEXP_REPLACE(TRIM(COALESCE(property_address,'')), '[.,]+', '', 'g'), '\\s+', ' ', 'g'))
+       ) STORED`,
   ];
   for (const sql of genCols) {
     try { await query(sql); }
@@ -411,7 +422,11 @@ async function initSchema() {
     `CREATE INDEX IF NOT EXISTS idx_properties_pipeline_stage ON properties(pipeline_stage)`,
     `CREATE INDEX IF NOT EXISTS idx_property_lists_list      ON property_lists(list_id)`,
     `CREATE INDEX IF NOT EXISTS idx_property_contacts_primary ON property_contacts(property_id) WHERE primary_contact = true`,
-    `CREATE INDEX IF NOT EXISTS idx_cc_property_address_state ON campaign_contacts (LOWER(property_address), UPPER(property_state))`,
+    // 2026-04-18 audit fix #4: previous index on LOWER(property_address) was
+    // never used because the filter does LOWER(TRIM(...)). Use the normalized
+    // generated column instead — both sides of the comparison now match.
+    `CREATE INDEX IF NOT EXISTS idx_cc_property_addr_norm_state
+       ON campaign_contacts (property_address_normalized, UPPER(TRIM(property_state)))`,
     `CREATE INDEX IF NOT EXISTS idx_cc_marketing_result      ON campaign_contacts (marketing_result) WHERE marketing_result IS NOT NULL`,
     `CREATE INDEX IF NOT EXISTS idx_cn_marketing_result      ON campaign_numbers (marketing_result) WHERE marketing_result IS NOT NULL`,
     `CREATE INDEX IF NOT EXISTS idx_cn_phone_number          ON campaign_numbers (phone_number)`,
@@ -427,6 +442,12 @@ async function initSchema() {
       }
     }
   }
+
+  // 2026-04-18 audit fix #4: clean up the old unused index. Safe to drop — it
+  // was never used by any query (filter does LOWER+TRIM, index was LOWER only).
+  // Wrapped in try/catch because DROP IF EXISTS is harmless if it's already gone.
+  try { await query(`DROP INDEX IF EXISTS idx_cc_property_address_state`); }
+  catch (e) { /* non-fatal */ }
 
   // ── Owner portfolio counts MV (Audit issue #4c / min-owned filter) ──────────
   try {
