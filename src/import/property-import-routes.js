@@ -17,7 +17,21 @@ function normalizeState(v) {
   return sharedNormalizeState(v) || '';
 }
 
-const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 50 * 1024 * 1024 } });
+// 2026-04-18 audit fix #21: add fileFilter to reject non-CSV uploads.
+const csvFileFilter = (req, file, cb) => {
+  const name = String(file.originalname || '').toLowerCase();
+  const okExt = /\.(csv|txt)$/.test(name);
+  const okMime = ['text/csv', 'text/plain', 'application/csv', 'application/vnd.ms-excel',
+                  'application/octet-stream'].includes(String(file.mimetype || '').toLowerCase());
+  if (okExt || okMime) return cb(null, true);
+  cb(new Error('Only CSV files are accepted. Convert xlsx/xls to CSV before uploading.'));
+};
+
+const upload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 50 * 1024 * 1024 },
+  fileFilter: csvFileFilter,
+});
 
 function requireAuth(req, res, next) {
   if (req.session && req.session.authenticated) return next();
