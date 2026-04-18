@@ -3,6 +3,50 @@
 
 const ENTRIES = [
   {
+    date: 'April 18, 2026',
+    title: 'Production audit: filter correctness, data integrity, performance & concurrency',
+    items: [
+      // ── Classification & Filter Correctness ──
+      { tag: 'fix', text: 'Marketing Result filter returned zero rows for every choice — root cause was a silent address-match failure. Filter compared campaign_contacts.property_address to properties.street with LOWER+TRIM only, so "123 Main St." (SMS CSV) never matched "123 Main St" (PropStream). Added property_address_normalized generated column on campaign_contacts that strips punctuation and collapses whitespace; 11 filter sites updated to use the normalized column on both sides.' },
+      { tag: 'fix', text: 'Do Not Call dispositions were being classified as "Not Interested" in marketing_result (copy-paste bug in mktResult()). DNC and NI are compliance-distinct outcomes; they must not collapse. Now correctly produces "Do Not Call — {list}".' },
+      { tag: 'fix', text: 'Marketing Result filter dropdown had three values (Potential Lead, Sold, Listed) that only the SMS flow ever wrote, so filtering by them missed every cold-call lead of the same type. Added parity in normDispo()/mktResult()/phoneStatus() so cold-call dispositions of potential_lead, sold, listed produce matching marketing_result values and classify as real-conversation outcomes.' },
+      { tag: 'fix', text: 'Marketing Result dropdown now includes "Do Not Call" option (previously missing despite being a valid outcome) and reorders values logically — lead-like first, negative outcomes last. Applied to Records filter panel and property edit form.' },
+      { tag: 'fix', text: 'Dashboard "this month" label was actually "last 30 days" — new_this_month and filtration_runs_month used NOW() - INTERVAL \'30 days\'. Replaced with date_trunc(\'month\', NOW()) so the count reflects the actual calendar month.' },
+
+      // ── Data Integrity ──
+      { tag: 'fix', text: 'Campaign re-upload corrupted phone state. Unique constraint on campaign_contact_phones was (contact_id, slot_index) — if a contact\'s phone at slot 1 changed between uploads, we\'d overwrite phone_number but keep the OLD phone\'s phone_status, wrong_number, and filtered flags. A new phone arrived pre-marked Wrong. Constraint migrated to (contact_id, phone_number) — phone number IS the identity; slot_index becomes informational.' },
+      { tag: 'fix', text: 'Cross-campaign filtration memory leak. memKey() fell back to list-name scoping when campaign_id was missing. Two campaigns with the same list name (e.g. both "Tax Delinquent IN") shared filter memory — a DNC count from Campaign A retroactively filtered Campaign B. memKey() now REQUIRES campaign_id; /process endpoint rejects uploads without one.' },
+      { tag: 'fix', text: 'Multiple primary_contact=true rows could exist per property (duplicate-merge path used BOOL_OR on merged contacts). Main list LEFT JOIN then produced duplicate rows; DISTINCT ON picked arbitrarily. Added partial-unique index idx_property_contacts_single_primary; boot-time migration demotes any existing duplicates keeping the lowest-id primary; merge path checks for existing primary before assigning.' },
+      { tag: 'fix', text: 'Dashboard "wrong phones" count never updated as agents dispositioned calls. Filtration wrote "Wrong" to campaign_contact_phones only, not to the global phones table that the dashboard reads. Filtration now syncs wrong-number flag back to phones when a Wrong disposition fires.' },
+
+      // ── Performance ──
+      { tag: 'fix', text: 'Min/Max Owned filter was running a per-row correlated subquery with a 13-layer REGEXP_REPLACE chain. On 75k properties that meant ~5B row comparisons per filter query. Now uses the owner_portfolio_counts materialized view with an indexed lookup — single hash lookup per property row. Filter response time: seconds → milliseconds.' },
+      { tag: 'fix', text: 'Records list query did LEFT JOIN phones unconditionally, then relied on DISTINCT ON to deduplicate the fanout. Join now only attached when search query is present (the only case that references ph.phone_number). Non-search page loads materialize substantially fewer rows.' },
+      { tag: 'fix', text: 'Marketing filter index was on LOWER(property_address) but filter used LOWER(TRIM(property_address)) — Postgres couldn\'t use the index. Replaced with idx_cc_property_addr_norm_state on the normalized generated column; filter now uses it.' },
+
+      // ── Concurrency ──
+      { tag: 'fix', text: 'Distress rescore job state was module-level JavaScript, so each Node worker had its own copy. If Railway scaled to 2+ replicas, two users clicking "Recompute" on different replicas would both see running=false and fire simultaneous rescores against the same DB. Job state moved to Redis with a 30-minute TTL; all replicas now see a single source of truth. In-memory fallback preserved for dev without Redis.' },
+
+      // ── Deploy Reliability ──
+      { tag: 'fix', text: 'Schema-init race condition on deploy. db.js tried to ALTER campaign_contacts (adding property_address_normalized column) in parallel with campaigns.js creating the table. If db.js won the race, the ALTER failed silently and the marketing filter returned 0 rows until the next restart. ALTER moved into campaigns.initCampaignSchema() where the table is created — race eliminated.' },
+      { tag: 'fix', text: 'Distress rescore handler was synchronous — a 3-10 minute UPDATE query blocked the HTTP request, and Railway\'s edge proxy killed the connection at ~100 seconds. UI showed "nothing happening" even when the backend was still working. Rescore now fires as a background job; endpoint returns in <100ms with a flash message; UI polls GET /_distress/status every 3 seconds and shows a live progress banner that turns green on completion.' },
+      { tag: 'fix', text: 'connect-redis v7 default-export shape wasn\'t being detected reliably, causing sessions to fall back to MemoryStore and log users out on every deploy. Rewrote session-store initialization with defensive multi-shape import detection (mod.RedisStore || mod || mod.default). Sessions now persist across deploys.' },
+
+      // ── Security & Hardening ──
+      { tag: 'fix', text: 'Production boot now refuses to start with default APP_PASSWORD or SESSION_SECRET — fail-fast prevents shipping a deploy with the repo\'s baked-in credentials. Dashboard shows a yellow warning banner when the delete code is still HudREI2026.' },
+      { tag: 'fix', text: 'Garbage-state cleanup (2,635 properties with invalid state codes like "46", "UN") gated behind LOKI_CLEANUP env var. Defaults to report-only — logs counts, doesn\'t delete. Requires explicit LOKI_CLEANUP=confirm plus a FK CASCADE pre-check. Previous unconditional DELETE removed.' },
+      { tag: 'fix', text: 'migrate-properties.js one-time migration now requires CONFIRM_MIGRATION=yes — prevents accidental re-runs from deploy hooks.' },
+
+      // ── Data Hygiene ──
+      { tag: 'improvement', text: 'Stopped writing to marketing_touches table. Every filtration was inserting rows that nothing in the app ever read — it was an aspirational data model for a "marketing history" feature that was never built. Table preserved in DB for safety; feature can still be built against filtration_results which contains the same data and IS read.' },
+      { tag: 'improvement', text: 'Distress scoring bumped to v2 — previously relied on p.marketing_result = \'lead\' to award the +5 Marketing Lead bonus, but that column is almost never populated. Rule now checks p.pipeline_stage IN (\'lead\',\'contract\',\'closed\') which matches what the system actually writes. Existing scores are tagged v1 and can be rebuilt from the Records distress page.' },
+
+      // ── UI / UX ──
+      { tag: 'fix', text: 'Records "Manage" button did nothing when a single row was checked. Root cause: duplicate script block in shared-shell.js overwrote the real selection state with a null object. Duplicate removed; single-row selections now correctly propagate to bulk modals.' },
+      { tag: 'fix', text: 'Upload page lost the "Bulk Import REISift" card during an earlier refactor. Restored as the 3rd option alongside Upload Call Log and Import Property List.' },
+    ],
+  },
+  {
     date: 'April 14, 2026',
     title: 'Distress scoring engine, multi-value filters, import crash fixes & source customization',
     items: [
