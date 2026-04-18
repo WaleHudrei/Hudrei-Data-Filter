@@ -6,7 +6,7 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const crypto = require('crypto');
-const { query } = require('../db');
+const { query, refreshOwnerPortfolioMv } = require('../db');
 const { shell } = require('../shared-shell');
 const { normalizeState } = require('./state');
 
@@ -578,6 +578,19 @@ async function processImport(jobId, csvPath, filename) {
       [rowsProcessed, rowsCreated, rowsUpdated, rowsErrored, jobId]
     );
     console.log(`[bulk] Job ${jobId} complete — ${rowsCreated} created, ${rowsUpdated} updated, ${rowsErrored} errors`);
+
+    // 2026-04-18 audit fix #35: refresh owner_portfolio_counts MV after every
+    // import. The MV powers the Min/Max Owned filter (fix #8). Previously it
+    // was created once at boot and never refreshed, so the owned-count filter
+    // returned increasingly stale numbers as new properties arrived.
+    // Non-fatal — log on failure but don't fail the import.
+    try {
+      const t = Date.now();
+      await refreshOwnerPortfolioMv();
+      console.log(`[bulk] refreshed owner_portfolio_counts MV (${Date.now() - t}ms)`);
+    } catch (e) {
+      console.error(`[bulk] MV refresh failed (non-fatal):`, e.message);
+    }
   } catch(e) {
     console.error(`[bulk] Job ${jobId} failed:`, e.message);
     await query(
