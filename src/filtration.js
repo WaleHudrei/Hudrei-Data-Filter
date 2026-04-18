@@ -251,14 +251,21 @@ async function applyFiltrationToContacts(campaignId, allRows) {
 
       // 2. Flag the specific property as lead in the main properties table
       // Find property via campaign_contacts → property address match
+      // 2026-04-18 audit fix #29: previously used `p.street = cc.property_address`
+      // — a raw case-sensitive string equality. "123 Main St" and "123 main st"
+      // (from different CSV sources) never matched; the cold-call transfer
+      // silently failed to flag the property as a lead. Now uses the normalized
+      // address columns (property_address_normalized + street_normalized) which
+      // strip punctuation and collapse whitespace on both sides. Same pattern
+      // used by the marketing filter (audit fix #3).
       await query(
         `UPDATE properties p SET pipeline_stage = 'lead', updated_at = NOW()
          FROM campaign_contacts cc
          JOIN campaign_contact_phones ccp ON ccp.contact_id = cc.id
          WHERE cc.campaign_id = $1
            AND ccp.phone_number = $2
-           AND p.street = cc.property_address
-           AND p.state_code = cc.property_state
+           AND p.street_normalized = cc.property_address_normalized
+           AND UPPER(TRIM(p.state_code)) = UPPER(TRIM(cc.property_state))
            AND p.pipeline_stage NOT IN ('contract','closed')`,
         [campaignId, phone]
       );
@@ -266,6 +273,8 @@ async function applyFiltrationToContacts(campaignId, allRows) {
       // 3. Mark the specific phone(s) as correct in the global phones table,
       //    scoped by the campaign linkage so shared phone numbers on other
       //    contacts (roommates, relisted, etc.) are NOT flagged. (Audit #15.)
+      // 2026-04-18 audit fix #29 (cont): JOIN now uses normalized address
+      // columns instead of LOWER+TRIM — same reasoning as above.
       await query(
         `UPDATE phones SET phone_status = 'correct', updated_at = NOW()
          WHERE id IN (
@@ -273,7 +282,7 @@ async function applyFiltrationToContacts(campaignId, allRows) {
              FROM phones ph
              JOIN property_contacts pc ON pc.contact_id = ph.contact_id
              JOIN properties p         ON p.id = pc.property_id
-             JOIN campaign_contacts cc ON LOWER(TRIM(cc.property_address)) = LOWER(TRIM(p.street))
+             JOIN campaign_contacts cc ON cc.property_address_normalized = p.street_normalized
                                       AND UPPER(TRIM(cc.property_state))   = UPPER(TRIM(p.state_code))
             WHERE cc.campaign_id  = $1
               AND ph.phone_number = $2
