@@ -2585,11 +2585,20 @@ router.post('/_duplicates/merge', requireAuth, async (req, res) => {
 router.post('/_duplicates/merge_all', requireAuth, async (req, res) => {
   try {
     const startedAt = Date.now();
+    // 2026-04-18 audit fix #37: previously grouped by LOWER(TRIM(street)) —
+    // the old normalization. The GET /_duplicates page (fix #22) uses
+    // street_normalized, so the UI showed one set of groups and the POST
+    // handler merged a different set. Now both sides use the same key.
+    // COALESCE defensive fallback for any row where the generated column
+    // hasn't been populated yet.
     const groupsRes = await query(`
       WITH normalized AS (
         SELECT
           id,
-          LOWER(TRIM(street))                  AS k_street,
+          COALESCE(
+            street_normalized,
+            LOWER(REGEXP_REPLACE(REGEXP_REPLACE(TRIM(COALESCE(street,'')), '[.,]+', '', 'g'), '\\s+', ' ', 'g'))
+          )                                    AS k_street,
           LOWER(TRIM(city))                    AS k_city,
           UPPER(TRIM(state_code))              AS k_state,
           SUBSTRING(TRIM(zip_code) FROM 1 FOR 5) AS k_zip
@@ -2635,9 +2644,23 @@ router.post('/_duplicates/merge_all', requireAuth, async (req, res) => {
         `, [keepId, dropIds]);
         totalMovedLists += lr.rowCount || 0;
 
+        // 2026-04-18 audit fix #38: previously used BOOL_OR(primary_contact)
+        // which could produce TRUE when the keep property already had a
+        // primary, violating the idx_property_contacts_single_primary partial
+        // unique index from fix #17. The error was caught and logged but
+        // every affected group failed entirely — dropped records stayed
+        // around as orphan duplicates, lists weren't moved. Now mirrors the
+        // single-merge fix: check whether keep already has a primary and
+        // assign primary_contact = false for all incoming rows if it does.
+        const keepHasPrimaryRes = await query(
+          `SELECT 1 FROM property_contacts WHERE property_id = $1 AND primary_contact = true LIMIT 1`,
+          [keepId]
+        );
+        const keepHasPrimary = keepHasPrimaryRes.rows.length > 0;
+
         const cr = await query(`
           INSERT INTO property_contacts (property_id, contact_id, primary_contact)
-          SELECT $1, contact_id, BOOL_OR(primary_contact)
+          SELECT $1, contact_id, ${keepHasPrimary ? 'false' : 'BOOL_OR(primary_contact)'}
           FROM property_contacts
           WHERE property_id = ANY($2::int[])
             AND contact_id NOT IN (SELECT contact_id FROM property_contacts WHERE property_id = $1)
@@ -2663,6 +2686,16 @@ router.post('/_duplicates/merge_all', requireAuth, async (req, res) => {
     try {
       if (recomputeIds.length > 0) await distress.scoreProperties(recomputeIds);
     } catch(e) { console.error('[duplicates/merge_all] rescore failed:', e.message); }
+
+    // 2026-04-18 audit fix #35: merges consolidate properties, which changes
+    // the owned_count aggregation. Refresh the MV so the Min/Max Owned filter
+    // stays accurate. Non-fatal.
+    try {
+      const { refreshOwnerPortfolioMv } = require('../db');
+      await refreshOwnerPortfolioMv();
+    } catch (e) {
+      console.error('[duplicates/merge_all] MV refresh failed (non-fatal):', e.message);
+    }
 
     const elapsed = Math.round((Date.now() - startedAt) / 1000);
     const summary = `Merged ${groupsMerged} group(s) in ${elapsed}s. Deleted ${totalDropped} duplicates. Moved ${totalMovedLists} list link(s), ${totalMovedContacts} contact link(s).${errors.length > 0 ? ' Errors: ' + errors.length : ''}`;
