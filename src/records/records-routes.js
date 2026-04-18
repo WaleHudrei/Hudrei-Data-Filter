@@ -1,6 +1,6 @@
 const express = require('express');
 const router = express.Router();
-const { query } = require('../db');
+const { query, pool } = require('../db');
 const distress = require('../scoring/distress');
 const settings = require('../settings');
 
@@ -283,18 +283,22 @@ router.get('/', requireAuth, async (req, res) => {
     // portfolio landlords (high count) vs individual homeowners (count = 1).
     // Properties with no mailing address are treated as count 1 (unknowable).
     if (min_owned || max_owned) {
+      // 2026-04-18 audit fix #8: was running a 13-layer REGEXP_REPLACE chain
+      // as a correlated subquery for every property row. On 75k properties
+      // that's 75k × 75k = ~5B row comparisons per filter. Now uses the
+      // owner_portfolio_counts materialized view (created in db.js). The MV
+      // pre-aggregates counts keyed by normalized (address, city, state, zip5).
+      // Single indexed lookup per property row instead of a full scan.
+      //   Properties with no mailing address still treated as count 1.
       const ownedSubquery = `
         CASE WHEN c.mailing_address IS NULL OR TRIM(c.mailing_address) = '' THEN 1
-        ELSE (
-          SELECT COUNT(*)
-          FROM properties p2
-          JOIN property_contacts pc2 ON pc2.property_id = p2.id AND pc2.primary_contact = true
-          JOIN contacts c2 ON c2.id = pc2.contact_id
-          WHERE c2.mailing_address IS NOT NULL AND TRIM(c2.mailing_address) != ''
-            AND ${NORM_ADDR('c2.mailing_address')} = ${NORM_ADDR('c.mailing_address')}
-            AND LOWER(TRIM(c2.mailing_city)) = LOWER(TRIM(c.mailing_city))
-            AND UPPER(TRIM(p2.state_code)) = UPPER(TRIM(p.state_code))
-            AND SUBSTRING(TRIM(c2.mailing_zip) FROM 1 FOR 5) = SUBSTRING(TRIM(c.mailing_zip) FROM 1 FOR 5)
+        ELSE COALESCE(
+          (SELECT opc.owned_count FROM owner_portfolio_counts opc
+            WHERE opc.mailing_address_normalized = c.mailing_address_normalized
+              AND opc.mailing_city_normalized = LOWER(TRIM(c.mailing_city))
+              AND opc.mailing_state = UPPER(TRIM(c.mailing_state))
+              AND opc.zip5 = SUBSTRING(TRIM(c.mailing_zip) FROM 1 FOR 5)),
+          1
         ) END`;
       if (min_owned) { conditions.push(`${ownedSubquery} >= $${idx}`); params.push(parseInt(min_owned)); idx++; }
       if (max_owned) { conditions.push(`${ownedSubquery} <= $${idx}`); params.push(parseInt(max_owned)); idx++; }
@@ -1162,18 +1166,16 @@ router.post('/export', requireAuth, async (req, res) => {
       // Properties-owned filter — mirror list route logic
       const minOwnedX = qv('min_owned'), maxOwnedX = qv('max_owned');
       if (minOwnedX || maxOwnedX) {
+        // 2026-04-18 audit fix #8: use materialized view (same pattern as list query)
         const ownedSubX = `
           CASE WHEN c.mailing_address IS NULL OR TRIM(c.mailing_address) = '' THEN 1
-          ELSE (
-            SELECT COUNT(*)
-            FROM properties p2
-            JOIN property_contacts pc2 ON pc2.property_id = p2.id AND pc2.primary_contact = true
-            JOIN contacts c2 ON c2.id = pc2.contact_id
-            WHERE c2.mailing_address IS NOT NULL AND TRIM(c2.mailing_address) != ''
-              AND ${NORM_ADDR_X('c2.mailing_address')} = ${NORM_ADDR_X('c.mailing_address')}
-              AND LOWER(TRIM(c2.mailing_city)) = LOWER(TRIM(c.mailing_city))
-              AND UPPER(TRIM(p2.state_code)) = UPPER(TRIM(p.state_code))
-              AND SUBSTRING(TRIM(c2.mailing_zip) FROM 1 FOR 5) = SUBSTRING(TRIM(c.mailing_zip) FROM 1 FOR 5)
+          ELSE COALESCE(
+            (SELECT opc.owned_count FROM owner_portfolio_counts opc
+              WHERE opc.mailing_address_normalized = c.mailing_address_normalized
+                AND opc.mailing_city_normalized = LOWER(TRIM(c.mailing_city))
+                AND opc.mailing_state = UPPER(TRIM(c.mailing_state))
+                AND opc.zip5 = SUBSTRING(TRIM(c.mailing_zip) FROM 1 FOR 5)),
+            1
           ) END`;
         if (minOwnedX) { conditions.push(`${ownedSubX} >= $${idx}`); params.push(parseInt(minOwnedX)); idx++; }
         if (maxOwnedX) { conditions.push(`${ownedSubX} <= $${idx}`); params.push(parseInt(maxOwnedX)); idx++; }
@@ -2206,23 +2208,69 @@ router.get('/_distress', requireAuth, async (req, res) => {
 // Now: start a background job, return immediately, let the UI poll for status.
 // ─────────────────────────────────────────────────────────────────────────────
 
-// Module-level job state (single running job at a time is fine for this use)
-let distressJob = {
-  running: false,
-  startedAt: null,
-  finishedAt: null,
-  scored: 0,
-  total: 0,
-  error: null,
+// 2026-04-18 audit fix #11: job state was module-level JS, meaning each Node
+// process had its own copy. If Railway scales to 2+ replicas, two users clicking
+// Recompute on different replicas would both see `running: false` and fire
+// simultaneous rescores against the same DB. Moved to Redis so all replicas see
+// a single source of truth. Falls back to in-memory if Redis unavailable
+// (single-replica dev mode).
+
+const DISTRESS_JOB_KEY = 'loki:distress:job';
+const DISTRESS_JOB_TTL = 30 * 60; // 30 minutes — job must finish or fail in this window
+
+// Lazy Redis connection — only created if REDIS_URL is set. Avoids circular
+// require of server.js. If Redis is unreachable, falls back to in-memory.
+let _distressRedis = null;
+let _distressRedisInitTried = false;
+function _getDistressRedis() {
+  if (_distressRedisInitTried) return _distressRedis;
+  _distressRedisInitTried = true;
+  if (!process.env.REDIS_URL) return null;
+  try {
+    const Redis = require('ioredis');
+    _distressRedis = new Redis(process.env.REDIS_URL, { maxRetriesPerRequest: 2, lazyConnect: true });
+    _distressRedis.on('error', (e) => { /* fall back to memory silently */ });
+  } catch (e) {
+    console.warn('[distress] Redis unavailable for job state:', e.message);
+    _distressRedis = null;
+  }
+  return _distressRedis;
+}
+
+// In-memory fallback only used when Redis isn't configured (local dev).
+let _localDistressJob = {
+  running: false, startedAt: null, finishedAt: null,
+  scored: 0, total: 0, error: null,
 };
 
+async function getDistressJob() {
+  const redis = _getDistressRedis();
+  if (redis) {
+    try {
+      const raw = await redis.get(DISTRESS_JOB_KEY);
+      return raw ? JSON.parse(raw) : _localDistressJob;
+    } catch (_) { /* fall through to local */ }
+  }
+  return _localDistressJob;
+}
+
+async function setDistressJob(job) {
+  _localDistressJob = job;   // always keep local copy in sync
+  const redis = _getDistressRedis();
+  if (redis) {
+    try { await redis.setex(DISTRESS_JOB_KEY, DISTRESS_JOB_TTL, JSON.stringify(job)); }
+    catch (_) { /* non-fatal — memory still has it */ }
+  }
+}
+
 router.post('/_distress/recompute', requireAuth, async (req, res) => {
-  if (distressJob.running) {
+  const existing = await getDistressJob();
+  if (existing.running) {
     return res.redirect('/records/_distress?msg=' + encodeURIComponent('A rescore is already running. Check back in a minute.'));
   }
 
   // Mark job as started BEFORE responding so the next poll sees running=true
-  distressJob = {
+  const newJob = {
     running: true,
     startedAt: Date.now(),
     finishedAt: null,
@@ -2230,6 +2278,7 @@ router.post('/_distress/recompute', requireAuth, async (req, res) => {
     total: 0,
     error: null,
   };
+  await setDistressJob(newJob);
 
   // Respond immediately — browser won't hang
   res.redirect('/records/_distress?msg=' + encodeURIComponent('Rescore started. This runs in the background (typically 2-5 minutes for 75k properties). The Score Distribution numbers will update when it finishes — refresh this page to check.'));
@@ -2243,33 +2292,44 @@ router.post('/_distress/recompute', requireAuth, async (req, res) => {
           console.log(`[distress/recompute] done: ${p.done}/${p.total}`);
         }
       });
-      distressJob.scored = result.scored;
-      distressJob.total = result.total;
-      distressJob.finishedAt = Date.now();
-      distressJob.running = false;
-      const secs = Math.round((distressJob.finishedAt - distressJob.startedAt) / 1000);
+      const finishedAt = Date.now();
+      await setDistressJob({
+        running: false,
+        startedAt: newJob.startedAt,
+        finishedAt,
+        scored: result.scored,
+        total: result.total,
+        error: null,
+      });
+      const secs = Math.round((finishedAt - newJob.startedAt) / 1000);
       console.log(`[distress/recompute] finished in ${secs}s — scored ${result.scored} of ${result.total}`);
     } catch (e) {
       console.error('[distress/recompute] FAILED:', e);
-      distressJob.error = e.message;
-      distressJob.finishedAt = Date.now();
-      distressJob.running = false;
+      await setDistressJob({
+        running: false,
+        startedAt: newJob.startedAt,
+        finishedAt: Date.now(),
+        scored: 0,
+        total: 0,
+        error: e.message,
+      });
     }
   });
 });
 
 // Status endpoint — lets the UI poll without doing any work
-router.get('/_distress/status', requireAuth, (req, res) => {
+router.get('/_distress/status', requireAuth, async (req, res) => {
+  const job = await getDistressJob();
   const now = Date.now();
-  const elapsed = distressJob.startedAt ? Math.round((now - distressJob.startedAt) / 1000) : 0;
+  const elapsed = job.startedAt ? Math.round((now - job.startedAt) / 1000) : 0;
   res.json({
-    running: distressJob.running,
-    startedAt: distressJob.startedAt,
-    finishedAt: distressJob.finishedAt,
-    elapsed_seconds: distressJob.running ? elapsed : null,
-    scored: distressJob.scored,
-    total: distressJob.total,
-    error: distressJob.error,
+    running: job.running,
+    startedAt: job.startedAt,
+    finishedAt: job.finishedAt,
+    elapsed_seconds: job.running ? elapsed : null,
+    scored: job.scored,
+    total: job.total,
+    error: job.error,
   });
 });
 
@@ -2447,9 +2507,21 @@ router.post('/_duplicates/merge', requireAuth, async (req, res) => {
     movedLists = listRes.rowCount || 0;
 
     // 2) Move contact relationships (skip those already on keep)
+    // 2026-04-18 audit fix #17: Previously BOOL_OR(primary_contact) could
+    // produce TRUE for incoming contacts even when the keep property already
+    // had a primary. That would violate the new partial-unique index
+    // (idx_property_contacts_single_primary) and fail the merge. Check
+    // whether keep already has a primary; if so, all incoming moves come in
+    // as primary_contact = false.
+    const keepHasPrimaryRes = await query(
+      `SELECT 1 FROM property_contacts WHERE property_id = $1 AND primary_contact = true LIMIT 1`,
+      [keepId]
+    );
+    const keepHasPrimary = keepHasPrimaryRes.rows.length > 0;
+
     const contactRes = await query(`
       INSERT INTO property_contacts (property_id, contact_id, primary_contact)
-      SELECT $1, contact_id, BOOL_OR(primary_contact)
+      SELECT $1, contact_id, ${keepHasPrimary ? 'false' : 'BOOL_OR(primary_contact)'}
       FROM property_contacts
       WHERE property_id = ANY($2::int[])
         AND contact_id NOT IN (SELECT contact_id FROM property_contacts WHERE property_id = $1)
