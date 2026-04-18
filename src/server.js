@@ -11,7 +11,25 @@ const Redis = require('ioredis');
 const { normalizeState } = require('./import/state');
 
 const app = express();
-const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 50 * 1024 * 1024 } });
+// 2026-04-18 audit fix #21: previously multer accepted any file up to 50MB
+// with no type check. Client-side had `.endsWith('.csv')` but a hostile or
+// confused caller could POST any bytes. xlsx files would silently fail in
+// Papaparse (returning 0 rows with no explanation — wasted operator time).
+// Now rejects anything that isn't a CSV/TXT by extension or MIME type.
+const csvFileFilter = (req, file, cb) => {
+  const name = String(file.originalname || '').toLowerCase();
+  const okExt = /\.(csv|txt)$/.test(name);
+  const okMime = ['text/csv', 'text/plain', 'application/csv', 'application/vnd.ms-excel',
+                  'application/octet-stream'].includes(String(file.mimetype || '').toLowerCase());
+  if (okExt || okMime) return cb(null, true);
+  cb(new Error('Only CSV files are accepted. Convert xlsx/xls to CSV before uploading.'));
+};
+
+const upload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 50 * 1024 * 1024 },
+  fileFilter: csvFileFilter,
+});
 
 const APP_USERNAME   = process.env.APP_USERNAME   || 'hudrei';
 const APP_PASSWORD   = process.env.APP_PASSWORD   || 'changeme123';
@@ -354,7 +372,14 @@ function processCSV(csvText, memory, campaignId) {
 function toCSV(rows) {
   if(!rows.length) return '';
   const cols=Object.keys(rows[0]).filter(c=>!c.startsWith('_'));
-  return [cols.join(','),...rows.map(r=>cols.map(c=>`"${(r[c]||'').toString().replace(/"/g,'""')}"`).join(','))].join('\n');
+  // 2026-04-18 audit fix #26: CSV injection protection. Prefix any cell
+  // starting with =, +, -, @, or control chars with a single quote so Excel
+  // treats it as text instead of a formula.
+  const safe = (v) => {
+    const s = String(v || '');
+    return /^[=+\-@\t\r]/.test(s) ? "'" + s : s;
+  };
+  return [cols.join(','),...rows.map(r=>cols.map(c=>`"${safe(r[c]).replace(/"/g,'""')}"`).join(','))].join('\n');
 }
 
 app.get('/login',(req,res)=>{
@@ -362,10 +387,55 @@ app.get('/login',(req,res)=>{
   res.send(`<!DOCTYPE html><html><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Loki</title><style>*{box-sizing:border-box;margin:0;padding:0}body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;background:#f5f4f0;display:flex;align-items:center;justify-content:center;min-height:100vh}.box{background:#fff;border:1px solid #e0dfd8;border-radius:12px;padding:2.5rem 2rem;width:100%;max-width:380px;text-align:center}h1{font-size:36px;font-weight:600;margin-bottom:.5rem;letter-spacing:-.5px}.sub{font-size:13px;color:#888;margin-bottom:1.75rem}label{font-size:13px;color:#555;display:block;margin-bottom:4px;text-align:left}input{width:100%;padding:9px 12px;border:1px solid #ddd;border-radius:8px;font-size:14px;background:#fafaf8;color:#1a1a1a;margin-bottom:1rem;font-family:inherit}input:focus{outline:none;border-color:#888}button{width:100%;padding:10px;background:#1a1a1a;color:#fff;border:none;border-radius:8px;font-size:14px;font-weight:500;cursor:pointer;font-family:inherit}button:hover{background:#333}.error{background:#fff0f0;border:1px solid #f5c5c5;border-radius:8px;padding:9px 12px;font-size:13px;color:#c0392b;margin-bottom:1rem;text-align:left}</style></head><body><div class="box"><h1>Loki</h1><p class="sub">Sign in to begin</p>${error?`<div class="error">${error}</div>`:''}<form method="POST" action="/login"><label>Username</label><input type="text" name="username" autofocus><label>Password</label><input type="password" name="password"><button type="submit">Sign in</button></form></div></body></html>`);
 });
 
-app.post('/login',(req,res)=>{
-  const{username,password}=req.body;
-  if(username===APP_USERNAME&&password===APP_PASSWORD){req.session.authenticated=true;res.redirect('/dashboard');}
-  else res.redirect('/login?error=1');
+// 2026-04-18 audit fix #25: simple in-memory login rate limiter. Previously
+// /login accepted unlimited POSTs per IP, making brute-force trivial. Keyed
+// by trusted IP; limit of 5 failed attempts per 15 minutes. On exceed, returns
+// 429 with a Retry-After header. Successful login clears the counter.
+// Multi-replica note: each Node process has its own counter; an attacker
+// distributing across replicas gets N × 5 attempts. For tighter security,
+// move to Redis-backed tracking. Acceptable for current single-replica deploy.
+const _loginAttempts = new Map(); // ip -> { count, firstAt }
+const LOGIN_WINDOW_MS = 15 * 60 * 1000;
+const LOGIN_MAX_FAILURES = 5;
+
+function _loginIp(req) {
+  // trust proxy is set earlier; req.ip reflects the real client when behind Railway
+  return String(req.ip || req.connection?.remoteAddress || 'unknown');
+}
+
+function _loginRateLimit(req, res, next) {
+  const ip = _loginIp(req);
+  const now = Date.now();
+  const rec = _loginAttempts.get(ip);
+  if (rec && (now - rec.firstAt) < LOGIN_WINDOW_MS && rec.count >= LOGIN_MAX_FAILURES) {
+    const retryAfter = Math.ceil((LOGIN_WINDOW_MS - (now - rec.firstAt)) / 1000);
+    res.set('Retry-After', String(retryAfter));
+    return res.status(429).send(
+      `<!DOCTYPE html><html><body style="font-family:system-ui;padding:2rem;text-align:center">
+       <h2>Too many login attempts</h2>
+       <p>Try again in ${Math.ceil(retryAfter / 60)} minute(s).</p></body></html>`
+    );
+  }
+  // Window expired — reset
+  if (rec && (now - rec.firstAt) >= LOGIN_WINDOW_MS) {
+    _loginAttempts.delete(ip);
+  }
+  next();
+}
+
+app.post('/login', _loginRateLimit, (req, res) => {
+  const { username, password } = req.body;
+  const ip = _loginIp(req);
+  if (username === APP_USERNAME && password === APP_PASSWORD) {
+    _loginAttempts.delete(ip); // success → clear counter
+    req.session.authenticated = true;
+    res.redirect('/dashboard');
+  } else {
+    const rec = _loginAttempts.get(ip) || { count: 0, firstAt: Date.now() };
+    rec.count++;
+    _loginAttempts.set(ip, rec);
+    res.redirect('/login?error=1');
+  }
 });
 
 app.get('/logout',(req,res)=>{req.session.destroy();res.redirect('/login');});
