@@ -167,6 +167,14 @@ function detectCols(headers) {
 function normDispo(v) {
   const s = (v||'').toLowerCase().trim();
   if (s.includes('transfer')||s==='lead') return 'transfer';
+  // 2026-04-18 audit: add cold-call parity for SMS-only outcomes so the
+  // Marketing Result filter values (Potential Lead / Sold / Listed) are
+  // actually reachable from cold-call dispositions too. Match BEFORE the
+  // generic "not interested" check since 'potential lead' could otherwise
+  // be missed.
+  if (s==='potential lead'||s.includes('potential lead')) return 'potential_lead';
+  if (s==='sold'||s.includes('sold')) return 'sold';
+  if (s==='listed'||s.includes('listed')) return 'listed';
   if (s==='not interested'||s.includes('not interested')||s==='ni') return 'not_interested';
   if (s.includes('do not call')||s==='dnc') return 'do_not_call';
   if (s.includes('spanish')) return 'spanish_speaker';
@@ -178,12 +186,22 @@ function normDispo(v) {
   if (s.includes('callback')||s.includes('call back')) return 'callback';
   return 'other';
 }
-function phoneStatus(d) { return {transfer:'Correct',not_interested:'Correct',do_not_call:'Correct',spanish_speaker:'Correct',wrong_number:'Wrong',callback:'Correct',disqualified:'Correct',completed:'Correct',hung_up:'Tentative'}[d]||''; }
+function phoneStatus(d) { return {transfer:'Correct',potential_lead:'Correct',sold:'Correct',listed:'Correct',not_interested:'Correct',do_not_call:'Correct',spanish_speaker:'Correct',wrong_number:'Wrong',callback:'Correct',disqualified:'Correct',completed:'Correct',hung_up:'Tentative'}[d]||''; }
 function mktResult(d,l) {
-  if(d==='transfer') return 'Lead';
-  if(d==='not_interested') return `Not Interested — ${l}`;
-  if(d==='do_not_call') return `Not Interested — ${l}`;
-  if(d==='spanish_speaker') return 'Spanish Speaker';
+  // 2026-04-18 audit fix: previously `do_not_call` mapped to `Not Interested — {list}`
+  // (copy-paste bug — DNC and NI are compliance-distinct outcomes that must not
+  // collapse to the same value in marketing_result). Also added explicit rows for
+  // potential_lead / sold / listed so cold-call and SMS pipelines produce the
+  // same filter-dropdown vocabulary. Previously these were only ever written by
+  // the SMS flow, making the "Sold"/"Listed"/"Potential Lead" filter values
+  // silently unreachable for cold-call-sourced leads.
+  if(d==='transfer')         return 'Lead';
+  if(d==='potential_lead')   return 'Potential Lead';
+  if(d==='sold')             return 'Sold';
+  if(d==='listed')           return 'Listed';
+  if(d==='not_interested')   return `Not Interested — ${l}`;
+  if(d==='do_not_call')      return `Do Not Call — ${l}`;
+  if(d==='spanish_speaker')  return 'Spanish Speaker';
   return '';
 }
 function phoneTag(d,count,l) {
@@ -271,7 +289,10 @@ function processCSV(csvText, memory, campaignId) {
     let status=phoneStatus(dispo);
     let mkt=mktResult(dispo,list);
     const dateClean=stripTime(dateRaw);
-    const ALWAYS_REM=new Set(['transfer','do_not_call','wrong_number','spanish_speaker','disqualified']);
+    // 2026-04-18 audit: added potential_lead, sold, listed so cold-call uploads
+    // with these dispositions get removed from callable list (they're all
+    // real-conversation outcomes, same treatment as 'transfer').
+    const ALWAYS_REM=new Set(['transfer','potential_lead','sold','listed','do_not_call','wrong_number','spanish_speaker','disqualified']);
     let action='keep',byMem=false,caughtByMem=false;
     const prevNi=prevDispoCounts['not_interested']||0;
     const prevHup=prevDispoCounts['hung_up']||0;
