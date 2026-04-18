@@ -172,10 +172,45 @@ async function initCampaignSchema() {
     `ALTER TABLE campaign_contact_phones ADD COLUMN IF NOT EXISTS wrong_number_flagged_at TIMESTAMPTZ`,
     `ALTER TABLE campaign_contact_phones ADD COLUMN IF NOT EXISTS correct_flagged_at TIMESTAMPTZ`,
     `ALTER TABLE campaign_contacts ADD COLUMN IF NOT EXISTS marketing_result VARCHAR(50)`,
+    // 2026-04-18 audit fix #18: moved from db.js to here (where campaign_contacts
+    // is actually created) to eliminate schema-init race condition. Previously
+    // db.js::initSchema() ran in parallel with campaigns.initCampaignSchema(),
+    // and if db.js won the race it tried to ALTER campaign_contacts before the
+    // table existed — the error was silently swallowed and the column (and its
+    // index) never got created, causing the marketing filter to return 0 rows.
+    `ALTER TABLE campaign_contacts ADD COLUMN IF NOT EXISTS property_address_normalized TEXT
+       GENERATED ALWAYS AS (
+         LOWER(REGEXP_REPLACE(REGEXP_REPLACE(TRIM(COALESCE(property_address,'')), '[.,]+', '', 'g'), '\\s+', ' ', 'g'))
+       ) STORED`,
   ];
   for (const m of migrations) {
     try { await query(m); } catch(e) { console.error('Migration error:', e.message); }
   }
+
+  // 2026-04-18 audit fix #18 (cont): index for the normalized address column.
+  // Created after the ALTER so the column is guaranteed to exist.
+  try {
+    await query(`CREATE INDEX IF NOT EXISTS idx_cc_property_addr_norm_state
+                   ON campaign_contacts (property_address_normalized, UPPER(TRIM(property_state)))`);
+  } catch(e) { console.error('Index create warning (cc_property_addr_norm_state):', e.message); }
+  // Drop the old index that was never used (the filter does LOWER+TRIM, index was LOWER only).
+  try { await query(`DROP INDEX IF EXISTS idx_cc_property_address_state`); } catch(_) {}
+
+  // 2026-04-18 audit fix #14: Change phone uniqueness key from (contact_id,
+  // slot_index) to (contact_id, phone_number). Previously a re-upload where
+  // a phone changed at a given slot would OVERWRITE the phone_number but
+  // KEEP the prior phone's status/wrong_number/filtered flags — a new phone
+  // arrived pre-marked as Wrong/Filtered. Phone number is the real identity;
+  // slot_index is positional-and-informational.
+  try {
+    // Drop the old slot-based unique if present (both common PG constraint names).
+    await query(`ALTER TABLE campaign_contact_phones DROP CONSTRAINT IF EXISTS campaign_contact_phones_contact_id_slot_index_key`);
+  } catch(_) {}
+  try {
+    await query(`CREATE UNIQUE INDEX IF NOT EXISTS idx_ccp_contact_phone_uniq
+                   ON campaign_contact_phones (contact_id, phone_number)`);
+  } catch(e) { console.error('Index create warning (ccp_contact_phone_uniq):', e.message); }
+
   _campaignSchemaReady = true;
 }
 
@@ -405,18 +440,22 @@ async function importContactList(campaignId, rows, headers, customMapping) {
     }
 
     if (phoneVals.length > 0) {
-      // MERGE for phones: only overwrite phone_number (the number at this slot
-      // may legitimately change between uploads). NEVER overwrite phone_status,
-      // wrong_number, filtered, last_disposition, cumulative_count, or the
-      // *_flagged_at timestamps — those are outcomes from filtration, not
-      // import data. They stay until filtration updates them.
+      // 2026-04-18 audit fix #14: Previously conflicted on (contact_id, slot_index)
+      // which is a positional identity — if a re-upload had a different phone at
+      // slot 1, we'd UPDATE the phone_number but keep the old phone's status,
+      // wrong_number, filtered, etc. A fresh number would arrive pre-marked as
+      // Wrong. The fix: conflict on (contact_id, phone_number) — phone number IS
+      // the identity. slot_index becomes informational and reflects the latest
+      // uploaded position. Outcome columns (phone_status, wrong_number, filtered,
+      // last_disposition, cumulative_count, *_flagged_at) still never overwritten
+      // by an import — only filtration updates those.
       await query(
         `INSERT INTO campaign_contact_phones
            (campaign_id, contact_id, phone_number, slot_index)
          VALUES ${phoneVals.join(',')}
-         ON CONFLICT (contact_id, slot_index) DO UPDATE SET
-           phone_number = EXCLUDED.phone_number,
-           updated_at   = NOW()`,
+         ON CONFLICT (contact_id, phone_number) DO UPDATE SET
+           slot_index = EXCLUDED.slot_index,
+           updated_at = NOW()`,
         phoneParams
       );
     }
