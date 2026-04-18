@@ -391,17 +391,10 @@ async function initSchema() {
        GENERATED ALWAYS AS (
          LOWER(REGEXP_REPLACE(REGEXP_REPLACE(TRIM(COALESCE(mailing_address,'')), '[.,]+', '', 'g'), '\\s+', ' ', 'g'))
        ) STORED`,
-    // 2026-04-18 audit fix #3: add matching normalized column on campaign_contacts
-    // so the Marketing Result filter can JOIN by normalized address (matches
-    // properties.street_normalized semantics). Without this, "123 Main St." in
-    // the SMS CSV never matches "123 Main St" in the properties table — the
-    // silent cause of "Marketing Results Filter Not Triggering" for many values.
-    // Wrapped in try/catch in the loop below because campaign_contacts may not
-    // exist yet on first boot (campaigns.js creates it).
-    `ALTER TABLE campaign_contacts ADD COLUMN IF NOT EXISTS property_address_normalized TEXT
-       GENERATED ALWAYS AS (
-         LOWER(REGEXP_REPLACE(REGEXP_REPLACE(TRIM(COALESCE(property_address,'')), '[.,]+', '', 'g'), '\\s+', ' ', 'g'))
-       ) STORED`,
+    // 2026-04-18 audit fix #18: campaign_contacts.property_address_normalized
+    // was previously added here, which created a schema-init race with
+    // campaigns.initCampaignSchema(). Moved to campaigns.js where the table is
+    // actually created — see migrations[] block in campaigns.initCampaignSchema().
   ];
   for (const sql of genCols) {
     try { await query(sql); }
@@ -422,32 +415,50 @@ async function initSchema() {
     `CREATE INDEX IF NOT EXISTS idx_properties_pipeline_stage ON properties(pipeline_stage)`,
     `CREATE INDEX IF NOT EXISTS idx_property_lists_list      ON property_lists(list_id)`,
     `CREATE INDEX IF NOT EXISTS idx_property_contacts_primary ON property_contacts(property_id) WHERE primary_contact = true`,
-    // 2026-04-18 audit fix #4: previous index on LOWER(property_address) was
-    // never used because the filter does LOWER(TRIM(...)). Use the normalized
-    // generated column instead — both sides of the comparison now match.
-    `CREATE INDEX IF NOT EXISTS idx_cc_property_addr_norm_state
-       ON campaign_contacts (property_address_normalized, UPPER(TRIM(property_state)))`,
-    `CREATE INDEX IF NOT EXISTS idx_cc_marketing_result      ON campaign_contacts (marketing_result) WHERE marketing_result IS NOT NULL`,
-    `CREATE INDEX IF NOT EXISTS idx_cn_marketing_result      ON campaign_numbers (marketing_result) WHERE marketing_result IS NOT NULL`,
-    `CREATE INDEX IF NOT EXISTS idx_cn_phone_number          ON campaign_numbers (phone_number)`,
-    `CREATE INDEX IF NOT EXISTS idx_ccp_campaign_phone       ON campaign_contact_phones (campaign_id, phone_number)`,
+    // 2026-04-18 audit fix #17: partial-unique — at most one primary contact per
+    // property. Previously nothing prevented the duplicate-merge path from
+    // producing two primary_contact=true rows for the same property, which made
+    // the main list query's LEFT JOIN produce duplicate rows (only DISTINCT ON
+    // saved it, and it picked an arbitrary winner). Before creating this index,
+    // clean up any existing dupes by downgrading all but the lowest-id primary.
   ];
   for (const sql of extraIndexes) {
     try { await query(sql); }
     catch (e) {
-      // Indexes referencing tables created by campaigns.js ensureSchema will
-      // fail if that runs later — safe to ignore; campaigns.js recreates them.
       if (!e.message.includes('does not exist') && !e.message.includes('already exists')) {
         console.error('Index migration warning:', e.message);
       }
     }
   }
 
-  // 2026-04-18 audit fix #4: clean up the old unused index. Safe to drop — it
-  // was never used by any query (filter does LOWER+TRIM, index was LOWER only).
-  // Wrapped in try/catch because DROP IF EXISTS is harmless if it's already gone.
-  try { await query(`DROP INDEX IF EXISTS idx_cc_property_address_state`); }
-  catch (e) { /* non-fatal */ }
+  // Fix #17 cleanup: demote duplicate primaries, keeping the oldest per property
+  try {
+    const res = await query(`
+      UPDATE property_contacts SET primary_contact = false
+       WHERE id IN (
+         SELECT id FROM (
+           SELECT id, property_id,
+             ROW_NUMBER() OVER (PARTITION BY property_id ORDER BY id ASC) AS rn
+             FROM property_contacts
+            WHERE primary_contact = true
+         ) ranked
+         WHERE rn > 1
+       )
+    `);
+    if (res.rowCount > 0) {
+      console.log(`[db] demoted ${res.rowCount} duplicate primary_contact rows (fix #17)`);
+    }
+  } catch (e) { console.error('Primary-contact cleanup warning:', e.message); }
+
+  // Fix #17: now-safe partial unique index. Created after the cleanup above.
+  try {
+    await query(`CREATE UNIQUE INDEX IF NOT EXISTS idx_property_contacts_single_primary
+                   ON property_contacts(property_id) WHERE primary_contact = true`);
+  } catch (e) { console.error('Primary-contact uniqueness index warning:', e.message); }
+
+  // 2026-04-18 audit fix #18: moved campaign_contacts index creation to
+  // campaigns.initCampaignSchema() since that's where the table is created.
+  // No longer tries to drop/recreate from here to avoid the schema-init race.
 
   // ── Owner portfolio counts MV (Audit issue #4c / min-owned filter) ──────────
   try {
