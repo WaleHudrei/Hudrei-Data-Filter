@@ -618,6 +618,20 @@ async function importSmarterContactFile(campaignId, rows, headers, filename) {
          WHERE id = $2`,
         [cleanedLabel, phoneRow.id]
       );
+      // 2026-04-18 audit fix #16: also update the global phones table so the
+      // dashboard's "wrong phones" count reflects filtration outcomes. Previously
+      // only campaign_contact_phones got updated — the dashboard (which reads
+      // phones.wrong_number) was forever stuck on the original CSV-imported values.
+      // Scoped by phone_number only so confirmed-wrong flags cross campaigns
+      // (a phone confirmed wrong in one campaign is wrong everywhere).
+      await query(
+        `UPDATE phones SET
+           wrong_number = true,
+           phone_status = 'wrong',
+           updated_at = NOW()
+         WHERE phone_number = (SELECT phone_number FROM campaign_contact_phones WHERE id = $1)`,
+        [phoneRow.id]
+      );
     }
 
     if (dispo === 'not_interested') {
