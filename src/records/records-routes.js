@@ -2560,7 +2560,15 @@ router.post('/_duplicates/merge', requireAuth, async (req, res) => {
     await query(`DELETE FROM properties        WHERE id = ANY($1::int[])`, [dropIds]);
 
     // 4) Recompute distress for the kept property since lists may have changed
-    try { await distress.scoreProperty(keepId); } catch(_) {}
+    // 2026-04-18 audit fix #27: previously `catch(_) {}` silently swallowed any
+    // scoring failure. Merge appeared successful but kept property had a stale
+    // score with no way to know. Log the error so operators can investigate;
+    // still non-fatal (merge itself is done, don't block the success redirect).
+    try {
+      await distress.scoreProperty(keepId);
+    } catch (e) {
+      console.error(`[duplicates/merge] post-merge scoreProperty(${keepId}) failed:`, e.message);
+    }
 
     const summary = `Merged ${dropIds.length} record(s) into property #${keepId}. Moved ${movedLists} list(s), ${movedContacts} contact(s). Deleted: #${dropIds.join(', #')}`;
     console.log('[duplicates/merge]', summary);
