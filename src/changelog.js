@@ -3,6 +3,14 @@
 
 const ENTRIES = [
   {
+    date: 'April 18, 2026 (Pass 6 — cold-call)',
+    title: 'Cold-call filtration bulk path — same feature flag as SMS',
+    items: [
+      { tag: 'improvement', text: 'Cold-call filtration can now run as bulk operations instead of per-row. Every row of a Readymode upload previously did 1 UPDATE for campaign_contact_phones plus 3 more UPDATEs if the row was a transfer — a 20K-row upload with 500 transfers was ~21,500 sequential queries. The new bulk path does ONE UNNEST-based UPDATE for all ccp rows plus at most 3 bulk UPDATEs for transfer extras (keyed by deduped phone array). Equivalence-tested against per-row: identical final state across campaign_contact_phones, campaign_contacts, properties, and global phones tables.' },
+      { tag: 'improvement', text: 'Shares the same LOKI_BATCHED_FILTRATION env var as the SMS bulk path. Enabling the flag activates bulk for BOTH channels. Bulk failures throw without silent fallback; unset the env var for instant revert to per-row.' },
+    ],
+  },
+  {
     date: 'April 18, 2026 (Pass 6)',
     title: 'SMS filtration bulk path — feature-flagged performance fix',
     items: [
