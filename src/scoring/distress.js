@@ -11,20 +11,29 @@ const { query } = require('../db');
 let _distressSchemaReady = false;
 
 // ── WEIGHTS (single source of truth — tune here, recompute, done) ──────────
+// 2026-04-18 weight rebalance (pass 9):
+//   tax_sale          20 → 30   (highest-intent signal; sheriff sale = same)
+//   tax_delinquent    10 → 15
+//   pre_foreclosure   20 → 15   (weaker than active foreclosure action)
+//   mortgage_foreclosure  —  → 20   NEW signal, more urgent than pre_foreclosure
+//   county_source      5 → 10   (authoritative source, less competition)
+// Unchanged: probate 20, code_violation 15, vacant 15, stacks 15/10/5,
+//            high_equity 10, out_of_state 10, marketing_lead 5.
 const WEIGHTS = {
-  list_tax_sale:        20,
-  list_tax_delinquent:  10,
-  list_pre_foreclosure: 20,
-  list_probate:         20,
-  list_code_violation:  15,
-  list_vacant:          15,
-  stack_5_plus:         15,
-  stack_3_4:            10,
-  stack_2:              5,
-  high_equity:          10,   // equity_percent >= 50
-  out_of_state:         10,   // mailing_state != property state_code
-  marketing_lead:       5,    // pipeline_stage IN ('lead','contract','closed')
-  county_source:        5,    // on at least one list whose source contains "county"
+  list_tax_sale:            30,   // also covers sheriff sale (same signal)
+  list_tax_delinquent:      15,
+  list_pre_foreclosure:     15,
+  list_mortgage_foreclosure: 20,
+  list_probate:             20,
+  list_code_violation:      15,
+  list_vacant:              15,
+  stack_5_plus:             15,
+  stack_3_4:                10,
+  stack_2:                  5,
+  high_equity:              10,   // equity_percent >= 50
+  out_of_state:             10,   // mailing_state != property state_code
+  marketing_lead:           5,    // pipeline_stage IN ('lead','contract','closed')
+  county_source:            10,   // on at least one list whose source contains "county"
 };
 
 // Display cap so the score reads as a 0-100 percentage-feel
@@ -49,12 +58,21 @@ const BAND_COLORS = {
 // Maps a list's normalized type or name to a canonical signal key.
 // Both list_type and list_name are checked so legacy lists with no type
 // still match if the name is meaningful.
+//
+// 2026-04-18 pass 9: sheriff sale is treated as the same signal as tax sale
+// (same intent, same weight). Mortgage foreclosure is a NEW signal at +20 —
+// more urgent than pre_foreclosure (notice stage) but not as late as tax_sale.
+// Order matters — check more specific patterns first so they win over weaker
+// matches (e.g. "mortgage foreclosure" should NOT fall through to pre_fc).
 function classifyList(listType, listName) {
   const t = String(listType || '').toLowerCase().trim();
   const n = String(listName || '').toLowerCase().trim();
   const both = t + ' ' + n;
-  // Order matters: check tax_sale first (more specific), then tax_delinquent
-  if (/tax\s*sale/.test(both)) return 'tax_sale';
+  // Tax sale and sheriff sale collapse to one signal (same weight, same meaning).
+  if (/tax\s*sale|sheriff[\s']*s?\s*sale/.test(both)) return 'tax_sale';
+  // Mortgage foreclosure — ACTIVE foreclosure action, stronger than pre_fc notice.
+  // Check BEFORE pre_foreclosure so "mortgage foreclosure" doesn't fall through.
+  if (/mortgage\s*foreclosure|mortgage\s*default|notice\s*of\s*sale/.test(both)) return 'mortgage_foreclosure';
   if (/tax\s*delinq/.test(both)) return 'tax_delinquent';
   if (/pre[\s-]?foreclosure|pre[\s-]?fc|notice\s*of\s*default|nod|lis\s*pendens|auction/.test(both)) return 'pre_foreclosure';
   if (/probate|deceased|estate|affidavit\s*of\s*death/.test(both)) return 'probate';
@@ -83,9 +101,25 @@ function computeScore(ctx) {
   };
 
   // List signals
-  if (ctx.list_signals && ctx.list_signals.has('tax_sale'))        add('list_tax_sale',        WEIGHTS.list_tax_sale,        'On Tax Sale list');
-  if (ctx.list_signals && ctx.list_signals.has('tax_delinquent'))  add('list_tax_delinquent',  WEIGHTS.list_tax_delinquent,  'On Tax Delinquent list');
-  if (ctx.list_signals && ctx.list_signals.has('pre_foreclosure')) add('list_pre_foreclosure', WEIGHTS.list_pre_foreclosure, 'On Pre-Foreclosure list');
+  // 2026-04-18 audit fix #42: SQL bulk scorer (scoreAllProperties) treats
+  // tax_sale and tax_delinquent as mutually exclusive (tax_sale wins when both
+  // present — see `AND NOT COALESCE(lf.has_tax_sale,false)` in the SQL).
+  // The JS scorer previously let BOTH apply, which made the same property
+  // score differently depending on which code path ran last (scoreProperty
+  // vs scoreAllProperties). Now matches SQL: tax_sale precludes tax_delinquent.
+  //
+  // Pass 9: mortgage_foreclosure added as NEW signal. It's more urgent than
+  // pre_foreclosure (notice stage). Mutually exclusive — a property on both
+  // a mortgage foreclosure list AND a pre-foreclosure list gets +20 once,
+  // not +35. Same stage of the same process, just different naming.
+  const hasTaxSale       = ctx.list_signals && ctx.list_signals.has('tax_sale');
+  const hasTaxDelinquent = ctx.list_signals && ctx.list_signals.has('tax_delinquent');
+  const hasMortgageFc    = ctx.list_signals && ctx.list_signals.has('mortgage_foreclosure');
+  const hasPreFc         = ctx.list_signals && ctx.list_signals.has('pre_foreclosure');
+  if (hasTaxSale)                            add('list_tax_sale',        WEIGHTS.list_tax_sale,        'On Tax Sale / Sheriff Sale list');
+  if (hasTaxDelinquent && !hasTaxSale)       add('list_tax_delinquent',  WEIGHTS.list_tax_delinquent,  'On Tax Delinquent list');
+  if (hasMortgageFc)                         add('list_mortgage_foreclosure', WEIGHTS.list_mortgage_foreclosure, 'On Mortgage Foreclosure list');
+  if (hasPreFc && !hasMortgageFc)            add('list_pre_foreclosure', WEIGHTS.list_pre_foreclosure, 'On Pre-Foreclosure list');
   if (ctx.list_signals && ctx.list_signals.has('probate'))         add('list_probate',         WEIGHTS.list_probate,         'On Probate list');
   if (ctx.list_signals && ctx.list_signals.has('code_violation'))  add('list_code_violation',  WEIGHTS.list_code_violation,  'On Code Violation list');
   if (ctx.list_signals && ctx.list_signals.has('vacant'))          add('list_vacant',          WEIGHTS.list_vacant,          'On Vacant list');
@@ -131,7 +165,11 @@ function computeScore(ctx) {
 // Rows with distress_scoring_version < SCORING_VERSION are stale and need a
 // rescore. Bumped to 2 in the 2026-04-17 audit when marketing_lead moved from
 // p.marketing_result='lead' to p.pipeline_stage IN ('lead','contract','closed').
-const SCORING_VERSION = 2;
+// Bumped to 3 on 2026-04-18 for the weight rebalance + mortgage_foreclosure
+// signal + sheriff_sale alias. Every existing cached score is now stale under
+// the new weights; operator should run "Recompute All" on /records/_distress
+// to bring them up to date.
+const SCORING_VERSION = 3;
 
 // ── Schema migration (idempotent — runs at most once per process) ──────────
 async function ensureDistressSchema() {
@@ -281,8 +319,15 @@ async function scoreProperties(propertyIds) {
     ),
     list_flags AS (
       SELECT pl.property_id,
-             BOOL_OR(LOWER(COALESCE(l.list_type,'') || ' ' || COALESCE(l.list_name,'')) ~ 'tax[[:space:]]*sale') AS has_tax_sale,
+             -- Pass 9: tax_sale regex now matches "sheriff sale" / "sheriff's sale" /
+             -- "sheriffs sale" — same signal, same +30 weight. The apostrophe is doubled
+             -- inside this template literal because the SQL string is being embedded
+             -- in a JS backtick string.
+             BOOL_OR(LOWER(COALESCE(l.list_type,'') || ' ' || COALESCE(l.list_name,'')) ~ 'tax[[:space:]]*sale|sheriff[[:space:]'']*s?[[:space:]]*sale') AS has_tax_sale,
              BOOL_OR(LOWER(COALESCE(l.list_type,'') || ' ' || COALESCE(l.list_name,'')) ~ 'tax[[:space:]]*delinq') AS has_tax_delinq,
+             -- Pass 9: new mortgage_foreclosure signal at +20. Distinct from
+             -- pre_foreclosure (which covers earlier-stage signals: NOD, lis pendens).
+             BOOL_OR(LOWER(COALESCE(l.list_type,'') || ' ' || COALESCE(l.list_name,'')) ~ 'mortgage[[:space:]]*foreclosure|mortgage[[:space:]]*default|notice[[:space:]]*of[[:space:]]*sale') AS has_mortgage_fc,
              BOOL_OR(LOWER(COALESCE(l.list_type,'') || ' ' || COALESCE(l.list_name,'')) ~ 'pre[[:space:]-]?foreclosure|pre[[:space:]-]?fc|notice[[:space:]]*of[[:space:]]*default|nod|lis[[:space:]]*pendens|auction') AS has_pre_fc,
              BOOL_OR(LOWER(COALESCE(l.list_type,'') || ' ' || COALESCE(l.list_name,'')) ~ 'probate|deceased|estate|affidavit[[:space:]]*of[[:space:]]*death') AS has_probate,
              BOOL_OR(LOWER(COALESCE(l.list_type,'') || ' ' || COALESCE(l.list_name,'')) ~ 'code[[:space:]]*violation|municipal[[:space:]]*lien') AS has_code_viol,
@@ -307,7 +352,11 @@ async function scoreProperties(propertyIds) {
                CASE WHEN lf.has_tax_sale   THEN ${w.list_tax_sale}        ELSE 0 END +
                CASE WHEN lf.has_tax_delinq AND NOT COALESCE(lf.has_tax_sale,false)
                                            THEN ${w.list_tax_delinquent}  ELSE 0 END +
-               CASE WHEN lf.has_pre_fc    THEN ${w.list_pre_foreclosure} ELSE 0 END +
+               -- Pass 9: mortgage_foreclosure is the stronger signal; when both
+               -- present, only mortgage_foreclosure scores (stage-of-process mutex).
+               CASE WHEN lf.has_mortgage_fc THEN ${w.list_mortgage_foreclosure} ELSE 0 END +
+               CASE WHEN lf.has_pre_fc    AND NOT COALESCE(lf.has_mortgage_fc,false)
+                                           THEN ${w.list_pre_foreclosure} ELSE 0 END +
                CASE WHEN lf.has_probate   THEN ${w.list_probate}         ELSE 0 END +
                CASE WHEN lf.has_code_viol THEN ${w.list_code_violation}  ELSE 0 END +
                CASE WHEN lf.has_vacant    THEN ${w.list_vacant}          ELSE 0 END +
@@ -360,12 +409,16 @@ async function scoreAllProperties(progressCb) {
 
   // Build one big CTE that aggregates signals per property, then a single
   // UPDATE that computes score from those signals using the same weights.
+  // Pass 9: tax_sale regex now also matches "sheriff sale" (same weight);
+  // added has_mortgage_fc flag at +20; pre_fc scores only when mortgage_fc
+  // is absent (mutually exclusive, mortgage_fc wins). Matches classifyList.
   const w = WEIGHTS;
   // NB: keep list pattern matching in sync with classifyList() above
   const sql = `
     WITH list_flags AS (
       SELECT pl.property_id,
-             BOOL_OR(LOWER(COALESCE(l.list_type,'') || ' ' || COALESCE(l.list_name,'')) ~ 'tax[[:space:]]*sale') AS has_tax_sale,
+             BOOL_OR(LOWER(COALESCE(l.list_type,'') || ' ' || COALESCE(l.list_name,'')) ~ 'tax[[:space:]]*sale|sheriff[[:space:]'']*s?[[:space:]]*sale') AS has_tax_sale,
+             BOOL_OR(LOWER(COALESCE(l.list_type,'') || ' ' || COALESCE(l.list_name,'')) ~ 'mortgage[[:space:]]*foreclosure|mortgage[[:space:]]*default|notice[[:space:]]*of[[:space:]]*sale') AS has_mortgage_fc,
              BOOL_OR(LOWER(COALESCE(l.list_type,'') || ' ' || COALESCE(l.list_name,'')) ~ 'tax[[:space:]]*delinq') AS has_tax_delinq,
              BOOL_OR(LOWER(COALESCE(l.list_type,'') || ' ' || COALESCE(l.list_name,'')) ~ 'pre[[:space:]-]?foreclosure|pre[[:space:]-]?fc|notice[[:space:]]*of[[:space:]]*default|nod|lis[[:space:]]*pendens|auction') AS has_pre_fc,
              BOOL_OR(LOWER(COALESCE(l.list_type,'') || ' ' || COALESCE(l.list_name,'')) ~ 'probate|deceased|estate|affidavit[[:space:]]*of[[:space:]]*death') AS has_probate,
@@ -389,7 +442,9 @@ async function scoreAllProperties(progressCb) {
                CASE WHEN lf.has_tax_sale   THEN ${w.list_tax_sale}        ELSE 0 END +
                CASE WHEN lf.has_tax_delinq AND NOT COALESCE(lf.has_tax_sale,false)
                                            THEN ${w.list_tax_delinquent}  ELSE 0 END +
-               CASE WHEN lf.has_pre_fc    THEN ${w.list_pre_foreclosure} ELSE 0 END +
+               CASE WHEN lf.has_mortgage_fc THEN ${w.list_mortgage_foreclosure} ELSE 0 END +
+               CASE WHEN lf.has_pre_fc AND NOT COALESCE(lf.has_mortgage_fc,false)
+                                           THEN ${w.list_pre_foreclosure} ELSE 0 END +
                CASE WHEN lf.has_probate   THEN ${w.list_probate}         ELSE 0 END +
                CASE WHEN lf.has_code_viol THEN ${w.list_code_violation}  ELSE 0 END +
                CASE WHEN lf.has_vacant    THEN ${w.list_vacant}          ELSE 0 END +
