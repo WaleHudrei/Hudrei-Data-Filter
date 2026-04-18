@@ -3,6 +3,14 @@
 
 const ENTRIES = [
   {
+    date: 'April 18, 2026 (Pass 6)',
+    title: 'SMS filtration bulk path — feature-flagged performance fix',
+    items: [
+      { tag: 'improvement', text: 'SMS filtration can now run as a single bulk operation instead of per-row. Previously every row did 1-3 SQL queries (SELECT phone, UPDATE ccp, UPDATE global phones for wrong/DNC) — a 5000-row SMS upload was 10,000+ sequential round-trips. The new bulk path loads all phones in ONE query, groups rows by disposition in memory, then runs one UNNEST-based UPDATE per (dispo, target_table). Equivalence-tested against per-row: identical tallies, identical final state in campaign_contact_phones / campaign_contacts / phones / campaigns tables.' },
+      { tag: 'improvement', text: 'Feature-flagged rollout: set LOKI_BATCHED_FILTRATION=true to activate the bulk path. Default is per-row (known-good). Revert instantly by unsetting the env var. Bulk failures do NOT silently fall back to per-row — partial state from a failed bulk would corrupt data if per-row re-ran on top; instead the error surfaces to the user so ops can investigate.' },
+    ],
+  },
+  {
     date: 'April 18, 2026 (Pass 5)',
     title: 'Correctness fix: cold-call transfer flag + index coverage',
     items: [
