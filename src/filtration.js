@@ -46,7 +46,7 @@ function detectPhoneColumns(headers) {
 // INSERT for new numbers and ONE bulk UPDATE for existing numbers via UNNEST.
 // Same semantics; ~50× faster on typical uploads. (Audit — filtration.js gaps.)
 async function recordUpload(campaignId, filename, sourceListName, channel, rows, rawTotal) {
-  const CONNECTED_DISPOS = new Set(['not_interested','transfer','callback','spanish_speaker','hung_up','completed','disqualified','do_not_call']);
+  const CONNECTED_DISPOS = new Set(['not_interested','transfer','potential_lead','sold','listed','callback','spanish_speaker','hung_up','completed','disqualified','do_not_call']);
   const tally = { total:0, kept:0, filtered:0, wrong:0, vm:0, ni:0, dnc:0, transfer:0, mem:0, newNums:0, connected:0 };
 
   // ── Pass 1: tally counts + collect per-phone upsert payload ──────────────
