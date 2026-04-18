@@ -3,7 +3,7 @@ const router = express.Router();
 const multer = require('multer');
 const Papa = require('papaparse');
 const crypto = require('crypto');
-const { query } = require('../db');
+const { query, refreshOwnerPortfolioMv } = require('../db');
 const { shell } = require('../shared-shell');
 const { normalizeState: sharedNormalizeState } = require('./state');
 
@@ -1554,6 +1554,19 @@ async function runBackgroundImport(jobId, allRows, mapping, filename, resolvedLi
 
     if (allSkipped.length > 0) {
       console.warn(`[bulk-import] job ${jobId} — ${allSkipped.length} rows skipped due to length violations`);
+    }
+
+    // 2026-04-18 audit fix #35: refresh owner_portfolio_counts MV after every
+    // import. The MV powers the Min/Max Owned filter (fix #8). Previously it
+    // was created once at boot and never refreshed, so the owned-count filter
+    // returned increasingly stale numbers as new properties arrived.
+    // Non-fatal — log on failure but don't fail the import.
+    try {
+      const t = Date.now();
+      await refreshOwnerPortfolioMv();
+      console.log(`[bulk-import] refreshed owner_portfolio_counts MV (${Date.now() - t}ms)`);
+    } catch (e) {
+      console.error(`[bulk-import] MV refresh failed (non-fatal):`, e.message);
     }
 
   } catch(e) {
