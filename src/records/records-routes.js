@@ -1331,6 +1331,17 @@ router.post('/export', requireAuth, async (req, res) => {
       return colLabels[k] || k;
     });
 
+    // 2026-04-18 audit fix #26: CSV injection protection. Excel will execute
+    // cell contents that begin with =, +, -, @, or certain control chars as
+    // formulas. If any string in the DB (owner name, street, source, etc.)
+    // starts with one of those, opening the export in Excel could leak data
+    // via =HYPERLINK() or similar. Prefix any such value with a single quote
+    // to force Excel to treat it as text. Standard OWASP guidance.
+    const csvSafe = (val) => {
+      const s = String(val);
+      return /^[=+\-@\t\r]/.test(s) ? "'" + s : s;
+    };
+
     const csvRows = props.rows.map(row => {
       const phoneList = phoneMap[row.id] || [];
       return expandedColumns.map(col => {
@@ -1357,7 +1368,7 @@ router.post('/export', requireAuth, async (req, res) => {
         } else {
           val = row[col] !== null && row[col] !== undefined ? String(row[col]) : '';
         }
-        return `"${String(val).replace(/"/g, '""')}"`;
+        return `"${csvSafe(val).replace(/"/g, '""')}"`;
       }).join(',');
     });
 
@@ -2346,6 +2357,14 @@ router.get('/_duplicates', requireAuth, async (req, res) => {
 
     // Group properties by normalized key. SUBSTRING(zip_code, 1, 5) collapses
     // ZIP+4 to 5-digit; LOWER + TRIM normalize street/city/state casing.
+    // 2026-04-18 audit fix #22: previously used LOWER(TRIM(street)) which
+    // differed from the rest of the system — marketing filter, owner occupancy,
+    // and street_normalized generated column all strip periods/commas and
+    // collapse whitespace. So "123 Main St." and "123 Main St" were treated as
+    // different records by the dedup finder but same by everything else — you
+    // had ghost duplicates the dedup page would never show. Now uses
+    // street_normalized with a COALESCE fallback for any row where the
+    // generated column hasn't been populated yet (defensive).
     const groupsRes = await query(`
       WITH normalized AS (
         SELECT
@@ -2354,7 +2373,10 @@ router.get('/_duplicates', requireAuth, async (req, res) => {
           city,
           state_code,
           zip_code,
-          LOWER(TRIM(street))                  AS k_street,
+          COALESCE(
+            street_normalized,
+            LOWER(REGEXP_REPLACE(REGEXP_REPLACE(TRIM(COALESCE(street,'')), '[.,]+', '', 'g'), '\\s+', ' ', 'g'))
+          )                                    AS k_street,
           LOWER(TRIM(city))                    AS k_city,
           UPPER(TRIM(state_code))              AS k_state,
           SUBSTRING(TRIM(zip_code) FROM 1 FOR 5) AS k_zip,
