@@ -242,7 +242,7 @@ router.get('/', requireAuth, async (req, res) => {
     const mktCampaignMatch = (paramIdx) => `(
       EXISTS (
         SELECT 1 FROM campaign_contacts cc_mkt
-        WHERE LOWER(TRIM(cc_mkt.property_address)) = LOWER(TRIM(p.street))
+        WHERE cc_mkt.property_address_normalized = p.street_normalized
           AND UPPER(TRIM(cc_mkt.property_state)) = UPPER(TRIM(p.state_code))
           AND cc_mkt.marketing_result IS NOT NULL
           AND split_part(cc_mkt.marketing_result, ' — ', 1) = ANY($${paramIdx}::text[])
@@ -333,11 +333,18 @@ router.get('/', requireAuth, async (req, res) => {
 
     const where = conditions.length ? 'WHERE ' + conditions.join(' AND ') : '';
 
+    // 2026-04-18 audit fix #5: LEFT JOIN phones was unconditional but only
+    // used when `q` search is active (via ph.phone_number ILIKE in the OR chain
+    // at the top of this handler). Without `q`, the join just fans out rows
+    // per-phone then gets deduplicated by COUNT(DISTINCT) / DISTINCT ON — pure
+    // overhead. Big perf win on large DBs.
+    const phoneJoin = q ? `LEFT JOIN phones ph ON ph.contact_id = c.id` : '';
+
     const countRes = await query(`
       SELECT COUNT(DISTINCT p.id) FROM properties p
       LEFT JOIN property_contacts pc ON pc.property_id = p.id AND pc.primary_contact = true
       LEFT JOIN contacts c ON c.id = pc.contact_id
-      LEFT JOIN phones ph ON ph.contact_id = c.id
+      ${phoneJoin}
       ${where}
     `, params);
     const total = parseInt(countRes.rows[0].count);
@@ -365,7 +372,7 @@ router.get('/', requireAuth, async (req, res) => {
       FROM properties p
       LEFT JOIN property_contacts pc ON pc.property_id = p.id AND pc.primary_contact = true
       LEFT JOIN contacts c ON c.id = pc.contact_id
-      LEFT JOIN phones ph ON ph.contact_id = c.id
+      ${phoneJoin}
       ${where}
       ORDER BY p.id DESC, p.created_at DESC
       LIMIT $${idx} OFFSET $${idx+1}
@@ -613,7 +620,7 @@ router.get('/', requireAuth, async (req, res) => {
                   <span style="float:right;color:#aaa">▾</span>
                 </button>
                 <div id="mkt-inc-pop" style="display:none;position:absolute;top:100%;left:0;right:0;margin-top:4px;background:#fff;border:1px solid #ddd;border-radius:7px;box-shadow:0 4px 12px rgba(0,0,0,.08);z-index:10;max-height:240px;overflow-y:auto;padding:6px 0">
-                  ${['Lead','Not Interested','Spanish Speaker','Potential Lead','Sold','Listed'].map(s => `
+                  ${['Lead','Potential Lead','Sold','Listed','Not Interested','Do Not Call','Spanish Speaker'].map(s => `
                     <label style="display:flex;align-items:center;gap:8px;padding:6px 12px;cursor:pointer;font-size:13px" onmouseover="this.style.background='#f5f4f0'" onmouseout="this.style.background='transparent'">
                       <input type="checkbox" name="mkt_include" value="${s}" ${mktIncludeList.includes(s) ? 'checked' : ''} onchange="updateMktSummary('inc')">
                       <span>${s}</span>
@@ -630,7 +637,7 @@ router.get('/', requireAuth, async (req, res) => {
                   <span style="float:right;color:#aaa">▾</span>
                 </button>
                 <div id="mkt-exc-pop" style="display:none;position:absolute;top:100%;left:0;right:0;margin-top:4px;background:#fff;border:1px solid #ddd;border-radius:7px;box-shadow:0 4px 12px rgba(0,0,0,.08);z-index:10;max-height:240px;overflow-y:auto;padding:6px 0">
-                  ${['Lead','Not Interested','Spanish Speaker','Potential Lead','Sold','Listed'].map(s => `
+                  ${['Lead','Potential Lead','Sold','Listed','Not Interested','Do Not Call','Spanish Speaker'].map(s => `
                     <label style="display:flex;align-items:center;gap:8px;padding:6px 12px;cursor:pointer;font-size:13px" onmouseover="this.style.background='#f5f4f0'" onmouseout="this.style.background='transparent'">
                       <input type="checkbox" name="mkt_exclude" value="${s}" ${mktExcludeList.includes(s) ? 'checked' : ''} onchange="updateMktSummary('exc')">
                       <span>${s}</span>
@@ -1098,7 +1105,7 @@ router.post('/export', requireAuth, async (req, res) => {
       const mktMatchExp_export = (paramIdx) => `(
         EXISTS (
           SELECT 1 FROM campaign_contacts cc_mkt
-          WHERE LOWER(TRIM(cc_mkt.property_address)) = LOWER(TRIM(p.street))
+          WHERE cc_mkt.property_address_normalized = p.street_normalized
             AND UPPER(TRIM(cc_mkt.property_state)) = UPPER(TRIM(p.state_code))
             AND cc_mkt.marketing_result IS NOT NULL
             AND split_part(cc_mkt.marketing_result, ' — ', 1) = ANY($${paramIdx}::text[])
@@ -1731,7 +1738,7 @@ router.get('/:id(\\d+)', requireAuth, async (req, res) => {
               <div class="form-field" style="margin:0"><label>Marketing Result</label>
                 <select name="marketing_result">
                   <option value="">—</option>
-                  ${['Lead','Not Interested','Spanish Speaker','Potential Lead','Sold','Listed'].map(t=>`<option value="${t}" ${p.marketing_result===t?'selected':''}>${t}</option>`).join('')}
+                  ${['Lead','Potential Lead','Sold','Listed','Not Interested','Do Not Call','Spanish Speaker'].map(t=>`<option value="${t}" ${p.marketing_result===t?'selected':''}>${t}</option>`).join('')}
                 </select>
               </div>
               <div class="form-field" style="margin:0"><label>Pipeline Stage</label>
@@ -2625,7 +2632,7 @@ router.post('/delete', requireAuth, async (req, res) => {
       if (qv('mkt_result'))  { conditions.push(`(
         EXISTS (
           SELECT 1 FROM campaign_contacts cc_mkt
-          WHERE LOWER(TRIM(cc_mkt.property_address)) = LOWER(TRIM(p.street))
+          WHERE cc_mkt.property_address_normalized = p.street_normalized
             AND UPPER(TRIM(cc_mkt.property_state)) = UPPER(TRIM(p.state_code))
             AND cc_mkt.marketing_result IS NOT NULL
             AND split_part(cc_mkt.marketing_result, ' — ', 1) = ANY($${idx}::text[])
@@ -2644,7 +2651,7 @@ router.post('/delete', requireAuth, async (req, res) => {
         conditions.push(`(
         EXISTS (
           SELECT 1 FROM campaign_contacts cc_mkt
-          WHERE LOWER(TRIM(cc_mkt.property_address)) = LOWER(TRIM(p.street))
+          WHERE cc_mkt.property_address_normalized = p.street_normalized
             AND UPPER(TRIM(cc_mkt.property_state)) = UPPER(TRIM(p.state_code))
             AND cc_mkt.marketing_result IS NOT NULL
             AND split_part(cc_mkt.marketing_result, ' — ', 1) = ANY($${idx}::text[])
@@ -2663,7 +2670,7 @@ router.post('/delete', requireAuth, async (req, res) => {
         conditions.push(`NOT (
         EXISTS (
           SELECT 1 FROM campaign_contacts cc_mkt
-          WHERE LOWER(TRIM(cc_mkt.property_address)) = LOWER(TRIM(p.street))
+          WHERE cc_mkt.property_address_normalized = p.street_normalized
             AND UPPER(TRIM(cc_mkt.property_state)) = UPPER(TRIM(p.state_code))
             AND cc_mkt.marketing_result IS NOT NULL
             AND split_part(cc_mkt.marketing_result, ' — ', 1) = ANY($${idx}::text[])
@@ -2863,7 +2870,7 @@ router.post('/bulk-tag', requireAuth, async (req, res) => {
       if (qv('mkt_result'))  { conditions.push(`(
         EXISTS (
           SELECT 1 FROM campaign_contacts cc_mkt
-          WHERE LOWER(TRIM(cc_mkt.property_address)) = LOWER(TRIM(p.street))
+          WHERE cc_mkt.property_address_normalized = p.street_normalized
             AND UPPER(TRIM(cc_mkt.property_state)) = UPPER(TRIM(p.state_code))
             AND cc_mkt.marketing_result IS NOT NULL
             AND split_part(cc_mkt.marketing_result, ' — ', 1) = ANY($${idx}::text[])
@@ -2880,7 +2887,7 @@ router.post('/bulk-tag', requireAuth, async (req, res) => {
       if (mktIncArr.length > 0) { conditions.push(`(
         EXISTS (
           SELECT 1 FROM campaign_contacts cc_mkt
-          WHERE LOWER(TRIM(cc_mkt.property_address)) = LOWER(TRIM(p.street))
+          WHERE cc_mkt.property_address_normalized = p.street_normalized
             AND UPPER(TRIM(cc_mkt.property_state)) = UPPER(TRIM(p.state_code))
             AND cc_mkt.marketing_result IS NOT NULL
             AND split_part(cc_mkt.marketing_result, ' — ', 1) = ANY($${idx}::text[])
@@ -2896,7 +2903,7 @@ router.post('/bulk-tag', requireAuth, async (req, res) => {
       if (mktExcArr.length > 0) { conditions.push(`NOT (
         EXISTS (
           SELECT 1 FROM campaign_contacts cc_mkt
-          WHERE LOWER(TRIM(cc_mkt.property_address)) = LOWER(TRIM(p.street))
+          WHERE cc_mkt.property_address_normalized = p.street_normalized
             AND UPPER(TRIM(cc_mkt.property_state)) = UPPER(TRIM(p.state_code))
             AND cc_mkt.marketing_result IS NOT NULL
             AND split_part(cc_mkt.marketing_result, ' — ', 1) = ANY($${idx}::text[])
@@ -3127,7 +3134,7 @@ router.post('/remove-from-list', requireAuth, async (req, res) => {
       if (qv('mkt_result'))  { conditions.push(`(
         EXISTS (
           SELECT 1 FROM campaign_contacts cc_mkt
-          WHERE LOWER(TRIM(cc_mkt.property_address)) = LOWER(TRIM(p.street))
+          WHERE cc_mkt.property_address_normalized = p.street_normalized
             AND UPPER(TRIM(cc_mkt.property_state)) = UPPER(TRIM(p.state_code))
             AND cc_mkt.marketing_result IS NOT NULL
             AND split_part(cc_mkt.marketing_result, ' — ', 1) = ANY($${idx}::text[])
@@ -3146,7 +3153,7 @@ router.post('/remove-from-list', requireAuth, async (req, res) => {
         conditions.push(`(
         EXISTS (
           SELECT 1 FROM campaign_contacts cc_mkt
-          WHERE LOWER(TRIM(cc_mkt.property_address)) = LOWER(TRIM(p.street))
+          WHERE cc_mkt.property_address_normalized = p.street_normalized
             AND UPPER(TRIM(cc_mkt.property_state)) = UPPER(TRIM(p.state_code))
             AND cc_mkt.marketing_result IS NOT NULL
             AND split_part(cc_mkt.marketing_result, ' — ', 1) = ANY($${idx}::text[])
@@ -3165,7 +3172,7 @@ router.post('/remove-from-list', requireAuth, async (req, res) => {
         conditions.push(`NOT (
         EXISTS (
           SELECT 1 FROM campaign_contacts cc_mkt
-          WHERE LOWER(TRIM(cc_mkt.property_address)) = LOWER(TRIM(p.street))
+          WHERE cc_mkt.property_address_normalized = p.street_normalized
             AND UPPER(TRIM(cc_mkt.property_state)) = UPPER(TRIM(p.state_code))
             AND cc_mkt.marketing_result IS NOT NULL
             AND split_part(cc_mkt.marketing_result, ' — ', 1) = ANY($${idx}::text[])
