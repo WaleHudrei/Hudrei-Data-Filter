@@ -196,7 +196,26 @@ async function recordUpload(campaignId, filename, sourceListName, channel, rows,
 }
 
 // ── Apply filtration results to contact phones (with flagged_at timestamps) ───
+// 2026-04-18 audit fix #29 (part 2): feature-flagged bulk pipeline for cold-call.
+// Same pattern as the SMS bulk fix (#28) — per-row path remains the default,
+// bulk activates via LOKI_BATCHED_FILTRATION=true. Cold-call uploads from
+// Readymode are often 20K+ rows; per-row was the real pain point. Bulk does
+// ONE UPDATE for all ccp rows plus up to 3 bulk UPDATEs for transfer rows.
 async function applyFiltrationToContacts(campaignId, allRows) {
+  if (String(process.env.LOKI_BATCHED_FILTRATION || '').toLowerCase() === 'true') {
+    try {
+      return await applyFiltrationToContactsBulk(campaignId, allRows);
+    } catch (e) {
+      // Hard fail — same reasoning as SMS: partial state from a failed bulk
+      // would corrupt data if per-row re-ran on top of it.
+      console.error('[coldcall/bulk] FAILED — refusing to fall back to per-row to avoid partial-state corruption:', e);
+      throw new Error(`Bulk filtration failed: ${e.message}. Unset LOKI_BATCHED_FILTRATION to revert to per-row while we investigate.`);
+    }
+  }
+  return applyFiltrationToContactsPerRow(campaignId, allRows);
+}
+
+async function applyFiltrationToContactsPerRow(campaignId, allRows) {
   for (const row of allRows) {
     const phone = String(row.Phone || '').replace(/\D/g, '');
     if (!phone) continue;
@@ -291,6 +310,143 @@ async function applyFiltrationToContacts(campaignId, allRows) {
       );
     }
   }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// BULK cold-call filtration — identical semantics to the per-row version
+// above, collapses N queries into at most 4 bulk UPDATEs. See audit fix #29.
+// ─────────────────────────────────────────────────────────────────────────────
+async function applyFiltrationToContactsBulk(campaignId, allRows) {
+  // ── Step 1: Walk rows once, collect arrays for the bulk update ───────────
+  // Rows with no phone number are skipped (same as per-row line 202).
+  const phones = [];
+  const statuses = [];
+  const tags = [];
+  const wrongs = [];
+  const removes = [];
+  const counts = [];
+  const dispositions = [];
+  const corrects = [];
+
+  // Track which phone numbers had disposition === 'transfer' for the
+  // follow-on UPDATEs. Deduped so we don't issue redundant writes for a
+  // phone that appeared on multiple rows.
+  const transferPhones = new Set();
+
+  for (const row of allRows) {
+    const phone = String(row.Phone || '').replace(/\D/g, '');
+    if (!phone) continue;
+
+    const dispo = row._normDispo || '';
+    const isWrong = dispo === 'wrong_number';
+    const wasRemoved = row.Action === 'remove';
+    const status = row['Phone Status'] || '';
+    const tag = row['Phone Tag'] || '';
+    const count = parseInt(row['Call Log Count']) || 1;
+    const isCorrect = ['not_interested', 'transfer', 'callback', 'do_not_call',
+                       'spanish_speaker', 'hung_up', 'completed', 'disqualified'].includes(dispo);
+
+    phones.push(phone);
+    statuses.push(status || 'unknown');
+    tags.push(tag);
+    wrongs.push(isWrong);
+    removes.push(wasRemoved);
+    counts.push(count);
+    dispositions.push(row.Disposition || '');
+    corrects.push(isCorrect);
+
+    if (dispo === 'transfer') transferPhones.add(phone);
+  }
+
+  if (phones.length === 0) return; // nothing to do
+
+  // ── Step 2: Bulk UPDATE ccp — one query replaces N per-row UPDATEs ───────
+  // Uses UNNEST to build a derived table of (phone, status, tag, ...), then
+  // JOINs it to campaign_contact_phones by (campaign_id, phone_number).
+  // Preserves every nuance of the per-row version:
+  //   - phone_status isn't overwritten when it's already 'dead_number'
+  //   - wrong_number is OR-ed (never downgraded from true to false)
+  //   - filtered is OR-ed
+  //   - wrong_number_flagged_at is set only on first confirmation
+  //   - correct_flagged_at refreshes on every live pickup
+  await query(
+    `UPDATE campaign_contact_phones AS ccp SET
+       phone_status = CASE WHEN ccp.phone_status = 'dead_number' THEN ccp.phone_status ELSE t.status END,
+       phone_tag = t.tag,
+       wrong_number = ccp.wrong_number OR t.is_wrong,
+       filtered = ccp.filtered OR t.was_removed,
+       cumulative_count = t.count,
+       last_disposition = t.dispo,
+       updated_at = NOW(),
+       wrong_number_flagged_at = CASE
+         WHEN t.is_wrong = true AND ccp.wrong_number_flagged_at IS NULL THEN NOW()
+         ELSE ccp.wrong_number_flagged_at
+       END,
+       correct_flagged_at = CASE
+         WHEN t.is_correct = true THEN NOW()
+         ELSE ccp.correct_flagged_at
+       END
+     FROM UNNEST($2::text[], $3::text[], $4::text[], $5::bool[], $6::bool[], $7::int[], $8::text[], $9::bool[])
+       AS t(phone, status, tag, is_wrong, was_removed, count, dispo, is_correct)
+     WHERE ccp.campaign_id = $1
+       AND ccp.phone_number = t.phone`,
+    [campaignId, phones, statuses, tags, wrongs, removes, counts, dispositions, corrects]
+  );
+
+  // ── Step 3: Transfer-specific follow-ups, bulked by phone array ──────────
+  // Only run if there were any transfers in this upload. Each of these
+  // mirrors the corresponding per-row statement exactly — just with ANY($2)
+  // instead of = $2.
+  if (transferPhones.size > 0) {
+    const transferPhoneArr = Array.from(transferPhones);
+
+    // 1. Flag campaign contacts as Lead
+    await query(
+      `UPDATE campaign_contacts cc
+         SET marketing_result = 'Lead'
+        FROM campaign_contact_phones ccp
+       WHERE ccp.contact_id = cc.id
+         AND ccp.campaign_id = $1
+         AND ccp.phone_number = ANY($2::text[])
+         AND cc.campaign_id = $1`,
+      [campaignId, transferPhoneArr]
+    );
+
+    // 2. Flag properties as lead in the main properties table
+    //    Uses normalized address columns (audit fix #29).
+    await query(
+      `UPDATE properties p SET pipeline_stage = 'lead', updated_at = NOW()
+         FROM campaign_contacts cc
+         JOIN campaign_contact_phones ccp ON ccp.contact_id = cc.id
+        WHERE cc.campaign_id = $1
+          AND ccp.phone_number = ANY($2::text[])
+          AND p.street_normalized = cc.property_address_normalized
+          AND UPPER(TRIM(p.state_code)) = UPPER(TRIM(cc.property_state))
+          AND p.pipeline_stage NOT IN ('contract','closed')`,
+      [campaignId, transferPhoneArr]
+    );
+
+    // 3. Mark specific phone(s) as correct globally. Uses normalized address
+    //    columns (audit fix #29). Scoped by campaign linkage so shared phone
+    //    numbers on other contacts are NOT incorrectly flagged (Audit #15).
+    await query(
+      `UPDATE phones SET phone_status = 'correct', updated_at = NOW()
+        WHERE id IN (
+          SELECT DISTINCT ph.id
+            FROM phones ph
+            JOIN property_contacts pc ON pc.contact_id = ph.contact_id
+            JOIN properties p         ON p.id = pc.property_id
+            JOIN campaign_contacts cc ON cc.property_address_normalized = p.street_normalized
+                                     AND UPPER(TRIM(cc.property_state))   = UPPER(TRIM(p.state_code))
+           WHERE cc.campaign_id  = $1
+             AND ph.phone_number = ANY($2::text[])
+        )`,
+      [campaignId, transferPhoneArr]
+    );
+  }
+
+  const queryCount = 1 + (transferPhones.size > 0 ? 3 : 0);
+  console.log(`[coldcall/bulk] processed ${phones.length} rows in ${queryCount} bulk updates (vs ${phones.length + transferPhones.size * 3}+ per-row queries)`);
 }
 
 // ── Generate clean export — one row per contact, blanked wrong/filtered phones ─
