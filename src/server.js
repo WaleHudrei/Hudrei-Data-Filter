@@ -222,7 +222,15 @@ function stripTime(val) {
   return s.split(' ')[0];
 }
 function memKey(list,phone,campaignId){
-  const scope = campaignId ? 'campaign:'+campaignId : list.toLowerCase().trim();
+  // 2026-04-18 audit fix #9: previously fell back to list-name scoping when
+  // campaignId was missing. Two different campaigns with the same list name
+  // (e.g. both using "Tax Delinquent IN") would share filtration memory —
+  // a DNC count from Campaign A would retroactively filter rows in Campaign B.
+  // Now we REQUIRE campaignId. Callers must supply it; undefined/null throws.
+  if (!campaignId) {
+    throw new Error('memKey: campaignId is required. List-name-only scoping was causing cross-campaign data leaks.');
+  }
+  const scope = 'campaign:'+campaignId;
   return scope+'||'+String(phone).replace(/\D/g,'');
 }
 // Global keys — shared across ALL campaigns (wrong numbers, DNC stay permanent)
@@ -537,8 +545,16 @@ app.get('/',requireAuth,async(req,res)=>{
 app.post('/process',requireAuth,upload.single('csvfile'),async(req,res)=>{
   try{
     if(!req.file) return res.status(400).json({error:'No file uploaded.'});
+    // 2026-04-18 audit fix #9: reject uploads without a campaign id. Previously
+    // fell through to list-name scoping which caused cross-campaign memory
+    // contamination. Every upload must be tagged to a campaign.
+    const cId = req.body.campaign_id;
+    if (!cId) {
+      return res.status(400).json({
+        error: 'campaign_id is required. Select a campaign before uploading a filtration file.'
+      });
+    }
     const memory=await loadMemory();
-    const cId = req.body.campaign_id||null;
     const result=processCSV(req.file.buffer.toString('utf8'),memory,cId);
     await saveMemory(result.memory);
     req.session.lastResult={cleanRows:result.cleanRows,filteredRows:result.filteredRows};
@@ -615,7 +631,7 @@ app.get('/dashboard', requireAuth, async (req, res) => {
     // they're already fast thanks to idx_properties_pipeline_stage. (Audit #34.)
     const stats = await dbQuery(`SELECT
       (SELECT COALESCE(NULLIF(n_live_tup, 0), (SELECT COUNT(*) FROM properties)) FROM pg_stat_user_tables WHERE relname = 'properties') AS total_properties,
-      (SELECT COUNT(*) FROM properties WHERE created_at >= NOW() - INTERVAL '30 days') AS new_this_month,
+      (SELECT COUNT(*) FROM properties WHERE created_at >= date_trunc('month', NOW())) AS new_this_month,
       (SELECT COALESCE(NULLIF(n_live_tup, 0), (SELECT COUNT(*) FROM contacts)) FROM pg_stat_user_tables WHERE relname = 'contacts') AS total_contacts,
       (SELECT COALESCE(NULLIF(n_live_tup, 0), (SELECT COUNT(*) FROM phones)) FROM pg_stat_user_tables WHERE relname = 'phones') AS total_phones,
       (SELECT COUNT(*) FROM phones WHERE LOWER(phone_status) = 'correct') AS correct_phones,
@@ -628,7 +644,7 @@ app.get('/dashboard', requireAuth, async (req, res) => {
       (SELECT COUNT(*) FROM properties WHERE state_code = 'IN') AS indiana_props,
       (SELECT COUNT(*) FROM properties WHERE state_code = 'GA') AS georgia_props,
       (SELECT COUNT(*) FROM filtration_runs) AS total_filtration_runs,
-      (SELECT COUNT(*) FROM filtration_runs WHERE run_at >= NOW() - INTERVAL '30 days') AS filtration_runs_month
+      (SELECT COUNT(*) FROM filtration_runs WHERE run_at >= date_trunc('month', NOW())) AS filtration_runs_month
     `);
     const s = stats.rows[0];
 
@@ -1204,36 +1220,17 @@ async function saveRunToDB(filename, stats, listsSeen, allRows) {
       }
     }
 
-    // ── Pass 11: bulk INSERT marketing_touches ───────────────────────────────
-    const touches = [];
-    for (const r of validRows) {
-      if (!r.street) continue;
-      const pid = propMap.get(propKey(r));
-      if (!pid) continue;
-      touches.push({
-        pid,
-        cid: contactIdByProp.get(pid) || null,
-        campaignName: r.listName,
-        listId: listMap.get(r.listName) || null,
-        callDate: r.callDate,
-        outcome: r.dispo,
-      });
-    }
-    if (touches.length > 0) {
-      await dbQuery(`
-        INSERT INTO marketing_touches (property_id, contact_id, channel, campaign_name, list_id, touch_date, outcome)
-        SELECT property_id, contact_id, 'cold_call', campaign_name, list_id, touch_date, outcome
-          FROM UNNEST($1::int[], $2::int[], $3::text[], $4::int[], $5::date[], $6::text[])
-            AS t(property_id, contact_id, campaign_name, list_id, touch_date, outcome)
-      `, [
-        touches.map(t => t.pid),
-        touches.map(t => t.cid),
-        touches.map(t => t.campaignName),
-        touches.map(t => t.listId),
-        touches.map(t => t.callDate),
-        touches.map(t => t.outcome),
-      ]);
-    }
+    // ── Pass 11: marketing_touches writes REMOVED (audit fix #12) ────────────
+    // The marketing_touches table is written here on every filtration but is
+    // never read anywhere in the app. It was an aspirational data model for a
+    // "marketing history" feature that was never built. Writes removed to stop
+    // silently accumulating rows and paying for index maintenance. The same
+    // data lives in filtration_results (Pass 12 below) which IS used. If the
+    // history feature is built later, either read from filtration_results or
+    // revive this write path.
+    //
+    // The table itself is NOT dropped — that's destructive and data could still
+    // be useful if someone wants it later. It just stops growing from now on.
 
     // ── Pass 12: bulk INSERT filtration_results (every row, valid or not) ────
     await dbQuery(`
