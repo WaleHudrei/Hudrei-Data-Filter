@@ -3,6 +3,15 @@
 
 const ENTRIES = [
   {
+    date: 'April 18, 2026 (Pass 5)',
+    title: 'Correctness fix: cold-call transfer flag + index coverage',
+    items: [
+      { tag: 'fix', text: 'Cold-call transfer disposition silently failed to flag properties as leads when the campaign upload\'s property_address didn\'t match the properties.street byte-for-byte. "123 Main St" vs "123 Main St." (trailing period) or casing differences broke the flag. Now uses the same normalized address columns (property_address_normalized + street_normalized) that the marketing filter uses — so cold-call transfers reliably surface in the leads pipeline. Same bug class as the earlier marketing filter fix, different code path.' },
+      { tag: 'fix', text: 'Added index on properties.created_at. The Records filter\'s upload_from/upload_to date range, the dashboard\'s new-this-month count, and the main Records ORDER BY were doing full sequential scans on 75k properties. Every dashboard page load paid that cost. Now indexed.' },
+      { tag: 'fix', text: 'Duplicate-merge post-processing no longer silently swallows errors. Previously `catch(_) {}` discarded any distress-scoring failure after a merge — the kept property would have a stale score with no log trace. Now logs the error so operators can investigate; still non-fatal so it doesn\'t block the merge success redirect.' },
+    ],
+  },
+  {
     date: 'April 18, 2026 (Pass 4)',
     title: 'Deeper audit: SMS compliance hole, NIS idempotency, CSV injection, rate limiting',
     items: [
