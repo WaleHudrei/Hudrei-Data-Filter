@@ -3,6 +3,29 @@
 
 const ENTRIES = [
   {
+    date: 'April 18, 2026 (Pass 9)',
+    title: 'Distress weight rebalance — high-intent signals weighted higher, mortgage foreclosure added',
+    items: [
+      { tag: 'improvement', text: 'Tax Sale bumped from 20 to 30 points. Sheriff Sale now classifies as the same signal — "Sheriff Sale" / "Sheriff\'s Sale" / "Sheriffs Sale" list names all collapse to tax_sale and get the same 30-point weight (not double-counted). These are the highest-intent distress signals; a property headed to auction gets the biggest score boost.' },
+      { tag: 'improvement', text: 'Tax Delinquent bumped from 10 to 15 points. Still mutually exclusive with Tax Sale — a property on both lists gets only the stronger +30 (tax_sale wins).' },
+      { tag: 'improvement', text: 'New Mortgage Foreclosure signal added at 20 points. Matches list names with "mortgage foreclosure", "mortgage default", or "notice of sale". This is more urgent than Pre-Foreclosure (notice stage), so when both apply only the stronger +20 scores — same stage-of-process mutex pattern as tax_sale/tax_delinquent.' },
+      { tag: 'improvement', text: 'Pre-Foreclosure lowered from 20 to 15 points — earlier stage, lower urgency than active mortgage foreclosure action. Still covers NOD, lis pendens, and auction list names.' },
+      { tag: 'improvement', text: 'County Source bonus bumped from 5 to 10 points. County-sourced lists have less competition from other investors (you\'re buying from the original record, not a scraped aggregator), so the authoritative-source bonus is now meaningful rather than token.' },
+      { tag: 'note', text: 'SCORING_VERSION bumped to 3. Every existing cached score is stale under the new weights — run "Recompute All" on /records/_distress to bring them up to date. Until then you\'ll see a yellow banner on the distress page showing how many rows need rescoring.' },
+    ],
+  },
+  {
+    date: 'April 18, 2026 (Pass 8)',
+    title: 'Cross-file gap pass: Upload route regression, Lists delete gating, scoring consistency',
+    items: [
+      { tag: 'fix', text: 'Upload → Filter → Review route was broken in production. Fix #9 made campaignId mandatory in processCSV() to close a cross-campaign memory leak, but a separate endpoint at /upload/filter/process was still calling processCSV(csvText, memory) with no third argument. Users going through the Upload flow would hit a 500 error the moment they submitted. Endpoint now accepts campaignId in the request body; when absent it synthesizes a unique per-upload scope so legacy flows work without the cross-campaign contamination risk. UI should ideally pass the selected campaign — that\'s the proper fix, this is the safe stop-gap.' },
+      { tag: 'fix', text: 'Lists Delete was ungated. Records Delete, bulk merges of 10+ groups, and single property Delete all require the delete code. Deleting a List wipes every property→list membership for that list, which is similarly destructive — now gated by settings.verifyDeleteCode() for consistency. The delete modal now includes a password field.' },
+      { tag: 'fix', text: 'Distress scoring was inconsistent between JS computeScore() (used by scoreProperty, runs on single-property updates) and the SQL bulk scorer (scoreAllProperties, runs on Recompute All). SQL treats tax_sale and tax_delinquent as mutually exclusive — tax_sale wins when both present. JS previously let both apply, so the same property would score 30 after an edit-triggered rescore vs 20 after a bulk recompute. Now both paths treat tax_sale as precluding tax_delinquent. Existing cached scores may still diverge until the next bulk rescore.' },
+      { tag: 'fix', text: 'Second multer instance in routes/upload-routes.js was missing the fileFilter from audit fix #21. Non-CSV uploads reached Papa.parse and silently produced empty results (0 rows processed, no error). Now rejects non-CSV uploads with a clear error message — matches the behavior of server.js and property-import-routes.js multer configs.' },
+      { tag: 'improvement', text: 'src/records/filters.js is dead code — 288 lines defining parseFilterInput + buildPropertyFilters that are never imported anywhere. Records-routes.js has its own inline filter builders (which it deduplicates across 4 handlers by hand). The file is flagged at the top with a clear dead-code warning so anyone touching the code later knows it\'s not active. Either delete or actually use in a future refactor.' },
+    ],
+  },
+  {
     date: 'April 18, 2026 (Pass 7)',
     title: 'merge_all consistency fix + owner-portfolio MV refresh',
     items: [
