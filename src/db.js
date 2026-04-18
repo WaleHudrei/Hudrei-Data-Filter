@@ -415,6 +415,11 @@ async function initSchema() {
     `CREATE INDEX IF NOT EXISTS idx_properties_pipeline_stage ON properties(pipeline_stage)`,
     `CREATE INDEX IF NOT EXISTS idx_property_lists_list      ON property_lists(list_id)`,
     `CREATE INDEX IF NOT EXISTS idx_property_contacts_primary ON property_contacts(property_id) WHERE primary_contact = true`,
+    // 2026-04-18 audit fix #32: properties.created_at was unindexed but queried
+    // in 5+ sites — the Records filter's upload_from/upload_to date range, the
+    // dashboard's new-this-month count, and the main ORDER BY on Records. On
+    // 75k properties each dashboard hit was doing a full sequential scan.
+    `CREATE INDEX IF NOT EXISTS idx_properties_created_at    ON properties(created_at)`,
     // 2026-04-18 audit fix #17: partial-unique — at most one primary contact per
     // property. Previously nothing prevented the duplicate-merge path from
     // producing two primary_contact=true rows for the same property, which made
