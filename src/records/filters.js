@@ -1,4 +1,23 @@
 // ─────────────────────────────────────────────────────────────────────────────
+// ⚠️  DEAD CODE — UNUSED AS OF 2026-04-18 AUDIT ⚠️
+//
+// This module exports parseFilterInput + buildPropertyFilters but is never
+// imported anywhere in the codebase. The filter-building logic lives inline
+// in records-routes.js across multiple handlers (records list, export, delete,
+// bulk-tag). This file was apparently created as an aspirational refactor
+// that was never wired up.
+//
+// Options for the next cleanup pass:
+//   (a) Delete this file and remove the 288 lines of dead code, OR
+//   (b) Actually use it — refactor records-routes.js to require('./filters')
+//       and replace the 4 duplicate filter-building blocks with calls into
+//       this module. Bigger change but reduces duplication.
+//
+// Leaving in place for now since it's harmless dead code; flagged so the next
+// person to touch this understands it's not in use.
+// ─────────────────────────────────────────────────────────────────────────────
+//
+// Original header (retained for reference):
 // filters.js — shared WHERE-clause builder for /records + bulk handlers.
 //
 // Before this file, the filter-building logic was hand-duplicated in 5 places:
