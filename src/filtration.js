@@ -7,11 +7,19 @@
 const { query } = require('./db');
 
 // ── Normalize a phone number — strip non-digits, strip leading 1 if 11 digits ─
-function normalizePhone(raw) {
-  let p = String(raw || '').replace(/\D/g, '');
-  if (p.length === 11 && p.startsWith('1')) p = p.substring(1);
-  return p;
-}
+// 2026-04-20 pass 12: phone normalization moved to src/phone-normalize.js as
+// the single source of truth. Four implementations used to live across
+// filtration.js, campaigns.js, property-import-routes.js, and
+// bulk-import-routes.js, and only this one stripped the leading "1" on
+// length-11 inputs. So "1-555-123-4567" stored as "15551234567" via bulk
+// imports but "5551234567" via filtration — every cross-path dedup and
+// NIS match silently missed. Also handled extensions (old: "(555) 123-4567
+// x3" → "55512345673" ghost record) and international numbers (old:
+// "+44 20 7946 0958" → stored as garbage). All callers now import from
+// phone-normalize.js; this function is kept as a re-export so the large
+// number of in-file callers don't all need to change.
+const { normalizePhone: _normalizePhone } = require('./phone-normalize');
+function normalizePhone(raw) { return _normalizePhone(raw); }
 
 // ── Detect phone columns from CSV headers ─────────────────────────────────────
 function detectPhoneColumns(headers) {
@@ -65,7 +73,7 @@ async function recordUpload(campaignId, filename, sourceListName, channel, rows,
     if (row._caughtByMemory)     tally.mem++;
     if (CONNECTED_DISPOS.has(d)) tally.connected++;
 
-    const phone = String(row.Phone || '').replace(/\D/g, '');
+    const phone = normalizePhone(row.Phone);
     if (!phone) continue;
 
     byPhone.set(phone, {
@@ -217,7 +225,7 @@ async function applyFiltrationToContacts(campaignId, allRows) {
 
 async function applyFiltrationToContactsPerRow(campaignId, allRows) {
   for (const row of allRows) {
-    const phone = String(row.Phone || '').replace(/\D/g, '');
+    const phone = normalizePhone(row.Phone);
     if (!phone) continue;
 
     const dispo = row._normDispo || '';
@@ -334,7 +342,7 @@ async function applyFiltrationToContactsBulk(campaignId, allRows) {
   const transferPhones = new Set();
 
   for (const row of allRows) {
-    const phone = String(row.Phone || '').replace(/\D/g, '');
+    const phone = normalizePhone(row.Phone);
     if (!phone) continue;
 
     const dispo = row._normDispo || '';
@@ -587,16 +595,50 @@ async function importNisFile(rows) {
   await ensureNisEventsSchema();
   let inserted = 0, updated = 0, flagged = 0, duplicateEvents = 0;
   const BATCH = 500;
+  // Reset per-call counter for unparseable-date warnings so each file is
+  // fresh (see pass 12 explicit date parsing below).
+  importNisFile._unparseableLogged = 0;
 
   const phoneMap = new Map();
   for (const r of rows) {
     const phone = normalizePhone(r.dialed || r.Dialed || r.phone || '');
     if (!phone || phone.length < 10) continue;
     const dayRaw = r.day || r.Day || '';
+    // 2026-04-20 pass 12: explicit date parsing. Pre-pass-12 we used
+    //   `const parsed = new Date(dayRaw); if (!isNaN(parsed)) day = parsed.toISOString().split('T')[0]`
+    // which had three problems:
+    //   1. "10/04/2026" is US Oct 4 in Node but EU Apr 10 to a human —
+    //      ambiguous input silently interpreted as Month/Day/Year.
+    //   2. Completely unparseable input returned Invalid Date and the row
+    //      was silently dropped with no log — user saw "0 events imported"
+    //      with no idea why.
+    //   3. If dayRaw had a time component in a non-UTC timezone, toISOString
+    //      shifted by ±1 day depending on server TZ.
+    // Now: accept only explicit YYYY-MM-DD or M/D/YYYY (+ 2-digit year variant)
+    // and collect unparseable rows for logging so the operator sees the gap.
     let day = null;
+    let dayParseFail = null;
     if (dayRaw) {
-      const parsed = new Date(dayRaw);
-      if (!isNaN(parsed)) day = parsed.toISOString().split('T')[0];
+      const s = String(dayRaw).trim();
+      // ISO: 2026-04-19 (preferred format from carrier / dialer exports)
+      const iso = s.match(/^(\d{4})-(\d{1,2})-(\d{1,2})(?:\s|T|$)/);
+      // US slash: 4/19/2026 or 04/19/26
+      const us = s.match(/^(\d{1,2})\/(\d{1,2})\/(\d{2,4})(?:\s|$)/);
+      if (iso) {
+        const [, y, m, d] = iso;
+        day = `${y}-${String(m).padStart(2,'0')}-${String(d).padStart(2,'0')}`;
+      } else if (us) {
+        let [, m, d, y] = us;
+        if (y.length === 2) y = (parseInt(y) >= 70 ? '19' : '20') + y;
+        day = `${y}-${String(m).padStart(2,'0')}-${String(d).padStart(2,'0')}`;
+      } else {
+        dayParseFail = s;
+      }
+    }
+    // Surface unparseable dates so the operator knows why a row didn't land.
+    // Rate-limited to the first ~5 per file via a module-level counter.
+    if (dayParseFail && (importNisFile._unparseableLogged = (importNisFile._unparseableLogged || 0) + 1) <= 5) {
+      console.warn(`[nis] unparseable date value dropped: "${dayParseFail}" — expected YYYY-MM-DD or M/D/YYYY`);
     }
     if (!phoneMap.has(phone)) {
       phoneMap.set(phone, { phone, first: day, last: day, days: new Set(day ? [day] : []) });
