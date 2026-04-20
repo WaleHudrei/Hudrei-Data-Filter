@@ -134,7 +134,13 @@ router.get('/', requireAuth, async (req, res) => {
           const data = await res.json();
           if (data.html) document.getElementById('activity-tbody').innerHTML = data.html;
           if (!data.hasRunning) clearInterval(refreshInterval);
-        } catch(e) {}
+        } catch(e) {
+          // pass 12: was an empty catch — polling errors were silent, so a
+          // server-side 500 or malformed JSON just made the UI hang with no
+          // indication. Log to browser console so the operator can at least
+          // see it's failing by opening DevTools.
+          console.warn('[activity] poll failed:', e && e.message ? e.message : e);
+        }
       }, 2000);
       ` : ''}
       </script>
