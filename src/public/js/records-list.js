@@ -637,6 +637,12 @@ async function confirmBulkTag() {
   var ids = Object.keys(selectedIds);
   var tagNames = [], tagIds = [];
   if (_bulkTagMode === 'add') {
+    // 2026-04-20 UX fix: if the user typed a tag name but hit Apply instead
+    // of Enter, auto-commit the input value first so they don't have to
+    // re-type it. Mirrors the natural flow — typing then clicking Apply
+    // is at least as common as typing then pressing Enter.
+    var pending = (document.getElementById('bulk-tag-input').value || '').trim();
+    if (pending) bulkTagAdd();
     if (_bulkTagQueue.length === 0) { showBulkTagErr('Add at least one tag first.'); return; }
     tagNames = _bulkTagQueue.map(function(t){ return t.name; });
   } else {
