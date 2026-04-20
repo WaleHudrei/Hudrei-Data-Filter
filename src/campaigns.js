@@ -486,20 +486,40 @@ async function importContactList(campaignId, rows, headers, customMapping) {
       params
     );
 
-    // Build batch UPSERT for phones
-    const phoneVals = [];
-    const phoneParams = [];
-    let pp = 1;
+    // Build batch UPSERT for phones.
+    //
+    // 2026-04-20 pass 11: Dedup by (contact_id, phone_number) before building
+    // the VALUES list. Previously we pushed every non-empty phone column for
+    // every contact row without checking — if a single CSV row had the same
+    // phone in multiple columns (very common in county-sourced lists where
+    // scrapers fill 3–5 phone slots with the same cleaned number), the batch
+    // contained multiple rows targeting the same (contact_id, phone_number)
+    // key. ON CONFLICT DO UPDATE can't touch the same target row twice in
+    // one statement — PG throws 21000 "ON CONFLICT DO UPDATE command cannot
+    // affect row a second time" and the entire upload dies. First occurrence
+    // (= lowest slot_index) wins, which is also the canonical position for
+    // that phone. Same pattern as server.js:1196 bulk CSV ingest.
+    const phoneBucket = new Map();  // key = `${contactId}|${phone}`
+    let phoneDupesCollapsed = 0;
     for (const cRow of contactRes.rows) {
       const r = batch[cRow.row_index - i];
       if (!r) continue;
       for (let s = 0; s < phoneCols.length; s++) {
         const phone = String(r[phoneCols[s].col]||'').replace(/\D/g,'');
         if (!phone || phone === '0' || phone.length < 7) continue;
-        phoneVals.push(`($${pp},$${pp+1},$${pp+2},$${pp+3})`);
-        phoneParams.push(campaignId, cRow.id, phone, s + 1);
-        pp += 4;
+        const k = `${cRow.id}|${phone}`;
+        if (phoneBucket.has(k)) { phoneDupesCollapsed++; continue; }
+        phoneBucket.set(k, { contactId: cRow.id, phone, slot: s + 1 });
       }
+    }
+
+    const phoneVals = [];
+    const phoneParams = [];
+    let pp = 1;
+    for (const p of phoneBucket.values()) {
+      phoneVals.push(`($${pp},$${pp+1},$${pp+2},$${pp+3})`);
+      phoneParams.push(campaignId, p.contactId, p.phone, p.slot);
+      pp += 4;
     }
 
     if (phoneVals.length > 0) {
@@ -521,6 +541,10 @@ async function importContactList(campaignId, rows, headers, customMapping) {
            updated_at = NOW()`,
         phoneParams
       );
+    }
+
+    if (phoneDupesCollapsed > 0) {
+      console.log(`[campaigns/upload] collapsed ${phoneDupesCollapsed} duplicate phone entries within batch (same contact, same number in multiple slots)`);
     }
 
     imported += batch.length;
