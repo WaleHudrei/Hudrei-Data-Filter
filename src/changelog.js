@@ -3,6 +3,14 @@
 
 const ENTRIES = [
   {
+    date: 'April 20, 2026 (Pass 10)',
+    title: 'Contact upload hotfix — unique index dedup',
+    items: [
+      { tag: 'fix', text: 'Contact uploads into campaigns have been silently broken since Pass 1 deployed on April 18. Every upload died with Postgres error 42P10 ("no unique or exclusion constraint matching the ON CONFLICT specification"). Root cause: Pass 1 audit fix #14 changed the ON CONFLICT key on campaign_contact_phones from (contact_id, slot_index) to (contact_id, phone_number), which required dropping the old unique constraint and creating a new unique index. The CREATE UNIQUE INDEX failed because pre-existing rows already had duplicate (contact_id, phone_number) pairs — legacy from slot-shuffle re-uploads and contact merges before the fix. With the old constraint dropped and the new index never created, the table had no unique constraint at all, so every INSERT ... ON CONFLICT (contact_id, phone_number) crashed instantly. The failure was swallowed by a catch block on boot, so it only surfaced when you tried to upload. Now initCampaignSchema runs a one-time dedup pass before creating the index — keeps the most informative row per (contact, phone) group (filtered status beats unknown, higher cumulative_count wins, newer updated_at wins, lowest id as tiebreak), deletes the rest. No phone number disappears from any contact; duplicate bookkeeping rows collapse to one with the richest state preserved. If the index creation still fails after dedup, it now logs loudly with CRITICAL prefix and dumps the top remaining dupe groups for diagnosis instead of hiding the problem.' },
+      { tag: 'note', text: 'The dedup runs once at next boot after this deploy. First boot will log "[campaigns] Deduplicated N duplicate (contact_id, phone_number) row(s)" with the count. Subsequent boots are no-ops (0 rows to dedup, index already exists). No manual intervention required.' },
+    ],
+  },
+  {
     date: 'April 18, 2026 (Pass 9)',
     title: 'Distress weight rebalance — high-intent signals weighted higher, mortgage foreclosure added',
     items: [
