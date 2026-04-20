@@ -1499,20 +1499,53 @@ async function runBackgroundImport(jobId, allRows, mapping, filename, resolvedLi
           for (let i = 0; i < newPropIds.length; i++) contactIdByProp.set(newPropIds[i], newIds[i]);
         }
 
-        // Bulk UPSERT phones — walk every row × 10 slots, emit one array
-        const phCids=[], phNums=[], phIdxs=[], phTypes=[], phStats=[];
+        // Bulk UPSERT phones — walk every row × 10 slots, emit one array.
+        //
+        // 2026-04-20 pass 11: Dedup by (contact_id, phone_number) before the
+        // UNNEST — without it, a single property row with the same phone
+        // number in multiple slot columns OR two properties in the batch
+        // that share a contact via property_contacts would both emit the
+        // same (cid, phone) key, tripping PG 21000 and killing the import.
+        // First occurrence wins (lowest slot = canonical); an informative
+        // phone_status from a later duplicate is preserved over 'unknown'.
+        const phoneBucket = new Map();   // key = `${cid}|${phone}`
+        let phoneDupesCollapsed = 0;
         for (const [propId, row] of rowByPropId) {
           const cid = contactIdByProp.get(propId);
           if (!cid) continue;
           for (let i = 1; i <= 10; i++) {
             const phoneRaw = cleanPhone(get(row, `phone_${i}`));
             if (!phoneRaw || phoneRaw.length < 7) continue;
-            phCids.push(cid);
-            phNums.push(phoneRaw);
-            phIdxs.push(i);
-            phTypes.push((get(row, `phone_type_${i}`) || 'unknown').toLowerCase().trim());
-            phStats.push((get(row, `phone_status_${i}`) || 'unknown').toLowerCase().trim());
+            const pType   = (get(row, `phone_type_${i}`)   || 'unknown').toLowerCase().trim();
+            const pStatus = (get(row, `phone_status_${i}`) || 'unknown').toLowerCase().trim();
+            const key = `${cid}|${phoneRaw}`;
+            const existing = phoneBucket.get(key);
+            if (existing) {
+              phoneDupesCollapsed++;
+              // Upgrade to informative status/type if existing was blank
+              const existingInformative = existing.status !== 'unknown';
+              const incomingInformative = pStatus !== 'unknown';
+              if (!existingInformative && incomingInformative) {
+                existing.status = pStatus;
+              }
+              const existingInformativeType = existing.type !== 'unknown';
+              const incomingInformativeType = pType !== 'unknown';
+              if (!existingInformativeType && incomingInformativeType) {
+                existing.type = pType;
+              }
+              continue;
+            }
+            phoneBucket.set(key, { cid, phone: phoneRaw, idx: i, type: pType, status: pStatus });
           }
+        }
+
+        const phCids=[], phNums=[], phIdxs=[], phTypes=[], phStats=[];
+        for (const p of phoneBucket.values()) {
+          phCids.push(p.cid);
+          phNums.push(p.phone);
+          phIdxs.push(p.idx);
+          phTypes.push(p.type);
+          phStats.push(p.status);
         }
         if (phCids.length > 0) {
           await query(`
@@ -1524,6 +1557,10 @@ async function runBackgroundImport(jobId, allRows, mapping, filename, resolvedLi
               phone_status = CASE WHEN EXCLUDED.phone_status != 'unknown' THEN EXCLUDED.phone_status ELSE phones.phone_status END,
               updated_at   = NOW()
           `, [phCids, phNums, phIdxs, phTypes, phStats]);
+        }
+
+        if (phoneDupesCollapsed > 0) {
+          console.log(`[property-import] collapsed ${phoneDupesCollapsed} duplicate phone entries in batch`);
         }
 
         // Bulk INSERT property_lists links for every property in the batch
