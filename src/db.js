@@ -442,6 +442,14 @@ async function initSchema() {
     `CREATE INDEX IF NOT EXISTS idx_cc_marketing_result_set
                      ON campaign_contacts(LOWER(TRIM(marketing_result)))
                   WHERE marketing_result IS NOT NULL AND TRIM(marketing_result) <> ''`,
+    // 2026-04-20 audit fix #5 (cont): composite index for the stack_list
+    // semi-join rewrite. The old idx_property_lists_list covered list_id
+    // alone; adding property_id second lets the planner do an index-only
+    // scan when answering "is property X on list Y" — no heap lookup per
+    // row. Huge win when a single-list filter needs to verify ~30k
+    // properties against a popular list.
+    `CREATE INDEX IF NOT EXISTS idx_property_lists_list_property
+                     ON property_lists(list_id, property_id)`,
   ];
   for (const sql of extraIndexes) {
     try { await query(sql); }
