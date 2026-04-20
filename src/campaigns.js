@@ -202,14 +202,77 @@ async function initCampaignSchema() {
   // KEEP the prior phone's status/wrong_number/filtered flags — a new phone
   // arrived pre-marked as Wrong/Filtered. Phone number is the real identity;
   // slot_index is positional-and-informational.
+  //
+  // 2026-04-20 hotfix (pass 10): The unique index creation above was failing
+  // silently on boot because pre-existing rows had duplicate (contact_id,
+  // phone_number) pairs — legacy artifacts from slot-shuffle re-uploads and
+  // contact merges that predated fix #14. With the old slot-based constraint
+  // dropped and the new phone-based index never created, the table had NO
+  // unique constraint at all, so every `ON CONFLICT (contact_id, phone_number)`
+  // in importContactList() crashed with Postgres 42P10. Contact uploads have
+  // been dead since pass 1 deployed. Fix: dedup duplicates BEFORE creating
+  // the index, keeping the row with the most informative state per group.
   try {
     // Drop the old slot-based unique if present (both common PG constraint names).
     await query(`ALTER TABLE campaign_contact_phones DROP CONSTRAINT IF EXISTS campaign_contact_phones_contact_id_slot_index_key`);
   } catch(_) {}
+
+  // Dedup existing (contact_id, phone_number) duplicates.
+  // Ranking for "keeper" row per group:
+  //   1. phone_status set to something other than 'unknown' (has been filtered)
+  //      beats unfiltered — don't lose call-result data.
+  //   2. Higher cumulative_count — more call history is more valuable.
+  //   3. Most recent updated_at — freshest state.
+  //   4. Lowest id — stable tiebreak.
+  // Runs once per boot; becomes a no-op (0 rows affected) after first success.
+  try {
+    const dedupRes = await query(`
+      DELETE FROM campaign_contact_phones
+       WHERE id IN (
+         SELECT id FROM (
+           SELECT id,
+                  ROW_NUMBER() OVER (
+                    PARTITION BY contact_id, phone_number
+                    ORDER BY
+                      CASE WHEN phone_status IS NOT NULL AND phone_status <> 'unknown' THEN 0 ELSE 1 END,
+                      COALESCE(cumulative_count, 0) DESC,
+                      updated_at DESC NULLS LAST,
+                      id ASC
+                  ) AS rn
+             FROM campaign_contact_phones
+         ) t
+         WHERE t.rn > 1
+       )
+    `);
+    if (dedupRes.rowCount > 0) {
+      console.log(`[campaigns] Deduplicated ${dedupRes.rowCount} duplicate (contact_id, phone_number) row(s) in campaign_contact_phones`);
+    }
+  } catch(e) {
+    console.error('[campaigns] Dedup of campaign_contact_phones failed:', e.message);
+  }
+
   try {
     await query(`CREATE UNIQUE INDEX IF NOT EXISTS idx_ccp_contact_phone_uniq
                    ON campaign_contact_phones (contact_id, phone_number)`);
-  } catch(e) { console.error('Index create warning (ccp_contact_phone_uniq):', e.message); }
+  } catch(e) {
+    // If this STILL fails after dedup, something is genuinely wrong. Surface it
+    // LOUDLY — contact uploads will fail with 42P10 until resolved. Dump the
+    // top remaining dupe groups so the operator can investigate by hand.
+    console.error('[campaigns] CRITICAL: unique index idx_ccp_contact_phone_uniq failed to create AFTER dedup. Contact uploads will fail with ON CONFLICT 42P10 until fixed. Error:', e.message);
+    try {
+      const r = await query(`
+        SELECT contact_id, phone_number, COUNT(*) AS cnt
+          FROM campaign_contact_phones
+         GROUP BY contact_id, phone_number
+        HAVING COUNT(*) > 1
+         ORDER BY cnt DESC
+         LIMIT 5
+      `);
+      if (r.rows.length) {
+        console.error('[campaigns]   Remaining dupe groups (top 5):', JSON.stringify(r.rows));
+      }
+    } catch(_) {}
+  }
 
   _campaignSchemaReady = true;
 }
