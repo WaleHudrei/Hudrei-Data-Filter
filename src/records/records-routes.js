@@ -348,15 +348,33 @@ router.get('/', requireAuth, async (req, res) => {
     // ── AND-stacking: property must appear on EVERY selected list ────────────
     // For N selected lists, require N matching rows in property_lists. If only
     // 1 list is selected, this behaves identically to the old single-list filter.
+    // 2026-04-20 audit fix #5 (cont): rewrite from correlated subquery to
+    // semi-join. The old COUNT(DISTINCT) subquery ran ONCE PER outer row,
+    // so filtering (state=IN) + (stack_list=[2630]) did ~30k subquery
+    // evaluations against property_lists. Semi-joins let Postgres choose
+    // whichever side is smaller as the driver — if list 2630 has 7k
+    // members, we scan those 7k first instead of all Indiana properties.
+    //
+    // Special-cased length=1 to a plain EXISTS (fastest path — the query
+    // planner hits idx_property_lists_list_property with an index-only
+    // scan). Length>1 uses an IN (SELECT … GROUP BY … HAVING COUNT) —
+    // single aggregation instead of N correlated subqueries.
     if (stackList.length > 0) {
       const listIdInts = stackList.map(v => parseInt(v)).filter(n => !isNaN(n));
-      if (listIdInts.length > 0) {
-        conditions.push(
-          `(SELECT COUNT(DISTINCT pl_stack.list_id)
-              FROM property_lists pl_stack
-             WHERE pl_stack.property_id = p.id
-               AND pl_stack.list_id = ANY($${idx}::int[])) = $${idx+1}`
-        );
+      if (listIdInts.length === 1) {
+        conditions.push(`EXISTS (
+          SELECT 1 FROM property_lists pl_stack
+           WHERE pl_stack.property_id = p.id
+             AND pl_stack.list_id = $${idx}
+        )`);
+        params.push(listIdInts[0]); idx++;
+      } else if (listIdInts.length > 1) {
+        conditions.push(`p.id IN (
+          SELECT pl_stack.property_id FROM property_lists pl_stack
+           WHERE pl_stack.list_id = ANY($${idx}::int[])
+           GROUP BY pl_stack.property_id
+          HAVING COUNT(DISTINCT pl_stack.list_id) = $${idx+1}
+        )`);
         params.push(listIdInts);
         params.push(listIdInts.length);
         idx += 2;
