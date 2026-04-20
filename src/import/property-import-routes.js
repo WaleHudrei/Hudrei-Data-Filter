@@ -1461,10 +1461,51 @@ async function runBackgroundImport(jobId, allRows, mapping, filename, resolvedLi
           for (const r of ex.rows) existingPC.set(r.property_id, r.contact_id);
         }
 
+        // ──────────────────────────────────────────────────────────────────
+        // 2026-04-20 audit fix #6: phone-based contact reuse.
+        //
+        // Before this block: every new (property_id, has-no-primary-contact
+        // yet) row would create a FRESH contacts row, even when the same
+        // phone number already belongs to a contact in another property.
+        // Result: John Smith who owns 5 properties had 5 contact rows, each
+        // with (possibly the same) phone — making outbound calls look like
+        // 5 separate people to every downstream system.
+        //
+        // Now: we scan every phone in the batch, ask the global phones table
+        // "who already owns this?", and for any property whose row has at
+        // least one already-owned phone, we reuse that contact instead of
+        // creating a new one. Falls through to new-contact creation only for
+        // genuinely new owners.
+        // ──────────────────────────────────────────────────────────────────
+        const phoneToExistingContact = new Map();   // phone_number → contact_id
+        {
+          const batchPhones = new Set();
+          for (const [propId, row] of rowByPropId) {
+            if (existingPC.has(propId)) continue;  // already has a primary — skip
+            for (let i = 1; i <= 10; i++) {
+              const p = cleanPhone(get(row, `phone_${i}`));
+              if (p && p.length >= 7) batchPhones.add(p);
+            }
+          }
+          if (batchPhones.size > 0) {
+            const phoneArr = Array.from(batchPhones);
+            // Prefer oldest contact per phone (stable, deterministic)
+            const phRes = await query(
+              `SELECT DISTINCT ON (phone_number) phone_number, contact_id
+                 FROM phones
+                WHERE phone_number = ANY($1::text[])
+                ORDER BY phone_number, contact_id ASC`,
+              [phoneArr]
+            );
+            for (const r of phRes.rows) phoneToExistingContact.set(r.phone_number, r.contact_id);
+          }
+        }
+
         // Split into update-existing vs insert-new
         const updIds=[], updFns=[], updLns=[], updMaddr=[], updMcity=[], updMstate=[], updMzip=[], updE1=[], updE2=[];
         const newPropIds=[], newFns=[], newLns=[], newMaddr=[], newMcity=[], newMstate=[], newMzip=[], newE1=[], newE2=[];
         const contactIdByProp = new Map();
+        let reusedContactCount = 0;
 
         for (const [propId, row] of rowByPropId) {
           if (existingPC.has(propId)) {
@@ -1479,6 +1520,43 @@ async function runBackgroundImport(jobId, allRows, mapping, filename, resolvedLi
             updMzip.push(get(row,'mailing_zip') || '');
             updE1.push(get(row,'email_1') || '');
             updE2.push(get(row,'email_2') || '');
+            continue;
+          }
+
+          // No primary yet — check if any phone on this row already belongs
+          // to an existing contact (fix #6). First match wins.
+          let reusedCid = null;
+          for (let i = 1; i <= 10; i++) {
+            const p = cleanPhone(get(row, `phone_${i}`));
+            if (p && p.length >= 7 && phoneToExistingContact.has(p)) {
+              reusedCid = phoneToExistingContact.get(p);
+              break;
+            }
+          }
+
+          if (reusedCid) {
+            // Reuse the existing contact. Link it to this property as primary
+            // (via property_contacts) and UPDATE the contact with any new
+            // owner fields from this row (COALESCE preserves prior non-empty).
+            contactIdByProp.set(propId, reusedCid);
+            updIds.push(reusedCid);
+            updFns.push(get(row,'first_name') || '');
+            updLns.push(get(row,'last_name') || '');
+            updMaddr.push(get(row,'mailing_address') || '');
+            updMcity.push(get(row,'mailing_city') || '');
+            updMstate.push(get(row,'mailing_state') || '');
+            updMzip.push(get(row,'mailing_zip') || '');
+            updE1.push(get(row,'email_1') || '');
+            updE2.push(get(row,'email_2') || '');
+            // Create the primary property_contacts link — safe via ON CONFLICT
+            // on (property_id, contact_id).
+            await query(
+              `INSERT INTO property_contacts (property_id, contact_id, primary_contact)
+               VALUES ($1, $2, true)
+               ON CONFLICT (property_id, contact_id) DO UPDATE SET primary_contact = true`,
+              [propId, reusedCid]
+            );
+            reusedContactCount++;
           } else {
             newPropIds.push(propId);
             newFns.push(get(row,'first_name') || '');
@@ -1490,6 +1568,10 @@ async function runBackgroundImport(jobId, allRows, mapping, filename, resolvedLi
             newE1.push(get(row,'email_1') || null);
             newE2.push(get(row,'email_2') || null);
           }
+        }
+
+        if (reusedContactCount > 0) {
+          console.log(`[property-import] reused ${reusedContactCount} existing contact(s) via phone-match (fix #6)`);
         }
 
         // Bulk UPDATE existing contacts (COALESCE preserves prior non-empty values)
