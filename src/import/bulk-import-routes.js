@@ -506,19 +506,59 @@ async function processImport(jobId, csvPath, filename) {
     }
 
     // 8. Bulk UPSERT phones. One row per (contact_id, phone_number).
-    const phContactIds = [], phNumbers = [], phStatuses = [], phTags = [], phIdx = [];
+    //
+    // 2026-04-20 pass 11: Dedup by (contact_id, phone_number) before UNNEST.
+    // Same bug class as campaigns.js — county-sourced CSVs commonly repeat
+    // the same phone across multiple slots for one property, and property
+    // merges can make two properties share a contact_id so their phones
+    // collide across the batch. ON CONFLICT DO UPDATE crashes with 21000
+    // when the same key appears twice. First occurrence wins (lowest
+    // phone_index = canonical slot), most-informative status preserved.
+    const phoneBucket = new Map();   // key = `${cid}|${phone_number}`
+    let phoneDupesCollapsed = 0;
     for (const [k, propId] of propIdByKey) {
       const m = mappedByKey.get(k);
       if (!m) continue;
       const cid = contactIdByProp.get(propId);
       if (!cid) continue;
       for (const ph of m.phones) {
-        phContactIds.push(cid);
-        phNumbers.push(ph.phone_number);
-        phStatuses.push(ph.phone_status);
-        phTags.push(ph.phone_tag || '');
-        phIdx.push(ph.phone_index);
+        const key = `${cid}|${ph.phone_number}`;
+        const existing = phoneBucket.get(key);
+        if (existing) {
+          phoneDupesCollapsed++;
+          // Prefer the entry whose phone_status is something other than
+          // 'unknown' — don't let a later blank-status duplicate erase a
+          // real disposition. If existing is already informative, keep it.
+          const existingInformative = existing.phone_status && existing.phone_status !== 'unknown';
+          const incomingInformative = ph.phone_status && ph.phone_status !== 'unknown';
+          if (!existingInformative && incomingInformative) {
+            phoneBucket.set(key, {
+              contact_id: cid,
+              phone_number: ph.phone_number,
+              phone_index: existing.phone_index,         // keep lowest index
+              phone_status: ph.phone_status,
+              phone_tag: ph.phone_tag || existing.phone_tag,
+            });
+          }
+          continue;
+        }
+        phoneBucket.set(key, {
+          contact_id: cid,
+          phone_number: ph.phone_number,
+          phone_index: ph.phone_index,
+          phone_status: ph.phone_status,
+          phone_tag: ph.phone_tag || '',
+        });
       }
+    }
+
+    const phContactIds = [], phNumbers = [], phStatuses = [], phTags = [], phIdx = [];
+    for (const p of phoneBucket.values()) {
+      phContactIds.push(p.contact_id);
+      phNumbers.push(p.phone_number);
+      phStatuses.push(p.phone_status);
+      phTags.push(p.phone_tag || '');
+      phIdx.push(p.phone_index);
     }
 
     if (phContactIds.length > 0) {
@@ -534,6 +574,10 @@ async function processImport(jobId, csvPath, filename) {
           phone_tag    = COALESCE(NULLIF(EXCLUDED.phone_tag,''), phones.phone_tag),
           updated_at   = NOW()
       `, [phContactIds, phNumbers, phIdx, phStatuses, phTags]);
+    }
+
+    if (phoneDupesCollapsed > 0) {
+      console.log(`[bulk-import] collapsed ${phoneDupesCollapsed} duplicate phone entries in batch`);
     }
 
     rowsProcessed += raw.length;
