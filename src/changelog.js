@@ -3,6 +3,15 @@
 
 const ENTRIES = [
   {
+    date: 'April 20, 2026 (Pass 11)',
+    title: 'Upload crash 21000 — phone batch dedup across three import paths',
+    items: [
+      { tag: 'fix', text: 'Contact uploads into campaigns were crashing with Postgres error 21000 — "ON CONFLICT DO UPDATE command cannot affect row a second time." Pass 10 fixed the missing unique index on campaign_contact_phones, which let uploads reach this next layer of the same underlying bug. Root cause: the phone-batch builder walked every phone column for every contact and pushed each one into the VALUES list without checking whether (contact_id, phone_number) had already been emitted earlier in the same batch. County-sourced lists (especially mortgage foreclosure data) routinely repeat the same phone number across multiple slot columns for one contact — scrapers fill three or four phone fields with the same cleaned value. When two entries in the batch target the same conflict key, Postgres refuses the whole statement because it can\'t decide which slot_index should win. Fix: Map-based dedup keyed by contactId|phoneNumber, first occurrence (lowest slot) kept as canonical position. Same pattern that server.js:1196 has used successfully for bulk CSV ingest since Pass 8. Duplicate-collapse count is logged per batch so it\'s visible at scale.' },
+      { tag: 'fix', text: 'Audited every ON CONFLICT DO UPDATE across the codebase for the same class of gap (batched upsert where the conflict target can collide within a single batch). Found the same unguarded pattern in two more places that hadn\'t surfaced yet: bulk-import-routes.js (the Excel/CSV bulk import path) and property-import-routes.js (the standard property CSV import path). Both fixed with identical dedup logic. Without this fix, any property whose seller appears twice in the source file — or any merged-contact scenario where two properties legitimately share an owner — would have crashed the import the moment a shared phone number turned up in both. No prod report yet because both paths had gone unused during the window the bug was reachable; but the bug was definitely there and now isn\'t.' },
+      { tag: 'note', text: 'In the dedup, if two entries share (contact_id, phone_number) but one has a meaningful phone_status and the other has "unknown," the informative status is preserved. This matters because a number can legitimately appear twice in a source file with different dispositions recorded against each slot — we don\'t want to drop the useful signal just because it came second. Also: the one existing sibling ON CONFLICT that was already safe — server.js:1211 bulk CSV ingest — was untouched; it has had Map-based dedup at line 1196 since Pass 8 and has been working correctly all along.' },
+    ],
+  },
+  {
     date: 'April 20, 2026 (Pass 10)',
     title: 'Contact upload hotfix — unique index dedup',
     items: [
