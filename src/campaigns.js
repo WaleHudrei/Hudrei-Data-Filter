@@ -1,6 +1,7 @@
 const { query } = require('./db');
 const filtration = require('./filtration');
 const { normalizePhone } = require('./phone-normalize');
+const { normalizeState } = require('./import/state');
 
 // ─────────────────────────────────────────────────────────────────────────────
 // 2026-04-17 audit changes:
@@ -31,7 +32,7 @@ async function initCampaignSchema() {
   await query(`
     CREATE TABLE IF NOT EXISTS campaigns (
       id SERIAL PRIMARY KEY,
-      name VARCHAR(255) NOT NULL UNIQUE,
+      name VARCHAR(255) NOT NULL,
       list_type VARCHAR(100) NOT NULL,
       market_name VARCHAR(100) NOT NULL,
       state_code CHAR(2) NOT NULL,
@@ -183,6 +184,14 @@ async function initCampaignSchema() {
        GENERATED ALWAYS AS (
          LOWER(REGEXP_REPLACE(REGEXP_REPLACE(TRIM(COALESCE(property_address,'')), '[.,]+', '', 'g'), '\\s+', ' ', 'g'))
        ) STORED`,
+    // 2026-04-20 audit fix #A: allow duplicate campaign names. The original
+    // schema had `name VARCHAR(255) NOT NULL UNIQUE`, which (a) blocked users
+    // from creating a second campaign with the same name — a legitimate use
+    // case when running the same campaign type across different markets or
+    // rounds — and (b) silently broke cloneCampaign() which tries to INSERT
+    // the source's name verbatim. Dropping the PG auto-named constraint
+    // (table_column_key pattern); IF EXISTS keeps the migration idempotent.
+    `ALTER TABLE campaigns DROP CONSTRAINT IF EXISTS campaigns_name_key`,
   ];
   for (const m of migrations) {
     try { await query(m); } catch(e) { console.error('Migration error:', e.message); }
@@ -275,6 +284,62 @@ async function initCampaignSchema() {
     } catch(_) {}
   }
 
+  // ── 2026-04-20 audit fix #1: campaign_contacts.property_state backfill ──────
+  // Pre-fix, property_state was stored raw from the CSV — values like
+  // "Indiana", "INDIANA", "  Indiana  ", "In." landed in the column. The
+  // records filter does UPPER(TRIM(property_state)) = UPPER(TRIM(p.state_code))
+  // against properties.state_code (always a 2-letter USPS code), so every one
+  // of those rows silently dropped and the marketing-result filter returned 0.
+  //
+  // This block normalizes historical rows in-place. Gated by LOKI_STATE_FIX:
+  //   unset / 'report' (default) — log how many rows would be changed
+  //   'confirm'                  — actually run the UPDATE
+  //   'skip'                     — no-op
+  try {
+    const mode = (process.env.LOKI_STATE_FIX || 'report').toLowerCase();
+    if (mode !== 'skip') {
+      // Pull distinct offenders
+      const bad = await query(`
+        SELECT DISTINCT TRIM(property_state) AS raw
+          FROM campaign_contacts
+         WHERE property_state IS NOT NULL
+           AND TRIM(property_state) <> ''
+           AND UPPER(TRIM(property_state)) NOT IN (
+             'AL','AK','AZ','AR','CA','CO','CT','DE','FL','GA',
+             'HI','ID','IL','IN','IA','KS','KY','LA','ME','MD',
+             'MA','MI','MN','MS','MO','MT','NE','NV','NH','NJ',
+             'NM','NY','NC','ND','OH','OK','OR','PA','RI','SC',
+             'SD','TN','TX','UT','VT','VA','WA','WV','WI','WY','DC'
+           )
+      `);
+      const toFix = [];
+      for (const r of bad.rows) {
+        const normed = normalizeState(r.raw);
+        if (normed) toFix.push({ raw: r.raw, normed });
+      }
+      if (toFix.length === 0) {
+        // nothing to do — stay silent
+      } else if (mode === 'confirm') {
+        let total = 0;
+        for (const { raw, normed } of toFix) {
+          const res = await query(
+            `UPDATE campaign_contacts SET property_state = $1 WHERE TRIM(property_state) = $2`,
+            [normed, raw]
+          );
+          total += res.rowCount;
+        }
+        console.log(`[campaigns] state backfill: normalized ${total} row(s) across ${toFix.length} distinct value(s). You can unset LOKI_STATE_FIX now.`);
+      } else {
+        const sample = toFix.slice(0, 10).map(t => `"${t.raw}" → ${t.normed}`).join(', ');
+        console.log(`[campaigns] state backfill — REPORT ONLY (set LOKI_STATE_FIX=confirm to execute):`);
+        console.log(`[campaigns]   ${toFix.length} distinct value(s) would be normalized`);
+        console.log(`[campaigns]   sample: ${sample}${toFix.length > 10 ? ` (+${toFix.length - 10} more)` : ''}`);
+      }
+    }
+  } catch (e) {
+    console.error('[campaigns] state backfill warning:', e.message);
+  }
+
   _campaignSchemaReady = true;
 }
 
@@ -349,6 +414,27 @@ async function updateCampaignChannel(id, channel) {
   const cold = channel==='cold_call'?'active':'dormant';
   const sms  = channel==='sms'?'active':'dormant';
   await query(`UPDATE campaigns SET active_channel=$1, cold_call_status=$2, sms_status=$3, updated_at=NOW() WHERE id=$4`, [channel, cold, sms, id]);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 2026-04-20 audit fix #B: rename a campaign.
+// Returns { ok, campaign?, error? }. Trims whitespace, validates length,
+// and checks the campaign exists. Uniqueness was dropped in the migration
+// above so duplicate names are allowed — two campaigns with the same name
+// across different markets or rounds is a legitimate use case.
+// ─────────────────────────────────────────────────────────────────────────────
+async function updateCampaignName(id, rawName) {
+  const name = String(rawName || '').trim();
+  if (!name) return { ok: false, error: 'Name is required.' };
+  if (name.length > 255) return { ok: false, error: 'Name too long (max 255 characters).' };
+  const idInt = parseInt(id, 10);
+  if (!Number.isFinite(idInt) || idInt <= 0) return { ok: false, error: 'Invalid campaign id.' };
+  const res = await query(
+    `UPDATE campaigns SET name = $1, updated_at = NOW() WHERE id = $2 RETURNING *`,
+    [name, idInt]
+  );
+  if (!res.rows.length) return { ok: false, error: 'Campaign not found.' };
+  return { ok: true, campaign: res.rows[0] };
 }
 
 // ── Contact list management ───────────────────────────────────────────────────
@@ -454,11 +540,24 @@ async function importContactList(campaignId, rows, headers, customMapping) {
       const r = batch[j];
       const idx = i + j;
       vals.push(`($${p},$${p+1},$${p+2},$${p+3},$${p+4},$${p+5},$${p+6},$${p+7},$${p+8},$${p+9},$${p+10},$${p+11},$${p+12})`);
+      // 2026-04-20 audit fix #1: route property_state + mailing_state through
+      // normalizeState() so the records filter's UPPER(TRIM(property_state))
+      // = UPPER(TRIM(p.state_code)) comparison actually matches. Before this,
+      // a CSV with "Indiana" in the Property State column got stored as "In"
+      // (VARCHAR(10) no-op + no normalization) while properties.state_code
+      // holds "IN" — the join silently dropped every row and the marketing
+      // filter returned 0. normalizeState() accepts both 2-letter codes and
+      // full state names, returns null for garbage (in which case we store
+      // the raw trimmed value so the row isn't lost, just flagged).
+      const rawMstate = String(r[COL.mstate] || '').trim();
+      const rawPstate = String(r[COL.pstate] || '').trim();
+      const mstate = normalizeState(rawMstate) || rawMstate;
+      const pstate = normalizeState(rawPstate) || rawPstate;
       params.push(
         campaignId,
         r[COL.fname]||'', r[COL.lname]||'',
-        r[COL.maddr]||'', r[COL.mcity]||'', r[COL.mstate]||'', r[COL.mzip]||'', r[COL.mcounty]||'',
-        r[COL.paddr]||'', r[COL.pcity]||'', r[COL.pstate]||'', r[COL.pzip]||'',
+        r[COL.maddr]||'', r[COL.mcity]||'', mstate, r[COL.mzip]||'', r[COL.mcounty]||'',
+        r[COL.paddr]||'', r[COL.pcity]||'', pstate, r[COL.pzip]||'',
         idx
       );
       p += 13;
@@ -633,7 +732,8 @@ async function addListType(name) {
 
 module.exports = {
   initCampaignSchema, getCampaigns, getCampaign, createCampaign,
-  updateCampaignStatus, updateCampaignChannel, closeCampaign, cloneCampaign,
+  updateCampaignStatus, updateCampaignChannel, updateCampaignName,
+  closeCampaign, cloneCampaign,
   importContactList, getListTypes, addListType,
   // Re-exported from filtration.js (the authoritative implementations)
   recordUpload:              filtration.recordUpload,
