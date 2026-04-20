@@ -995,6 +995,23 @@ async function importSmarterContactFilePerRow(campaignId, rows, headers, filenam
          WHERE id = $1`,
         [phoneRow.contact_id]
       );
+      // 2026-04-20 audit fix #2: Also promote the matching property to
+      // pipeline_stage='lead'. Pre-fix, only the cold-call transfer path did
+      // this (filtration.js:288-298). The SMS transfer path wrote to
+      // campaign_contacts.marketing_result but never touched the properties
+      // table — that's why the dashboard leads count (which reads
+      // properties.pipeline_stage='lead') was drastically lower than the
+      // campaigns-level lead count. Uses the same normalized-address JOIN
+      // as the cold-call path (audit fix #29 on that side).
+      await query(
+        `UPDATE properties p SET pipeline_stage = 'lead', updated_at = NOW()
+         FROM campaign_contacts cc
+         WHERE cc.id = $1
+           AND p.street_normalized = cc.property_address_normalized
+           AND UPPER(TRIM(p.state_code)) = UPPER(TRIM(cc.property_state))
+           AND p.pipeline_stage NOT IN ('contract','closed')`,
+        [phoneRow.contact_id]
+      );
     }
 
     if (dispo === 'potential_lead') {
@@ -1341,6 +1358,21 @@ async function importSmarterContactFileBulk(campaignId, rows, headers, filename)
     await query(
       `UPDATE campaign_contacts SET marketing_result = 'Lead'
          WHERE id = ANY($1::int[])`,
+      [g.map(r => r.contactId)]
+    );
+    // 2026-04-20 audit fix #2: also promote matching properties to
+    // pipeline_stage='lead'. Pre-fix, the SMS bulk transfer path wrote only
+    // to campaign_contacts.marketing_result — the properties table was never
+    // touched, so the dashboard lead count (driven by properties.pipeline_stage)
+    // stayed stale while campaigns showed the real lead count. Mirrors the
+    // cold-call bulk path at filtration.js:425-434.
+    await query(
+      `UPDATE properties p SET pipeline_stage = 'lead', updated_at = NOW()
+         FROM campaign_contacts cc
+        WHERE cc.id = ANY($1::int[])
+          AND p.street_normalized = cc.property_address_normalized
+          AND UPPER(TRIM(p.state_code)) = UPPER(TRIM(cc.property_state))
+          AND p.pipeline_stage NOT IN ('contract','closed')`,
       [g.map(r => r.contactId)]
     );
   }
