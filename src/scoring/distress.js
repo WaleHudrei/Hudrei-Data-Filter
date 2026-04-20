@@ -147,9 +147,16 @@ function computeScore(ctx) {
     add('marketing_lead', WEIGHTS.marketing_lead, 'Already engaged (' + stage + ')');
   }
 
-  // County-sourced data (more authoritative than third-party scrapes)
-  if (ctx.has_county_source) {
-    add('county_source', WEIGHTS.county_source, 'County-sourced list');
+  // County-sourced data bonus — authoritative records, less competition from
+  // scraper aggregators. 2026-04-20 pass 12: previously fired whenever ANY
+  // list on the property had source matching "county", including pure
+  // marketing lists. Now requires at least one actual distress signal to
+  // fire — a property on only a "County Marketing List" with no distress
+  // indicator no longer gets a free +10.
+  const hasAnyDistressSignal = hasTaxSale || hasTaxDelinquent || hasMortgageFc || hasPreFc ||
+    (ctx.list_signals && (ctx.list_signals.has('probate') || ctx.list_signals.has('code_violation') || ctx.list_signals.has('vacant')));
+  if (ctx.has_county_source && hasAnyDistressSignal) {
+    add('county_source', WEIGHTS.county_source, 'County-sourced distress list');
   }
 
   const capped = Math.min(raw, DISPLAY_CAP);
@@ -360,7 +367,13 @@ async function scoreProperties(propertyIds) {
                CASE WHEN lf.has_probate   THEN ${w.list_probate}         ELSE 0 END +
                CASE WHEN lf.has_code_viol THEN ${w.list_code_violation}  ELSE 0 END +
                CASE WHEN lf.has_vacant    THEN ${w.list_vacant}          ELSE 0 END +
-               CASE WHEN lf.has_county_source THEN ${w.county_source}    ELSE 0 END +
+               CASE WHEN lf.has_county_source AND (
+                                      COALESCE(lf.has_tax_sale,false) OR COALESCE(lf.has_tax_delinq,false) OR
+                                      COALESCE(lf.has_mortgage_fc,false) OR COALESCE(lf.has_pre_fc,false) OR
+                                      COALESCE(lf.has_probate,false) OR COALESCE(lf.has_code_viol,false) OR
+                                      COALESCE(lf.has_vacant,false)
+                                    )
+                                    THEN ${w.county_source} ELSE 0 END +
                CASE
                  WHEN COALESCE(lf.list_count,0) >= 5 THEN ${w.stack_5_plus}
                  WHEN COALESCE(lf.list_count,0) >= 3 THEN ${w.stack_3_4}
@@ -448,7 +461,13 @@ async function scoreAllProperties(progressCb) {
                CASE WHEN lf.has_probate   THEN ${w.list_probate}         ELSE 0 END +
                CASE WHEN lf.has_code_viol THEN ${w.list_code_violation}  ELSE 0 END +
                CASE WHEN lf.has_vacant    THEN ${w.list_vacant}          ELSE 0 END +
-               CASE WHEN lf.has_county_source THEN ${w.county_source}    ELSE 0 END +
+               CASE WHEN lf.has_county_source AND (
+                                      COALESCE(lf.has_tax_sale,false) OR COALESCE(lf.has_tax_delinq,false) OR
+                                      COALESCE(lf.has_mortgage_fc,false) OR COALESCE(lf.has_pre_fc,false) OR
+                                      COALESCE(lf.has_probate,false) OR COALESCE(lf.has_code_viol,false) OR
+                                      COALESCE(lf.has_vacant,false)
+                                    )
+                                    THEN ${w.county_source} ELSE 0 END +
                CASE
                  WHEN COALESCE(lf.list_count,0) >= 5 THEN ${w.stack_5_plus}
                  WHEN COALESCE(lf.list_count,0) >= 3 THEN ${w.stack_3_4}
