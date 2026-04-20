@@ -426,6 +426,22 @@ async function initSchema() {
     // the main list query's LEFT JOIN produce duplicate rows (only DISTINCT ON
     // saved it, and it picked an arbitrary winner). Before creating this index,
     // clean up any existing dupes by downgrading all but the lowest-id primary.
+    // ─────────────────────────────────────────────────────────────────────────
+    // 2026-04-20 audit fix #5 (query performance):
+    // (street_normalized, state_code) composite covers the marketing-result
+    // EXISTS subquery's join condition exactly:
+    //   WHERE cc.property_address_normalized = p.street_normalized
+    //     AND UPPER(TRIM(cc.property_state)) = UPPER(TRIM(p.state_code))
+    // The pre-existing idx_properties_street_norm was single-column; Postgres
+    // couldn't combine it with a seq-scan on state. With the composite, the
+    // filter hits an index both sides of the join and the EXISTS bails out
+    // early. Expect 10–20× speedup on the ~7000-row list.
+    `CREATE INDEX IF NOT EXISTS idx_properties_street_state_norm ON properties(street_normalized, state_code)`,
+    // Partial index on campaign_contacts rows that actually have a marketing_result —
+    // speeds up the "lead" roll-up used by the dashboard's new UNION count.
+    `CREATE INDEX IF NOT EXISTS idx_cc_marketing_result_set
+                     ON campaign_contacts(LOWER(TRIM(marketing_result)))
+                  WHERE marketing_result IS NOT NULL AND TRIM(marketing_result) <> ''`,
   ];
   for (const sql of extraIndexes) {
     try { await query(sql); }
@@ -491,6 +507,16 @@ async function initSchema() {
 
   _schemaReady = true;
   console.log('Database schema initialized + migrations applied');
+
+  // ── 2026-04-20 audit fix #6: phone-based contact dedup ─────────────────────
+  // Dry-run by default. Gated by LOKI_DEDUP_PHONES env var — see
+  // maintenance.js for semantics. Non-fatal on any failure (won't block boot).
+  try {
+    const { runScheduledMaintenance } = require('./maintenance');
+    await runScheduledMaintenance();
+  } catch (e) {
+    console.error('[db] dedup maintenance warning:', e.message);
+  }
 }
 
 /**
