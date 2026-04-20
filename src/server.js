@@ -709,7 +709,31 @@ app.get('/dashboard', requireAuth, async (req, res) => {
       (SELECT COUNT(*) FROM phones WHERE LOWER(phone_status) = 'wrong' OR wrong_number = true) AS wrong_phones,
       (SELECT COUNT(*) FROM phones WHERE LOWER(phone_status) IN ('dead','dead_number')) AS dead_phones,
       (SELECT COUNT(*) FROM lists) AS total_lists,
-      (SELECT COUNT(*) FROM properties WHERE pipeline_stage = 'lead') AS leads,
+      (
+        -- 2026-04-20 audit fix #2: dashboard leads = union of two sources.
+        --   (a) properties with pipeline_stage='lead' (set by filtration's
+        --       cold-call and SMS transfer paths when the address can be
+        --       resolved back to a property row)
+        --   (b) campaign_contacts.marketing_result='Lead' rows (SMS path
+        --       source-of-truth — some never resolve to a property because
+        --       the address doesn't match).
+        -- DISTINCT on the resolved property avoids double-counting. The extra
+        -- clause unions in unresolved campaign leads so the total matches the
+        -- campaign-level lead count the user sees in /campaigns.
+        SELECT COUNT(*) FROM (
+          SELECT p.id AS key FROM properties p WHERE p.pipeline_stage = 'lead'
+          UNION
+          SELECT 'cc:' || cc.id AS key
+            FROM campaign_contacts cc
+           WHERE LOWER(TRIM(cc.marketing_result)) = 'lead'
+             AND NOT EXISTS (
+               SELECT 1 FROM properties p2
+                WHERE p2.pipeline_stage = 'lead'
+                  AND p2.street_normalized = cc.property_address_normalized
+                  AND UPPER(TRIM(p2.state_code)) = UPPER(TRIM(cc.property_state))
+             )
+        ) lead_union
+      ) AS leads,
       (SELECT COUNT(*) FROM properties WHERE pipeline_stage = 'contract') AS contracts,
       (SELECT COUNT(*) FROM properties WHERE pipeline_stage = 'closed') AS closed,
       (SELECT COUNT(*) FROM properties WHERE state_code = 'IN') AS indiana_props,
@@ -1438,7 +1462,7 @@ app.get('/campaigns/:id', requireAuth, async (req, res) => {
     const c = await campaigns.getCampaign(req.params.id);
     if (!c) return res.redirect('/campaigns');
     c.contact_counts = await campaigns.getContactStats(req.params.id);
-    res.send(campaignDetailPage(c));
+    res.send(campaignDetailPage(c, { msg: req.query.msg || '', err: req.query.err || '' }));
   } catch (e) { res.status(500).send('Error: ' + e.message); }
 });
 
@@ -1452,6 +1476,21 @@ app.post('/campaigns/:id/status', requireAuth, async (req, res) => {
 app.post('/campaigns/:id/channel', requireAuth, async (req, res) => {
   await campaigns.updateCampaignChannel(req.params.id, req.body.channel);
   res.redirect('/campaigns/' + req.params.id);
+});
+
+// 2026-04-20 audit fix #B: rename a campaign. Validation lives in
+// campaigns.updateCampaignName(); route just surfaces the result via flash.
+app.post('/campaigns/:id/rename', requireAuth, async (req, res) => {
+  try {
+    const result = await campaigns.updateCampaignName(req.params.id, req.body.name);
+    if (!result.ok) {
+      return res.redirect('/campaigns/' + req.params.id + '?err=' + encodeURIComponent(result.error));
+    }
+    res.redirect('/campaigns/' + req.params.id + '?msg=' + encodeURIComponent('Campaign renamed.'));
+  } catch (e) {
+    console.error('[campaigns/rename]', e);
+    res.redirect('/campaigns/' + req.params.id + '?err=' + encodeURIComponent('Rename failed: ' + e.message));
+  }
 });
 
 // Get campaigns as JSON (for upload selector)
@@ -1996,7 +2035,13 @@ function changelogPage() {
 }
 
 
-function campaignDetailPage(c) {
+function campaignDetailPage(c, flash) {
+  flash = flash || {};
+  // Escape so the campaign name can safely flow into an HTML attribute on
+  // the rename modal's <input value="..."> and into visible text.
+  const escAttr = (s) => String(s == null ? '' : s)
+    .replace(/&/g, '&amp;').replace(/"/g, '&quot;')
+    .replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/'/g, '&#39;');
   const n = c.total_unique_numbers || 0;
   const manualCount = parseInt(c.manual_count) || 0;
   const rmCount = manualCount > 0 ? manualCount : n;
@@ -2043,10 +2088,20 @@ function campaignDetailPage(c) {
 
   return shell(c.name, `
     <div style="margin-bottom:1rem"><a href="/campaigns" style="font-size:13px;color:#888;text-decoration:none">← Campaigns</a></div>
+    ${flash.err ? `<div class="alert alert-error" style="margin-bottom:1rem">${escAttr(flash.err)}</div>` : ''}
+    ${flash.msg ? `<div class="alert alert-success" style="margin-bottom:1rem">${escAttr(flash.msg)}</div>` : ''}
     <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:1.5rem;flex-wrap:wrap;gap:12px">
       <div>
         <div style="display:flex;align-items:center;gap:10px;margin-bottom:4px">
-          <h2 style="font-size:20px;font-weight:500">${c.name}</h2>
+          <h2 style="font-size:20px;font-weight:500">${escAttr(c.name)}</h2>
+          <!-- 2026-04-20 audit fix #B: edit-name pencil icon -->
+          <button type="button" onclick="document.getElementById('rename-campaign-modal').classList.add('open');setTimeout(function(){document.getElementById('rename-campaign-input').focus();document.getElementById('rename-campaign-input').select();},50)"
+                  title="Edit campaign name"
+                  style="background:none;border:none;padding:4px;cursor:pointer;color:#888;display:inline-flex;align-items:center;border-radius:6px;transition:background .12s"
+                  onmouseover="this.style.background='#f0efe9';this.style.color='#1a1a1a'"
+                  onmouseout="this.style.background='none';this.style.color='#888'">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
+          </button>
           <span class="badge" style="background:${STATUS_COLORS[c.status]}20;color:${STATUS_COLORS[c.status]}">${c.status}</span>
         </div>
         <p style="font-size:13px;color:#888">${c.list_type} · ${c.market_name} · ${c.state_code} · Started ${c.start_date ? new Date(c.start_date).toLocaleDateString() : '—'} ${c.end_date ? '· Ended ' + new Date(c.end_date).toLocaleDateString() : ''} · ${c.upload_count} uploads</p>
@@ -2293,6 +2348,27 @@ ${c.sms_status === 'active' ? `
         <thead><tr><th>Date</th><th>File / Source list</th><th>Channel</th><th>Total</th><th>Kept</th><th>Filtered</th><th>Breakdown</th><th>Memory catches</th><th></th></tr></thead>
         <tbody>${uploadRows||'<tr><td colspan="8" style="color:#aaa;padding:16px;text-align:center">No uploads yet for this campaign</td></tr>'}</tbody>
       </table>
+    </div>
+
+    <!-- 2026-04-20 audit fix #B: rename campaign modal -->
+    <div id="rename-campaign-modal" class="modal-overlay">
+      <div class="modal" style="max-width:480px">
+        <div class="modal-header">
+          <div class="modal-title">Rename campaign</div>
+          <button type="button" class="modal-close" onclick="document.getElementById('rename-campaign-modal').classList.remove('open')">×</button>
+        </div>
+        <form method="POST" action="/campaigns/${c.id}/rename">
+          <div class="form-field">
+            <label>Campaign name</label>
+            <input type="text" id="rename-campaign-input" name="name" value="${escAttr(c.name)}" required maxlength="255" autocomplete="off">
+            <span class="field-hint">Duplicate names are allowed — use whatever makes sense for you.</span>
+          </div>
+          <div style="display:flex;gap:8px;margin-top:1rem">
+            <button type="submit" class="btn btn-primary" style="flex:1">Save</button>
+            <button type="button" class="btn btn-ghost" onclick="document.getElementById('rename-campaign-modal').classList.remove('open')">Cancel</button>
+          </div>
+        </form>
+      </div>
     </div>
 
     <script>
