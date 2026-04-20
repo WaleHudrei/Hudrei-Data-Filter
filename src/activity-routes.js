@@ -65,8 +65,8 @@ function renderJobRow(j) {
       ${j.errors > 0 ? `, <span style="color:#c0392b">${j.errors.toLocaleString()} errors</span>` : ''}
     </td>
     <td style="padding:13px 16px;font-size:12px;color:#888;white-space:nowrap">${fmtDate(j.created_at)}</td>
-    <td style="padding:13px 16px;text-align:right">
-      ${j.list_id ? `<a href="/records?list_id=${j.list_id}" style="padding:5px 12px;background:#f5f4f0;border:1px solid #e0dfd8;border-radius:6px;font-size:12px;color:#1a1a1a;text-decoration:none">View List</a>` : ''}
+    <td style="padding:13px 16px;text-align:right;white-space:nowrap;min-width:110px">
+      ${j.list_id ? `<a href="/records?list_id=${j.list_id}" style="display:inline-block;padding:5px 12px;background:#f5f4f0;border:1px solid #e0dfd8;border-radius:6px;font-size:12px;color:#1a1a1a;text-decoration:none;white-space:nowrap;line-height:1.2">View List</a>` : ''}
     </td>
   </tr>`;
 }
