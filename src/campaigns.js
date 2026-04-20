@@ -1,5 +1,6 @@
 const { query } = require('./db');
 const filtration = require('./filtration');
+const { normalizePhone } = require('./phone-normalize');
 
 // ─────────────────────────────────────────────────────────────────────────────
 // 2026-04-17 audit changes:
@@ -505,8 +506,13 @@ async function importContactList(campaignId, rows, headers, customMapping) {
       const r = batch[cRow.row_index - i];
       if (!r) continue;
       for (let s = 0; s < phoneCols.length; s++) {
-        const phone = String(r[phoneCols[s].col]||'').replace(/\D/g,'');
-        if (!phone || phone === '0' || phone.length < 7) continue;
+        // 2026-04-20 pass 12: route through shared normalizePhone so a contact
+        // file with "1-555-123-4567" stores the same 10-digit canonical key
+        // as every other import path. Pre-pass-12 inline cleaning produced
+        // "15551234567" here while filtration.js produced "5551234567" for
+        // the same input — cross-path dedup and NIS matches silently missed.
+        const phone = normalizePhone(r[phoneCols[s].col]);
+        if (!phone || phone.length < 7) continue;
         const k = `${cRow.id}|${phone}`;
         if (phoneBucket.has(k)) { phoneDupesCollapsed++; continue; }
         phoneBucket.set(k, { contactId: cRow.id, phone, slot: s + 1 });
