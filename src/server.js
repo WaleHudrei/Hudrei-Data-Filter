@@ -721,9 +721,9 @@ app.get('/dashboard', requireAuth, async (req, res) => {
         -- clause unions in unresolved campaign leads so the total matches the
         -- campaign-level lead count the user sees in /campaigns.
         SELECT COUNT(*) FROM (
-          SELECT p.id AS key FROM properties p WHERE p.pipeline_stage = 'lead'
+          SELECT 'p:' || p.id::text AS key FROM properties p WHERE p.pipeline_stage = 'lead'
           UNION
-          SELECT 'cc:' || cc.id AS key
+          SELECT 'cc:' || cc.id::text AS key
             FROM campaign_contacts cc
            WHERE LOWER(TRIM(cc.marketing_result)) = 'lead'
              AND NOT EXISTS (
