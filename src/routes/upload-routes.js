@@ -3,6 +3,7 @@ const multer = require('multer');
 const Papa = require('papaparse');
 const router = express.Router();
 const uploadUI = require('../ui/upload');
+const { bufferToCsvText } = require('../csv-utils');
 
 // 2026-04-18 audit fix #43: this second multer instance (separate from the one
 // in server.js) was missing the fileFilter from fix #21. Non-CSV uploads would
@@ -39,7 +40,7 @@ router.get('/property/review', requireAuth, (req, res) => res.send(uploadUI.uplo
 router.post('/filter/parse', requireAuth, upload.single('csvfile'), (req, res) => {
   try {
     if (!req.file) return res.status(400).json({ error: 'No file uploaded.' });
-    const parsed = Papa.parse(req.file.buffer.toString('utf8'), { header: true, skipEmptyLines: true });
+    const parsed = Papa.parse(bufferToCsvText(req.file.buffer), { header: true, skipEmptyLines: true });
     const columns = parsed.meta.fields || [];
     const rows = parsed.data;
     const autoMap = uploadUI.autoMap(columns, uploadUI.REISIFT_FILTER_FIELDS);
@@ -50,7 +51,7 @@ router.post('/filter/parse', requireAuth, upload.single('csvfile'), (req, res) =
 router.post('/property/parse', requireAuth, upload.single('csvfile'), (req, res) => {
   try {
     if (!req.file) return res.status(400).json({ error: 'No file uploaded.' });
-    const parsed = Papa.parse(req.file.buffer.toString('utf8'), { header: true, skipEmptyLines: true });
+    const parsed = Papa.parse(bufferToCsvText(req.file.buffer), { header: true, skipEmptyLines: true });
     const columns = parsed.meta.fields || [];
     const rows = parsed.data;
     const autoMap = uploadUI.autoMap(columns, uploadUI.REISIFT_PROPERTY_FIELDS);
