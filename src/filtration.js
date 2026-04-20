@@ -458,24 +458,83 @@ async function applyFiltrationToContactsBulk(campaignId, allRows) {
 }
 
 // ── Generate clean export — one row per contact, blanked wrong/filtered phones ─
+//
+// 2026-04-20 audit fix: previously this SELECTed campaign_contacts.* directly,
+// which meant if the original contact-list upload's CSV headers didn't match
+// the auto-detect patterns in importContactList (very common — "Address" vs
+// "Mailing Address", "Owner Email" vs "Email_1", etc.), those columns landed
+// blank in campaign_contacts and the export was useless — just names and
+// phones. Also: campaign_contacts has no email column at all, so emails
+// could never appear in the export even when the data existed.
+//
+// Fix: LEFT JOIN through phones → contacts → property_contacts → properties
+// to enrich from the authoritative global tables (which are populated by
+// the property-import pipeline regardless of campaign CSV format). COALESCE
+// campaign_contacts values first so they still win when present.
+//
+// Key resolution: each campaign contact has multiple phones; we pick the
+// first one (lowest slot_index) that resolves to a global contact. DISTINCT ON
+// ensures only one enrichment row per campaign_contact.
+// ─────────────────────────────────────────────────────────────────────────────
 async function generateCleanExport(campaignId) {
   const contacts = await query(
-    `SELECT cc.*, array_agg(
-       json_build_object(
-         'phone', ccp.phone_number,
-         'slot', ccp.slot_index,
-         'status', ccp.phone_status,
-         'wrong', ccp.wrong_number,
-         'filtered', ccp.filtered,
-         'tag', ccp.phone_tag
-       ) ORDER BY ccp.slot_index
-     ) as phones
-     FROM campaign_contacts cc
-     LEFT JOIN campaign_contact_phones ccp ON ccp.contact_id = cc.id
-     WHERE cc.campaign_id = $1
-       AND (cc.marketing_result IS NULL OR cc.marketing_result != 'Lead')
-     GROUP BY cc.id
-     ORDER BY cc.row_index`,
+    `WITH cc_phones AS (
+       -- For each campaign_contact, find the first phone that resolves to
+       -- a global contacts row. Pick deterministically: lowest slot_index,
+       -- lowest phones.id tiebreaker.
+       SELECT DISTINCT ON (ccp.contact_id)
+              ccp.contact_id AS cc_id,
+              ph.contact_id AS global_contact_id
+         FROM campaign_contact_phones ccp
+         JOIN phones ph ON ph.phone_number = ccp.phone_number
+        WHERE ccp.campaign_id = $1
+        ORDER BY ccp.contact_id, ccp.slot_index ASC, ph.id ASC
+     ),
+     cc_props AS (
+       -- For each resolved global contact, find their primary property.
+       SELECT DISTINCT ON (pc.contact_id)
+              pc.contact_id AS global_contact_id,
+              p.id AS property_id
+         FROM property_contacts pc
+         JOIN properties p ON p.id = pc.property_id
+        WHERE pc.primary_contact = true
+        ORDER BY pc.contact_id, p.id ASC
+     )
+     SELECT cc.*,
+            array_agg(
+              json_build_object(
+                'phone',    ccp.phone_number,
+                'slot',     ccp.slot_index,
+                'status',   ccp.phone_status,
+                'wrong',    ccp.wrong_number,
+                'filtered', ccp.filtered,
+                'tag',      ccp.phone_tag
+              ) ORDER BY ccp.slot_index
+            ) AS phones,
+            -- Enrichment from global tables
+            gc.email_1         AS g_email_1,
+            gc.email_2         AS g_email_2,
+            gc.mailing_address AS g_mailing_address,
+            gc.mailing_city    AS g_mailing_city,
+            gc.mailing_state   AS g_mailing_state,
+            gc.mailing_zip     AS g_mailing_zip,
+            gp.street          AS g_property_address,
+            gp.city            AS g_property_city,
+            gp.state_code      AS g_property_state,
+            gp.zip_code        AS g_property_zip,
+            gp.county          AS g_property_county
+       FROM campaign_contacts cc
+       LEFT JOIN campaign_contact_phones ccp ON ccp.contact_id = cc.id
+       LEFT JOIN cc_phones cph             ON cph.cc_id = cc.id
+       LEFT JOIN contacts gc               ON gc.id = cph.global_contact_id
+       LEFT JOIN cc_props cpr              ON cpr.global_contact_id = cph.global_contact_id
+       LEFT JOIN properties gp             ON gp.id = cpr.property_id
+      WHERE cc.campaign_id = $1
+        AND (cc.marketing_result IS NULL OR cc.marketing_result != 'Lead')
+      GROUP BY cc.id, gc.email_1, gc.email_2, gc.mailing_address, gc.mailing_city,
+               gc.mailing_state, gc.mailing_zip, gp.street, gp.city, gp.state_code,
+               gp.zip_code, gp.county
+      ORDER BY cc.row_index`,
     [campaignId]
   );
 
@@ -492,6 +551,14 @@ async function generateCleanExport(campaignId) {
   }
   if (globalMaxSlot > 10) globalMaxSlot = 10; // Cap at 10 for Readymode
 
+  // Campaign-level value wins when non-empty, otherwise fall back to the
+  // enriched global value. Prevents a stale main-table address from
+  // overwriting a deliberately-updated campaign contact.
+  const pick = (primary, fallback) => {
+    const p = primary == null ? '' : String(primary).trim();
+    return p !== '' ? primary : (fallback == null ? '' : fallback);
+  };
+
   for (const c of contacts.rows) {
     const phones = (c.phones || []).filter(p => p && p.phone);
     const callablePhones = phones.filter(p => !p.wrong && !p.filtered && p.status !== 'dead_number');
@@ -500,17 +567,19 @@ async function generateCleanExport(campaignId) {
     callable++;
 
     const row = {
-      'First Name':       c.first_name,
-      'Last Name':        c.last_name,
-      'Mailing Address':  c.mailing_address,
-      'Mailing City':     c.mailing_city,
-      'Mailing State':    c.mailing_state,
-      'Mailing Zip':      c.mailing_zip,
-      'Mailing County':   c.mailing_county,
-      'Property Address': c.property_address,
-      'Property City':    c.property_city,
-      'Property State':   c.property_state,
-      'Property Zip':     c.property_zip,
+      'First Name':       c.first_name || '',
+      'Last Name':        c.last_name || '',
+      'Email 1':          c.g_email_1 || '',
+      'Email 2':          c.g_email_2 || '',
+      'Mailing Address':  pick(c.mailing_address, c.g_mailing_address),
+      'Mailing City':     pick(c.mailing_city,    c.g_mailing_city),
+      'Mailing State':    pick(c.mailing_state,   c.g_mailing_state),
+      'Mailing Zip':      pick(c.mailing_zip,     c.g_mailing_zip),
+      'Mailing County':   pick(c.mailing_county,  c.g_property_county),
+      'Property Address': pick(c.property_address, c.g_property_address),
+      'Property City':    pick(c.property_city,    c.g_property_city),
+      'Property State':   pick(c.property_state,   c.g_property_state),
+      'Property Zip':     pick(c.property_zip,     c.g_property_zip),
     };
 
     for (let s = 1; s <= globalMaxSlot; s++) {
