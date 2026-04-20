@@ -375,8 +375,19 @@ router.get('/', requireAuth, async (req, res) => {
     // overhead. Big perf win on large DBs.
     const phoneJoin = q ? `LEFT JOIN phones ph ON ph.contact_id = c.id` : '';
 
+    // 2026-04-20 audit fix #5 (cont): DISTINCT / DISTINCT ON are pure overhead
+    // when phoneJoin is empty. property_contacts has a partial unique index
+    // (idx_property_contacts_single_primary) guaranteeing at most one
+    // primary_contact row per property, and contacts.id is PK — so neither
+    // of those LEFT JOINs can multiply rows. Only the phones LEFT JOIN can,
+    // and it's only active when `q` is set. Skipping dedup when it's not
+    // needed lets Postgres use simpler execution plans (often index-only
+    // scans instead of sort+unique).
+    const countExpr = phoneJoin ? 'COUNT(DISTINCT p.id)' : 'COUNT(*)';
+    const distinctClause = phoneJoin ? 'DISTINCT ON (p.id)' : '';
+
     const countRes = await query(`
-      SELECT COUNT(DISTINCT p.id) FROM properties p
+      SELECT ${countExpr} FROM properties p
       LEFT JOIN property_contacts pc ON pc.property_id = p.id AND pc.primary_contact = true
       LEFT JOIN contacts c ON c.id = pc.contact_id
       ${phoneJoin}
@@ -394,7 +405,7 @@ router.get('/', requireAuth, async (req, res) => {
     const allStates = allStatesRes.rows.map(r => ({ code: r.state_code, name: STATE_NAMES[r.state_code] || r.state_code }));
 
     const rows = await query(`
-      SELECT DISTINCT ON (p.id)
+      SELECT ${distinctClause}
         p.id, p.street, p.city, p.state_code, p.zip_code,
         p.property_type, p.vacant, p.pipeline_stage, p.source,
         p.estimated_value, p.condition, p.created_at,
@@ -409,7 +420,7 @@ router.get('/', requireAuth, async (req, res) => {
       LEFT JOIN contacts c ON c.id = pc.contact_id
       ${phoneJoin}
       ${where}
-      ORDER BY p.id DESC, p.created_at DESC
+      ORDER BY p.id DESC
       LIMIT $${idx} OFFSET $${idx+1}
     `, [...params, limit, offset]);
 
