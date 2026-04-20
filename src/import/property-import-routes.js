@@ -6,6 +6,9 @@ const crypto = require('crypto');
 const { query, refreshOwnerPortfolioMv } = require('../db');
 const { shell } = require('../shared-shell');
 const { normalizeState: sharedNormalizeState } = require('./state');
+// 2026-04-20 pass 12: shared phone normalizer — see phone-normalize.js.
+const { normalizePhone } = require('../phone-normalize');
+const { bufferToCsvText } = require('../csv-utils');
 
 // Wrapper: callers rely on string truthiness (empty string = skip). The
 // shared helper returns null for garbage — we normalize that to '' here
@@ -479,7 +482,7 @@ router.get('/', requireAuth, async (req, res) => {
 router.post('/parse', requireAuth, upload.single('csvfile'), async (req, res) => {
   try {
     if (!req.file) return res.status(400).json({ error: 'No file uploaded.' });
-    const parsed = Papa.parse(req.file.buffer.toString('utf8'), { header: true, skipEmptyLines: true });
+    const parsed = Papa.parse(bufferToCsvText(req.file.buffer), { header: true, skipEmptyLines: true });
     const columns = parsed.meta.fields || [];
     const rows = parsed.data;
     if (!rows.length) return res.status(400).json({ error: 'File is empty.' });
@@ -904,7 +907,12 @@ router.get('/preview', requireAuth, (req, res) => {
                 btn.onclick = () => listId ? window.location.href='/records?list_id='+listId : window.location.href='/records';
               }
             }
-          } catch(e) {}
+          } catch(e) {
+            // pass 12: was an empty catch — a server-side 500 during poll
+            // now logs to console so the operator can at least diagnose from
+            // DevTools instead of staring at a frozen progress bar.
+            console.warn('[import/poll] failed:', e && e.message ? e.message : e);
+          }
         }, 2000);
 
       } catch(e) {
@@ -929,22 +937,31 @@ router.post('/commit', requireAuth, async (req, res) => {
     const rows = allRows.slice(offset || 0, (offset || 0) + (batchSize || 500));
 
     let created = 0, updated = 0, errors = 0;
+    // 2026-04-20 pass 12: local error var instead of `global._importFirstError`.
+    // The global was module-wide state — two concurrent /commit calls trampled
+    // each other's error messages, and the failure path never cleared it so
+    // stale errors could contaminate the next success response.
+    let firstError = null;
 
     // ── Resolve list: create new or use existing ──────────────────────────────
     let resolvedListId = null;
     if (listName && listName.trim()) {
-      // Create new list (or get existing by same name)
-      const existingList = await query(`SELECT id FROM lists WHERE LOWER(list_name) = LOWER($1)`, [listName.trim()]);
-      if (existingList.rows.length) {
-        resolvedListId = existingList.rows[0].id;
-      } else {
-        const newList = await query(
-          `INSERT INTO lists (list_name, list_type, source, upload_date, active)
-            VALUES ($1, $2, $3, NOW(), true) RETURNING id`,
-          [listName.trim(), listType || null, listSource || null]
-        );
-        resolvedListId = newList.rows[0].id;
-      }
+      // 2026-04-20 pass 12: atomic UPSERT. Pre-pass-12 this was SELECT then
+      // conditional INSERT — two concurrent imports for the same list name
+      // both saw "doesn't exist" and both INSERTed, one hitting UNIQUE
+      // constraint violation and returning a 500. UPSERT keyed on the
+      // existing UNIQUE(list_name) constraint handles both "create new"
+      // and "fetch existing" atomically. The DO UPDATE branch re-writes
+      // list_name to itself — no-op but lets RETURNING fire so we always
+      // get the id regardless of branch.
+      const upserted = await query(
+        `INSERT INTO lists (list_name, list_type, source, upload_date, active)
+         VALUES ($1, $2, $3, NOW(), true)
+         ON CONFLICT (list_name) DO UPDATE SET list_name = EXCLUDED.list_name
+         RETURNING id`,
+        [listName.trim(), listType || null, listSource || null]
+      );
+      resolvedListId = upserted.rows[0].id;
     } else if (listId) {
       resolvedListId = parseInt(listId);
     }
@@ -979,7 +996,7 @@ router.post('/commit', requireAuth, async (req, res) => {
       return isNaN(d) ? null : d.toISOString().split('T')[0];
     };
     const toBool = v => { const s = (v||'').toLowerCase(); return s==='yes'||s==='true'||s==='1'||s==='y' ? true : s==='no'||s==='false'||s==='0'||s==='n' ? false : null; };
-    const cleanPhone = v => v ? v.replace(/\D/g,'') : '';
+    const cleanPhone = v => normalizePhone(v);
     // Normalize ZIP to 5-digit only — strips ZIP+4 suffixes ("47303-3111" → "47303")
     // and any whitespace. Prevents duplicates when same property is exported by
     // different providers (PropStream uses 5-digit, REISift uses ZIP+4, etc.).
@@ -1025,7 +1042,7 @@ router.post('/commit', requireAuth, async (req, res) => {
     }
 
     if (!validRows.length) {
-      return res.json({ created, updated, errors, resolvedListId, skipped: skippedReasons, firstError: global._importFirstError || null });
+      return res.json({ created, updated, errors, resolvedListId, skipped: skippedReasons, firstError: firstError || null });
     }
 
     // Dedup within batch — Postgres ON CONFLICT can't process the same key twice
@@ -1048,7 +1065,7 @@ router.post('/commit', requireAuth, async (req, res) => {
     }
 
     if (!dedupedRows.length) {
-      return res.json({ created, updated, errors, resolvedListId, skipped: skippedReasons, firstError: global._importFirstError || null });
+      return res.json({ created, updated, errors, resolvedListId, skipped: skippedReasons, firstError: firstError || null });
     }
 
     // Build arrays for UNNEST bulk insert
@@ -1189,12 +1206,29 @@ router.post('/commit', requireAuth, async (req, res) => {
       } catch(rowErr) {
         errors++;
         if (errors<=3) console.error('Row error:',rowErr.message);
-        if (errors===1) global._importFirstError = rowErr.message;
+        if (errors===1) firstError = rowErr.message;
       }
     }
 
-    res.json({ created, updated, errors, skipped: skippedReasons, firstError: global._importFirstError || null, resolvedListId });
-    global._importFirstError = null;
+    // 2026-04-20 pass 12: refresh owner_portfolio_counts MV after the final
+    // batch. Pre-pass-12 the /commit path never refreshed — only bulk-import's
+    // background worker and merge_all did — so imports via the row-by-row
+    // non-background path left the owned-count aggregation stale until the
+    // next bulk op. The UI invokes /commit in fixed-size slices with an
+    // explicit offset; the last batch is the one whose offset+batchSize
+    // reaches or exceeds allRows.length.
+    const isLastBatch = (offset || 0) + rows.length >= allRows.length;
+    if (isLastBatch) {
+      try {
+        const t = Date.now();
+        await refreshOwnerPortfolioMv();
+        console.log(`[import/commit] refreshed owner_portfolio_counts MV (${Date.now() - t}ms)`);
+      } catch (e) {
+        console.error('[import/commit] MV refresh failed (non-fatal):', e.message);
+      }
+    }
+
+    res.json({ created, updated, errors, skipped: skippedReasons, firstError: firstError || null, resolvedListId });
   } catch(e) {
     console.error('Import commit error:', e.message);
     res.status(500).json({ error: e.message });
@@ -1213,16 +1247,16 @@ router.post('/start-job', requireAuth, async (req, res) => {
     // Resolve or create list first
     let resolvedListId = null;
     if (listName && listName.trim()) {
-      const existingList = await query(`SELECT id FROM lists WHERE LOWER(list_name) = LOWER($1)`, [listName.trim()]);
-      if (existingList.rows.length) {
-        resolvedListId = existingList.rows[0].id;
-      } else {
-        const newList = await query(
-          `INSERT INTO lists (list_name, list_type, source, upload_date, active) VALUES ($1,$2,$3,NOW(),true) RETURNING id`,
-          [listName.trim(), listType || null, listSource || null]
-        );
-        resolvedListId = newList.rows[0].id;
-      }
+      // 2026-04-20 pass 12: atomic UPSERT (same race fix as the /commit
+      // flow — see comment there).
+      const upserted = await query(
+        `INSERT INTO lists (list_name, list_type, source, upload_date, active)
+         VALUES ($1, $2, $3, NOW(), true)
+         ON CONFLICT (list_name) DO UPDATE SET list_name = EXCLUDED.list_name
+         RETURNING id`,
+        [listName.trim(), listType || null, listSource || null]
+      );
+      resolvedListId = upserted.rows[0].id;
     } else if (listId) {
       resolvedListId = parseInt(listId);
     }
@@ -1280,7 +1314,7 @@ async function runBackgroundImport(jobId, allRows, mapping, filename, resolvedLi
     const toInt = v => v && !isNaN(v) ? parseInt(v) : null;
     const toDate = v => { if (!v) return null; const d = new Date(v); return isNaN(d) ? null : d.toISOString().split('T')[0]; };
     const toBool = v => { const s=(v||'').toLowerCase(); return s==='yes'||s==='true'||s==='1'||s==='y'?true:s==='no'||s==='false'||s==='0'||s==='n'?false:null; };
-    const cleanPhone = v => v ? v.replace(/\D/g,'') : '';
+    const cleanPhone = v => normalizePhone(v);
     // Normalize ZIP to 5-digit only — strips ZIP+4 suffixes ("47303-3111" → "47303")
     // and any whitespace. Prevents duplicates when same property is exported by
     // different providers (PropStream uses 5-digit, REISift uses ZIP+4, etc.).
