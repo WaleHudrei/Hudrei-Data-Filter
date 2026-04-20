@@ -3,6 +3,7 @@ const router = express.Router();
 const { query, pool } = require('../db');
 const distress = require('../scoring/distress');
 const settings = require('../settings');
+const { normalizeState, VALID_STATES } = require('../import/state');
 
 function requireAuth(req, res, next) {
   if (req.session && req.session.authenticated) return next();
@@ -10,6 +11,36 @@ function requireAuth(req, res, next) {
 }
 
 const { shell } = require('../shared-shell');
+// ─────────────────────────────────────────────────────────────────────────────
+// 2026-04-20 audit fix #1 (marketing_result case-insensitivity):
+// Lowercase + trim every value in a marketing-result filter array so the SQL
+// side can do LOWER(TRIM(split_part(…))) = ANY($::text[]) and match regardless
+// of how the CSV-sourced campaign_numbers.marketing_result row was cased. Also
+// drops empties so ANY([]) never silently nukes the filter.
+// ─────────────────────────────────────────────────────────────────────────────
+function normMktList(arr) {
+  if (!arr) return [];
+  const a = Array.isArray(arr) ? arr : [arr];
+  return a.map(v => String(v == null ? '' : v).trim().toLowerCase()).filter(Boolean);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 2026-04-20 audit fix #3 (single-select payload unification):
+// Every bulk endpoint destructures `ids` from req.body and assumes it's an
+// array. When the frontend sends a single item, some callers (detail page,
+// inline row actions, future integrations) may post a scalar like
+// `ids: 42` or `ids: "42"`. Instead of failing with "No records selected",
+// we coerce to an int array. Scalar/array/string/nothing all normalize to
+// the same shape so the server handles single and bulk identically.
+// ─────────────────────────────────────────────────────────────────────────────
+function coerceIdArray(raw) {
+  if (raw == null) return [];
+  const arr = Array.isArray(raw) ? raw : [raw];
+  return arr
+    .map(v => parseInt(v, 10))
+    .filter(n => Number.isFinite(n) && n > 0);
+}
+
 
 // ── Tag Schema ──────────────────────────────────────────────────────────────
 let _tagSchemaReady = false;
@@ -215,7 +246,7 @@ router.get('/', requireAuth, async (req, res) => {
     if (occupancy === 'owner_occupied') {
       conditions.push(`(
         c.mailing_address IS NOT NULL
-        AND ${NORM_ADDR('p.street')} = ${NORM_ADDR('c.mailing_address')}
+        AND COALESCE(p.street_normalized, LOWER(TRIM(p.street))) = COALESCE(c.mailing_address_normalized, LOWER(TRIM(c.mailing_address)))
         AND LOWER(TRIM(p.city)) = LOWER(TRIM(c.mailing_city))
         AND UPPER(TRIM(p.state_code)) = UPPER(TRIM(c.mailing_state))
         AND SUBSTRING(TRIM(p.zip_code) FROM 1 FOR 5) = SUBSTRING(TRIM(c.mailing_zip) FROM 1 FOR 5)
@@ -224,7 +255,7 @@ router.get('/', requireAuth, async (req, res) => {
       conditions.push(`(
         c.mailing_address IS NOT NULL AND TRIM(c.mailing_address) != ''
         AND NOT (
-          ${NORM_ADDR('p.street')} = ${NORM_ADDR('c.mailing_address')}
+          COALESCE(p.street_normalized, LOWER(TRIM(p.street))) = COALESCE(c.mailing_address_normalized, LOWER(TRIM(c.mailing_address)))
           AND LOWER(TRIM(p.city)) = LOWER(TRIM(c.mailing_city))
           AND UPPER(TRIM(p.state_code)) = UPPER(TRIM(c.mailing_state))
           AND SUBSTRING(TRIM(p.zip_code) FROM 1 FOR 5) = SUBSTRING(TRIM(c.mailing_zip) FROM 1 FOR 5)
@@ -245,25 +276,25 @@ router.get('/', requireAuth, async (req, res) => {
         WHERE cc_mkt.property_address_normalized = p.street_normalized
           AND UPPER(TRIM(cc_mkt.property_state)) = UPPER(TRIM(p.state_code))
           AND cc_mkt.marketing_result IS NOT NULL
-          AND split_part(cc_mkt.marketing_result, ' — ', 1) = ANY($${paramIdx}::text[])
+          AND LOWER(TRIM(split_part(cc_mkt.marketing_result, ' — ', 1))) = ANY($${paramIdx}::text[])
       )
       OR EXISTS (
         SELECT 1 FROM campaign_numbers cn_mkt
         JOIN phones ph_mkt ON ph_mkt.phone_number = cn_mkt.phone_number
         JOIN property_contacts pc_mkt ON pc_mkt.contact_id = ph_mkt.contact_id AND pc_mkt.property_id = p.id
         WHERE cn_mkt.marketing_result IS NOT NULL
-          AND split_part(cn_mkt.marketing_result, ' — ', 1) = ANY($${paramIdx}::text[])
+          AND LOWER(TRIM(split_part(cn_mkt.marketing_result, ' — ', 1))) = ANY($${paramIdx}::text[])
       )
     )`;
-    if (mkt_result)   { conditions.push(mktCampaignMatch(idx));  params.push([mkt_result]); idx++; }
+    if (mkt_result)   { conditions.push(mktCampaignMatch(idx));  params.push(normMktList([mkt_result])); idx++; }
     if (mktIncludeList.length > 0) {
       conditions.push(mktCampaignMatch(idx));
-      params.push(mktIncludeList);
+      params.push(normMktList(mktIncludeList));
       idx++;
     }
     if (mktExcludeList.length > 0) {
       conditions.push(`NOT ${mktCampaignMatch(idx)}`);
-      params.push(mktExcludeList);
+      params.push(normMktList(mktExcludeList));
       idx++;
     }
     if (min_assessed) { conditions.push(`p.assessed_value >= $${idx}`);   params.push(min_assessed); idx++; }
@@ -1028,7 +1059,8 @@ router.delete('/:id(\\d+)/tags/:tagId(\\d+)', requireAuth, async (req, res) => {
 router.post('/export', requireAuth, async (req, res) => {
   try {
     await distress.ensureDistressSchema();
-    const { ids, columns, selectAll, filterParams, cleanPhonesOnly } = req.body;
+    const { columns, selectAll, filterParams, cleanPhonesOnly } = req.body;
+    const ids = coerceIdArray(req.body.ids);
     if (!columns || !columns.length) return res.status(400).json({ error: 'No columns selected' });
     // Default ON if not provided — matches the checkbox default
     const excludeBadPhones = cleanPhonesOnly !== false;
@@ -1098,14 +1130,14 @@ router.post('/export', requireAuth, async (req, res) => {
       const occX = qv('occupancy');
       if (occX === 'owner_occupied') {
         conditions.push(`(c.mailing_address IS NOT NULL
-          AND ${NORM_ADDR_X('p.street')} = ${NORM_ADDR_X('c.mailing_address')}
+          AND COALESCE(p.street_normalized, LOWER(TRIM(p.street))) = COALESCE(c.mailing_address_normalized, LOWER(TRIM(c.mailing_address)))
           AND LOWER(TRIM(p.city)) = LOWER(TRIM(c.mailing_city))
           AND UPPER(TRIM(p.state_code)) = UPPER(TRIM(c.mailing_state))
           AND SUBSTRING(TRIM(p.zip_code) FROM 1 FOR 5) = SUBSTRING(TRIM(c.mailing_zip) FROM 1 FOR 5))`);
       } else if (occX === 'absent_owner') {
         conditions.push(`(c.mailing_address IS NOT NULL AND TRIM(c.mailing_address) != ''
           AND NOT (
-            ${NORM_ADDR_X('p.street')} = ${NORM_ADDR_X('c.mailing_address')}
+            COALESCE(p.street_normalized, LOWER(TRIM(p.street))) = COALESCE(c.mailing_address_normalized, LOWER(TRIM(c.mailing_address)))
             AND LOWER(TRIM(p.city)) = LOWER(TRIM(c.mailing_city))
             AND UPPER(TRIM(p.state_code)) = UPPER(TRIM(c.mailing_state))
             AND SUBSTRING(TRIM(p.zip_code) FROM 1 FOR 5) = SUBSTRING(TRIM(c.mailing_zip) FROM 1 FOR 5)
@@ -1120,26 +1152,26 @@ router.post('/export', requireAuth, async (req, res) => {
           WHERE cc_mkt.property_address_normalized = p.street_normalized
             AND UPPER(TRIM(cc_mkt.property_state)) = UPPER(TRIM(p.state_code))
             AND cc_mkt.marketing_result IS NOT NULL
-            AND split_part(cc_mkt.marketing_result, ' — ', 1) = ANY($${paramIdx}::text[])
+            AND LOWER(TRIM(split_part(cc_mkt.marketing_result, ' — ', 1))) = ANY($${paramIdx}::text[])
         )
         OR EXISTS (
           SELECT 1 FROM campaign_numbers cn_mkt
           JOIN phones ph_mkt ON ph_mkt.phone_number = cn_mkt.phone_number
           JOIN property_contacts pc_mkt ON pc_mkt.contact_id = ph_mkt.contact_id AND pc_mkt.property_id = p.id
           WHERE cn_mkt.marketing_result IS NOT NULL
-            AND split_part(cn_mkt.marketing_result, ' — ', 1) = ANY($${paramIdx}::text[])
+            AND LOWER(TRIM(split_part(cn_mkt.marketing_result, ' — ', 1))) = ANY($${paramIdx}::text[])
         )
       )`;
-      if (qv('mkt_result'))  { conditions.push(mktMatchExp_export(idx)); params.push([qv('mkt_result')]); idx++; }
+      if (qv('mkt_result'))  { conditions.push(mktMatchExp_export(idx)); params.push(normMktList([qv('mkt_result')])); idx++; }
       const mktIncArr = qvAll('mkt_include');
       const mktExcArr = qvAll('mkt_exclude');
       if (mktIncArr.length > 0) {
         conditions.push(mktMatchExp_export(idx));
-        params.push(mktIncArr); idx++;
+        params.push(normMktList(mktIncArr)); idx++;
       }
       if (mktExcArr.length > 0) {
         conditions.push(`NOT ${mktMatchExp_export(idx)}`);
-        params.push(mktExcArr); idx++;
+        params.push(normMktList(mktExcArr)); idx++;
       }
       if (qv('min_assessed')){ conditions.push(`p.assessed_value >= $${idx}`);   params.push(qv('min_assessed')); idx++; }
       if (qv('max_assessed')){ conditions.push(`p.assessed_value <= $${idx}`);   params.push(qv('max_assessed')); idx++; }
@@ -1785,7 +1817,12 @@ router.get('/:id(\\d+)', requireAuth, async (req, res) => {
               <div class="form-field" style="margin:0"><label>Last Name</label><input type="text" name="last_name" value="${primaryContact.last_name||''}"></div>
               <div class="form-field" style="margin:0;grid-column:1/-1"><label>Mailing Address</label><input type="text" name="mailing_address" value="${primaryContact.mailing_address||''}"></div>
               <div class="form-field" style="margin:0"><label>Mailing City</label><input type="text" name="mailing_city" value="${primaryContact.mailing_city||''}"></div>
-              <div class="form-field" style="margin:0"><label>Mailing State</label><input type="text" name="mailing_state" value="${primaryContact.mailing_state||''}" maxlength="2"></div>
+              <div class="form-field" style="margin:0"><label>Mailing State</label>
+                <select name="mailing_state">
+                  <option value="">—</option>
+                  ${Array.from(VALID_STATES).sort().map(s => `<option value="${s}" ${(primaryContact.mailing_state||'').toUpperCase()===s?'selected':''}>${s}</option>`).join('')}
+                </select>
+              </div>
               <div class="form-field" style="margin:0;grid-column:1/-1"><label>Email 1</label><input type="email" name="email_1" value="${primaryContact.email_1||''}" placeholder="email@example.com"></div>
               <div class="form-field" style="margin:0;grid-column:1/-1"><label>Email 2</label><input type="email" name="email_2" value="${primaryContact.email_2||''}" placeholder="email@example.com"></div>
             </div>` : ''}
@@ -1843,8 +1880,29 @@ router.post('/:id(\\d+)/edit', requireAuth, async (req, res) => {
       property_status, assessed_value, equity_percent, marketing_result,
       pipeline_stage,
       contact_id, first_name, last_name, mailing_address, mailing_city,
-      mailing_state, email_1, email_2, edit_notes
+      mailing_state: rawMailingState, email_1, email_2, edit_notes
     } = req.body;
+
+    // 2026-04-20 audit fix #4: validate mailing_state through normalizeState.
+    // Pre-fix, whatever text the user typed was stored verbatim — including
+    // full names like "California", typos like "CAA", or pure garbage. The
+    // filter's UPPER(TRIM(c.mailing_state)) compare then silently dropped
+    // every record where mailing_state wasn't a clean 2-letter USPS code.
+    // Behavior: accept 2-letter codes and full names (normalizeState handles
+    // both), reject everything else. If the user submitted garbage we just
+    // skip updating that one column — the rest of the edit still applies.
+    let mailing_state = rawMailingState;
+    let mailingStateRejected = false;
+    if (rawMailingState != null && String(rawMailingState).trim() !== '') {
+      const normed = normalizeState(rawMailingState);
+      if (normed) {
+        mailing_state = normed;
+      } else {
+        mailing_state = '';  // blank-out so COALESCE(NULLIF($,'' ), ...) preserves prior
+        mailingStateRejected = true;
+        console.warn(`[records/edit] rejected invalid mailing_state "${rawMailingState}" on property ${id}`);
+      }
+    }
 
     // Capture before-state for outcome logging
     const beforeRes = await query(
@@ -1922,7 +1980,7 @@ router.post('/:id(\\d+)/edit', requireAuth, async (req, res) => {
       // Non-fatal — don't block the user's edit on scoring failure
     }
 
-    res.redirect(`/records/${id}?msg=saved`);
+    res.redirect(`/records/${id}?msg=${mailingStateRejected ? 'saved_state_rejected' : 'saved'}`);
   } catch (e) {
     console.error(e);
     res.redirect(`/records/${req.params.id}?msg=error`);
@@ -2825,7 +2883,8 @@ router.post('/_duplicates/merge_all', requireAuth, async (req, res) => {
 // ═══════════════════════════════════════════════════════════════════════════════
 router.post('/delete', requireAuth, async (req, res) => {
   try {
-    const { ids, selectAll, filterParams, code } = req.body;
+    const { selectAll, filterParams, code } = req.body;
+    const ids = coerceIdArray(req.body.ids);
 
     // Verify delete code BEFORE touching any data
     const verified = await settings.verifyDeleteCode(code);
@@ -2879,16 +2938,16 @@ router.post('/delete', requireAuth, async (req, res) => {
           WHERE cc_mkt.property_address_normalized = p.street_normalized
             AND UPPER(TRIM(cc_mkt.property_state)) = UPPER(TRIM(p.state_code))
             AND cc_mkt.marketing_result IS NOT NULL
-            AND split_part(cc_mkt.marketing_result, ' — ', 1) = ANY($${idx}::text[])
+            AND LOWER(TRIM(split_part(cc_mkt.marketing_result, ' — ', 1))) = ANY($${idx}::text[])
         )
         OR EXISTS (
           SELECT 1 FROM campaign_numbers cn_mkt
           JOIN phones ph_mkt ON ph_mkt.phone_number = cn_mkt.phone_number
           JOIN property_contacts pc_mkt ON pc_mkt.contact_id = ph_mkt.contact_id AND pc_mkt.property_id = p.id
           WHERE cn_mkt.marketing_result IS NOT NULL
-            AND split_part(cn_mkt.marketing_result, ' — ', 1) = ANY($${idx}::text[])
+            AND LOWER(TRIM(split_part(cn_mkt.marketing_result, ' — ', 1))) = ANY($${idx}::text[])
         )
-      )`); params.push([qv('mkt_result')]); idx++; }
+      )`); params.push(normMktList([qv('mkt_result')])); idx++; }
       const mktIncArr = qvAll('mkt_include');
       const mktExcArr = qvAll('mkt_exclude');
       if (mktIncArr.length > 0) {
@@ -2898,17 +2957,17 @@ router.post('/delete', requireAuth, async (req, res) => {
           WHERE cc_mkt.property_address_normalized = p.street_normalized
             AND UPPER(TRIM(cc_mkt.property_state)) = UPPER(TRIM(p.state_code))
             AND cc_mkt.marketing_result IS NOT NULL
-            AND split_part(cc_mkt.marketing_result, ' — ', 1) = ANY($${idx}::text[])
+            AND LOWER(TRIM(split_part(cc_mkt.marketing_result, ' — ', 1))) = ANY($${idx}::text[])
         )
         OR EXISTS (
           SELECT 1 FROM campaign_numbers cn_mkt
           JOIN phones ph_mkt ON ph_mkt.phone_number = cn_mkt.phone_number
           JOIN property_contacts pc_mkt ON pc_mkt.contact_id = ph_mkt.contact_id AND pc_mkt.property_id = p.id
           WHERE cn_mkt.marketing_result IS NOT NULL
-            AND split_part(cn_mkt.marketing_result, ' — ', 1) = ANY($${idx}::text[])
+            AND LOWER(TRIM(split_part(cn_mkt.marketing_result, ' — ', 1))) = ANY($${idx}::text[])
         )
       )`);
-        params.push(mktIncArr); idx++;
+        params.push(normMktList(mktIncArr)); idx++;
       }
       if (mktExcArr.length > 0) {
         conditions.push(`NOT (
@@ -2917,17 +2976,17 @@ router.post('/delete', requireAuth, async (req, res) => {
           WHERE cc_mkt.property_address_normalized = p.street_normalized
             AND UPPER(TRIM(cc_mkt.property_state)) = UPPER(TRIM(p.state_code))
             AND cc_mkt.marketing_result IS NOT NULL
-            AND split_part(cc_mkt.marketing_result, ' — ', 1) = ANY($${idx}::text[])
+            AND LOWER(TRIM(split_part(cc_mkt.marketing_result, ' — ', 1))) = ANY($${idx}::text[])
         )
         OR EXISTS (
           SELECT 1 FROM campaign_numbers cn_mkt
           JOIN phones ph_mkt ON ph_mkt.phone_number = cn_mkt.phone_number
           JOIN property_contacts pc_mkt ON pc_mkt.contact_id = ph_mkt.contact_id AND pc_mkt.property_id = p.id
           WHERE cn_mkt.marketing_result IS NOT NULL
-            AND split_part(cn_mkt.marketing_result, ' — ', 1) = ANY($${idx}::text[])
+            AND LOWER(TRIM(split_part(cn_mkt.marketing_result, ' — ', 1))) = ANY($${idx}::text[])
         )
       )`);
-        params.push(mktExcArr); idx++;
+        params.push(normMktList(mktExcArr)); idx++;
       }
       if (qv('min_assessed')){ conditions.push(`p.assessed_value >= $${idx}`);   params.push(qv('min_assessed')); idx++; }
       if (qv('max_assessed')){ conditions.push(`p.assessed_value <= $${idx}`);   params.push(qv('max_assessed')); idx++; }
@@ -2984,14 +3043,14 @@ router.post('/delete', requireAuth, async (req, res) => {
       const occDel = qv('occupancy');
       if (occDel === 'owner_occupied') {
         conditions.push(`(c.mailing_address IS NOT NULL
-          AND ${NORM_ADDR_DEL('p.street')} = ${NORM_ADDR_DEL('c.mailing_address')}
+          AND COALESCE(p.street_normalized, LOWER(TRIM(p.street))) = COALESCE(c.mailing_address_normalized, LOWER(TRIM(c.mailing_address)))
           AND LOWER(TRIM(p.city)) = LOWER(TRIM(c.mailing_city))
           AND UPPER(TRIM(p.state_code)) = UPPER(TRIM(c.mailing_state))
           AND SUBSTRING(TRIM(p.zip_code) FROM 1 FOR 5) = SUBSTRING(TRIM(c.mailing_zip) FROM 1 FOR 5))`);
       } else if (occDel === 'absent_owner') {
         conditions.push(`(c.mailing_address IS NOT NULL AND TRIM(c.mailing_address) != ''
           AND NOT (
-            ${NORM_ADDR_DEL('p.street')} = ${NORM_ADDR_DEL('c.mailing_address')}
+            COALESCE(p.street_normalized, LOWER(TRIM(p.street))) = COALESCE(c.mailing_address_normalized, LOWER(TRIM(c.mailing_address)))
             AND LOWER(TRIM(p.city)) = LOWER(TRIM(c.mailing_city))
             AND UPPER(TRIM(p.state_code)) = UPPER(TRIM(c.mailing_state))
             AND SUBSTRING(TRIM(p.zip_code) FROM 1 FOR 5) = SUBSTRING(TRIM(c.mailing_zip) FROM 1 FOR 5)
@@ -3010,7 +3069,7 @@ router.post('/delete', requireAuth, async (req, res) => {
             JOIN property_contacts pc2 ON pc2.property_id = p2.id AND pc2.primary_contact = true
             JOIN contacts c2 ON c2.id = pc2.contact_id
             WHERE c2.mailing_address IS NOT NULL AND TRIM(c2.mailing_address) != ''
-              AND ${NORM_ADDR_DEL('c2.mailing_address')} = ${NORM_ADDR_DEL('c.mailing_address')}
+              AND COALESCE(c2.mailing_address_normalized, LOWER(TRIM(c2.mailing_address))) = COALESCE(c.mailing_address_normalized, LOWER(TRIM(c.mailing_address)))
               AND LOWER(TRIM(c2.mailing_city)) = LOWER(TRIM(c.mailing_city))
               AND UPPER(TRIM(p2.state_code)) = UPPER(TRIM(p.state_code))
               AND SUBSTRING(TRIM(c2.mailing_zip) FROM 1 FOR 5) = SUBSTRING(TRIM(c.mailing_zip) FROM 1 FOR 5)
@@ -3034,10 +3093,11 @@ router.post('/delete', requireAuth, async (req, res) => {
       `, params);
       idsToDelete = idsRes.rows.map(r => r.id);
     } else {
-      if (!Array.isArray(ids) || ids.length === 0) {
+      // ids is already cleaned via coerceIdArray above — no further parseInt needed
+      if (ids.length === 0) {
         return res.status(400).json({ error: 'No records selected.' });
       }
-      idsToDelete = ids.map(n => parseInt(n)).filter(n => !isNaN(n) && n > 0);
+      idsToDelete = ids;
     }
 
     if (idsToDelete.length === 0) {
@@ -3124,7 +3184,8 @@ router.post('/:id(\\d+)/delete', requireAuth, async (req, res) => {
 router.post('/bulk-tag', requireAuth, async (req, res) => {
   try {
     await ensureTagSchema();
-    const { ids, selectAll, filterParams, mode, tagNames, tagIds } = req.body;
+    const { selectAll, filterParams, mode, tagNames, tagIds } = req.body;
+    const ids = coerceIdArray(req.body.ids);
 
     // Resolve property IDs — same selectAll filter-rebuild as other bulk routes
     let propertyIds = [];
@@ -3154,16 +3215,16 @@ router.post('/bulk-tag', requireAuth, async (req, res) => {
           WHERE cc_mkt.property_address_normalized = p.street_normalized
             AND UPPER(TRIM(cc_mkt.property_state)) = UPPER(TRIM(p.state_code))
             AND cc_mkt.marketing_result IS NOT NULL
-            AND split_part(cc_mkt.marketing_result, ' — ', 1) = ANY($${idx}::text[])
+            AND LOWER(TRIM(split_part(cc_mkt.marketing_result, ' — ', 1))) = ANY($${idx}::text[])
         )
         OR EXISTS (
           SELECT 1 FROM campaign_numbers cn_mkt
           JOIN phones ph_mkt ON ph_mkt.phone_number = cn_mkt.phone_number
           JOIN property_contacts pc_mkt ON pc_mkt.contact_id = ph_mkt.contact_id AND pc_mkt.property_id = p.id
           WHERE cn_mkt.marketing_result IS NOT NULL
-            AND split_part(cn_mkt.marketing_result, ' — ', 1) = ANY($${idx}::text[])
+            AND LOWER(TRIM(split_part(cn_mkt.marketing_result, ' — ', 1))) = ANY($${idx}::text[])
         )
-      )`);params.push([qv('mkt_result')]); idx++; }
+      )`);params.push(normMktList([qv('mkt_result')])); idx++; }
       const mktIncArr = qvAll('mkt_include'), mktExcArr = qvAll('mkt_exclude');
       if (mktIncArr.length > 0) { conditions.push(`(
         EXISTS (
@@ -3171,32 +3232,32 @@ router.post('/bulk-tag', requireAuth, async (req, res) => {
           WHERE cc_mkt.property_address_normalized = p.street_normalized
             AND UPPER(TRIM(cc_mkt.property_state)) = UPPER(TRIM(p.state_code))
             AND cc_mkt.marketing_result IS NOT NULL
-            AND split_part(cc_mkt.marketing_result, ' — ', 1) = ANY($${idx}::text[])
+            AND LOWER(TRIM(split_part(cc_mkt.marketing_result, ' — ', 1))) = ANY($${idx}::text[])
         )
         OR EXISTS (
           SELECT 1 FROM campaign_numbers cn_mkt
           JOIN phones ph_mkt ON ph_mkt.phone_number = cn_mkt.phone_number
           JOIN property_contacts pc_mkt ON pc_mkt.contact_id = ph_mkt.contact_id AND pc_mkt.property_id = p.id
           WHERE cn_mkt.marketing_result IS NOT NULL
-            AND split_part(cn_mkt.marketing_result, ' — ', 1) = ANY($${idx}::text[])
+            AND LOWER(TRIM(split_part(cn_mkt.marketing_result, ' — ', 1))) = ANY($${idx}::text[])
         )
-      )`); params.push(mktIncArr); idx++; }
+      )`); params.push(normMktList(mktIncArr)); idx++; }
       if (mktExcArr.length > 0) { conditions.push(`NOT (
         EXISTS (
           SELECT 1 FROM campaign_contacts cc_mkt
           WHERE cc_mkt.property_address_normalized = p.street_normalized
             AND UPPER(TRIM(cc_mkt.property_state)) = UPPER(TRIM(p.state_code))
             AND cc_mkt.marketing_result IS NOT NULL
-            AND split_part(cc_mkt.marketing_result, ' — ', 1) = ANY($${idx}::text[])
+            AND LOWER(TRIM(split_part(cc_mkt.marketing_result, ' — ', 1))) = ANY($${idx}::text[])
         )
         OR EXISTS (
           SELECT 1 FROM campaign_numbers cn_mkt
           JOIN phones ph_mkt ON ph_mkt.phone_number = cn_mkt.phone_number
           JOIN property_contacts pc_mkt ON pc_mkt.contact_id = ph_mkt.contact_id AND pc_mkt.property_id = p.id
           WHERE cn_mkt.marketing_result IS NOT NULL
-            AND split_part(cn_mkt.marketing_result, ' — ', 1) = ANY($${idx}::text[])
+            AND LOWER(TRIM(split_part(cn_mkt.marketing_result, ' — ', 1))) = ANY($${idx}::text[])
         )
-      )`); params.push(mktExcArr); idx++; }
+      )`); params.push(normMktList(mktExcArr)); idx++; }
       if (qv('min_assessed')){ conditions.push(`p.assessed_value >= $${idx}`);   params.push(qv('min_assessed')); idx++; }
       if (qv('max_assessed')){ conditions.push(`p.assessed_value <= $${idx}`);   params.push(qv('max_assessed')); idx++; }
       if (qv('min_equity'))  { conditions.push(`p.equity_percent >= $${idx}`);   params.push(qv('min_equity')); idx++; }
@@ -3238,14 +3299,14 @@ router.post('/bulk-tag', requireAuth, async (req, res) => {
       const occBt = qv('occupancy');
       if (occBt === 'owner_occupied') {
         conditions.push(`(c.mailing_address IS NOT NULL
-          AND ${NORM_ADDR_BT('p.street')} = ${NORM_ADDR_BT('c.mailing_address')}
+          AND COALESCE(p.street_normalized, LOWER(TRIM(p.street))) = COALESCE(c.mailing_address_normalized, LOWER(TRIM(c.mailing_address)))
           AND LOWER(TRIM(p.city)) = LOWER(TRIM(c.mailing_city))
           AND UPPER(TRIM(p.state_code)) = UPPER(TRIM(c.mailing_state))
           AND SUBSTRING(TRIM(p.zip_code) FROM 1 FOR 5) = SUBSTRING(TRIM(c.mailing_zip) FROM 1 FOR 5))`);
       } else if (occBt === 'absent_owner') {
         conditions.push(`(c.mailing_address IS NOT NULL AND TRIM(c.mailing_address) != ''
           AND NOT (
-            ${NORM_ADDR_BT('p.street')} = ${NORM_ADDR_BT('c.mailing_address')}
+            COALESCE(p.street_normalized, LOWER(TRIM(p.street))) = COALESCE(c.mailing_address_normalized, LOWER(TRIM(c.mailing_address)))
             AND LOWER(TRIM(p.city)) = LOWER(TRIM(c.mailing_city))
             AND UPPER(TRIM(p.state_code)) = UPPER(TRIM(c.mailing_state))
             AND SUBSTRING(TRIM(p.zip_code) FROM 1 FOR 5) = SUBSTRING(TRIM(c.mailing_zip) FROM 1 FOR 5)
@@ -3264,7 +3325,7 @@ router.post('/bulk-tag', requireAuth, async (req, res) => {
             JOIN property_contacts pc2 ON pc2.property_id = p2.id AND pc2.primary_contact = true
             JOIN contacts c2 ON c2.id = pc2.contact_id
             WHERE c2.mailing_address IS NOT NULL AND TRIM(c2.mailing_address) != ''
-              AND ${NORM_ADDR_BT('c2.mailing_address')} = ${NORM_ADDR_BT('c.mailing_address')}
+              AND COALESCE(c2.mailing_address_normalized, LOWER(TRIM(c2.mailing_address))) = COALESCE(c.mailing_address_normalized, LOWER(TRIM(c.mailing_address)))
               AND LOWER(TRIM(c2.mailing_city)) = LOWER(TRIM(c.mailing_city))
               AND UPPER(TRIM(p2.state_code)) = UPPER(TRIM(p.state_code))
               AND SUBSTRING(TRIM(c2.mailing_zip) FROM 1 FOR 5) = SUBSTRING(TRIM(c.mailing_zip) FROM 1 FOR 5)
@@ -3278,10 +3339,11 @@ router.post('/bulk-tag', requireAuth, async (req, res) => {
       const idsRes = await query(`SELECT DISTINCT p.id FROM properties p LEFT JOIN property_contacts pc ON pc.property_id = p.id AND pc.primary_contact = true LEFT JOIN contacts c ON c.id = pc.contact_id ${where}`, params);
       propertyIds = idsRes.rows.map(r => r.id);
     } else {
-      if (!Array.isArray(ids) || ids.length === 0) {
+      // ids is already cleaned via coerceIdArray above
+      if (ids.length === 0) {
         return res.status(400).json({ error: 'No records selected.' });
       }
-      propertyIds = ids.map(n => parseInt(n)).filter(n => !isNaN(n) && n > 0);
+      propertyIds = ids;
     }
 
     if (propertyIds.length === 0) {
@@ -3353,7 +3415,8 @@ router.post('/bulk-tag', requireAuth, async (req, res) => {
 // ═══════════════════════════════════════════════════════════════════════════════
 router.post('/remove-from-list', requireAuth, async (req, res) => {
   try {
-    const { ids, selectAll, filterParams, listId, code } = req.body;
+    const { selectAll, filterParams, listId, code } = req.body;
+    const ids = coerceIdArray(req.body.ids);
 
     // Verify delete code BEFORE touching any data
     const verified = await settings.verifyDeleteCode(code);
@@ -3418,16 +3481,16 @@ router.post('/remove-from-list', requireAuth, async (req, res) => {
           WHERE cc_mkt.property_address_normalized = p.street_normalized
             AND UPPER(TRIM(cc_mkt.property_state)) = UPPER(TRIM(p.state_code))
             AND cc_mkt.marketing_result IS NOT NULL
-            AND split_part(cc_mkt.marketing_result, ' — ', 1) = ANY($${idx}::text[])
+            AND LOWER(TRIM(split_part(cc_mkt.marketing_result, ' — ', 1))) = ANY($${idx}::text[])
         )
         OR EXISTS (
           SELECT 1 FROM campaign_numbers cn_mkt
           JOIN phones ph_mkt ON ph_mkt.phone_number = cn_mkt.phone_number
           JOIN property_contacts pc_mkt ON pc_mkt.contact_id = ph_mkt.contact_id AND pc_mkt.property_id = p.id
           WHERE cn_mkt.marketing_result IS NOT NULL
-            AND split_part(cn_mkt.marketing_result, ' — ', 1) = ANY($${idx}::text[])
+            AND LOWER(TRIM(split_part(cn_mkt.marketing_result, ' — ', 1))) = ANY($${idx}::text[])
         )
-      )`); params.push([qv('mkt_result')]); idx++; }
+      )`); params.push(normMktList([qv('mkt_result')])); idx++; }
       const mktIncArr = qvAll('mkt_include');
       const mktExcArr = qvAll('mkt_exclude');
       if (mktIncArr.length > 0) {
@@ -3437,17 +3500,17 @@ router.post('/remove-from-list', requireAuth, async (req, res) => {
           WHERE cc_mkt.property_address_normalized = p.street_normalized
             AND UPPER(TRIM(cc_mkt.property_state)) = UPPER(TRIM(p.state_code))
             AND cc_mkt.marketing_result IS NOT NULL
-            AND split_part(cc_mkt.marketing_result, ' — ', 1) = ANY($${idx}::text[])
+            AND LOWER(TRIM(split_part(cc_mkt.marketing_result, ' — ', 1))) = ANY($${idx}::text[])
         )
         OR EXISTS (
           SELECT 1 FROM campaign_numbers cn_mkt
           JOIN phones ph_mkt ON ph_mkt.phone_number = cn_mkt.phone_number
           JOIN property_contacts pc_mkt ON pc_mkt.contact_id = ph_mkt.contact_id AND pc_mkt.property_id = p.id
           WHERE cn_mkt.marketing_result IS NOT NULL
-            AND split_part(cn_mkt.marketing_result, ' — ', 1) = ANY($${idx}::text[])
+            AND LOWER(TRIM(split_part(cn_mkt.marketing_result, ' — ', 1))) = ANY($${idx}::text[])
         )
       )`);
-        params.push(mktIncArr); idx++;
+        params.push(normMktList(mktIncArr)); idx++;
       }
       if (mktExcArr.length > 0) {
         conditions.push(`NOT (
@@ -3456,17 +3519,17 @@ router.post('/remove-from-list', requireAuth, async (req, res) => {
           WHERE cc_mkt.property_address_normalized = p.street_normalized
             AND UPPER(TRIM(cc_mkt.property_state)) = UPPER(TRIM(p.state_code))
             AND cc_mkt.marketing_result IS NOT NULL
-            AND split_part(cc_mkt.marketing_result, ' — ', 1) = ANY($${idx}::text[])
+            AND LOWER(TRIM(split_part(cc_mkt.marketing_result, ' — ', 1))) = ANY($${idx}::text[])
         )
         OR EXISTS (
           SELECT 1 FROM campaign_numbers cn_mkt
           JOIN phones ph_mkt ON ph_mkt.phone_number = cn_mkt.phone_number
           JOIN property_contacts pc_mkt ON pc_mkt.contact_id = ph_mkt.contact_id AND pc_mkt.property_id = p.id
           WHERE cn_mkt.marketing_result IS NOT NULL
-            AND split_part(cn_mkt.marketing_result, ' — ', 1) = ANY($${idx}::text[])
+            AND LOWER(TRIM(split_part(cn_mkt.marketing_result, ' — ', 1))) = ANY($${idx}::text[])
         )
       )`);
-        params.push(mktExcArr); idx++;
+        params.push(normMktList(mktExcArr)); idx++;
       }
       if (qv('min_assessed')){ conditions.push(`p.assessed_value >= $${idx}`);   params.push(qv('min_assessed')); idx++; }
       if (qv('max_assessed')){ conditions.push(`p.assessed_value <= $${idx}`);   params.push(qv('max_assessed')); idx++; }
@@ -3525,14 +3588,14 @@ router.post('/remove-from-list', requireAuth, async (req, res) => {
       const occRfl = qv('occupancy');
       if (occRfl === 'owner_occupied') {
         conditions.push(`(c.mailing_address IS NOT NULL
-          AND ${NORM_ADDR_RFL('p.street')} = ${NORM_ADDR_RFL('c.mailing_address')}
+          AND COALESCE(p.street_normalized, LOWER(TRIM(p.street))) = COALESCE(c.mailing_address_normalized, LOWER(TRIM(c.mailing_address)))
           AND LOWER(TRIM(p.city)) = LOWER(TRIM(c.mailing_city))
           AND UPPER(TRIM(p.state_code)) = UPPER(TRIM(c.mailing_state))
           AND SUBSTRING(TRIM(p.zip_code) FROM 1 FOR 5) = SUBSTRING(TRIM(c.mailing_zip) FROM 1 FOR 5))`);
       } else if (occRfl === 'absent_owner') {
         conditions.push(`(c.mailing_address IS NOT NULL AND TRIM(c.mailing_address) != ''
           AND NOT (
-            ${NORM_ADDR_RFL('p.street')} = ${NORM_ADDR_RFL('c.mailing_address')}
+            COALESCE(p.street_normalized, LOWER(TRIM(p.street))) = COALESCE(c.mailing_address_normalized, LOWER(TRIM(c.mailing_address)))
             AND LOWER(TRIM(p.city)) = LOWER(TRIM(c.mailing_city))
             AND UPPER(TRIM(p.state_code)) = UPPER(TRIM(c.mailing_state))
             AND SUBSTRING(TRIM(p.zip_code) FROM 1 FOR 5) = SUBSTRING(TRIM(c.mailing_zip) FROM 1 FOR 5)
@@ -3551,7 +3614,7 @@ router.post('/remove-from-list', requireAuth, async (req, res) => {
             JOIN property_contacts pc2 ON pc2.property_id = p2.id AND pc2.primary_contact = true
             JOIN contacts c2 ON c2.id = pc2.contact_id
             WHERE c2.mailing_address IS NOT NULL AND TRIM(c2.mailing_address) != ''
-              AND ${NORM_ADDR_RFL('c2.mailing_address')} = ${NORM_ADDR_RFL('c.mailing_address')}
+              AND COALESCE(c2.mailing_address_normalized, LOWER(TRIM(c2.mailing_address))) = COALESCE(c.mailing_address_normalized, LOWER(TRIM(c.mailing_address)))
               AND LOWER(TRIM(c2.mailing_city)) = LOWER(TRIM(c.mailing_city))
               AND UPPER(TRIM(p2.state_code)) = UPPER(TRIM(p.state_code))
               AND SUBSTRING(TRIM(c2.mailing_zip) FROM 1 FOR 5) = SUBSTRING(TRIM(c.mailing_zip) FROM 1 FOR 5)
@@ -3575,10 +3638,11 @@ router.post('/remove-from-list', requireAuth, async (req, res) => {
       `, params);
       idsToRemove = idsRes.rows.map(r => r.id);
     } else {
-      if (!Array.isArray(ids) || ids.length === 0) {
+      // ids is already cleaned via coerceIdArray above
+      if (ids.length === 0) {
         return res.status(400).json({ error: 'No records selected.' });
       }
-      idsToRemove = ids.map(n => parseInt(n)).filter(n => !isNaN(n) && n > 0);
+      idsToRemove = ids;
     }
 
     if (idsToRemove.length === 0) {
