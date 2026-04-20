@@ -1033,6 +1033,14 @@ router.post('/export', requireAuth, async (req, res) => {
     // Default ON if not provided — matches the checkbox default
     const excludeBadPhones = cleanPhonesOnly !== false;
 
+    // 2026-04-20 pass 12: hard cap on export size. Pre-pass-12 the selectAll
+    // branch ran with no LIMIT and could pull the entire 77k+ property table
+    // into memory as JSON. The ids branch had no bound either — sending more
+    // than Postgres's 65,535 parameter limit crashed the query with an
+    // unhelpful error. Cap both paths at 100k rows; if users need more,
+    // they should use the Bulk Import flow or do the export in chunks.
+    const EXPORT_MAX_ROWS = 100000;
+
     let props;
     if (selectAll) {
       const qs = new URLSearchParams(filterParams || '');
@@ -1204,10 +1212,19 @@ router.post('/export', requireAuth, async (req, res) => {
         LEFT JOIN contacts c ON c.id = pc.contact_id
         ${where}
         ORDER BY p.id DESC
+        LIMIT ${EXPORT_MAX_ROWS}
       `, params);
     } else {
       if (!ids || !ids.length) return res.status(400).json({ error: 'No IDs provided' });
-      const placeholders = ids.map((_, i) => `$${i + 1}`).join(',');
+      // Bound the ids list — anything over 100k exceeds Postgres parameter
+      // limits anyway. Also filter to valid numeric IDs defensively.
+      const cleanIds = ids
+        .map(n => parseInt(n))
+        .filter(n => !isNaN(n) && n > 0)
+        .slice(0, EXPORT_MAX_ROWS);
+      if (cleanIds.length === 0) return res.status(400).json({ error: 'No valid IDs' });
+      // Use ANY($1::int[]) — sends a single array parameter rather than
+      // expanding into 100k placeholder params that would crash PG.
       props = await query(`
         SELECT
           p.id, p.street, p.city, p.state_code, p.zip_code, p.county,
@@ -1224,15 +1241,14 @@ router.post('/export', requireAuth, async (req, res) => {
         FROM properties p
         LEFT JOIN property_contacts pc ON pc.property_id = p.id AND pc.primary_contact = true
         LEFT JOIN contacts c ON c.id = pc.contact_id
-        WHERE p.id IN (${placeholders})
-      `, ids);
+        WHERE p.id = ANY($1::int[])
+      `, [cleanIds]);
     }
 
     // Fetch phones (number + status, stored together so we can interleave in CSV)
     const allIds = props.rows.map(r => r.id);
     const phoneMap = {};
     if (columns.includes('phones') && allIds.length) {
-      const phonePlaceholders = allIds.map((_, i) => `$${i + 1}`).join(',');
       // LEFT JOIN against nis_numbers so we can mark phones as "dead" even if
       // the master phones.phone_status wasn't synced from the campaign flow.
       // is_nis = true for any phone that appears in the NIS registry (any count).
@@ -1247,9 +1263,9 @@ router.post('/export', requireAuth, async (req, res) => {
         FROM phones ph
         JOIN property_contacts pc ON pc.contact_id = ph.contact_id
         LEFT JOIN nis_numbers nis ON nis.phone_number = ph.phone_number
-        WHERE pc.property_id IN (${phonePlaceholders})
+        WHERE pc.property_id = ANY($1::int[])
         ORDER BY ph.phone_index ASC
-      `, allIds);
+      `, [allIds]);
       phoneRes.rows.forEach(ph => {
         if (!phoneMap[ph.property_id]) phoneMap[ph.property_id] = [];
         phoneMap[ph.property_id].push({
@@ -2274,13 +2290,51 @@ async function setDistressJob(job) {
   }
 }
 
-router.post('/_distress/recompute', requireAuth, async (req, res) => {
-  const existing = await getDistressJob();
-  if (existing.running) {
-    return res.redirect('/records/_distress?msg=' + encodeURIComponent('A rescore is already running. Check back in a minute.'));
+// 2026-04-20 pass 12: atomic test-and-set.
+// Pre-pass-12 the recompute endpoint did getDistressJob() → check !running →
+// setDistressJob({running:true}) in three separate awaits. Two fast clicks
+// on the Recompute button (or two users hitting it within the same 100ms)
+// both observed running=false and both proceeded to start workers.
+// tryClaimDistressJob uses Redis SET NX EX for a single-shot atomic claim;
+// falls back to a JS-level boolean when Redis isn't available (Railway runs
+// single-process so this is race-free within one worker).
+let _localClaimFlag = false;
+async function tryClaimDistressJob(newJob) {
+  const redis = _getDistressRedis();
+  if (redis) {
+    try {
+      // NX = only set if key doesn't exist. Returns 'OK' on success, null if
+      // someone else already holds the key.
+      const result = await redis.set(DISTRESS_JOB_KEY, JSON.stringify(newJob), 'NX', 'EX', DISTRESS_JOB_TTL);
+      if (result === 'OK') {
+        _localDistressJob = newJob;
+        _localClaimFlag = true;
+        return true;
+      }
+      // Someone else claimed it; make sure our local copy reflects that.
+      const raw = await redis.get(DISTRESS_JOB_KEY);
+      if (raw) _localDistressJob = JSON.parse(raw);
+      return false;
+    } catch (e) {
+      console.error('[distress] Redis claim failed, falling back to local flag:', e.message);
+      // Fall through to the local-flag path.
+    }
   }
+  // Local fallback — single-process node is single-threaded, this synchronous
+  // read-write block cannot race with itself.
+  if (_localClaimFlag || (_localDistressJob && _localDistressJob.running)) return false;
+  _localClaimFlag = true;
+  _localDistressJob = newJob;
+  return true;
+}
 
-  // Mark job as started BEFORE responding so the next poll sees running=true
+async function releaseDistressJob(finalJob) {
+  _localClaimFlag = false;
+  await setDistressJob(finalJob);
+}
+
+router.post('/_distress/recompute', requireAuth, async (req, res) => {
+  // 2026-04-20 pass 12: atomic claim. See tryClaimDistressJob.
   const newJob = {
     running: true,
     startedAt: Date.now(),
@@ -2289,7 +2343,10 @@ router.post('/_distress/recompute', requireAuth, async (req, res) => {
     total: 0,
     error: null,
   };
-  await setDistressJob(newJob);
+  const claimed = await tryClaimDistressJob(newJob);
+  if (!claimed) {
+    return res.redirect('/records/_distress?msg=' + encodeURIComponent('A rescore is already running. Check back in a minute.'));
+  }
 
   // Respond immediately — browser won't hang
   res.redirect('/records/_distress?msg=' + encodeURIComponent('Rescore started. This runs in the background (typically 2-5 minutes for 75k properties). The Score Distribution numbers will update when it finishes — refresh this page to check.'));
@@ -2304,7 +2361,7 @@ router.post('/_distress/recompute', requireAuth, async (req, res) => {
         }
       });
       const finishedAt = Date.now();
-      await setDistressJob({
+      await releaseDistressJob({
         running: false,
         startedAt: newJob.startedAt,
         finishedAt,
@@ -2316,7 +2373,7 @@ router.post('/_distress/recompute', requireAuth, async (req, res) => {
       console.log(`[distress/recompute] finished in ${secs}s — scored ${result.scored} of ${result.total}`);
     } catch (e) {
       console.error('[distress/recompute] FAILED:', e);
-      await setDistressJob({
+      await releaseDistressJob({
         running: false,
         startedAt: newJob.startedAt,
         finishedAt: Date.now(),
@@ -2552,14 +2609,40 @@ router.post('/_duplicates/merge', requireAuth, async (req, res) => {
     `, [keepId, dropIds]);
     movedContacts = contactRes.rowCount || 0;
 
-    // 3) Delete the dropped properties — distress logs cascade automatically
+    // 3) Move or clean FK-dependent history rows so the DELETE doesn't fail.
+    //    For merges we REPARENT history to the keeper (call_logs, sms_logs,
+    //    filtration_results, marketing_touches, deals) instead of discarding
+    //    it — the merge is supposed to consolidate a duplicate onto one
+    //    canonical property, so the canonical one should inherit the call
+    //    attempts, SMS sends, deals, etc.
+    //    2026-04-20 pass 12: pre-pass-12 these steps were absent, and any
+    //    duplicate property that happened to carry call/SMS/deal history
+    //    blew up the DELETE with a FK violation, leaving the merge half-
+    //    complete (list memberships already moved) with no transaction to
+    //    unwind. Now: reparent, then delete.
+    await query(`UPDATE call_logs          SET property_id = $1 WHERE property_id = ANY($2::int[])`, [keepId, dropIds]);
+    await query(`UPDATE sms_logs           SET property_id = $1 WHERE property_id = ANY($2::int[])`, [keepId, dropIds]);
+    await query(`UPDATE filtration_results SET property_id = $1 WHERE property_id = ANY($2::int[])`, [keepId, dropIds]);
+    await query(`UPDATE marketing_touches  SET property_id = $1 WHERE property_id = ANY($2::int[])`, [keepId, dropIds]);
+    await query(`UPDATE deals              SET property_id = $1 WHERE property_id = ANY($2::int[])`, [keepId, dropIds]);
+
+    // 4) Delete the dropped properties — distress logs cascade automatically;
     //    property_lists / property_contacts for the drops are no longer needed
     //    (we copied the unique ones; rest were duplicates already on keep).
     await query(`DELETE FROM property_lists    WHERE property_id = ANY($1::int[])`, [dropIds]);
     await query(`DELETE FROM property_contacts WHERE property_id = ANY($1::int[])`, [dropIds]);
     await query(`DELETE FROM properties        WHERE id = ANY($1::int[])`, [dropIds]);
 
-    // 4) Recompute distress for the kept property since lists may have changed
+    // 5) Refresh owner_portfolio_counts — the owned-count for every property
+    //    owned by this contact just changed.
+    try {
+      const { refreshOwnerPortfolioMv } = require('../db');
+      await refreshOwnerPortfolioMv();
+    } catch (e) {
+      console.error('[duplicates/merge] MV refresh failed (non-fatal):', e.message);
+    }
+
+    // 6) Recompute distress for the kept property since lists may have changed
     // 2026-04-18 audit fix #27: previously `catch(_) {}` silently swallowed any
     // scoring failure. Merge appeared successful but kept property had a stale
     // score with no way to know. Log the error so operators can investigate;
@@ -2582,7 +2665,19 @@ router.post('/_duplicates/merge', requireAuth, async (req, res) => {
 // POST /records/_duplicates/merge_all — finds and merges every duplicate group
 // in one shot. Same logic as single merge, just iterated. Capped at 500 groups
 // per request to avoid Express timeouts.
+// 2026-04-20 pass 12: merge_all concurrency guard. Pre-pass-12 two
+// simultaneous requests both ran the full merge sequence; the second one
+// tried to touch properties the first had already deleted, producing FK-
+// violation noise in logs. A module-level flag suffices since node is
+// single-threaded per process and merge_all is a big synchronous-ish
+// job (typically 30-60s per the UI copy).
+let _mergeAllRunning = false;
+
 router.post('/_duplicates/merge_all', requireAuth, async (req, res) => {
+  if (_mergeAllRunning) {
+    return res.redirect('/records/_duplicates?err=' + encodeURIComponent('Another merge_all is already running. Wait for it to finish and try again.'));
+  }
+  _mergeAllRunning = true;
   try {
     const startedAt = Date.now();
     // 2026-04-18 audit fix #37: previously grouped by LOWER(TRIM(street)) —
@@ -2669,6 +2764,18 @@ router.post('/_duplicates/merge_all', requireAuth, async (req, res) => {
         `, [keepId, dropIds]);
         totalMovedContacts += cr.rowCount || 0;
 
+        // 2026-04-20 pass 12: reparent history to the keeper before deleting
+        // dropped properties. Same fix as the single-merge path above —
+        // without it, any duplicate with a deal/call_log/sms_log/filtration
+        // record blew up the DELETE with an FK violation, leaving the group's
+        // merge half-complete (list memberships moved but dropped properties
+        // still present). Now history consolidates onto the keeper.
+        await query(`UPDATE call_logs          SET property_id = $1 WHERE property_id = ANY($2::int[])`, [keepId, dropIds]);
+        await query(`UPDATE sms_logs           SET property_id = $1 WHERE property_id = ANY($2::int[])`, [keepId, dropIds]);
+        await query(`UPDATE filtration_results SET property_id = $1 WHERE property_id = ANY($2::int[])`, [keepId, dropIds]);
+        await query(`UPDATE marketing_touches  SET property_id = $1 WHERE property_id = ANY($2::int[])`, [keepId, dropIds]);
+        await query(`UPDATE deals              SET property_id = $1 WHERE property_id = ANY($2::int[])`, [keepId, dropIds]);
+
         await query(`DELETE FROM property_lists    WHERE property_id = ANY($1::int[])`, [dropIds]);
         await query(`DELETE FROM property_contacts WHERE property_id = ANY($1::int[])`, [dropIds]);
         await query(`DELETE FROM properties        WHERE id = ANY($1::int[])`, [dropIds]);
@@ -2704,6 +2811,8 @@ router.post('/_duplicates/merge_all', requireAuth, async (req, res) => {
   } catch(e) {
     console.error('[duplicates/merge_all]', e);
     res.redirect('/records/_duplicates?err=' + encodeURIComponent('Bulk merge failed: ' + e.message));
+  } finally {
+    _mergeAllRunning = false;
   }
 });
 
@@ -2935,11 +3044,35 @@ router.post('/delete', requireAuth, async (req, res) => {
       return res.status(400).json({ error: 'No valid records to delete.' });
     }
 
-    // Delete in this order — child tables first (distress logs cascade via FK,
-    // so they clean up automatically when properties go)
+    // 2026-04-20 pass 12: Pre-pass-12 this only deleted property_lists and
+    // property_contacts. But properties are also referenced without CASCADE
+    // by: call_logs.property_id, sms_logs.property_id, deals.property_id,
+    // filtration_results.property_id, marketing_touches.property_id. Any
+    // property with call history, SMS history, or a deal attached would
+    // block the DELETE with a FK-violation 500. We set those references to
+    // NULL (preserves the history row, just detaches it from a property
+    // that's going away) then delete. deals.property_id is NOT NULL so we
+    // have to delete deal rows outright — acceptable because a deal on a
+    // property the operator is deleting is almost certainly a test deal or
+    // stale lead, and the delete code is gated behind settings.verifyDeleteCode.
+    await query(`UPDATE call_logs          SET property_id = NULL WHERE property_id = ANY($1::int[])`, [idsToDelete]);
+    await query(`UPDATE sms_logs           SET property_id = NULL WHERE property_id = ANY($1::int[])`, [idsToDelete]);
+    await query(`UPDATE filtration_results SET property_id = NULL WHERE property_id = ANY($1::int[])`, [idsToDelete]);
+    await query(`UPDATE marketing_touches  SET property_id = NULL WHERE property_id = ANY($1::int[])`, [idsToDelete]);
+    await query(`DELETE FROM deals                           WHERE property_id = ANY($1::int[])`, [idsToDelete]);
+    // Distress logs cascade via FK so they clean up automatically.
     await query(`DELETE FROM property_lists    WHERE property_id = ANY($1::int[])`, [idsToDelete]);
     await query(`DELETE FROM property_contacts WHERE property_id = ANY($1::int[])`, [idsToDelete]);
     const result = await query(`DELETE FROM properties WHERE id = ANY($1::int[]) RETURNING id`, [idsToDelete]);
+
+    // Refresh owner_portfolio_counts MV — deleting a property changes the
+    // owned-count for every remaining property owned by the same person.
+    try {
+      const { refreshOwnerPortfolioMv } = require('../db');
+      await refreshOwnerPortfolioMv();
+    } catch (e) {
+      console.error('[records/delete] MV refresh failed (non-fatal):', e.message);
+    }
 
     console.log(`[records/delete] Deleted ${result.rowCount} properties`);
     res.json({ ok: true, deleted: result.rowCount });
@@ -2957,11 +3090,24 @@ router.post('/:id(\\d+)/delete', requireAuth, async (req, res) => {
     if (!verified) {
       return res.status(403).json({ error: 'Invalid delete code.' });
     }
+    // 2026-04-20 pass 12: same FK-dependent cleanup as bulk delete above.
+    // See comment there for rationale.
+    await query(`UPDATE call_logs          SET property_id = NULL WHERE property_id = $1`, [id]);
+    await query(`UPDATE sms_logs           SET property_id = NULL WHERE property_id = $1`, [id]);
+    await query(`UPDATE filtration_results SET property_id = NULL WHERE property_id = $1`, [id]);
+    await query(`UPDATE marketing_touches  SET property_id = NULL WHERE property_id = $1`, [id]);
+    await query(`DELETE FROM deals                           WHERE property_id = $1`, [id]);
     await query(`DELETE FROM property_lists    WHERE property_id = $1`, [id]);
     await query(`DELETE FROM property_contacts WHERE property_id = $1`, [id]);
     const r = await query(`DELETE FROM properties WHERE id = $1 RETURNING id`, [id]);
     if (!r.rowCount) {
       return res.status(404).json({ error: 'Record not found.' });
+    }
+    try {
+      const { refreshOwnerPortfolioMv } = require('../db');
+      await refreshOwnerPortfolioMv();
+    } catch (e) {
+      console.error('[records/:id/delete] MV refresh failed (non-fatal):', e.message);
     }
     console.log(`[records/delete] Deleted single property #${id}`);
     res.json({ ok: true });
