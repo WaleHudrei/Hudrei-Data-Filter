@@ -4,6 +4,7 @@ const changelogModule = require('./changelog');
 const uploadRoutes = require('./routes/upload-routes');
 const uploadUI = require('./ui/upload');
 const express = require('express');
+const { bufferToCsvText, stripBom } = require('./csv-utils');
 const session = require('express-session');
 const multer = require('multer');
 const Papa = require('papaparse');
@@ -625,7 +626,7 @@ app.post('/process',requireAuth,upload.single('csvfile'),async(req,res)=>{
       });
     }
     const memory=await loadMemory();
-    const result=processCSV(req.file.buffer.toString('utf8'),memory,cId);
+    const result=processCSV(bufferToCsvText(req.file.buffer),memory,cId);
     await saveMemory(result.memory);
     req.session.lastResult={cleanRows:result.cleanRows,filteredRows:result.filteredRows};
     const allRows=[...result.cleanRows,...result.filteredRows];
@@ -668,7 +669,7 @@ app.get('/memory/export',requireAuth,async(req,res)=>{
 });
 
 app.post('/memory/import',requireAuth,upload.single('memfile'),async(req,res)=>{
-  try{const data=JSON.parse(req.file.buffer.toString('utf8'));await saveMemory(data);res.json({success:true,count:Object.keys(data).length});}
+  try{const data=JSON.parse(bufferToCsvText(req.file.buffer));await saveMemory(data);res.json({success:true,count:Object.keys(data).length});}
   catch(e){res.status(400).json({error:'Invalid memory file.'});}
 });
 
@@ -1285,7 +1286,14 @@ async function saveRunToDB(filename, stats, listsSeen, allRows) {
         const prev = priorMap.get(pid);
         if (prev !== 'lead' && prev !== 'contract' && prev !== 'closed') {
           try { await distress.logOutcomeChange(pid, 'pipeline_stage', prev, 'lead'); }
-          catch (e) { /* non-fatal */ }
+          catch (e) {
+            // 2026-04-20 pass 12: was `catch(e) { /* non-fatal */ }` — swallowed
+            // audit log failures silently, leaving invisible holes in the
+            // pipeline_stage outcome history on any FK violation or schema
+            // drift. Still non-fatal to the parent request (transfer succeeded)
+            // but now the operator can see the gap in Railway logs.
+            console.error(`[distress/outcome-log] pipeline_stage ${prev}→lead for property ${pid} failed to log:`, e.message);
+          }
         }
       }
     }
@@ -1460,7 +1468,7 @@ app.post('/campaigns/:id/upload', requireAuth, upload.single('csvfile'), async (
   try {
     if (!req.file) return res.status(400).json({ error: 'No file.' });
     const memory = await loadMemory();
-    const result = processCSV(req.file.buffer.toString('utf8'), memory, req.params.id);
+    const result = processCSV(bufferToCsvText(req.file.buffer), memory, req.params.id);
     await saveMemory(result.memory);
     req.session.lastResult = { cleanRows: result.cleanRows, filteredRows: result.filteredRows };
     const allRows = [...result.cleanRows, ...result.filteredRows];
@@ -1486,7 +1494,7 @@ app.post('/campaigns/:id/contacts/upload', requireAuth, upload.single('contactfi
   try {
     if (!req.file) return res.redirect('/campaigns/' + req.params.id);
     await campaigns.initCampaignSchema();
-    const parsed = Papa.parse(req.file.buffer.toString('utf8'), { header: true, skipEmptyLines: true });
+    const parsed = Papa.parse(bufferToCsvText(req.file.buffer), { header: true, skipEmptyLines: true });
     console.log('[contacts/upload] file received:', req.file.originalname, 'rows:', parsed.data.length, 'headers:', (parsed.meta.fields||[]).length);
     await campaigns.importContactList(req.params.id, parsed.data, parsed.meta.fields || []);
     console.log('[contacts/upload] import complete for campaign', req.params.id);
@@ -1513,7 +1521,7 @@ app.post('/campaigns/:id/contacts/delete', requireAuth, async (req, res) => {
 app.post('/campaigns/:id/sms/upload', requireAuth, upload.single('smsfile'), async (req, res) => {
   try {
     if (!req.file) return res.redirect('/campaigns/' + req.params.id);
-    const parsed = Papa.parse(req.file.buffer.toString('utf8'), { header: true, skipEmptyLines: true });
+    const parsed = Papa.parse(bufferToCsvText(req.file.buffer), { header: true, skipEmptyLines: true });
     const result = await campaigns.importSmarterContactFile(
       req.params.id,
       parsed.data,
@@ -1638,7 +1646,7 @@ app.post('/nis/upload', requireAuth, upload.single('nisfile'), async (req, res) 
   try {
     if (!req.file) return res.redirect('/nis');
     await campaigns.initCampaignSchema();
-    const csvText = req.file.buffer.toString('utf8').replace(/^\uFEFF/, '');
+    const csvText = bufferToCsvText(req.file.buffer);
     const parsed = Papa.parse(csvText, { header: true, skipEmptyLines: true });
     const result = await campaigns.importNisFile(parsed.data);
     const msg = `Processed ${result.totalRows} rows — ${result.uniqueNumbers} unique NIS numbers (${result.inserted} new, ${result.updated} updated). Flagged ${result.flagged} phones across all campaigns.`;
