@@ -9,6 +9,12 @@ const crypto = require('crypto');
 const { query, refreshOwnerPortfolioMv } = require('../db');
 const { shell } = require('../shared-shell');
 const { normalizeState } = require('./state');
+// 2026-04-20 pass 12: shared phone normalizer. Replaces the prior inline
+// cleanPhone that just stripped non-digits — it mishandled extensions
+// ("(555) 123-4567 x3" → "55512345673") and stored "1-555-123-4567" as
+// "15551234567" while filtration.js stored the same input as "5551234567".
+const { normalizePhone } = require('../phone-normalize');
+const { bufferToCsvText, stripBom } = require('../csv-utils');
 
 // ─────────────────────────────────────────────────────────────────────────────
 // bulk-import-routes.js — REISift bulk import (2026-04-17 rewrite)
@@ -54,7 +60,7 @@ function mapReisiftRow(row) {
   const toInt  = (v) => { const n = parseInt(v); return isNaN(n) ? null : n; };
   const toDate = (v) => { if (!v) return null; const d = new Date(v); return isNaN(d) ? null : d.toISOString().split('T')[0]; };
   const toBool = (v) => { const s = (v||'').toLowerCase(); return s==='true'||s==='yes'||s==='1' ? true : s==='false'||s==='no'||s==='0' ? false : null; };
-  const cleanPhone = (v) => String(v||'').replace(/\D/g,'');
+  const cleanPhone = (v) => normalizePhone(v);
   const mapStatus = (v) => {
     const s = (v||'').toLowerCase();
     if (s==='correct') return 'correct';
@@ -250,7 +256,10 @@ router.post('/start', requireAuth, upload.single('csvfile'), async (req, res) =>
     await ensureJobsTable();
 
     // Peek at header to validate format before committing to a job.
-    const head = req.file.buffer.toString('utf8', 0, Math.min(8192, req.file.buffer.length));
+    // Strip the UTF-8 BOM via the shared helper so Excel-saved CSVs don't
+    // report "Property address" missing because the first header has an
+    // invisible U+FEFF prefix.
+    const head = stripBom(req.file.buffer.toString('utf8', 0, Math.min(8192, req.file.buffer.length)));
     const firstPass = Papa.parse(head, { header: true, skipEmptyLines: true, preview: 1 });
     const headers = firstPass.meta.fields || [];
     if (!headers.includes('Property address') && !headers.includes('First Name')) {
@@ -261,7 +270,7 @@ router.post('/start', requireAuth, upload.single('csvfile'), async (req, res) =>
     // hold the full buffer once while writing to disk; after that, the in-
     // memory copy is eligible for GC.
     let totalRows = 0;
-    Papa.parse(req.file.buffer.toString('utf8'), {
+    Papa.parse(bufferToCsvText(req.file.buffer), {
       header: true,
       skipEmptyLines: true,
       step: () => { totalRows++; }
