@@ -831,6 +831,38 @@ router.get('/preview', requireAuth, (req, res) => {
         </div>
       </div>
 
+      <!-- 2026-04-21 Feature 8(a): import-mode 3-way toggle. Controls the
+           UPSERT branch on the server — "add_only" skips addresses that
+           already exist (INSERT ... ON CONFLICT DO NOTHING), "update_only"
+           skips brand-new rows (WHERE EXISTS pre-filter), "add_and_update"
+           (the default) does the current COALESCE safe-merge UPSERT. -->
+      <div class="card" style="margin-bottom:1.5rem;padding:14px 16px">
+        <div style="font-size:11px;font-weight:600;color:#888;text-transform:uppercase;letter-spacing:.08em;margin-bottom:10px">Import mode</div>
+        <div style="display:flex;flex-wrap:wrap;gap:8px">
+          <label style="flex:1;min-width:220px;display:flex;align-items:flex-start;gap:10px;padding:10px 12px;border:1px solid #ddd;border-radius:8px;cursor:pointer;font-size:13px;background:#fff" onmouseover="this.style.borderColor='#1a1a1a'" onmouseout="this.style.borderColor='#ddd'">
+            <input type="radio" name="import_mode" value="add_and_update" checked style="margin-top:2px">
+            <div>
+              <div style="font-weight:600;color:#1a1a1a">Add new + update existing</div>
+              <div style="font-size:11px;color:#888;margin-top:2px">Default. New addresses get inserted; existing rows have blank fields filled in (non-blank DB values are never overwritten).</div>
+            </div>
+          </label>
+          <label style="flex:1;min-width:220px;display:flex;align-items:flex-start;gap:10px;padding:10px 12px;border:1px solid #ddd;border-radius:8px;cursor:pointer;font-size:13px;background:#fff" onmouseover="this.style.borderColor='#1a1a1a'" onmouseout="this.style.borderColor='#ddd'">
+            <input type="radio" name="import_mode" value="add_only" style="margin-top:2px">
+            <div>
+              <div style="font-weight:600;color:#1a1a1a">Add new only</div>
+              <div style="font-size:11px;color:#888;margin-top:2px">Skip any address already in Loki. Use for clean "net new" imports where existing data must not be touched.</div>
+            </div>
+          </label>
+          <label style="flex:1;min-width:220px;display:flex;align-items:flex-start;gap:10px;padding:10px 12px;border:1px solid #ddd;border-radius:8px;cursor:pointer;font-size:13px;background:#fff" onmouseover="this.style.borderColor='#1a1a1a'" onmouseout="this.style.borderColor='#ddd'">
+            <input type="radio" name="import_mode" value="update_only" style="margin-top:2px">
+            <div>
+              <div style="font-weight:600;color:#1a1a1a">Update existing only</div>
+              <div style="font-size:11px;color:#888;margin-top:2px">Skip any address not yet in Loki. Use for skip-trace re-runs where you only want to enrich known properties.</div>
+            </div>
+          </label>
+        </div>
+      </div>
+
       <div id="progress-bar" style="display:none;margin-bottom:1rem">
         <div style="background:#f0efe9;border-radius:6px;height:8px;overflow:hidden">
           <div id="progress-fill" style="background:#1a1a1a;height:8px;width:0%;transition:width .3s;border-radius:6px"></div>
@@ -887,6 +919,9 @@ router.get('/preview', requireAuth, (req, res) => {
       document.getElementById('progress-text').textContent = 'Queuing import…';
 
       try {
+        // 2026-04-21 Feature 8(a): read selected import mode from radio.
+        var modeRadio = document.querySelector('input[name="import_mode"]:checked');
+        var importMode = (modeRadio && modeRadio.value) || 'add_and_update';
         const res = await fetch('/import/property/start-job', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -896,7 +931,8 @@ router.get('/preview', requireAuth, (req, res) => {
             listName:   importData.listName   || null,
             listId:     importData.listId     || null,
             listType:   importData.listType   || null,
-            listSource: importData.listSource || null
+            listSource: importData.listSource || null,
+            importMode: importMode
           })
         });
         const data = await res.json();
@@ -971,6 +1007,10 @@ router.post('/commit', requireAuth, async (req, res) => {
   try {
     const { mapping, filename, listName, listId, listType, listSource, offset, batchSize } = req.body;
     if (!mapping) return res.status(400).json({ error: 'Missing mapping.' });
+    // 2026-04-21 Feature 8(a): import-mode whitelist; defaults to the safe
+    // "add + update" behavior Loki has always used if client omits the field.
+    const VALID_IMPORT_MODES = ['add_and_update', 'add_only', 'update_only'];
+    const MODE = VALID_IMPORT_MODES.includes(req.body.importMode) ? req.body.importMode : 'add_and_update';
 
     // Read rows from server session
     const allRows = req.session.importRows;
@@ -1203,6 +1243,46 @@ router.post('/commit', requireAuth, async (req, res) => {
       }
       seenKeysSync.add(key);
       dedupedRows.push(row);
+    }
+
+    // 2026-04-21 Feature 8(a): import-mode filter (mirrors background worker
+    // exactly so both paths behave identically). See background comment for
+    // rationale — pre-filter rather than branch the conflict clause.
+    let skippedByMode = 0;
+    if ((MODE === 'add_only' || MODE === 'update_only') && dedupedRows.length) {
+      const tupStreets = dedupedRows.map(r => get(r,'street'));
+      const tupCities  = dedupedRows.map(r => get(r,'city'));
+      const tupStates  = dedupedRows.map(r => normalizeState(get(r,'state_code')));
+      const tupZips    = dedupedRows.map(r => normalizeZip(get(r,'zip_code')));
+      const existsRes = await query(
+        `SELECT DISTINCT
+           LOWER(TRIM(street)) || '|' || LOWER(TRIM(city)) || '|' || UPPER(TRIM(state_code)) || '|' || SUBSTRING(TRIM(zip_code) FROM 1 FOR 5) AS k
+           FROM properties
+          WHERE (street, city, state_code, zip_code) IN (
+            SELECT * FROM UNNEST($1::text[], $2::text[], $3::text[], $4::text[])
+          )`,
+        [tupStreets, tupCities, tupStates, tupZips]
+      );
+      const existing = new Set(existsRes.rows.map(r => r.k));
+      const kept = [];
+      for (const row of dedupedRows) {
+        const rk = [
+          (get(row,'street')||'').toLowerCase().trim(),
+          (get(row,'city')||'').toLowerCase().trim(),
+          (normalizeState(get(row,'state_code'))||'').toUpperCase(),
+          (normalizeZip(get(row,'zip_code'))||'').slice(0,5),
+        ].join('|');
+        const isExisting = existing.has(rk);
+        if (MODE === 'add_only'    && !isExisting) kept.push(row);
+        else if (MODE === 'update_only' && isExisting) kept.push(row);
+        else {
+          skippedByMode++;
+          skippedReasons.push({ street: get(row,'street'), reason: MODE === 'add_only' ? 'address already exists (add_only mode)' : 'address not in Loki yet (update_only mode)' });
+        }
+      }
+      dedupedRows.length = 0;
+      for (const k of kept) dedupedRows.push(k);
+      if (skippedByMode > 0) console.log(`[import/commit] mode=${MODE}: skipped ${skippedByMode} row(s)`);
     }
 
     if (!dedupedRows.length) {
@@ -1447,6 +1527,12 @@ router.post('/start-job', requireAuth, async (req, res) => {
     const { mapping, filename, listName, listId, listType, listSource } = req.body;
     if (!mapping) return res.status(400).json({ error: 'Missing mapping.' });
 
+    // 2026-04-21 Feature 8(a): whitelist the 3 valid import modes. Anything
+    // else (including undefined) falls back to the safe default. Server-side
+    // whitelist is the source of truth — the client radio is UX only.
+    const VALID_IMPORT_MODES = ['add_and_update', 'add_only', 'update_only'];
+    const importMode = VALID_IMPORT_MODES.includes(req.body.importMode) ? req.body.importMode : 'add_and_update';
+
     const allRows = req.session.importRows;
     if (!allRows || !allRows.length) return res.status(400).json({ error: 'Session expired. Please re-upload your file.' });
 
@@ -1480,7 +1566,7 @@ router.post('/start-job', requireAuth, async (req, res) => {
     req.session.save();
 
     // Fire background processing
-    setImmediate(() => runBackgroundImport(jobId, rows, mapping, filename, resolvedListId, listType, listSource));
+    setImmediate(() => runBackgroundImport(jobId, rows, mapping, filename, resolvedListId, listType, listSource, importMode));
 
     res.json({ jobId, resolvedListId, total: allRows.length });
   } catch(e) {
@@ -1490,7 +1576,12 @@ router.post('/start-job', requireAuth, async (req, res) => {
 });
 
 // ── BACKGROUND IMPORT WORKER ──────────────────────────────────────────────────
-async function runBackgroundImport(jobId, allRows, mapping, filename, resolvedListId) {
+async function runBackgroundImport(jobId, allRows, mapping, filename, resolvedListId, listTypeIgnored, listSourceIgnored, importMode) {
+  // 2026-04-21 Feature 8(a): importMode is one of 'add_and_update' (default),
+  // 'add_only', 'update_only' — branches the property UPSERT behavior below.
+  // Validated against a whitelist in the caller before we get here; guard
+  // here too in case of future call sites.
+  const MODE = (['add_and_update','add_only','update_only'].includes(importMode)) ? importMode : 'add_and_update';
   const BATCH = 500;
   let inserted = 0, updated = 0, errors = 0, processed = 0;
   const allSkipped = [];  // hoisted so the catch block can reference it
@@ -1762,6 +1853,54 @@ async function runBackgroundImport(jobId, allRows, mapping, filename, resolvedLi
       if (duplicatesMergedCount > 0 || secondaryOwnersCount > 0) {
         console.log(`[property-import] batch: merged ${duplicatesMergedCount} same-person dup(s), flagged ${secondaryOwnersCount} co-owner row(s) for secondary contact insertion`);
         totalDuplicatesMerged += duplicatesMergedCount;
+      }
+
+      // 2026-04-21 Feature 8(a): import mode filter.
+      //   add_only    → drop rows whose address ALREADY exists in Loki
+      //   update_only → drop rows whose address does NOT yet exist
+      //   add_and_update (default) → no filter, UPSERT handles both paths
+      // Single pre-query against the batch's address tuples produces the set
+      // of existing keys; we keep or drop against it based on MODE. Using a
+      // pre-filter rather than branching the ON CONFLICT clause keeps the
+      // downstream propMap/contact/phone linking code intact — every row
+      // that reaches the INSERT is guaranteed to produce a matching RETURNING.
+      let skippedByMode = 0;
+      let skippedByModeReason = '';
+      if ((MODE === 'add_only' || MODE === 'update_only') && dedupedRows.length) {
+        const tupStreets = dedupedRows.map(r => get(r,'street'));
+        const tupCities  = dedupedRows.map(r => get(r,'city'));
+        const tupStates  = dedupedRows.map(r => normalizeState(get(r,'state_code')));
+        const tupZips    = dedupedRows.map(r => normalizeZip(get(r,'zip_code')));
+        const existsRes = await query(
+          `SELECT DISTINCT
+             LOWER(TRIM(street)) || '|' || LOWER(TRIM(city)) || '|' || UPPER(TRIM(state_code)) || '|' || SUBSTRING(TRIM(zip_code) FROM 1 FOR 5) AS k
+             FROM properties
+            WHERE (street, city, state_code, zip_code) IN (
+              SELECT * FROM UNNEST($1::text[], $2::text[], $3::text[], $4::text[])
+            )`,
+          [tupStreets, tupCities, tupStates, tupZips]
+        );
+        const existing = new Set(existsRes.rows.map(r => r.k));
+        const kept = [];
+        for (const row of dedupedRows) {
+          const rk = [
+            (get(row,'street')||'').toLowerCase().trim(),
+            (get(row,'city')||'').toLowerCase().trim(),
+            (normalizeState(get(row,'state_code'))||'').toUpperCase(),
+            (normalizeZip(get(row,'zip_code'))||'').slice(0,5),
+          ].join('|');
+          const isExisting = existing.has(rk);
+          if (MODE === 'add_only'    && !isExisting) kept.push(row);
+          else if (MODE === 'update_only' && isExisting) kept.push(row);
+          else skippedByMode++;
+        }
+        skippedByModeReason = MODE === 'add_only'
+          ? `mode=add_only: skipped ${skippedByMode} row(s) whose address already exists`
+          : `mode=update_only: skipped ${skippedByMode} row(s) whose address doesn't exist in Loki yet`;
+        // Mutate dedupedRows in place — seenKeys map is not used after this point.
+        dedupedRows.length = 0;
+        for (const k of kept) dedupedRows.push(k);
+        if (skippedByMode > 0) console.log(`[property-import] ${skippedByModeReason}`);
       }
 
       if (dedupedRows.length) {
