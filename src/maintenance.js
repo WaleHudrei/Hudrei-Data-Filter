@@ -153,14 +153,21 @@ async function dedupByPhone(mode = 'report') {
       FROM phones ph
      WHERE ph.contact_id = ANY($1::int[])
     ON CONFLICT (contact_id, phone_number) DO UPDATE SET
-      -- keeper-wins unless loser has more informative status
+      -- keeper-wins unless loser has more informative status.
+      -- NOTE: x IN (NULL, ...) never matches NULL due to SQL three-valued
+      -- logic — NULL compared with = returns NULL, not TRUE.
+      -- Must write x IS NULL OR x IN (...) explicitly.
       phone_status = CASE
-        WHEN phones.phone_status IN (NULL, '', 'unknown') AND EXCLUDED.phone_status NOT IN (NULL, '', 'unknown')
+        WHEN (phones.phone_status IS NULL OR phones.phone_status IN ('', 'unknown'))
+             AND EXCLUDED.phone_status IS NOT NULL
+             AND EXCLUDED.phone_status NOT IN ('', 'unknown')
           THEN EXCLUDED.phone_status
         ELSE phones.phone_status
       END,
       phone_type = CASE
-        WHEN phones.phone_type IN (NULL, '', 'unknown') AND EXCLUDED.phone_type NOT IN (NULL, '', 'unknown')
+        WHEN (phones.phone_type IS NULL OR phones.phone_type IN ('', 'unknown'))
+             AND EXCLUDED.phone_type IS NOT NULL
+             AND EXCLUDED.phone_type NOT IN ('', 'unknown')
           THEN EXCLUDED.phone_type
         ELSE phones.phone_type
       END,
