@@ -1948,6 +1948,14 @@ function campaignsPage(list, tab) {
   const active = list.filter(c => c.status !== 'completed');
   const completed = list.filter(c => c.status === 'completed');
   const display = tab === 'completed' ? completed : active;
+  // 2026-04-21 PM: running total of leads across ALL campaigns (active +
+  // completed combined) so the headline number reflects total lead volume
+  // regardless of which tab is selected. Per-row leads render in the Leads
+  // column below so users can see which campaigns contributed. Uses the
+  // same lead_contacts field the per-campaign detail page + the dashboard
+  // both read — single source of truth (filtration.getContactStats, which
+  // counts campaign_numbers.last_disposition_normalized='transfer').
+  const totalLeads = list.reduce((sum, c) => sum + parseInt(c.contact_counts?.lead_contacts || 0), 0);
   const rows = display.map(c => {
     const totalContacts = parseInt(c.contact_counts?.total_contacts||0);
     const totalPhones = parseInt(c.contact_counts?.total_phones||0);
@@ -1962,6 +1970,7 @@ function campaignsPage(list, tab) {
     const connected = parseInt(c.total_connected||0);
     const transfers = parseInt(c.total_transfers||0);
     const lgr = connected > 0 ? ((transfers / connected) * 100).toFixed(2) : '0.00';
+    const leadContacts = parseInt(c.contact_counts?.lead_contacts || 0);
     return `
     <tr onclick="location.href='/campaigns/${c.id}'" style="cursor:pointer">
       <td><strong>${c.name}</strong><br><span style="font-size:11px;color:#888">${c.list_type} · ${c.market_name}</span></td>
@@ -1972,6 +1981,7 @@ function campaignsPage(list, tab) {
       <td>${Number(totalContacts).toLocaleString()}</td>
       <td>${lgr}%</td>
       <td style="color:#1a7a4a">${Number(callableContacts).toLocaleString()}</td>
+      <td style="color:#1a7a4a;font-weight:${leadContacts > 0 ? '600' : '400'}">${Number(leadContacts).toLocaleString()}</td>
       <td>${c.upload_count||0}</td>
     </tr>`;
   }).join('');
@@ -1982,14 +1992,19 @@ function campaignsPage(list, tab) {
       <p style="font-size:13px;color:#888">Each campaign tracks all filtration activity for a list type in a market</p></div>
       <a href="/campaigns/new" class="btn-primary-link">+ New Campaign</a>
     </div>
-    <div style="display:flex;gap:2px;border-bottom:1px solid #e0dfd8;margin-bottom:1.25rem">
+    <div style="display:flex;gap:2px;border-bottom:1px solid #e0dfd8;margin-bottom:1.25rem;align-items:center">
       <a href="/campaigns?tab=active" style="padding:8px 16px;font-size:13px;text-decoration:none;border-bottom:2px solid ${tab==='active'?'#1a1a1a':'transparent'};color:${tab==='active'?'#1a1a1a':'#888'}">Active (${active.length})</a>
       <a href="/campaigns?tab=completed" style="padding:8px 16px;font-size:13px;text-decoration:none;border-bottom:2px solid ${tab==='completed'?'#1a1a1a':'transparent'};color:${tab==='completed'?'#1a1a1a':'#888'}">Completed (${completed.length})</a>
+      <!-- 2026-04-21 PM: running total of leads across ALL campaigns
+           (active + completed combined). Stays constant when switching tabs. -->
+      <div style="margin-left:auto;padding:6px 14px;background:#e8f5ed;color:#1a7a4a;border-radius:7px;font-size:13px;font-weight:600">
+        ${Number(totalLeads).toLocaleString()} leads <span style="font-weight:400;color:#5a8a6a;font-size:11px;text-transform:uppercase;letter-spacing:.05em">total</span>
+      </div>
     </div>
     ${display.length === 0 ? `<div class="empty-state">No ${tab} campaigns yet.</div>` : `
     <div class="card" style="padding:0;overflow:hidden">
       <table class="data-table">
-        <thead><tr><th>Campaign</th><th>Status</th><th>Channel</th><th>Start date</th><th>End date</th><th>Total Contacts</th><th>LGR</th><th>Callable Contacts</th><th>Uploads</th></tr></thead>
+        <thead><tr><th>Campaign</th><th>Status</th><th>Channel</th><th>Start date</th><th>End date</th><th>Total Contacts</th><th>LGR</th><th>Callable Contacts</th><th>Leads</th><th>Uploads</th></tr></thead>
         <tbody>${rows}</tbody>
       </table>
     </div>`}
