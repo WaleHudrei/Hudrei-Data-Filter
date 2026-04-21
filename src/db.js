@@ -312,7 +312,14 @@ async function initSchema() {
     `ALTER TABLE properties ADD COLUMN IF NOT EXISTS apn VARCHAR(50)`,
     `ALTER TABLE properties ADD COLUMN IF NOT EXISTS legal_description TEXT`,
     `ALTER TABLE properties ADD COLUMN IF NOT EXISTS total_tax_owed NUMERIC(12,2)`,
-    `ALTER TABLE properties ADD COLUMN IF NOT EXISTS tax_delinquent_year SMALLINT`,
+    // 2026-04-21 PM hotfix: tax_delinquent_year originally SMALLINT. PropStream
+    // CSVs leak currency values ($57,142 etc.) into this column via their
+    // column-shift export bug. SMALLINT max is 32,767 → overflow → whole import
+    // batch crashes. Widen to INTEGER as defense-in-depth; importer also
+    // coerces garbage values to NULL at read time so the DB only sees sane years.
+    // ALTER TYPE INTEGER from SMALLINT is a safe widening cast — no data loss.
+    `ALTER TABLE properties ADD COLUMN IF NOT EXISTS tax_delinquent_year INTEGER`,
+    `ALTER TABLE properties ALTER COLUMN tax_delinquent_year TYPE INTEGER`,
     `ALTER TABLE properties ADD COLUMN IF NOT EXISTS tax_auction_date DATE`,
     `ALTER TABLE properties ADD COLUMN IF NOT EXISTS deed_type VARCHAR(50)`,
     `ALTER TABLE properties ADD COLUMN IF NOT EXISTS lien_type VARCHAR(50)`,
@@ -320,6 +327,13 @@ async function initSchema() {
     // apn gets an index — it's a natural secondary key and we'll eventually use
     // it as a match key in Feature 8 (safe-merge upsert via address OR apn).
     `CREATE INDEX IF NOT EXISTS idx_properties_apn ON properties(apn) WHERE apn IS NOT NULL`,
+    // 2026-04-21 PM hotfix: equity_percent was NUMERIC(5,2) (max 999.99).
+    // PropStream exports occasionally carry absurd values (e.g. $403,382 in
+    // the equity_percent column — that's a dollar amount, not a percent).
+    // Widen to NUMERIC(8,2) so the DB can absorb the bad row; importer
+    // separately clamps to a sane range. This is a pre-existing column, so
+    // the ALTER is the only step — no ADD COLUMN needed.
+    `ALTER TABLE properties ALTER COLUMN equity_percent TYPE NUMERIC(8,2)`,
   ];
 
   for (const sql of migrations) {
