@@ -3,6 +3,17 @@
 
 const ENTRIES = [
   {
+    date: 'April 21, 2026',
+    title: 'Phone number tags, phone type editing, phone filters, and an email display fix',
+    items: [
+      { tag: 'feat', text: 'You can now add tags to individual phone numbers. Open any property, find the phone card, and click the "+ tag" button next to any number. Phone tags are separate from property tags, so your phone tag list stays clean — use them for things like "Decision Maker", "Spouse", "Voicemail only", or whatever makes sense for your workflow.' },
+      { tag: 'feat', text: 'You can now change the type of any phone number (Mobile, Landline, VoIP, or Unknown). Click the type chip next to any phone number on a property page and pick the correct type. This is helpful when the imported data was wrong or missing — you can fix it on the spot without re-importing.' },
+      { tag: 'feat', text: 'Two new filters on the Records page: Phone Type and Phone Tag. Use Phone Type to find only properties with mobile/textable numbers (or only landlines, or VoIP, or unknowns). Use Phone Tag to find all properties that have a phone number tagged with something specific — great for building targeted call lists.' },
+      { tag: 'fix', text: 'Fixed a display issue where long email addresses on the Owner card could overlap with the next field. Long emails now wrap cleanly inside their own column.' },
+      { tag: 'note', text: 'About phone types: Loki learns the type from your CSV import (PropStream, REISift, etc. — their export usually includes it). If the source file didn\'t have that column, the type shows as "Unknown" until you edit it manually. There\'s no automatic lookup yet; that would require an outside service with per-number cost.' },
+    ],
+  },
+  {
     date: 'April 21, 2026 (Late evening)',
     title: 'Feature 8(a) import-mode toggle + 3 audit bugs fixed (NaN injection, Feature 7 race, Feature 7 URL-length)',
     items: [
