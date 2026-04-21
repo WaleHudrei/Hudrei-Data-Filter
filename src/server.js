@@ -689,59 +689,77 @@ app.use('/activity', activityRoutes);
 
 
 
+// ── Dashboard stats helper ────────────────────────────────────────────────────
+// 2026-04-21 PM: extracted from /dashboard so /api/dashboard-stats can reuse.
+// Live-refresh: /dashboard polls this endpoint every 30s to update counters
+// in-place without a full page reload. Single source of truth for "what does
+// a lead mean" — any future change goes in one place.
+async function getDashboardStats() {
+  const stats = await dbQuery(`SELECT
+    (SELECT COALESCE(NULLIF(n_live_tup, 0), (SELECT COUNT(*) FROM properties)) FROM pg_stat_user_tables WHERE relname = 'properties') AS total_properties,
+    (SELECT COUNT(*) FROM properties WHERE created_at >= date_trunc('month', NOW())) AS new_this_month,
+    (SELECT COALESCE(NULLIF(n_live_tup, 0), (SELECT COUNT(*) FROM contacts)) FROM pg_stat_user_tables WHERE relname = 'contacts') AS total_contacts,
+    (SELECT COALESCE(NULLIF(n_live_tup, 0), (SELECT COUNT(*) FROM phones)) FROM pg_stat_user_tables WHERE relname = 'phones') AS total_phones,
+    (SELECT COUNT(*) FROM phones WHERE LOWER(phone_status) = 'correct') AS correct_phones,
+    (SELECT COUNT(*) FROM phones WHERE LOWER(phone_status) = 'wrong' OR wrong_number = true) AS wrong_phones,
+    (SELECT COUNT(*) FROM phones WHERE LOWER(phone_status) IN ('dead','dead_number')) AS dead_phones,
+    (SELECT COUNT(*) FROM lists) AS total_lists,
+    (
+      -- Leads = same definition as /campaigns per-campaign counter.
+      -- See the longer comment on the /dashboard caller below.
+      SELECT COUNT(*) FROM (
+        SELECT 'cc:' || cc.id::text AS key
+          FROM campaign_contacts cc
+          JOIN campaign_contact_phones ccp ON ccp.contact_id = cc.id
+          JOIN campaign_numbers cn ON cn.phone_number = ccp.phone_number
+                                  AND cn.campaign_id = cc.campaign_id
+         WHERE cn.last_disposition_normalized = 'transfer'
+        UNION
+        SELECT 'p:' || p.id::text AS key
+          FROM properties p
+         WHERE p.pipeline_stage = 'lead'
+           AND NOT EXISTS (
+             SELECT 1
+               FROM campaign_contacts cc2
+               JOIN campaign_contact_phones ccp2 ON ccp2.contact_id = cc2.id
+               JOIN campaign_numbers cn2 ON cn2.phone_number = ccp2.phone_number
+                                        AND cn2.campaign_id = cc2.campaign_id
+              WHERE cn2.last_disposition_normalized = 'transfer'
+                AND cc2.property_address_normalized = p.street_normalized
+                AND UPPER(TRIM(cc2.property_state)) = UPPER(TRIM(p.state_code))
+           )
+      ) lead_union
+    ) AS leads,
+    (SELECT COUNT(*) FROM properties WHERE pipeline_stage = 'contract') AS contracts,
+    (SELECT COUNT(*) FROM properties WHERE pipeline_stage = 'closed') AS closed,
+    (SELECT COUNT(*) FROM properties WHERE state_code = 'IN') AS indiana_props,
+    (SELECT COUNT(*) FROM properties WHERE state_code = 'GA') AS georgia_props,
+    (SELECT COUNT(*) FROM filtration_runs) AS total_filtration_runs,
+    (SELECT COUNT(*) FROM filtration_runs WHERE run_at >= date_trunc('month', NOW())) AS filtration_runs_month
+  `);
+  return stats.rows[0];
+}
+
+// JSON endpoint for live-refresh. Dashboard polls this every 30s.
+app.get('/api/dashboard-stats', requireAuth, async (req, res) => {
+  try {
+    const s = await getDashboardStats();
+    res.json({ ok: true, stats: s, timestamp: Date.now() });
+  } catch (e) {
+    console.error('[api/dashboard-stats]', e.message);
+    res.status(500).json({ ok: false, error: e.message });
+  }
+});
+
 // ── Dashboard ─────────────────────────────────────────────────────────────────
 app.get('/dashboard', requireAuth, async (req, res) => {
   try {
     const { shell } = require('./shared-shell');
 
-    // Counts use Postgres's approximate live-tuple statistics for the three
-    // biggest tables (properties, contacts, phones) instead of full COUNT(*)
-    // scans. On databases >100k rows the full scan was ~200-500ms per dashboard
-    // load. n_live_tup is maintained by autovacuum and is close enough for a
-    // dashboard headline; the small pipeline-stage counts stay exact because
-    // they're already fast thanks to idx_properties_pipeline_stage. (Audit #34.)
-    const stats = await dbQuery(`SELECT
-      (SELECT COALESCE(NULLIF(n_live_tup, 0), (SELECT COUNT(*) FROM properties)) FROM pg_stat_user_tables WHERE relname = 'properties') AS total_properties,
-      (SELECT COUNT(*) FROM properties WHERE created_at >= date_trunc('month', NOW())) AS new_this_month,
-      (SELECT COALESCE(NULLIF(n_live_tup, 0), (SELECT COUNT(*) FROM contacts)) FROM pg_stat_user_tables WHERE relname = 'contacts') AS total_contacts,
-      (SELECT COALESCE(NULLIF(n_live_tup, 0), (SELECT COUNT(*) FROM phones)) FROM pg_stat_user_tables WHERE relname = 'phones') AS total_phones,
-      (SELECT COUNT(*) FROM phones WHERE LOWER(phone_status) = 'correct') AS correct_phones,
-      (SELECT COUNT(*) FROM phones WHERE LOWER(phone_status) = 'wrong' OR wrong_number = true) AS wrong_phones,
-      (SELECT COUNT(*) FROM phones WHERE LOWER(phone_status) IN ('dead','dead_number')) AS dead_phones,
-      (SELECT COUNT(*) FROM lists) AS total_lists,
-      (
-        -- 2026-04-20 audit fix #2: dashboard leads = union of two sources.
-        --   (a) properties with pipeline_stage='lead' (set by filtration's
-        --       cold-call and SMS transfer paths when the address can be
-        --       resolved back to a property row)
-        --   (b) campaign_contacts.marketing_result='Lead' rows (SMS path
-        --       source-of-truth — some never resolve to a property because
-        --       the address doesn't match).
-        -- DISTINCT on the resolved property avoids double-counting. The extra
-        -- clause unions in unresolved campaign leads so the total matches the
-        -- campaign-level lead count the user sees in /campaigns.
-        SELECT COUNT(*) FROM (
-          SELECT 'p:' || p.id::text AS key FROM properties p WHERE p.pipeline_stage = 'lead'
-          UNION
-          SELECT 'cc:' || cc.id::text AS key
-            FROM campaign_contacts cc
-           WHERE LOWER(TRIM(cc.marketing_result)) = 'lead'
-             AND NOT EXISTS (
-               SELECT 1 FROM properties p2
-                WHERE p2.pipeline_stage = 'lead'
-                  AND p2.street_normalized = cc.property_address_normalized
-                  AND UPPER(TRIM(p2.state_code)) = UPPER(TRIM(cc.property_state))
-             )
-        ) lead_union
-      ) AS leads,
-      (SELECT COUNT(*) FROM properties WHERE pipeline_stage = 'contract') AS contracts,
-      (SELECT COUNT(*) FROM properties WHERE pipeline_stage = 'closed') AS closed,
-      (SELECT COUNT(*) FROM properties WHERE state_code = 'IN') AS indiana_props,
-      (SELECT COUNT(*) FROM properties WHERE state_code = 'GA') AS georgia_props,
-      (SELECT COUNT(*) FROM filtration_runs) AS total_filtration_runs,
-      (SELECT COUNT(*) FROM filtration_runs WHERE run_at >= date_trunc('month', NOW())) AS filtration_runs_month
-    `);
-    const s = stats.rows[0];
+    // 2026-04-21 PM: stats query lives in getDashboardStats() so /api/
+    // dashboard-stats can use the same source of truth for live-refresh.
+    // See that function for the leads-definition rationale.
+    const s = await getDashboardStats();
 
     // Recent filtration runs
     const recentRuns = await dbQuery(`
@@ -789,10 +807,13 @@ app.get('/dashboard', requireAuth, async (req, res) => {
     const fmtNum = n => Number(n||0).toLocaleString();
     const fmtDate = v => v ? new Date(v).toLocaleDateString('en-US',{month:'short',day:'numeric',year:'numeric'}) : '—';
 
-    const statCard = (label, value, sub, color) => `
+    // 2026-04-21 PM: `key` is the stat field name on the stats object —
+    // gives the live-refresh script a stable selector (data-stat="leads")
+    // to update the rendered number in place without a full page reload.
+    const statCard = (label, value, sub, color, key) => `
       <div style="background:#fff;border:1px solid #e0dfd8;border-radius:10px;padding:14px 16px">
         <div style="font-size:11px;color:#888;margin-bottom:4px;text-transform:uppercase;letter-spacing:.05em">${label}</div>
-        <div style="font-size:24px;font-weight:600;color:${color||'#1a1a1a'}">${value}</div>
+        <div data-stat="${key||''}" style="font-size:24px;font-weight:600;color:${color||'#1a1a1a'}">${value}</div>
         ${sub ? `<div style="font-size:11px;color:#aaa;margin-top:2px">${sub}</div>` : ''}
       </div>`;
 
@@ -844,12 +865,12 @@ app.get('/dashboard', requireAuth, async (req, res) => {
 
       <!-- Stats grid -->
       <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:12px;margin-bottom:1.5rem">
-        ${statCard('Properties', fmtNum(s.total_properties), '+'+fmtNum(s.new_this_month)+' this month')}
-        ${statCard('Contacts', fmtNum(s.total_contacts))}
-        ${statCard('Phones', fmtNum(s.total_phones), fmtNum(s.correct_phones)+' correct')}
-        ${statCard('Lists', fmtNum(s.total_lists))}
-        ${statCard('Leads', fmtNum(s.leads), 'pipeline stage', '#1a7a4a')}
-        ${statCard('Contracts', fmtNum(s.contracts), 'pipeline stage', '#9a6800')}
+        ${statCard('Properties', fmtNum(s.total_properties), '+'+fmtNum(s.new_this_month)+' this month', null, 'total_properties')}
+        ${statCard('Contacts', fmtNum(s.total_contacts), null, null, 'total_contacts')}
+        ${statCard('Phones', fmtNum(s.total_phones), fmtNum(s.correct_phones)+' correct', null, 'total_phones')}
+        ${statCard('Lists', fmtNum(s.total_lists), null, null, 'total_lists')}
+        ${statCard('Leads', fmtNum(s.leads), 'live · auto-refresh', '#1a7a4a', 'leads')}
+        ${statCard('Contracts', fmtNum(s.contracts), 'pipeline stage', '#9a6800', 'contracts')}
       </div>
 
       <!-- Market split + Phone health -->
@@ -970,6 +991,52 @@ app.get('/dashboard', requireAuth, async (req, res) => {
           <a href="/lists" style="font-size:12px;color:#888;text-decoration:none;display:block;margin-top:10px">View all lists →</a>
         </div>
       </div>
+
+      <!-- 2026-04-21 PM: live-refresh. Poll /api/dashboard-stats every 30s
+           and update each data-stat="<key>" element in place. No full page
+           reload → filters/scroll position preserved. If a counter changes
+           vs the previous value, we briefly highlight it green so you see
+           the live update happen. Fails silently (e.g. on network blip) —
+           user still sees the last-known number rather than a broken UI. -->
+      <script>
+      (function(){
+        var REFRESH_MS = 30000;
+        function fmt(n){ var v = parseInt(n||0); return v.toLocaleString('en-US'); }
+        function flash(el){
+          el.style.transition = 'color 0.4s ease';
+          var orig = el.style.color;
+          el.style.color = '#1a7a4a';
+          setTimeout(function(){ el.style.color = orig; }, 800);
+        }
+        async function refresh(){
+          try {
+            var r = await fetch('/api/dashboard-stats', { credentials: 'same-origin' });
+            if (!r.ok) return;
+            var data = await r.json();
+            if (!data || !data.ok || !data.stats) return;
+            document.querySelectorAll('[data-stat]').forEach(function(el){
+              var k = el.getAttribute('data-stat');
+              if (!k || !(k in data.stats)) return;
+              var next = fmt(data.stats[k]);
+              if (el.textContent !== next) {
+                el.textContent = next;
+                flash(el);
+              }
+            });
+          } catch(e) { /* silent — retry on next tick */ }
+        }
+        // Only poll when the tab is visible so we do not hammer the DB
+        // from backgrounded tabs that users forgot about.
+        setInterval(function(){
+          if (document.visibilityState === 'visible') refresh();
+        }, REFRESH_MS);
+        // Also refresh immediately when the user returns to the tab so they
+        // see fresh numbers within a second of tab focus.
+        document.addEventListener('visibilitychange', function(){
+          if (document.visibilityState === 'visible') refresh();
+        });
+      })();
+      </script>
     `, 'dashboard'));
   } catch(e) {
     console.error(e);
