@@ -2172,10 +2172,10 @@ router.get('/:id(\\d+)', requireAuth, async (req, res) => {
       <!-- OWNER + PHONES -->
       <div class="grid-2" style="margin-bottom:1.25rem">
         <div class="card">
-          <div class="sec-lbl">Owner</div>
+          <div class="sec-lbl">Owner ${primaryContact?.id ? `<a href="/owners/${primaryContact.id}" style="font-size:11px;color:#1a4a9a;text-decoration:none;font-weight:500;margin-left:8px;text-transform:none;letter-spacing:0">→ View Owner Dashboard</a>` : ''}</div>
           <div class="kv-grid" style="margin-bottom:1.25rem">
-            <div class="kv"><div class="kv-label">First Name</div><div class="kv-val">${primaryContact?.first_name || '—'}</div></div>
-            <div class="kv"><div class="kv-label">Last Name</div><div class="kv-val">${primaryContact?.last_name || '—'}</div></div>
+            <div class="kv"><div class="kv-label">First Name</div><div class="kv-val">${primaryContact?.id ? `<a href="/owners/${primaryContact.id}" style="color:#1a4a9a;text-decoration:none">${primaryContact?.first_name || '—'}</a>` : (primaryContact?.first_name || '—')}</div></div>
+            <div class="kv"><div class="kv-label">Last Name</div><div class="kv-val">${primaryContact?.id ? `<a href="/owners/${primaryContact.id}" style="color:#1a4a9a;text-decoration:none">${primaryContact?.last_name || '—'}</a>` : (primaryContact?.last_name || '—')}</div></div>
             ${(() => {
               // 2026-04-21 Feature 1: Owner Type badge on detail card.
               // Matches the Records-table palette so users see the same visual cue.
