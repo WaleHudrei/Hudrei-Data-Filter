@@ -53,16 +53,24 @@ var _suggestTimer = null;
 function suggestTags(q) {
   clearTimeout(_suggestTimer);
   var box = document.getElementById('tag-suggestions');
-  if (!q.trim()) { box.style.display = 'none'; return; }
+  // 2026-04-21 fix: query on focus/empty too so clicking the field shows
+  // all existing tags for browsing (previously this returned 0 results
+  // until the user typed something, which looked broken).
   _suggestTimer = setTimeout(async function() {
     try {
-      var res = await fetch('/records/tags/suggest?q=' + encodeURIComponent(q.trim()));
+      var res = await fetch('/records/tags/suggest?q=' + encodeURIComponent((q||'').trim()));
       var tags = await res.json();
-      if (!tags.length) { box.style.display = 'none'; return; }
       // Filter out tags already on this property
       var existing = Array.from(document.querySelectorAll('.tag-pill')).map(function(el){ return parseInt(el.getAttribute('data-tag-id')); });
       tags = tags.filter(function(t){ return existing.indexOf(t.id) === -1; });
-      if (!tags.length) { box.style.display = 'none'; return; }
+      if (!tags.length) {
+        var q2 = (q||'').trim();
+        box.innerHTML = '<div style="padding:10px 12px;font-size:12px;color:#aaa;font-style:italic">'
+          + (q2 ? 'No matching tags — press Enter to create "' + _esc(q2) + '"' : 'This property already has every tag that exists. Type a new name to create one.')
+          + '</div>';
+        box.style.display = 'block';
+        return;
+      }
       box.innerHTML = tags.map(function(t){
         return '<div onclick="pickSuggestion(' + t.id + ', this)" style="padding:8px 12px;cursor:pointer;font-size:13px;display:flex;align-items:center;gap:8px" onmouseover="this.style.background=\'#f5f4f0\'" onmouseout="this.style.background=\'none\'">'
           + '<span style="width:10px;height:10px;border-radius:50%;background:' + (t.color||'#6b7280') + '"></span>'
@@ -71,6 +79,12 @@ function suggestTags(q) {
       box.style.display = 'block';
     } catch(e) { box.style.display = 'none'; }
   }, 200);
+}
+
+// 2026-04-21: click/focus handler — triggers suggest with current input value.
+function suggestTagsOnFocus() {
+  var input = document.getElementById('tag-input');
+  if (input) suggestTags(input.value || '');
 }
 
 function pickSuggestion(tagId, el) {
