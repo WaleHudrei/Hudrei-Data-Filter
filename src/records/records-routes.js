@@ -77,6 +77,28 @@ async function ensureTagSchema() {
     CREATE INDEX IF NOT EXISTS idx_property_tags_tag ON property_tags(tag_id);
     CREATE INDEX IF NOT EXISTS idx_property_tags_prop ON property_tags(property_id);
   `);
+  // 2026-04-21 Phone tags — a completely separate tag pool for tagging
+  // individual phone numbers (e.g. "Decision Maker", "Voicemail only",
+  // "Spouse"). Does NOT share the property tag pool; users wanted the two
+  // to stay distinct so a property's tags don't pollute the phone tag
+  // dropdown and vice versa.
+  await query(`
+    CREATE TABLE IF NOT EXISTS phone_tags (
+      id SERIAL PRIMARY KEY,
+      name VARCHAR(100) NOT NULL,
+      color VARCHAR(7) DEFAULT '#6b7280',
+      created_at TIMESTAMPTZ DEFAULT NOW()
+    );
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_phone_tags_name_lower ON phone_tags (LOWER(name));
+    CREATE TABLE IF NOT EXISTS phone_tag_links (
+      phone_id INTEGER NOT NULL REFERENCES phones(id) ON DELETE CASCADE,
+      phone_tag_id INTEGER NOT NULL REFERENCES phone_tags(id) ON DELETE CASCADE,
+      created_at TIMESTAMPTZ DEFAULT NOW(),
+      PRIMARY KEY (phone_id, phone_tag_id)
+    );
+    CREATE INDEX IF NOT EXISTS idx_phone_tag_links_tag ON phone_tag_links(phone_tag_id);
+    CREATE INDEX IF NOT EXISTS idx_phone_tag_links_phone ON phone_tag_links(phone_id);
+  `);
   _tagSchemaReady = true;
 }
 
@@ -155,6 +177,8 @@ router.get('/', requireAuth, async (req, res) => {
       min_owned = '', max_owned = '',
       min_years_owned = '', max_years_owned = '',
       tag = '',
+      phone_type = '',
+      phone_tag = '',
       owner_type = '',
       mailing = '',
       msg = '', err = '',
@@ -375,6 +399,30 @@ router.get('/', requireAuth, async (req, res) => {
       conditions.push(`EXISTS (SELECT 1 FROM property_tags pt_f WHERE pt_f.property_id = p.id AND pt_f.tag_id = $${idx})`);
       params.push(parseInt(tag)); idx++;
     }
+    // 2026-04-21 Phone Type filter. "Any linked phone matches" semantics —
+    // show properties where at least one phone on the primary contact has
+    // the selected phone_type. Whitelist to prevent arbitrary values leaking
+    // into the SQL (param is still passed, but defense in depth).
+    const VALID_PHONE_TYPES = ['mobile', 'landline', 'voip', 'unknown'];
+    if (phone_type && VALID_PHONE_TYPES.includes(phone_type)) {
+      conditions.push(`EXISTS (
+        SELECT 1 FROM phones ph_pt
+        JOIN property_contacts pc_pt ON pc_pt.contact_id = ph_pt.contact_id
+        WHERE pc_pt.property_id = p.id AND LOWER(ph_pt.phone_type) = $${idx}
+      )`);
+      params.push(phone_type); idx++;
+    }
+    // 2026-04-21 Phone Tag filter. Any linked phone with this phone_tag_id.
+    const phoneTagId = safeInt(phone_tag);
+    if (phoneTagId !== null) {
+      conditions.push(`EXISTS (
+        SELECT 1 FROM phone_tag_links ptl_f
+        JOIN phones ph_ptl ON ph_ptl.id = ptl_f.phone_id
+        JOIN property_contacts pc_ptl ON pc_ptl.contact_id = ph_ptl.contact_id
+        WHERE pc_ptl.property_id = p.id AND ptl_f.phone_tag_id = $${idx}
+      )`);
+      params.push(phoneTagId); idx++;
+    }
     // 2026-04-21 Feature 1: Owner Type filter (Person/Company/Trust). Matches
     // on the primary contact's owner_type. Empty string or 'any' = no filter.
     if (owner_type && VALID_OWNER_TYPES.includes(owner_type)) {
@@ -513,6 +561,9 @@ router.get('/', requireAuth, async (req, res) => {
     await ensureTagSchema();
     const allTagsRes = await query(`SELECT id, name, color FROM tags ORDER BY name ASC`);
     const allTags = allTagsRes.rows;
+    // 2026-04-21 Phone tags for the filter dropdown.
+    const allPhoneTagsRes = await query(`SELECT id, name, color FROM phone_tags ORDER BY name ASC`);
+    const allPhoneTags = allPhoneTagsRes.rows;
 
     const totalPages = Math.ceil(total / limit);
 
@@ -568,6 +619,7 @@ router.get('/', requireAuth, async (req, res) => {
       add('min_owned', min_owned); add('max_owned', max_owned);
       add('min_years_owned', min_years_owned); add('max_years_owned', max_years_owned);
       add('tag', tag);
+      add('phone_type', phone_type); add('phone_tag', phone_tag);
       add('owner_type', owner_type);
       add('mailing', mailing);
       stackList.forEach(sl => parts.push(`stack_list=${encodeURIComponent(sl)}`));
@@ -588,7 +640,7 @@ router.get('/', requireAuth, async (req, res) => {
       </div>` : '';
 
     // Filter count — multi-select filters count as 1 each regardless of how many values
-    const activeFilterCount = [city,zip,county,type,pipeline,prop_status,mkt_result,occupancy,phones,min_assessed,max_assessed,min_equity,max_equity,min_year,max_year,upload_from,upload_to,min_stack,min_distress,min_owned,max_owned,min_years_owned,max_years_owned,tag,owner_type,mailing].filter(Boolean).length + (stackList.length > 0 ? 1 : 0) + (stateList.length > 0 ? 1 : 0) + (mktIncludeList.length > 0 ? 1 : 0) + (mktExcludeList.length > 0 ? 1 : 0);
+    const activeFilterCount = [city,zip,county,type,pipeline,prop_status,mkt_result,occupancy,phones,min_assessed,max_assessed,min_equity,max_equity,min_year,max_year,upload_from,upload_to,min_stack,min_distress,min_owned,max_owned,min_years_owned,max_years_owned,tag,phone_type,phone_tag,owner_type,mailing].filter(Boolean).length + (stackList.length > 0 ? 1 : 0) + (stateList.length > 0 ? 1 : 0) + (mktIncludeList.length > 0 ? 1 : 0) + (mktExcludeList.length > 0 ? 1 : 0);
 
     res.send(shell('Records', `
       <div class="page-header">
@@ -739,6 +791,26 @@ router.get('/', requireAuth, async (req, res) => {
                 <option value="">Any</option>
                 <option value="has"  ${phones==='has' ?'selected':''}>Has phones</option>
                 <option value="none" ${phones==='none'?'selected':''}>No phones</option>
+              </select>
+            </div>
+            <!-- 2026-04-21 Phone Type filter. "Any linked phone matches"
+                 semantics — the property shows if at least one phone on
+                 the primary contact has the selected type. -->
+            <div>
+              <label style="font-size:11px;color:#888;display:block;margin-bottom:3px">Phone Type</label>
+              <select name="phone_type" style="width:100%;padding:7px 10px;border:1px solid #ddd;border-radius:7px;font-size:13px;font-family:inherit;background:#fff">
+                <option value="">Any</option>
+                <option value="mobile"   ${phone_type==='mobile'  ?'selected':''}>Mobile (textable)</option>
+                <option value="landline" ${phone_type==='landline'?'selected':''}>Landline (call only)</option>
+                <option value="voip"     ${phone_type==='voip'    ?'selected':''}>VoIP</option>
+                <option value="unknown"  ${phone_type==='unknown' ?'selected':''}>Unknown</option>
+              </select>
+            </div>
+            <div>
+              <label style="font-size:11px;color:#888;display:block;margin-bottom:3px">Phone Tag</label>
+              <select name="phone_tag" style="width:100%;padding:7px 10px;border:1px solid #ddd;border-radius:7px;font-size:13px;font-family:inherit;background:#fff" ${allPhoneTags.length === 0 ? 'disabled title="No phone tags yet — add them from any property\'s phone card"' : ''}>
+                <option value="">${allPhoneTags.length === 0 ? 'No phone tags yet' : 'Any'}</option>
+                ${allPhoneTags.map(t => `<option value="${t.id}" ${phone_tag == t.id ? 'selected' : ''}>${escHTML(t.name)}</option>`).join('')}
               </select>
             </div>
             <div>
@@ -1170,6 +1242,103 @@ router.get('/tags/suggest', requireAuth, async (req, res) => {
     res.json(r.rows);
   } catch (e) {
     console.error('[tags/suggest]', e);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// 2026-04-21 Phone tags — separate pool from property tags.
+// GET  /records/phone-tags/suggest       → auto-suggest for the tag picker
+// POST /records/phones/:phoneId/tags     → attach a phone tag (creates if new)
+// POST /records/phones/:phoneId/tags/:tagId/remove → detach one
+// POST /records/phones/:phoneId/type     → set phone_type (manual override)
+// ═══════════════════════════════════════════════════════════════════════════════
+router.get('/phone-tags/suggest', requireAuth, async (req, res) => {
+  try {
+    await ensureTagSchema();
+    const q = String(req.query.q || '').trim();
+    if (!q) {
+      const r = await query(`SELECT id, name, color FROM phone_tags ORDER BY name ASC LIMIT 50`);
+      return res.json(r.rows);
+    }
+    const r = await query(
+      `SELECT id, name, color FROM phone_tags WHERE name ILIKE $1 ORDER BY name ASC LIMIT 20`,
+      [`%${q}%`]
+    );
+    res.json(r.rows);
+  } catch (e) {
+    console.error('[phone-tags/suggest]', e);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+router.post('/phones/:phoneId(\\d+)/tags', requireAuth, async (req, res) => {
+  try {
+    await ensureTagSchema();
+    const phoneId = parseInt(req.params.phoneId, 10);
+    const name = String(req.body.name || '').trim().slice(0, 100);
+    if (!phoneId || !name) return res.status(400).json({ error: 'phoneId + name required' });
+
+    // Verify phone exists (clearer error than FK violation)
+    const ph = await query(`SELECT id FROM phones WHERE id = $1`, [phoneId]);
+    if (!ph.rowCount) return res.status(404).json({ error: 'Phone not found' });
+
+    // Find-or-create the tag (case-insensitive). Race-safe via the unique
+    // index on LOWER(name) — if two simultaneous creates happen, the second
+    // hits ON CONFLICT and we SELECT again to grab the existing id.
+    let tagRes = await query(`SELECT id, name, color FROM phone_tags WHERE LOWER(name) = LOWER($1) LIMIT 1`, [name]);
+    let tag;
+    if (tagRes.rowCount) {
+      tag = tagRes.rows[0];
+    } else {
+      try {
+        const ins = await query(`INSERT INTO phone_tags (name) VALUES ($1) RETURNING id, name, color`, [name]);
+        tag = ins.rows[0];
+      } catch (e) {
+        // Race: concurrent insert won. Re-read.
+        const r2 = await query(`SELECT id, name, color FROM phone_tags WHERE LOWER(name) = LOWER($1) LIMIT 1`, [name]);
+        if (!r2.rowCount) throw e;
+        tag = r2.rows[0];
+      }
+    }
+
+    await query(
+      `INSERT INTO phone_tag_links (phone_id, phone_tag_id) VALUES ($1, $2) ON CONFLICT DO NOTHING`,
+      [phoneId, tag.id]
+    );
+    res.json({ ok: true, tag });
+  } catch (e) {
+    console.error('[phones/:id/tags POST]', e);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+router.post('/phones/:phoneId(\\d+)/tags/:tagId(\\d+)/remove', requireAuth, async (req, res) => {
+  try {
+    const phoneId = parseInt(req.params.phoneId, 10);
+    const tagId = parseInt(req.params.tagId, 10);
+    await query(`DELETE FROM phone_tag_links WHERE phone_id = $1 AND phone_tag_id = $2`, [phoneId, tagId]);
+    res.json({ ok: true });
+  } catch (e) {
+    console.error('[phones/:id/tags/:tid/remove]', e);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// Manual phone type override — user-driven correction when the CSV import
+// got it wrong (or when the source data had no type column). Whitelist the
+// allowed values to keep the DB clean.
+router.post('/phones/:phoneId(\\d+)/type', requireAuth, async (req, res) => {
+  try {
+    const phoneId = parseInt(req.params.phoneId, 10);
+    const allowed = ['mobile', 'landline', 'voip', 'unknown'];
+    const newType = String(req.body.phone_type || '').toLowerCase();
+    if (!phoneId || !allowed.includes(newType)) return res.status(400).json({ error: 'Invalid phone_type. Use mobile / landline / voip / unknown.' });
+    const r = await query(`UPDATE phones SET phone_type = $1, updated_at = NOW() WHERE id = $2 RETURNING id, phone_type`, [newType, phoneId]);
+    if (!r.rowCount) return res.status(404).json({ error: 'Phone not found' });
+    res.json({ ok: true, phone: r.rows[0] });
+  } catch (e) {
+    console.error('[phones/:id/type POST]', e);
     res.status(500).json({ error: e.message });
   }
 });
@@ -1712,6 +1881,18 @@ router.post('/export', requireAuth, async (req, res) => {
         conditions.push(`EXISTS (SELECT 1 FROM property_tags pt_f WHERE pt_f.property_id = p.id AND pt_f.tag_id = $${idx})`);
         params.push(parseInt(qv('tag'))); idx++;
       }
+      // 2026-04-21 phone_type + phone_tag parity filters.
+      const VPT_SA = ['mobile','landline','voip','unknown'];
+      const ptSA = qv('phone_type');
+      if (ptSA && VPT_SA.includes(ptSA)) {
+        conditions.push(`EXISTS (SELECT 1 FROM phones ph_pt JOIN property_contacts pc_pt ON pc_pt.contact_id = ph_pt.contact_id WHERE pc_pt.property_id = p.id AND LOWER(ph_pt.phone_type) = $${idx})`);
+        params.push(ptSA); idx++;
+      }
+      const ptagSA = safeInt(qv('phone_tag'));
+      if (ptagSA !== null) {
+        conditions.push(`EXISTS (SELECT 1 FROM phone_tag_links ptl_f JOIN phones ph_ptl ON ph_ptl.id = ptl_f.phone_id JOIN property_contacts pc_ptl ON pc_ptl.contact_id = ph_ptl.contact_id WHERE pc_ptl.property_id = p.id AND ptl_f.phone_tag_id = $${idx})`);
+        params.push(ptagSA); idx++;
+      }
       // 2026-04-21 Feature 1 parity: Owner Type. Mirrors main list route.
       if (qv('owner_type') && VALID_OWNER_TYPES.includes(qv('owner_type'))) {
         conditions.push(`c.owner_type = $${idx}`);
@@ -2025,6 +2206,25 @@ router.get('/:id(\\d+)', requireAuth, async (req, res) => {
         SELECT * FROM phones WHERE contact_id = $1 ORDER BY phone_index ASC
       `, [primaryContact.id]);
       phones = phoneRes.rows;
+      // Attach phone tags (new 2026-04-21). One query for all phones at once
+      // to avoid N+1 on the detail page. Each phone gets .tags = [{id,name,color}, ...].
+      if (phones.length) {
+        const phoneIds = phones.map(p => p.id);
+        const ptRes = await query(
+          `SELECT ptl.phone_id, pt.id, pt.name, pt.color
+             FROM phone_tag_links ptl
+             JOIN phone_tags pt ON pt.id = ptl.phone_tag_id
+            WHERE ptl.phone_id = ANY($1::int[])
+            ORDER BY pt.name ASC`,
+          [phoneIds]
+        );
+        const tagsByPhone = {};
+        for (const r of ptRes.rows) {
+          if (!tagsByPhone[r.phone_id]) tagsByPhone[r.phone_id] = [];
+          tagsByPhone[r.phone_id].push({ id: r.id, name: r.name, color: r.color });
+        }
+        for (const p of phones) p.tags = tagsByPhone[p.id] || [];
+      }
     }
 
     // Lists
@@ -2118,29 +2318,48 @@ router.get('/:id(\\d+)', requireAuth, async (req, res) => {
     // ── Render phones ──
     const phoneHTML = phones.length ? phones.map(ph => {
       const statusClass = {unknown:'ps-unknown',correct:'ps-correct',wrong:'ps-wrong',dead:'ps-dead'}[ph.phone_status?.toLowerCase()] || 'ps-unknown';
-      // 2026-04-21 Feature 4: phone_type chip ("mobile" / "landline" / other).
-      // Schema already had phone_type (VARCHAR default 'unknown') — the import
-      // pipeline populates it from CSV columns. Only the display was missing.
-      // Show it inline before the status chip so the user can tell at-a-glance
-      // whether a number is textable vs callable-only.
-      const ptRaw = (ph.phone_type || '').toLowerCase();
+      // 2026-04-21 phone_type chip. Clickable — opens an inline popover with
+      // a dropdown to manually correct the type if the CSV got it wrong or
+      // the source data had no type column. Saves immediately on change.
+      const ptRaw = (ph.phone_type || 'unknown').toLowerCase();
       const ptLabel = ptRaw === 'mobile'   ? 'Mobile'
                    : ptRaw === 'landline' ? 'Landline'
                    : ptRaw === 'voip'     ? 'VoIP'
-                   : null;  // unknown / empty → don't render a chip at all
-      const ptColor = ptRaw === 'mobile'   ? { bg:'#e8f5ee', text:'#1a7a4a' }   // green = textable
-                    : ptRaw === 'landline' ? { bg:'#e8f0ff', text:'#2c5cc5' }   // blue = call-only
-                    : ptRaw === 'voip'     ? { bg:'#fff8e1', text:'#9a6800' }   // amber = VoIP
-                    : null;
-      const typeChip = ptLabel
-        ? `<span style="font-size:10px;font-weight:600;letter-spacing:.05em;text-transform:uppercase;padding:3px 7px;border-radius:4px;background:${ptColor.bg};color:${ptColor.text}">${ptLabel}</span>`
-        : '';
-      return `<div class="phone-row">
-        <span class="phone-num">${ph.phone_number}</span>
-        <div style="display:flex;align-items:center;gap:8px">
-          ${typeChip}
-          ${ph.phone_tag ? `<span class="tag">${escHTML(ph.phone_tag)}</span>` : ''}
-          <span class="phone-status ${statusClass}">${ph.phone_status || 'Unknown'}</span>
+                   : 'Unknown';
+      const ptColor = ptRaw === 'mobile'   ? { bg:'#e8f5ee', text:'#1a7a4a' }
+                    : ptRaw === 'landline' ? { bg:'#e8f0ff', text:'#2c5cc5' }
+                    : ptRaw === 'voip'     ? { bg:'#fff8e1', text:'#9a6800' }
+                    :                        { bg:'#f0efe9', text:'#888'    };
+      const typeChip = `<span class="phone-type-chip" data-phone-id="${ph.id}" onclick="togglePhoneTypePopover(${ph.id}, event)" title="Click to change phone type" style="font-size:10px;font-weight:600;letter-spacing:.05em;text-transform:uppercase;padding:3px 7px;border-radius:4px;background:${ptColor.bg};color:${ptColor.text};cursor:pointer;user-select:none">${ptLabel}</span>`;
+
+      // Phone tag pills — each is removable (hover shows ×)
+      const phoneTagPills = (ph.tags || []).map(t => `
+        <span class="phone-tag-pill" data-tag-id="${t.id}" style="display:inline-flex;align-items:center;gap:4px;font-size:10px;font-weight:500;padding:3px 4px 3px 7px;border-radius:4px;background:${escHTML(t.color)}22;color:${escHTML(t.color)};border:1px solid ${escHTML(t.color)}55">
+          <span>${escHTML(t.name)}</span>
+          <button type="button" onclick="removePhoneTag(${ph.id}, ${t.id})" title="Remove tag" style="background:none;border:none;cursor:pointer;padding:0 2px;color:inherit;font-size:13px;line-height:1;opacity:.6" onmouseover="this.style.opacity=1" onmouseout="this.style.opacity=.6">×</button>
+        </span>
+      `).join('');
+
+      return `<div class="phone-row" data-phone-id="${ph.id}" style="flex-direction:column;align-items:stretch;gap:6px">
+        <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;flex-wrap:wrap">
+          <span class="phone-num">${ph.phone_number}</span>
+          <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap">
+            ${typeChip}
+            <span class="phone-status ${statusClass}">${ph.phone_status || 'Unknown'}</span>
+          </div>
+        </div>
+        <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;position:relative">
+          ${phoneTagPills}
+          <button type="button" onclick="openPhoneTagInput(${ph.id})" id="ptag-addbtn-${ph.id}" style="font-size:10px;font-weight:500;padding:3px 8px;border-radius:4px;background:#fafaf8;color:#888;border:1px dashed #ccc;cursor:pointer;font-family:inherit">+ tag</button>
+          <div id="ptag-input-wrap-${ph.id}" style="display:none;position:relative">
+            <input type="text" id="ptag-input-${ph.id}" placeholder="Type tag…" autocomplete="off"
+              style="font-size:11px;padding:3px 8px;border:1px solid #ddd;border-radius:4px;font-family:inherit;width:140px"
+              oninput="phoneTagSuggest(${ph.id}, this.value)"
+              onfocus="phoneTagSuggest(${ph.id}, this.value)"
+              onclick="phoneTagSuggest(${ph.id}, this.value)"
+              onkeydown="if(event.key==='Enter'){event.preventDefault();addPhoneTagFromInput(${ph.id});}else if(event.key==='Escape'){closePhoneTagInput(${ph.id});}">
+            <div id="ptag-suggest-${ph.id}" style="display:none;position:absolute;top:100%;left:0;right:0;margin-top:3px;background:#fff;border:1px solid #ddd;border-radius:6px;box-shadow:0 2px 10px rgba(0,0,0,.08);max-height:180px;overflow-y:auto;z-index:50;min-width:160px"></div>
+          </div>
         </div>
       </div>`;
     }).join('') : '<div style="color:#aaa;font-size:13px">No phones on record</div>';
@@ -2240,8 +2459,8 @@ router.get('/:id(\\d+)', requireAuth, async (req, res) => {
               return `<div class="kv"><div class="kv-label">Owner Type</div><div class="kv-val"><span style="background:${c.bg};color:${c.text};padding:3px 10px;border-radius:5px;font-size:11px;font-weight:600;display:inline-block">${ot}</span></div></div>`;
             })()}
             <div class="kv" style="grid-column:1/-1"><div class="kv-label">Mailing Address</div><div class="kv-val">${mailingAddr || '—'}</div></div>
-            ${primaryContact?.email_1 ? `<div class="kv"><div class="kv-label">Email 1</div><div class="kv-val"><a href="mailto:${primaryContact.email_1}" style="color:#1a4a9a">${primaryContact.email_1}</a></div></div>` : ''}
-            ${primaryContact?.email_2 ? `<div class="kv"><div class="kv-label">Email 2</div><div class="kv-val"><a href="mailto:${primaryContact.email_2}" style="color:#1a4a9a">${primaryContact.email_2}</a></div></div>` : ''}
+            ${primaryContact?.email_1 ? `<div class="kv"><div class="kv-label">Email 1</div><div class="kv-val" style="word-break:break-all;overflow-wrap:anywhere;min-width:0"><a href="mailto:${primaryContact.email_1}" style="color:#1a4a9a">${primaryContact.email_1}</a></div></div>` : ''}
+            ${primaryContact?.email_2 ? `<div class="kv"><div class="kv-label">Email 2</div><div class="kv-val" style="word-break:break-all;overflow-wrap:anywhere;min-width:0"><a href="mailto:${primaryContact.email_2}" style="color:#1a4a9a">${primaryContact.email_2}</a></div></div>` : ''}
           </div>
           <div class="sec-lbl">Phone Numbers <span class="count-pill">${phones.length}</span></div>
           ${phoneHTML}
@@ -2529,7 +2748,7 @@ router.get('/:id(\\d+)', requireAuth, async (req, res) => {
         </div>
       </div>
 
-      <script src="/js/records-detail.js?v=3"></script>
+      <script src="/js/records-detail.js?v=4"></script>
     `, 'records'));
   } catch (e) {
     console.error(e);
@@ -3805,6 +4024,18 @@ router.post('/delete', requireAuth, async (req, res) => {
         conditions.push(`EXISTS (SELECT 1 FROM property_tags pt_f WHERE pt_f.property_id = p.id AND pt_f.tag_id = $${idx})`);
         params.push(parseInt(qv('tag'))); idx++;
       }
+      // 2026-04-21 phone_type + phone_tag parity filters.
+      const VPT_SA = ['mobile','landline','voip','unknown'];
+      const ptSA = qv('phone_type');
+      if (ptSA && VPT_SA.includes(ptSA)) {
+        conditions.push(`EXISTS (SELECT 1 FROM phones ph_pt JOIN property_contacts pc_pt ON pc_pt.contact_id = ph_pt.contact_id WHERE pc_pt.property_id = p.id AND LOWER(ph_pt.phone_type) = $${idx})`);
+        params.push(ptSA); idx++;
+      }
+      const ptagSA = safeInt(qv('phone_tag'));
+      if (ptagSA !== null) {
+        conditions.push(`EXISTS (SELECT 1 FROM phone_tag_links ptl_f JOIN phones ph_ptl ON ph_ptl.id = ptl_f.phone_id JOIN property_contacts pc_ptl ON pc_ptl.contact_id = ph_ptl.contact_id WHERE pc_ptl.property_id = p.id AND ptl_f.phone_tag_id = $${idx})`);
+        params.push(ptagSA); idx++;
+      }
       // 2026-04-21 Feature 1 parity: Owner Type.
       if (qv('owner_type') && VALID_OWNER_TYPES.includes(qv('owner_type'))) {
         conditions.push(`c.owner_type = $${idx}`);
@@ -4091,6 +4322,17 @@ router.post('/bulk-tag', requireAuth, async (req, res) => {
       }
 
       if (qv('tag')) { conditions.push(`EXISTS (SELECT 1 FROM property_tags pt_f WHERE pt_f.property_id = p.id AND pt_f.tag_id = $${idx})`); params.push(parseInt(qv('tag'))); idx++; }
+      const VPT_SA = ['mobile','landline','voip','unknown'];
+      const ptSA = qv('phone_type');
+      if (ptSA && VPT_SA.includes(ptSA)) {
+        conditions.push(`EXISTS (SELECT 1 FROM phones ph_pt JOIN property_contacts pc_pt ON pc_pt.contact_id = ph_pt.contact_id WHERE pc_pt.property_id = p.id AND LOWER(ph_pt.phone_type) = $${idx})`);
+        params.push(ptSA); idx++;
+      }
+      const ptagSA = safeInt(qv('phone_tag'));
+      if (ptagSA !== null) {
+        conditions.push(`EXISTS (SELECT 1 FROM phone_tag_links ptl_f JOIN phones ph_ptl ON ph_ptl.id = ptl_f.phone_id JOIN property_contacts pc_ptl ON pc_ptl.contact_id = ph_ptl.contact_id WHERE pc_ptl.property_id = p.id AND ptl_f.phone_tag_id = $${idx})`);
+        params.push(ptagSA); idx++;
+      }
       // 2026-04-21 Feature 1 parity: Owner Type.
       if (qv('owner_type') && VALID_OWNER_TYPES.includes(qv('owner_type'))) {
         conditions.push(`c.owner_type = $${idx}`);
@@ -4416,6 +4658,18 @@ router.post('/remove-from-list', requireAuth, async (req, res) => {
         conditions.push(`EXISTS (SELECT 1 FROM property_tags pt_f WHERE pt_f.property_id = p.id AND pt_f.tag_id = $${idx})`);
         params.push(parseInt(qv('tag'))); idx++;
       }
+      // 2026-04-21 phone_type + phone_tag parity filters.
+      const VPT_SA = ['mobile','landline','voip','unknown'];
+      const ptSA = qv('phone_type');
+      if (ptSA && VPT_SA.includes(ptSA)) {
+        conditions.push(`EXISTS (SELECT 1 FROM phones ph_pt JOIN property_contacts pc_pt ON pc_pt.contact_id = ph_pt.contact_id WHERE pc_pt.property_id = p.id AND LOWER(ph_pt.phone_type) = $${idx})`);
+        params.push(ptSA); idx++;
+      }
+      const ptagSA = safeInt(qv('phone_tag'));
+      if (ptagSA !== null) {
+        conditions.push(`EXISTS (SELECT 1 FROM phone_tag_links ptl_f JOIN phones ph_ptl ON ph_ptl.id = ptl_f.phone_id JOIN property_contacts pc_ptl ON pc_ptl.contact_id = ph_ptl.contact_id WHERE pc_ptl.property_id = p.id AND ptl_f.phone_tag_id = $${idx})`);
+        params.push(ptagSA); idx++;
+      }
       // 2026-04-21 Feature 1 parity: Owner Type.
       if (qv('owner_type') && VALID_OWNER_TYPES.includes(qv('owner_type'))) {
         conditions.push(`c.owner_type = $${idx}`);
@@ -4711,6 +4965,18 @@ router.post('/add-to-list', requireAuth, async (req, res) => {
       if (qv('tag')) {
         conditions.push(`EXISTS (SELECT 1 FROM property_tags pt_f WHERE pt_f.property_id = p.id AND pt_f.tag_id = $${idx})`);
         params.push(parseInt(qv('tag'))); idx++;
+      }
+      // 2026-04-21 phone_type + phone_tag parity filters.
+      const VPT_SA = ['mobile','landline','voip','unknown'];
+      const ptSA = qv('phone_type');
+      if (ptSA && VPT_SA.includes(ptSA)) {
+        conditions.push(`EXISTS (SELECT 1 FROM phones ph_pt JOIN property_contacts pc_pt ON pc_pt.contact_id = ph_pt.contact_id WHERE pc_pt.property_id = p.id AND LOWER(ph_pt.phone_type) = $${idx})`);
+        params.push(ptSA); idx++;
+      }
+      const ptagSA = safeInt(qv('phone_tag'));
+      if (ptagSA !== null) {
+        conditions.push(`EXISTS (SELECT 1 FROM phone_tag_links ptl_f JOIN phones ph_ptl ON ph_ptl.id = ptl_f.phone_id JOIN property_contacts pc_ptl ON pc_ptl.contact_id = ph_ptl.contact_id WHERE pc_ptl.property_id = p.id AND ptl_f.phone_tag_id = $${idx})`);
+        params.push(ptagSA); idx++;
       }
       if (qv('owner_type') && VALID_OWNER_TYPES.includes(qv('owner_type'))) {
         conditions.push(`c.owner_type = $${idx}`);
