@@ -157,3 +157,161 @@ document.addEventListener('click', function(ev) {
     box.style.display = 'none';
   }
 });
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// 2026-04-21 Phone tags + phone type manual edit
+// ═══════════════════════════════════════════════════════════════════════════════
+
+// ─── Phone type popover ───────────────────────────────────────────────────
+var _phoneTypePopoverEl = null;
+function togglePhoneTypePopover(phoneId, ev) {
+  ev.stopPropagation();
+  // Close any existing popover
+  if (_phoneTypePopoverEl) { _phoneTypePopoverEl.remove(); _phoneTypePopoverEl = null; return; }
+  var chip = ev.currentTarget;
+  var pop = document.createElement('div');
+  pop.style.cssText = 'position:absolute;z-index:100;background:#fff;border:1px solid #ddd;border-radius:8px;box-shadow:0 4px 16px rgba(0,0,0,.12);padding:6px;min-width:140px;font-family:inherit';
+  var opts = [
+    { v:'mobile',   label:'Mobile',   color:'#1a7a4a' },
+    { v:'landline', label:'Landline', color:'#2c5cc5' },
+    { v:'voip',     label:'VoIP',     color:'#9a6800' },
+    { v:'unknown',  label:'Unknown',  color:'#888'    },
+  ];
+  pop.innerHTML = opts.map(function(o){
+    return '<button type="button" onclick="setPhoneType(' + phoneId + ', \'' + o.v + '\')" style="display:block;width:100%;text-align:left;padding:7px 10px;font-size:12px;border:none;background:none;border-radius:5px;cursor:pointer;color:' + o.color + ';font-weight:600;font-family:inherit" onmouseover="this.style.background=\'#f5f4f0\'" onmouseout="this.style.background=\'none\'">' + o.label + '</button>';
+  }).join('');
+  document.body.appendChild(pop);
+  // Position under the chip
+  var rect = chip.getBoundingClientRect();
+  pop.style.left = (rect.left + window.scrollX) + 'px';
+  pop.style.top = (rect.bottom + window.scrollY + 4) + 'px';
+  _phoneTypePopoverEl = pop;
+}
+
+async function setPhoneType(phoneId, newType) {
+  try {
+    var res = await fetch('/records/phones/' + phoneId + '/type', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ phone_type: newType })
+    });
+    var data = await res.json();
+    if (!res.ok || data.error) { alert('Error: ' + (data.error || 'failed')); return; }
+    // Close popover and update chip in place without full reload
+    if (_phoneTypePopoverEl) { _phoneTypePopoverEl.remove(); _phoneTypePopoverEl = null; }
+    var chip = document.querySelector('.phone-type-chip[data-phone-id="' + phoneId + '"]');
+    if (chip) {
+      var labels = { mobile:'Mobile', landline:'Landline', voip:'VoIP', unknown:'Unknown' };
+      var colors = {
+        mobile:   { bg:'#e8f5ee', text:'#1a7a4a' },
+        landline: { bg:'#e8f0ff', text:'#2c5cc5' },
+        voip:     { bg:'#fff8e1', text:'#9a6800' },
+        unknown:  { bg:'#f0efe9', text:'#888'    },
+      };
+      var c = colors[newType] || colors.unknown;
+      chip.textContent = labels[newType] || 'Unknown';
+      chip.style.background = c.bg;
+      chip.style.color = c.text;
+    }
+  } catch(e) { alert('Network error: ' + e.message); }
+}
+
+// Close type popover on outside click
+document.addEventListener('click', function(ev){
+  if (_phoneTypePopoverEl && !_phoneTypePopoverEl.contains(ev.target) && !ev.target.classList.contains('phone-type-chip')) {
+    _phoneTypePopoverEl.remove();
+    _phoneTypePopoverEl = null;
+  }
+});
+
+// ─── Phone tags ───────────────────────────────────────────────────────────
+function openPhoneTagInput(phoneId) {
+  document.getElementById('ptag-addbtn-' + phoneId).style.display = 'none';
+  document.getElementById('ptag-input-wrap-' + phoneId).style.display = 'inline-block';
+  var input = document.getElementById('ptag-input-' + phoneId);
+  input.value = '';
+  setTimeout(function(){ input.focus(); }, 20);
+}
+function closePhoneTagInput(phoneId) {
+  document.getElementById('ptag-addbtn-' + phoneId).style.display = '';
+  document.getElementById('ptag-input-wrap-' + phoneId).style.display = 'none';
+  var box = document.getElementById('ptag-suggest-' + phoneId);
+  if (box) box.style.display = 'none';
+}
+
+var _phoneTagSuggestTimer = {};
+function phoneTagSuggest(phoneId, q) {
+  clearTimeout(_phoneTagSuggestTimer[phoneId]);
+  var box = document.getElementById('ptag-suggest-' + phoneId);
+  _phoneTagSuggestTimer[phoneId] = setTimeout(async function() {
+    try {
+      var res = await fetch('/records/phone-tags/suggest?q=' + encodeURIComponent((q||'').trim()));
+      var tags = await res.json();
+      // Filter out tags already on this phone
+      var existing = Array.from(document.querySelectorAll('.phone-row[data-phone-id="' + phoneId + '"] .phone-tag-pill')).map(function(el){ return parseInt(el.getAttribute('data-tag-id')); });
+      tags = tags.filter(function(t){ return existing.indexOf(t.id) === -1; });
+      if (!tags.length) {
+        var q2 = (q||'').trim();
+        box.innerHTML = '<div style="padding:8px 10px;font-size:11px;color:#aaa;font-style:italic">'
+          + (q2 ? 'Press Enter to create "' + _esc(q2) + '"' : 'No phone tags yet — type a name and press Enter to create one')
+          + '</div>';
+        box.style.display = 'block';
+        return;
+      }
+      box.innerHTML = tags.map(function(t){
+        return '<div onclick="pickPhoneTagSuggestion(' + phoneId + ', \'' + _esc(t.name).replace(/\'/g,"\\'") + '\')" style="padding:7px 10px;cursor:pointer;font-size:12px;display:flex;align-items:center;gap:6px" onmouseover="this.style.background=\'#f5f4f0\'" onmouseout="this.style.background=\'none\'">'
+          + '<span style="width:8px;height:8px;border-radius:50%;background:' + (t.color||'#6b7280') + '"></span>'
+          + '<span>' + _esc(t.name) + '</span></div>';
+      }).join('');
+      box.style.display = 'block';
+    } catch(e) { box.style.display = 'none'; }
+  }, 150);
+}
+
+function pickPhoneTagSuggestion(phoneId, name) {
+  document.getElementById('ptag-input-' + phoneId).value = name;
+  addPhoneTagFromInput(phoneId);
+}
+
+async function addPhoneTagFromInput(phoneId) {
+  var input = document.getElementById('ptag-input-' + phoneId);
+  var name = (input.value || '').trim();
+  if (!name) return;
+  try {
+    var res = await fetch('/records/phones/' + phoneId + '/tags', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: name })
+    });
+    var data = await res.json();
+    if (!res.ok || data.error) { alert(data.error || 'Failed to add tag'); return; }
+    // Insert pill into DOM before the + tag button
+    var row = document.querySelector('.phone-row[data-phone-id="' + phoneId + '"]');
+    var addBtn = document.getElementById('ptag-addbtn-' + phoneId);
+    var pill = document.createElement('span');
+    pill.className = 'phone-tag-pill';
+    pill.setAttribute('data-tag-id', data.tag.id);
+    pill.style.cssText = 'display:inline-flex;align-items:center;gap:4px;font-size:10px;font-weight:500;padding:3px 4px 3px 7px;border-radius:4px;background:' + data.tag.color + '22;color:' + data.tag.color + ';border:1px solid ' + data.tag.color + '55';
+    pill.innerHTML = '<span>' + _esc(data.tag.name) + '</span>'
+      + '<button type="button" onclick="removePhoneTag(' + phoneId + ',' + data.tag.id + ')" title="Remove tag" style="background:none;border:none;cursor:pointer;padding:0 2px;color:inherit;font-size:13px;line-height:1;opacity:.6">×</button>';
+    addBtn.parentNode.insertBefore(pill, addBtn);
+    closePhoneTagInput(phoneId);
+  } catch(e) { alert('Network error: ' + e.message); }
+}
+
+async function removePhoneTag(phoneId, tagId) {
+  try {
+    await fetch('/records/phones/' + phoneId + '/tags/' + tagId + '/remove', { method: 'POST' });
+    var pill = document.querySelector('.phone-row[data-phone-id="' + phoneId + '"] .phone-tag-pill[data-tag-id="' + tagId + '"]');
+    if (pill) pill.remove();
+  } catch(e) { alert('Network error: ' + e.message); }
+}
+
+// Close phone-tag suggestions on outside click
+document.addEventListener('click', function(ev){
+  document.querySelectorAll('[id^="ptag-suggest-"]').forEach(function(box){
+    var phoneId = box.id.replace('ptag-suggest-','');
+    var wrap = document.getElementById('ptag-input-wrap-' + phoneId);
+    if (wrap && !wrap.contains(ev.target)) box.style.display = 'none';
+  });
+});
