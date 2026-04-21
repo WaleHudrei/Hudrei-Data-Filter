@@ -495,6 +495,7 @@ router.post('/parse', requireAuth, upload.single('csvfile'), async (req, res) =>
     // use the saved mapping. Otherwise, fall back to the heuristic autoMap().
     const fingerprint = fingerprintHeaders(columns);
     let mapping = autoMap(columns);
+    const autoMapCount = Object.keys(mapping).length;
     let savedTemplate = null;
     try {
       const template = await lookupMappingByFingerprint(fingerprint);
@@ -506,21 +507,31 @@ router.post('/parse', requireAuth, upload.single('csvfile'), async (req, res) =>
         for (const [lokiKey, csvCol] of Object.entries(template.mapping || {})) {
           if (colSet.has(csvCol)) filtered[lokiKey] = csvCol;
         }
-        // If after filtering nothing is left (template fully stale), keep
-        // autoMap instead — no point surfacing an empty "saved mapping" badge.
+        // 2026-04-21 fix: merge saved template OVER autoMap instead of
+        // replacing it. Pre-fix, `mapping = filtered` wiped any field
+        // autoMap caught that the user hadn't explicitly configured in
+        // the mapping modal. Result: DealMachine CSV had first_name and
+        // last_name auto-detectable (phone/street/etc were in the saved
+        // template, so template-replace dropped the names). Owner fields
+        // came out blank despite being right there in the CSV. Now:
+        // autoMap provides the baseline, template overrides win where
+        // present. Users who DID configure a field keep their override;
+        // fields autoMap can infer flow through automatically.
         if (Object.keys(filtered).length > 0) {
-          mapping = filtered;
+          mapping = { ...mapping, ...filtered };
           savedTemplate = {
             fingerprint: template.fingerprint,
             name: template.name,
             use_count: template.use_count,
           };
-          console.log(`[mapping matched] fingerprint=${fingerprint} name="${template.name}" use_count=${template.use_count} → ${Object.keys(filtered).length} fields auto-mapped`);
+          const total = Object.keys(mapping).length;
+          const templateCount = Object.keys(filtered).length;
+          console.log(`[mapping matched] fingerprint=${fingerprint} name="${template.name}" use_count=${template.use_count} → ${total} fields mapped (${templateCount} from saved template, ${total - templateCount} auto-detected filled gaps)`);
         } else {
-          console.log(`[mapping matched but stale] fingerprint=${fingerprint} — all saved columns missing from this CSV, falling back to autoMap`);
+          console.log(`[mapping matched but stale] fingerprint=${fingerprint} — all saved columns missing from this CSV, falling back to autoMap (${autoMapCount} fields)`);
         }
       } else {
-        console.log(`[mapping not found] fingerprint=${fingerprint} — using autoMap; will save if user completes import`);
+        console.log(`[mapping not found] fingerprint=${fingerprint} — using autoMap (${autoMapCount} fields); will save if user completes import`);
       }
     } catch (e) {
       // Non-fatal — if the lookup fails, we still have autoMap
