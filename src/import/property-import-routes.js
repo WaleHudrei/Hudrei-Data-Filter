@@ -1769,15 +1769,31 @@ async function runBackgroundImport(jobId, allRows, mapping, filename, resolvedLi
         }
 
         // Bulk INSERT new contacts + property_contacts links
+        //
+        // 2026-04-21 audit fix: Postgres does NOT guarantee that
+        // INSERT ... RETURNING emits rows in the same order as the input
+        // UNNEST. The old `newIds[i]` paired with `newPropIds[i]` could
+        // silently cross-contaminate contacts to the wrong properties
+        // under any reordering (Samuel's name on Matt's property). Even
+        // matching-back via field equality is unsafe because two input
+        // rows can have identical fields (e.g., both blank, or same
+        // name + mailing). Fix: pre-allocate contact IDs from the
+        // sequence, then INSERT with explicit id values. IDs are known
+        // before the INSERT runs, zero ordering assumption, zero match
+        // ambiguity.
         if (newPropIds.length > 0) {
-          const nr = await query(`
-            INSERT INTO contacts (first_name,last_name,mailing_address,mailing_city,mailing_state,mailing_zip,email_1,email_2)
+          const idRes = await query(
+            `SELECT nextval(pg_get_serial_sequence('contacts', 'id')) AS id
+               FROM generate_series(1, $1)`,
+            [newPropIds.length]
+          );
+          const newIds = idRes.rows.map(r => Number(r.id));
+          await query(`
+            INSERT INTO contacts (id, first_name, last_name, mailing_address, mailing_city, mailing_state, mailing_zip, email_1, email_2)
             SELECT * FROM UNNEST(
-              $1::text[],$2::text[],$3::text[],$4::text[],$5::text[],$6::text[],$7::text[],$8::text[]
-            ) AS t(first_name,last_name,mailing_address,mailing_city,mailing_state,mailing_zip,email_1,email_2)
-            RETURNING id
-          `, [newFns, newLns, newMaddr, newMcity, newMstate, newMzip, newE1, newE2]);
-          const newIds = nr.rows.map(r => r.id);
+              $1::int[], $2::text[], $3::text[], $4::text[], $5::text[], $6::text[], $7::text[], $8::text[], $9::text[]
+            ) AS t(id, first_name, last_name, mailing_address, mailing_city, mailing_state, mailing_zip, email_1, email_2)
+          `, [newIds, newFns, newLns, newMaddr, newMcity, newMstate, newMzip, newE1, newE2]);
           await query(`
             INSERT INTO property_contacts (property_id, contact_id, primary_contact)
             SELECT property_id, contact_id, true
@@ -1992,25 +2008,36 @@ async function runBackgroundImport(jobId, allRows, mapping, filename, resolvedLi
           }
 
           // Create new co-owner contacts + link with primary_contact=false
+          //
+          // 2026-04-21 audit fix: pre-allocate IDs so the coContactIds[i] ↔
+          // coNewTasks[i] pairing is bulletproof. Same RETURNING-ordering
+          // hazard as the primary path — see comment there. The downstream
+          // phone-attach block (allCoTasks map) relies on this pairing, so
+          // any mismatch would attach phones to the wrong co-owner.
           const coContactIds = [];  // parallel to coNewTasks
           if (coNewTasks.length > 0) {
-            const coRes = await query(`
-              INSERT INTO contacts (first_name,last_name,mailing_address,mailing_city,mailing_state,mailing_zip,email_1,email_2)
+            const coIdRes = await query(
+              `SELECT nextval(pg_get_serial_sequence('contacts', 'id')) AS id
+                 FROM generate_series(1, $1)`,
+              [coNewTasks.length]
+            );
+            for (const r of coIdRes.rows) coContactIds.push(Number(r.id));
+            await query(`
+              INSERT INTO contacts (id, first_name, last_name, mailing_address, mailing_city, mailing_state, mailing_zip, email_1, email_2)
               SELECT * FROM UNNEST(
-                $1::text[],$2::text[],$3::text[],$4::text[],$5::text[],$6::text[],$7::text[],$8::text[]
-              ) AS t(first_name,last_name,mailing_address,mailing_city,mailing_state,mailing_zip,email_1,email_2)
-              RETURNING id
+                $1::int[], $2::text[], $3::text[], $4::text[], $5::text[], $6::text[], $7::text[], $8::text[], $9::text[]
+              ) AS t(id, first_name, last_name, mailing_address, mailing_city, mailing_state, mailing_zip, email_1, email_2)
             `, [
+              coContactIds,
               coNewTasks.map(t => get(t.row,'first_name') || ''),
               coNewTasks.map(t => get(t.row,'last_name')  || ''),
               coNewTasks.map(t => get(t.row,'mailing_address') || ''),
               coNewTasks.map(t => get(t.row,'mailing_city')    || ''),
               coNewTasks.map(t => get(t.row,'mailing_state')   || ''),
               coNewTasks.map(t => get(t.row,'mailing_zip')     || ''),
-              coNewTasks.map(t => get(t.row,'email_1') || null),
-              coNewTasks.map(t => get(t.row,'email_2') || null),
+              coNewTasks.map(t => get(t.row,'email_1') || ''),
+              coNewTasks.map(t => get(t.row,'email_2') || ''),
             ]);
-            for (const r of coRes.rows) coContactIds.push(r.id);
 
             await query(`
               INSERT INTO property_contacts (property_id, contact_id, primary_contact)
