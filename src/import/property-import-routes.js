@@ -1288,6 +1288,7 @@ async function runBackgroundImport(jobId, allRows, mapping, filename, resolvedLi
   const BATCH = 500;
   let inserted = 0, updated = 0, errors = 0, processed = 0;
   const allSkipped = [];  // hoisted so the catch block can reference it
+  let totalDuplicatesMerged = 0;  // 2026-04-20: tracked separately from allSkipped — these rows aren't dropped, they're merged into the keeper
 
   try {
     await query(`UPDATE bulk_import_jobs SET status='running', updated_at=NOW() WHERE id=$1`, [jobId]);
@@ -1354,11 +1355,35 @@ async function runBackgroundImport(jobId, allRows, mapping, filename, resolvedLi
         validRows.push(row);
       }
 
-      // Dedup within this batch — Postgres ON CONFLICT can't act on the same
-      // unique-key row twice in one INSERT statement. Keep first occurrence,
-      // log dropped duplicates so user can clean source CSV.
-      const seenKeys = new Set();
+      // ──────────────────────────────────────────────────────────────────
+      // Dedup within this batch — Postgres ON CONFLICT can't act on the
+      // same unique-key row twice in one INSERT statement.
+      //
+      // 2026-04-20 UX fix: instead of silently dropping duplicate rows
+      // (and losing any contact data on them), we MERGE them into the
+      // keeper. County-sourced files like "Active Lien" exports often
+      // have one row per lien-holder or per owner for a single parcel —
+      // keeping only the first row throws away every other person's
+      // phones/emails. Now: keeper wins on every field where it already
+      // has a value; duplicate rows backfill blank keeper fields.
+      //
+      // Counters are tracked separately so the end-of-import banner can
+      // distinguish "1052 duplicates merged" from "3 rows skipped due to
+      // oversize state_code" — lumped together they were misleading.
+      // ──────────────────────────────────────────────────────────────────
+      const seenKeys = new Map();  // key → index into dedupedRows
       const dedupedRows = [];
+      let duplicatesMergedCount = 0;
+
+      // Helper: return first non-empty trimmed value from the list.
+      const firstNonEmpty = (...vals) => {
+        for (const v of vals) {
+          const s = (v == null ? '' : String(v)).trim();
+          if (s !== '') return v;
+        }
+        return vals[0];
+      };
+
       for (const row of validRows) {
         const key = [
           (get(row,'street')||'').toLowerCase().trim(),
@@ -1367,12 +1392,46 @@ async function runBackgroundImport(jobId, allRows, mapping, filename, resolvedLi
           normalizeZip(get(row,'zip_code')),
         ].join('|');
         if (seenKeys.has(key)) {
-          errors++;
-          allSkipped.push(`Duplicate skipped — same (street,city,state,zip): "${get(row,'street')}, ${get(row,'city')}"`);
+          // Merge duplicate into keeper. We mutate the source CSV row
+          // object in-place (under its mapped column names) so the
+          // downstream property-attribute and contact-linking passes
+          // pick up the enriched values without needing to know a merge
+          // happened.
+          const keeperIdx = seenKeys.get(key);
+          const keeper = dedupedRows[keeperIdx];
+          const mergeKey = (k) => {
+            const col = mapping[k];
+            if (!col) return;
+            const keeperVal = (keeper[col] == null ? '' : String(keeper[col])).trim();
+            if (keeperVal !== '') return;  // keeper wins when non-empty
+            const dupVal = (row[col] == null ? '' : String(row[col])).trim();
+            if (dupVal !== '') keeper[col] = row[col];
+          };
+          // Owner/contact identity — backfill only if keeper blank
+          ['first_name', 'last_name',
+           'mailing_address', 'mailing_city', 'mailing_state', 'mailing_zip',
+           'email_1', 'email_2'
+          ].forEach(mergeKey);
+          // Phone slots 1-10 + their type/status columns — backfill each
+          // independently. Order is preserved (keeper's phone_1 stays as
+          // phone_1; dup only fills slots the keeper left blank).
+          for (let i = 1; i <= 10; i++) {
+            mergeKey(`phone_${i}`);
+            mergeKey(`phone_type_${i}`);
+            mergeKey(`phone_status_${i}`);
+          }
+          duplicatesMergedCount++;
           continue;
         }
-        seenKeys.add(key);
+        seenKeys.set(key, dedupedRows.length);
         dedupedRows.push(row);
+      }
+
+      // Summary line written once per batch (not per-row) so the error_log
+      // stays readable when there are thousands of duplicates.
+      if (duplicatesMergedCount > 0) {
+        console.log(`[property-import] batch: merged ${duplicatesMergedCount} duplicate row(s) into existing keeper rows`);
+        totalDuplicatesMerged += duplicatesMergedCount;
       }
 
       if (dedupedRows.length) {
@@ -1695,18 +1754,43 @@ async function runBackgroundImport(jobId, allRows, mapping, filename, resolvedLi
         [processed, inserted, updated, errors, jobId]);
     }
 
-    // Write skip summary to error_log even on successful completion so
-    // user can see which rows were dropped and why.
-    const skipSummary = allSkipped.length > 0
-      ? `${allSkipped.length} row(s) skipped due to oversize fields:\n` + allSkipped.slice(0, 20).join('\n')
-        + (allSkipped.length > 20 ? `\n…(${allSkipped.length - 20} more)` : '')
-      : null;
+    // ────────────────────────────────────────────────────────────────────────
+    // Write skip/merge summary to error_log even on successful completion.
+    //
+    // 2026-04-20 UX fix: the old header hardcoded "skipped due to oversize
+    // fields" for every allSkipped entry, even when most or all of them were
+    // duplicates (which go to allSkipped under the previous behavior — now
+    // they're merged instead and don't hit this array at all). Now: classify
+    // by prefix and produce a breakdown that matches the actual cause.
+    // totalDuplicatesMerged is reported separately since those rows weren't
+    // dropped — they contributed data to the keeper.
+    // ────────────────────────────────────────────────────────────────────────
+    let oversizeState = 0, oversizeZip = 0, otherSkip = 0;
+    for (const line of allSkipped) {
+      if (line.startsWith('Row skipped — state_code')) oversizeState++;
+      else if (line.startsWith('Row skipped — zip_code')) oversizeZip++;
+      else otherSkip++;
+    }
+    const summaryParts = [];
+    if (oversizeState > 0) summaryParts.push(`${oversizeState} row(s) skipped — state_code too long`);
+    if (oversizeZip > 0)   summaryParts.push(`${oversizeZip} row(s) skipped — zip_code too long`);
+    if (otherSkip > 0)     summaryParts.push(`${otherSkip} row(s) skipped (other)`);
+    if (totalDuplicatesMerged > 0) summaryParts.push(`${totalDuplicatesMerged} duplicate row(s) merged into existing records (contact data preserved)`);
+
+    let skipSummary = null;
+    if (summaryParts.length > 0) {
+      skipSummary = summaryParts.join(' · ');
+      if (allSkipped.length > 0) {
+        skipSummary += '\n\nDetails:\n' + allSkipped.slice(0, 20).join('\n')
+          + (allSkipped.length > 20 ? `\n…(${allSkipped.length - 20} more)` : '');
+      }
+    }
 
     await query(`UPDATE bulk_import_jobs SET status='complete',processed_rows=$1,inserted=$2,updated=$3,errors=$4,error_log=$5,updated_at=NOW() WHERE id=$6`,
       [allRows.length, inserted, updated, errors, skipSummary, jobId]);
 
-    if (allSkipped.length > 0) {
-      console.warn(`[bulk-import] job ${jobId} — ${allSkipped.length} rows skipped due to length violations`);
+    if (allSkipped.length > 0 || totalDuplicatesMerged > 0) {
+      console.warn(`[bulk-import] job ${jobId} — ${allSkipped.length} rows skipped, ${totalDuplicatesMerged} duplicates merged`);
     }
 
     // 2026-04-18 audit fix #35: refresh owner_portfolio_counts MV after every
@@ -1724,10 +1808,15 @@ async function runBackgroundImport(jobId, allRows, mapping, filename, resolvedLi
 
   } catch(e) {
     console.error('Background import error:', e.message);
-    // Preserve skipped-rows context when we crash
-    const combined = (allSkipped && allSkipped.length > 0
-      ? `CRASH: ${e.message}\n\nBefore crash, ${allSkipped.length} row(s) had been skipped due to oversize fields.`
-      : e.message);
+    // Preserve skipped-rows + duplicate-merge context when we crash
+    const parts = [`CRASH: ${e.message}`];
+    if (allSkipped && allSkipped.length > 0) {
+      parts.push(`Before crash, ${allSkipped.length} row(s) had been skipped due to oversize state_code/zip_code fields.`);
+    }
+    if (typeof totalDuplicatesMerged !== 'undefined' && totalDuplicatesMerged > 0) {
+      parts.push(`${totalDuplicatesMerged} duplicate row(s) had been merged into keeper rows before the crash.`);
+    }
+    const combined = parts.join('\n\n');
     await query(`UPDATE bulk_import_jobs SET status='error',error_log=$1,updated_at=NOW() WHERE id=$2`, [combined, jobId]);
   }
 }
