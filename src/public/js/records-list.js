@@ -569,6 +569,99 @@ function showRflErr(msg) {
   el.style.display = 'block';
 }
 
+// ─── 2026-04-21 Feature 9: Add to List ──────────────────────────────────
+// Mirrors the Remove-from-List flow structurally but:
+//   • No delete-code required — adding is non-destructive.
+//   • Supports creating a new list inline via the "+ Create new list…"
+//     option — keeps users in flow instead of bouncing to /lists/new.
+//   • Works with individual checkbox selection AND cross-page selectAll
+//     (same pattern as the other bulk actions).
+
+function openAddToListModal() {
+  document.getElementById('manage-menu').style.display = 'none';
+  var ids = Object.keys(selectedIds);
+  var count = _allSelected ? _pageTotal : ids.length;
+  if (!_allSelected && !ids.length) { alert('No records selected.'); return; }
+  var msg = _allSelected
+    ? 'Add <strong>all ' + count.toLocaleString() + ' filtered properties</strong> to a list.'
+    : 'Add <strong>' + count + ' selected propert' + (count===1?'y':'ies') + '</strong> to a list.';
+  document.getElementById('atl-modal-msg').innerHTML = msg;
+  document.getElementById('atl-modal-err').style.display = 'none';
+  document.getElementById('atl-list-select').value = '';
+  document.getElementById('atl-new-list-wrap').style.display = 'none';
+  document.getElementById('atl-new-list-name').value = '';
+  var btn = document.getElementById('atl-confirm-btn');
+  btn.textContent = 'Add to List';
+  btn.disabled = false;
+  document.getElementById('atl-modal').classList.add('open');
+  setTimeout(function(){ document.getElementById('atl-list-select').focus(); }, 50);
+}
+
+function atlOnSelectChange(sel) {
+  var wrap = document.getElementById('atl-new-list-wrap');
+  if (sel.value === '__new__') {
+    wrap.style.display = 'block';
+    setTimeout(function(){ document.getElementById('atl-new-list-name').focus(); }, 50);
+  } else {
+    wrap.style.display = 'none';
+  }
+}
+
+async function confirmAddToList() {
+  var sel = document.getElementById('atl-list-select');
+  var listValue = sel.value;
+  var newListName = '';
+  if (!listValue) { showAtlErr('Pick a list first.'); return; }
+  if (listValue === '__new__') {
+    newListName = (document.getElementById('atl-new-list-name').value || '').trim();
+    if (!newListName) { showAtlErr('New list name required.'); return; }
+    if (newListName.length > 200) { showAtlErr('List name too long (max 200 chars).'); return; }
+  }
+  var ids = Object.keys(selectedIds);
+  var btn = document.getElementById('atl-confirm-btn');
+  btn.textContent = 'Adding…';
+  btn.disabled = true;
+  try {
+    var res = await fetch('/records/add-to-list', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        ids: _allSelected ? [] : ids,
+        selectAll: _allSelected,
+        filterParams: window.location.search,
+        listId: listValue === '__new__' ? null : parseInt(listValue),
+        newListName: newListName
+      })
+    });
+    var data = await res.json();
+    if (!res.ok || data.error) {
+      showAtlErr(data.error || 'Add to list failed.');
+      btn.textContent = 'Add to List';
+      btn.disabled = false;
+      return;
+    }
+    // Compose a useful flash message
+    var msg = 'Added ' + data.added + ' propert' + (data.added===1?'y':'ies') + ' to "' + data.listName + '"';
+    if (data.skipped > 0) msg += ' (' + data.skipped + ' already on the list, skipped)';
+    // Preserve current filter state in the redirect — same pattern as RFL
+    var qs = window.location.search;
+    var sep = qs ? (qs.includes('?') ? '&' : '&') : '?';
+    if (!qs) qs = '?msg=' + encodeURIComponent(msg);
+    else qs = qs + '&msg=' + encodeURIComponent(msg);
+    window.location.href = '/records' + qs;
+  } catch(err) {
+    showAtlErr('Network error: ' + err.message);
+    btn.textContent = 'Add to List';
+    btn.disabled = false;
+  }
+}
+
+function showAtlErr(msg) {
+  var el = document.getElementById('atl-modal-err');
+  el.textContent = msg;
+  el.style.display = 'block';
+}
+
 // ─── Bulk Tag modal ───────────────────────────────────────────────────
 function _esc(s) {
   var d = document.createElement('div');
