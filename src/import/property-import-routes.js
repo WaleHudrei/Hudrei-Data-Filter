@@ -2035,8 +2035,8 @@ async function runBackgroundImport(jobId, allRows, mapping, filename, resolvedLi
               coNewTasks.map(t => get(t.row,'mailing_city')    || ''),
               coNewTasks.map(t => get(t.row,'mailing_state')   || ''),
               coNewTasks.map(t => get(t.row,'mailing_zip')     || ''),
-              coNewTasks.map(t => get(t.row,'email_1') || ''),
-              coNewTasks.map(t => get(t.row,'email_2') || ''),
+              coNewTasks.map(t => get(t.row,'email_1') || null),
+              coNewTasks.map(t => get(t.row,'email_2') || null),
             ]);
 
             await query(`
