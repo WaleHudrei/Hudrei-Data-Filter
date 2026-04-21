@@ -215,6 +215,18 @@ const LOKI_FIELDS = [
   { key: 'last_sale_price', label: 'Last Sale Price',   required: false, group: 'Property' },
   { key: 'vacant',          label: 'Vacant',            required: false, group: 'Property' },
   { key: 'source',          label: 'Source',            required: false, group: 'Property' },
+  // 2026-04-21 Feature 8: the 10 Additional Info fields shipped in Feature 2.
+  // These were previously UI-only (edit form); now importable via CSV.
+  { key: 'apn',                 label: 'APN / Parcel ID',    required: false, group: 'Additional Info' },
+  { key: 'stories',             label: 'Stories',            required: false, group: 'Additional Info' },
+  { key: 'structure_type',      label: 'Structure Type',     required: false, group: 'Additional Info' },
+  { key: 'legal_description',   label: 'Legal Description',  required: false, group: 'Additional Info' },
+  { key: 'total_tax_owed',      label: 'Total Tax Owed',     required: false, group: 'Additional Info' },
+  { key: 'tax_delinquent_year', label: 'Tax Delinquent Year',required: false, group: 'Additional Info' },
+  { key: 'tax_auction_date',    label: 'Tax Auction Date',   required: false, group: 'Additional Info' },
+  { key: 'deed_type',           label: 'Deed Type',          required: false, group: 'Additional Info' },
+  { key: 'lien_type',           label: 'Lien Type',          required: false, group: 'Additional Info' },
+  { key: 'lien_date',           label: 'Lien Date',          required: false, group: 'Additional Info' },
   // Owner
   { key: 'first_name',      label: 'Owner First Name',  required: false, group: 'Owner' },
   { key: 'last_name',       label: 'Owner Last Name',   required: false, group: 'Owner' },
@@ -282,6 +294,20 @@ function autoMap(csvColumns) {
     last_sale_price: ['lastsaleprice','saleprice','lastsolprice'],
     vacant: ['vacant','vacancy','isvacant'],
     source: ['source','leadsource','datasource','listsource'],
+    // 2026-04-21 Feature 8: auto-map aliases for Feature 2 Additional Info
+    // fields. PropStream uses apnparcelid / apn_parcel_id ; County records
+    // sometimes call it parcel / parcelnumber. Date fields try multiple name
+    // variants. Tax aliases include "taxamount"/"taxamt" which PropStream uses.
+    apn:                 ['apn','apnparcelid','parcelid','parcelnumber','parcelnum','parcel','parcel_number','assessorparcel','assessorparcelnumber'],
+    stories:             ['stories','numstories','numberofstories','storycount','floors','numfloors'],
+    structure_type:      ['structuretype','constructiontype','buildingtype','buildingstructure'],
+    legal_description:   ['legaldescription','legaldesc','legal','propertylegaldescription'],
+    total_tax_owed:      ['totaltaxowed','taxowed','taxdue','taxdelinquentamount','delinquenttaxamount','totaldelinquenttax','taxamt','taxamount'],
+    tax_delinquent_year: ['taxdelinquentyear','delinquentyear','taxyear','delinquenttaxyear'],
+    tax_auction_date:    ['taxauctiondate','auctiondate','taxsaledate','saleauctiondate','trusteesaledate'],
+    deed_type:           ['deedtype','typeofdeed','documenttype','deed','typedeed'],
+    lien_type:           ['lientype','typeoflien','lien','lientitle'],
+    lien_date:           ['liendate','dateoflien','lienrecorded','recordingdate'],
     first_name: ['firstname','ownerfirst','ownersfirstname','first'],
     last_name: ['lastname','ownerlast','ownerslastname','last'],
     mailing_address: ['mailingaddress','owneraddress','mailaddress'],
@@ -1188,6 +1214,13 @@ router.post('/commit', requireAuth, async (req, res) => {
     const propTypes=[], yearBuilts=[], sqfts=[], bedrooms=[], bathrooms=[], lotSizes=[];
     const assessedVals=[], estVals=[], equityPcts=[], propStatuses=[], conditions=[];
     const lastSaleDates=[], lastSalePrices=[], vacants=[];
+    // 2026-04-21 Feature 8: Additional Info arrays. 10 columns from Feature 2.
+    // Numeric columns use the same bounded helpers as the main batch. String
+    // columns pass through as-is (slice to VARCHAR column width happens via
+    // DB truncation if user provides oversized strings — prefer explicit nulls).
+    const apns=[], stories=[], structureTypes=[], legalDescs=[];
+    const totalTaxOwed=[], taxDelinquentYears=[], taxAuctionDates=[];
+    const deedTypes=[], lienTypes=[], lienDates=[];
 
     for (const row of dedupedRows) {
       const state = normalizeState(get(row,'state_code'));
@@ -1212,6 +1245,20 @@ router.post('/commit', requireAuth, async (req, res) => {
       lastSaleDates.push(toDate(get(row,'last_sale_date')));
       lastSalePrices.push(toMoney(get(row,'last_sale_price')));
       vacants.push(toBool(get(row,'vacant')));
+      // Additional Info — mirror column types: apn VARCHAR(50), stories SMALLINT,
+      // structure_type VARCHAR(50), legal_description TEXT, total_tax_owed
+      // NUMERIC(12,2), tax_delinquent_year INTEGER, tax_auction_date DATE,
+      // deed_type VARCHAR(50), lien_type VARCHAR(50), lien_date DATE.
+      apns.push((get(row,'apn')||'').slice(0, 50) || null);
+      stories.push(toSmallInt(get(row,'stories')));
+      structureTypes.push((get(row,'structure_type')||'').slice(0, 50) || null);
+      legalDescs.push(get(row,'legal_description') || null);  // TEXT — no cap
+      totalTaxOwed.push(toMoney(get(row,'total_tax_owed')));
+      taxDelinquentYears.push(toYear(get(row,'tax_delinquent_year')));
+      taxAuctionDates.push(toDate(get(row,'tax_auction_date')));
+      deedTypes.push((get(row,'deed_type')||'').slice(0, 50) || null);
+      lienTypes.push((get(row,'lien_type')||'').slice(0, 50) || null);
+      lienDates.push(toDate(get(row,'lien_date')));
     }
 
     const propRes = await query(`
@@ -1219,17 +1266,24 @@ router.post('/commit', requireAuth, async (req, res) => {
         street,city,state_code,zip_code,county,market_id,source,
         property_type,year_built,sqft,bedrooms,bathrooms,lot_size,
         assessed_value,estimated_value,equity_percent,property_status,
-        condition,last_sale_date,last_sale_price,vacant,first_seen_at
+        condition,last_sale_date,last_sale_price,vacant,
+        apn,stories,structure_type,legal_description,total_tax_owed,
+        tax_delinquent_year,tax_auction_date,deed_type,lien_type,lien_date,
+        first_seen_at
       )
       SELECT * FROM UNNEST(
         $1::text[],$2::text[],$3::text[],$4::text[],$5::text[],$6::int[],$7::text[],
         $8::text[],$9::int[],$10::int[],$11::int[],$12::numeric[],$13::int[],
         $14::numeric[],$15::numeric[],$16::numeric[],$17::text[],
-        $18::text[],$19::date[],$20::numeric[],$21::boolean[]
+        $18::text[],$19::date[],$20::numeric[],$21::boolean[],
+        $22::text[],$23::int[],$24::text[],$25::text[],$26::numeric[],
+        $27::int[],$28::date[],$29::text[],$30::text[],$31::date[]
       ) AS t(street,city,state_code,zip_code,county,market_id,source,
         property_type,year_built,sqft,bedrooms,bathrooms,lot_size,
         assessed_value,estimated_value,equity_percent,property_status,
-        condition,last_sale_date,last_sale_price,vacant),
+        condition,last_sale_date,last_sale_price,vacant,
+        apn,stories,structure_type,legal_description,total_tax_owed,
+        tax_delinquent_year,tax_auction_date,deed_type,lien_type,lien_date),
       (SELECT NOW()) AS s(first_seen_at)
       ON CONFLICT (street,city,state_code,zip_code) DO UPDATE SET
         county          = COALESCE(EXCLUDED.county, properties.county),
@@ -1248,12 +1302,28 @@ router.post('/commit', requireAuth, async (req, res) => {
         last_sale_date  = COALESCE(EXCLUDED.last_sale_date, properties.last_sale_date),
         last_sale_price = COALESCE(EXCLUDED.last_sale_price, properties.last_sale_price),
         vacant          = COALESCE(EXCLUDED.vacant, properties.vacant),
+        -- 2026-04-21 Feature 8: preserve-blank safe-merge for Additional Info.
+        -- Same COALESCE pattern — new values fill empty slots, never overwrite
+        -- existing non-null DB values. Matches Feature 8 "safe-merge upsert"
+        -- contract that's the primary /commit path behavior.
+        apn                  = COALESCE(EXCLUDED.apn,                  properties.apn),
+        stories              = COALESCE(EXCLUDED.stories,              properties.stories),
+        structure_type       = COALESCE(EXCLUDED.structure_type,       properties.structure_type),
+        legal_description    = COALESCE(EXCLUDED.legal_description,    properties.legal_description),
+        total_tax_owed       = COALESCE(EXCLUDED.total_tax_owed,       properties.total_tax_owed),
+        tax_delinquent_year  = COALESCE(EXCLUDED.tax_delinquent_year,  properties.tax_delinquent_year),
+        tax_auction_date     = COALESCE(EXCLUDED.tax_auction_date,     properties.tax_auction_date),
+        deed_type            = COALESCE(EXCLUDED.deed_type,            properties.deed_type),
+        lien_type            = COALESCE(EXCLUDED.lien_type,            properties.lien_type),
+        lien_date            = COALESCE(EXCLUDED.lien_date,            properties.lien_date),
         updated_at      = NOW()
       RETURNING id, xmax, street, city, state_code, zip_code
     `, [streets,cities,states,zips,counties,mktIds,sources,
         propTypes,yearBuilts,sqfts,bedrooms,bathrooms,lotSizes,
         assessedVals,estVals,equityPcts,propStatuses,conditions,
-        lastSaleDates,lastSalePrices,vacants]);
+        lastSaleDates,lastSalePrices,vacants,
+        apns,stories,structureTypes,legalDescs,totalTaxOwed,
+        taxDelinquentYears,taxAuctionDates,deedTypes,lienTypes,lienDates]);
 
     // Map address -> property id
     const propMap = {};
@@ -1700,6 +1770,12 @@ async function runBackgroundImport(jobId, allRows, mapping, filename, resolvedLi
         const propTypes=[],yearBuilts=[],sqfts=[],beds=[],baths=[],lots=[];
         const assessed=[],estVals=[],equity=[],propStatus=[],conds=[];
         const lastSaleDates=[],lastSalePrices=[],vacants=[];
+        // 2026-04-21 Feature 8: Additional Info arrays for background path.
+        // Mirrors the /commit foreground path 1:1 so both code paths accept
+        // the same CSV columns and produce the same DB writes.
+        const apns=[], storiesArr=[], structureTypes=[], legalDescs=[];
+        const totalTaxOwed=[], taxDelinquentYears=[], taxAuctionDates=[];
+        const deedTypes=[], lienTypes=[], lienDates=[];
 
         for (const row of dedupedRows) {
           const state = normalizeState(get(row,'state_code'));
@@ -1713,12 +1789,23 @@ async function runBackgroundImport(jobId, allRows, mapping, filename, resolvedLi
           equity.push(toPercent(get(row,'equity_percent'))); propStatus.push(get(row,'property_status')||null);
           conds.push(get(row,'condition')||null); lastSaleDates.push(toDate(get(row,'last_sale_date')));
           lastSalePrices.push(toMoney(get(row,'last_sale_price'))); vacants.push(toBool(get(row,'vacant')));
+          // Feature 8 additions
+          apns.push((get(row,'apn')||'').slice(0, 50) || null);
+          storiesArr.push(toSmallInt(get(row,'stories')));
+          structureTypes.push((get(row,'structure_type')||'').slice(0, 50) || null);
+          legalDescs.push(get(row,'legal_description') || null);
+          totalTaxOwed.push(toMoney(get(row,'total_tax_owed')));
+          taxDelinquentYears.push(toYear(get(row,'tax_delinquent_year')));
+          taxAuctionDates.push(toDate(get(row,'tax_auction_date')));
+          deedTypes.push((get(row,'deed_type')||'').slice(0, 50) || null);
+          lienTypes.push((get(row,'lien_type')||'').slice(0, 50) || null);
+          lienDates.push(toDate(get(row,'lien_date')));
         }
 
         const propRes = await query(`
-          INSERT INTO properties (street,city,state_code,zip_code,county,market_id,source,property_type,year_built,sqft,bedrooms,bathrooms,lot_size,assessed_value,estimated_value,equity_percent,property_status,condition,last_sale_date,last_sale_price,vacant,first_seen_at)
-          SELECT *,NOW() FROM UNNEST($1::text[],$2::text[],$3::text[],$4::text[],$5::text[],$6::int[],$7::text[],$8::text[],$9::int[],$10::int[],$11::int[],$12::numeric[],$13::int[],$14::numeric[],$15::numeric[],$16::numeric[],$17::text[],$18::text[],$19::date[],$20::numeric[],$21::boolean[])
-          AS t(street,city,state_code,zip_code,county,market_id,source,property_type,year_built,sqft,bedrooms,bathrooms,lot_size,assessed_value,estimated_value,equity_percent,property_status,condition,last_sale_date,last_sale_price,vacant)
+          INSERT INTO properties (street,city,state_code,zip_code,county,market_id,source,property_type,year_built,sqft,bedrooms,bathrooms,lot_size,assessed_value,estimated_value,equity_percent,property_status,condition,last_sale_date,last_sale_price,vacant,apn,stories,structure_type,legal_description,total_tax_owed,tax_delinquent_year,tax_auction_date,deed_type,lien_type,lien_date,first_seen_at)
+          SELECT *,NOW() FROM UNNEST($1::text[],$2::text[],$3::text[],$4::text[],$5::text[],$6::int[],$7::text[],$8::text[],$9::int[],$10::int[],$11::int[],$12::numeric[],$13::int[],$14::numeric[],$15::numeric[],$16::numeric[],$17::text[],$18::text[],$19::date[],$20::numeric[],$21::boolean[],$22::text[],$23::int[],$24::text[],$25::text[],$26::numeric[],$27::int[],$28::date[],$29::text[],$30::text[],$31::date[])
+          AS t(street,city,state_code,zip_code,county,market_id,source,property_type,year_built,sqft,bedrooms,bathrooms,lot_size,assessed_value,estimated_value,equity_percent,property_status,condition,last_sale_date,last_sale_price,vacant,apn,stories,structure_type,legal_description,total_tax_owed,tax_delinquent_year,tax_auction_date,deed_type,lien_type,lien_date)
           ON CONFLICT (street,city,state_code,zip_code) DO UPDATE SET
             county=COALESCE(EXCLUDED.county,properties.county),source=COALESCE(EXCLUDED.source,properties.source),
             property_type=COALESCE(EXCLUDED.property_type,properties.property_type),year_built=COALESCE(EXCLUDED.year_built,properties.year_built),
@@ -1727,9 +1814,15 @@ async function runBackgroundImport(jobId, allRows, mapping, filename, resolvedLi
             assessed_value=COALESCE(EXCLUDED.assessed_value,properties.assessed_value),estimated_value=COALESCE(EXCLUDED.estimated_value,properties.estimated_value),
             equity_percent=COALESCE(EXCLUDED.equity_percent,properties.equity_percent),property_status=COALESCE(EXCLUDED.property_status,properties.property_status),
             condition=COALESCE(EXCLUDED.condition,properties.condition),last_sale_date=COALESCE(EXCLUDED.last_sale_date,properties.last_sale_date),
-            last_sale_price=COALESCE(EXCLUDED.last_sale_price,properties.last_sale_price),vacant=COALESCE(EXCLUDED.vacant,properties.vacant),updated_at=NOW()
+            last_sale_price=COALESCE(EXCLUDED.last_sale_price,properties.last_sale_price),vacant=COALESCE(EXCLUDED.vacant,properties.vacant),
+            apn=COALESCE(EXCLUDED.apn,properties.apn),stories=COALESCE(EXCLUDED.stories,properties.stories),
+            structure_type=COALESCE(EXCLUDED.structure_type,properties.structure_type),legal_description=COALESCE(EXCLUDED.legal_description,properties.legal_description),
+            total_tax_owed=COALESCE(EXCLUDED.total_tax_owed,properties.total_tax_owed),tax_delinquent_year=COALESCE(EXCLUDED.tax_delinquent_year,properties.tax_delinquent_year),
+            tax_auction_date=COALESCE(EXCLUDED.tax_auction_date,properties.tax_auction_date),deed_type=COALESCE(EXCLUDED.deed_type,properties.deed_type),
+            lien_type=COALESCE(EXCLUDED.lien_type,properties.lien_type),lien_date=COALESCE(EXCLUDED.lien_date,properties.lien_date),
+            updated_at=NOW()
           RETURNING id, xmax, street, city, state_code, zip_code
-        `, [streets,cities,states,zips,counties,mktIds,sources,propTypes,yearBuilts,sqfts,beds,baths,lots,assessed,estVals,equity,propStatus,conds,lastSaleDates,lastSalePrices,vacants]);
+        `, [streets,cities,states,zips,counties,mktIds,sources,propTypes,yearBuilts,sqfts,beds,baths,lots,assessed,estVals,equity,propStatus,conds,lastSaleDates,lastSalePrices,vacants,apns,storiesArr,structureTypes,legalDescs,totalTaxOwed,taxDelinquentYears,taxAuctionDates,deedTypes,lienTypes,lienDates]);
 
         const propMap = {};
         const propIds = [];
