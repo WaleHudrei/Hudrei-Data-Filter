@@ -140,6 +140,7 @@ router.get('/', requireAuth, async (req, res) => {
       occupancy = '',
       phones = '',
       min_owned = '', max_owned = '',
+      min_years_owned = '', max_years_owned = '',
       tag = '',
       owner_type = '',
       mailing = '',
@@ -337,6 +338,23 @@ router.get('/', requireAuth, async (req, res) => {
       if (min_owned) { conditions.push(`${ownedSubquery} >= $${idx}`); params.push(parseInt(min_owned)); idx++; }
       if (max_owned) { conditions.push(`${ownedSubquery} <= $${idx}`); params.push(parseInt(max_owned)); idx++; }
     }
+    // 2026-04-21 Feature 3: Ownership Duration filter. Years owned is
+    // derived from p.last_sale_date — EXTRACT(YEAR FROM AGE(...)) gives
+    // the integer year diff from today. Properties with NULL last_sale_date
+    // are EXCLUDED from both min and max filters (treating "unknown" as
+    // "doesn't match" — otherwise a min=5 filter would confusingly include
+    // properties where we genuinely don't know the ownership date).
+    // Applied at all 5 filter-code-path sites per the filter parity rule.
+    if (min_years_owned) {
+      conditions.push(`p.last_sale_date IS NOT NULL AND EXTRACT(YEAR FROM AGE(CURRENT_DATE, p.last_sale_date)) >= $${idx}`);
+      params.push(parseInt(min_years_owned));
+      idx++;
+    }
+    if (max_years_owned) {
+      conditions.push(`p.last_sale_date IS NOT NULL AND EXTRACT(YEAR FROM AGE(CURRENT_DATE, p.last_sale_date)) <= $${idx}`);
+      params.push(parseInt(max_years_owned));
+      idx++;
+    }
     // Tag filter — show only properties that have a specific tag
     if (tag) {
       conditions.push(`EXISTS (SELECT 1 FROM property_tags pt_f WHERE pt_f.property_id = p.id AND pt_f.tag_id = $${idx})`);
@@ -533,6 +551,7 @@ router.get('/', requireAuth, async (req, res) => {
       add('upload_from', upload_from); add('upload_to', upload_to);
       add('min_distress', min_distress); add('occupancy', occupancy); add('phones', phones);
       add('min_owned', min_owned); add('max_owned', max_owned);
+      add('min_years_owned', min_years_owned); add('max_years_owned', max_years_owned);
       add('tag', tag);
       add('owner_type', owner_type);
       add('mailing', mailing);
@@ -554,7 +573,7 @@ router.get('/', requireAuth, async (req, res) => {
       </div>` : '';
 
     // Filter count — multi-select filters count as 1 each regardless of how many values
-    const activeFilterCount = [city,zip,county,type,pipeline,prop_status,mkt_result,occupancy,phones,min_assessed,max_assessed,min_equity,max_equity,min_year,max_year,upload_from,upload_to,min_stack,min_distress,min_owned,max_owned,tag,owner_type,mailing].filter(Boolean).length + (stackList.length > 0 ? 1 : 0) + (stateList.length > 0 ? 1 : 0) + (mktIncludeList.length > 0 ? 1 : 0) + (mktExcludeList.length > 0 ? 1 : 0);
+    const activeFilterCount = [city,zip,county,type,pipeline,prop_status,mkt_result,occupancy,phones,min_assessed,max_assessed,min_equity,max_equity,min_year,max_year,upload_from,upload_to,min_stack,min_distress,min_owned,max_owned,min_years_owned,max_years_owned,tag,owner_type,mailing].filter(Boolean).length + (stackList.length > 0 ? 1 : 0) + (stateList.length > 0 ? 1 : 0) + (mktIncludeList.length > 0 ? 1 : 0) + (mktExcludeList.length > 0 ? 1 : 0);
 
     res.send(shell('Records', `
       <div class="page-header">
@@ -713,6 +732,18 @@ router.get('/', requireAuth, async (req, res) => {
                 <input type="number" name="max_owned" value="${max_owned}" placeholder="Max" min="1" style="width:100%;padding:7px 8px;border:1px solid #ddd;border-radius:7px;font-size:13px;font-family:inherit">
               </div>
               <div style="font-size:10px;color:#aaa;margin-top:2px">By mailing address</div>
+            </div>
+            <!-- 2026-04-21 Feature 3: Ownership Duration. Years computed
+                 from p.last_sale_date. Properties with NULL last_sale_date
+                 are excluded (see SQL comment in main list route). -->
+            <div>
+              <label style="font-size:11px;color:#888;display:block;margin-bottom:3px">Years Owned</label>
+              <div style="display:flex;gap:6px;align-items:center">
+                <input type="number" name="min_years_owned" value="${min_years_owned}" placeholder="Min" min="0" max="200" style="width:100%;padding:7px 8px;border:1px solid #ddd;border-radius:7px;font-size:13px;font-family:inherit">
+                <span style="color:#aaa;font-size:12px">–</span>
+                <input type="number" name="max_years_owned" value="${max_years_owned}" placeholder="Max" min="0" max="200" style="width:100%;padding:7px 8px;border:1px solid #ddd;border-radius:7px;font-size:13px;font-family:inherit">
+              </div>
+              <div style="font-size:10px;color:#aaa;margin-top:2px">Since last sale date</div>
             </div>
             <div>
               <label style="font-size:11px;color:#888;display:block;margin-bottom:3px">Tag</label>
@@ -1321,6 +1352,16 @@ router.post('/export', requireAuth, async (req, res) => {
         if (minOwnedX) { conditions.push(`${ownedSubX} >= $${idx}`); params.push(parseInt(minOwnedX)); idx++; }
         if (maxOwnedX) { conditions.push(`${ownedSubX} <= $${idx}`); params.push(parseInt(maxOwnedX)); idx++; }
       }
+      // 2026-04-21 Feature 3 parity: Ownership Duration. Mirrors main list.
+      const minYoX = qv('min_years_owned'), maxYoX = qv('max_years_owned');
+      if (minYoX) {
+        conditions.push(`p.last_sale_date IS NOT NULL AND EXTRACT(YEAR FROM AGE(CURRENT_DATE, p.last_sale_date)) >= $${idx}`);
+        params.push(parseInt(minYoX)); idx++;
+      }
+      if (maxYoX) {
+        conditions.push(`p.last_sale_date IS NOT NULL AND EXTRACT(YEAR FROM AGE(CURRENT_DATE, p.last_sale_date)) <= $${idx}`);
+        params.push(parseInt(maxYoX)); idx++;
+      }
       // Tag filter
       if (qv('tag')) {
         conditions.push(`EXISTS (SELECT 1 FROM property_tags pt_f WHERE pt_f.property_id = p.id AND pt_f.tag_id = $${idx})`);
@@ -1883,6 +1924,27 @@ router.get('/:id(\\d+)', requireAuth, async (req, res) => {
           <div class="kv-grid">
             <div class="kv"><div class="kv-label">Last Sale Date</div><div class="kv-val">${fmtDate(p.last_sale_date)}</div></div>
             <div class="kv"><div class="kv-label">Last Sale Price</div><div class="kv-val highlight">${fmtMoney(p.last_sale_price)}</div></div>
+            <!-- 2026-04-21 Feature 3: Ownership Duration derived from
+                 last_sale_date. Uses the same calendar-year calculation
+                 semantics as the filter's SQL (EXTRACT(YEAR FROM AGE(...)))
+                 — subtract year, subtract 1 more if the anniversary hasn't
+                 passed yet this year. This matches Postgres exactly so the
+                 displayed number always agrees with the filter's result. -->
+            <div class="kv"><div class="kv-label">Years Owned</div><div class="kv-val">${
+              p.last_sale_date
+                ? (() => {
+                    const sale = new Date(p.last_sale_date);
+                    const now = new Date();
+                    if (sale > now) return '—';  // future-dated sale, unknown state
+                    let years = now.getFullYear() - sale.getFullYear();
+                    const monthDiff = now.getMonth() - sale.getMonth();
+                    if (monthDiff < 0 || (monthDiff === 0 && now.getDate() < sale.getDate())) {
+                      years--;
+                    }
+                    return `${years} year${years === 1 ? '' : 's'}`;
+                  })()
+                : '—'
+            }</div></div>
           </div>
         </div>
       </div>
@@ -3381,6 +3443,16 @@ router.post('/delete', requireAuth, async (req, res) => {
         if (minOwnedDel) { conditions.push(`${ownedSubDel} >= $${idx}`); params.push(parseInt(minOwnedDel)); idx++; }
         if (maxOwnedDel) { conditions.push(`${ownedSubDel} <= $${idx}`); params.push(parseInt(maxOwnedDel)); idx++; }
       }
+      // 2026-04-21 Feature 3 parity: Ownership Duration.
+      const minYoDel = qv('min_years_owned'), maxYoDel = qv('max_years_owned');
+      if (minYoDel) {
+        conditions.push(`p.last_sale_date IS NOT NULL AND EXTRACT(YEAR FROM AGE(CURRENT_DATE, p.last_sale_date)) >= $${idx}`);
+        params.push(parseInt(minYoDel)); idx++;
+      }
+      if (maxYoDel) {
+        conditions.push(`p.last_sale_date IS NOT NULL AND EXTRACT(YEAR FROM AGE(CURRENT_DATE, p.last_sale_date)) <= $${idx}`);
+        params.push(parseInt(maxYoDel)); idx++;
+      }
       // Tag filter
       if (qv('tag')) {
         conditions.push(`EXISTS (SELECT 1 FROM property_tags pt_f WHERE pt_f.property_id = p.id AND pt_f.tag_id = $${idx})`);
@@ -3659,6 +3731,16 @@ router.post('/bulk-tag', requireAuth, async (req, res) => {
           ) END`;
         if (minOwnedBt) { conditions.push(`${ownedSubBt} >= $${idx}`); params.push(parseInt(minOwnedBt)); idx++; }
         if (maxOwnedBt) { conditions.push(`${ownedSubBt} <= $${idx}`); params.push(parseInt(maxOwnedBt)); idx++; }
+      }
+      // 2026-04-21 Feature 3 parity: Ownership Duration.
+      const minYoBt = qv('min_years_owned'), maxYoBt = qv('max_years_owned');
+      if (minYoBt) {
+        conditions.push(`p.last_sale_date IS NOT NULL AND EXTRACT(YEAR FROM AGE(CURRENT_DATE, p.last_sale_date)) >= $${idx}`);
+        params.push(parseInt(minYoBt)); idx++;
+      }
+      if (maxYoBt) {
+        conditions.push(`p.last_sale_date IS NOT NULL AND EXTRACT(YEAR FROM AGE(CURRENT_DATE, p.last_sale_date)) <= $${idx}`);
+        params.push(parseInt(maxYoBt)); idx++;
       }
 
       if (qv('tag')) { conditions.push(`EXISTS (SELECT 1 FROM property_tags pt_f WHERE pt_f.property_id = p.id AND pt_f.tag_id = $${idx})`); params.push(parseInt(qv('tag'))); idx++; }
@@ -3971,6 +4053,16 @@ router.post('/remove-from-list', requireAuth, async (req, res) => {
           ) END`;
         if (minOwnedRfl) { conditions.push(`${ownedSubRfl} >= $${idx}`); params.push(parseInt(minOwnedRfl)); idx++; }
         if (maxOwnedRfl) { conditions.push(`${ownedSubRfl} <= $${idx}`); params.push(parseInt(maxOwnedRfl)); idx++; }
+      }
+      // 2026-04-21 Feature 3 parity: Ownership Duration.
+      const minYoRfl = qv('min_years_owned'), maxYoRfl = qv('max_years_owned');
+      if (minYoRfl) {
+        conditions.push(`p.last_sale_date IS NOT NULL AND EXTRACT(YEAR FROM AGE(CURRENT_DATE, p.last_sale_date)) >= $${idx}`);
+        params.push(parseInt(minYoRfl)); idx++;
+      }
+      if (maxYoRfl) {
+        conditions.push(`p.last_sale_date IS NOT NULL AND EXTRACT(YEAR FROM AGE(CURRENT_DATE, p.last_sale_date)) <= $${idx}`);
+        params.push(parseInt(maxYoRfl)); idx++;
       }
       // Tag filter
       if (qv('tag')) {
