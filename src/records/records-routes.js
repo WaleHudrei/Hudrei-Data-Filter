@@ -4,6 +4,7 @@ const { query, pool } = require('../db');
 const distress = require('../scoring/distress');
 const settings = require('../settings');
 const { normalizeState, VALID_STATES } = require('../import/state');
+const { inferOwnerType, normalizeOwnerType, VALID_OWNER_TYPES } = require('../owner-type');
 
 function requireAuth(req, res, next) {
   if (req.session && req.session.authenticated) return next();
@@ -140,6 +141,8 @@ router.get('/', requireAuth, async (req, res) => {
       phones = '',
       min_owned = '', max_owned = '',
       tag = '',
+      owner_type = '',
+      mailing = '',
       msg = '', err = '',
       page = 1
     } = req.query;
@@ -339,6 +342,37 @@ router.get('/', requireAuth, async (req, res) => {
       conditions.push(`EXISTS (SELECT 1 FROM property_tags pt_f WHERE pt_f.property_id = p.id AND pt_f.tag_id = $${idx})`);
       params.push(parseInt(tag)); idx++;
     }
+    // 2026-04-21 Feature 1: Owner Type filter (Person/Company/Trust). Matches
+    // on the primary contact's owner_type. Empty string or 'any' = no filter.
+    if (owner_type && VALID_OWNER_TYPES.includes(owner_type)) {
+      conditions.push(`c.owner_type = $${idx}`);
+      params.push(owner_type); idx++;
+    }
+    // 2026-04-21 Feature 6: Clean vs Incomplete mailing address segmentation.
+    //   clean      = primary contact has ALL four mailing fields populated
+    //                (matches REISift's "skip-traced" mental model — can be
+    //                direct-mailed without further enrichment).
+    //   incomplete = primary contact missing one or more mailing fields, OR
+    //                no primary contact at all. These cannot be mailed to as-is.
+    // Implemented as (NOT) NULL/empty check on all four fields. We deliberately
+    // use c.mailing_* (which is already LEFT JOIN'd at line 437) — no extra
+    // join cost. Null-safe via COALESCE/TRIM so blank strings count as missing.
+    if (mailing === 'clean') {
+      conditions.push(`(
+        c.mailing_address IS NOT NULL AND TRIM(c.mailing_address) <> ''
+        AND c.mailing_city IS NOT NULL AND TRIM(c.mailing_city) <> ''
+        AND c.mailing_state IS NOT NULL AND TRIM(c.mailing_state) <> ''
+        AND c.mailing_zip IS NOT NULL AND TRIM(c.mailing_zip) <> ''
+      )`);
+    } else if (mailing === 'incomplete') {
+      conditions.push(`(
+        c.id IS NULL
+        OR c.mailing_address IS NULL OR TRIM(COALESCE(c.mailing_address,'')) = ''
+        OR c.mailing_city    IS NULL OR TRIM(COALESCE(c.mailing_city,''))    = ''
+        OR c.mailing_state   IS NULL OR TRIM(COALESCE(c.mailing_state,''))   = ''
+        OR c.mailing_zip     IS NULL OR TRIM(COALESCE(c.mailing_zip,''))     = ''
+      )`);
+    }
     if (min_year)     { conditions.push(`p.year_built >= $${idx}`);       params.push(min_year); idx++; }
     if (max_year)     { conditions.push(`p.year_built <= $${idx}`);       params.push(max_year); idx++; }
     if (upload_from)  { conditions.push(`p.created_at >= $${idx}`);       params.push(upload_from); idx++; }
@@ -428,7 +462,7 @@ router.get('/', requireAuth, async (req, res) => {
         p.property_type, p.vacant, p.pipeline_stage, p.source,
         p.estimated_value, p.condition, p.created_at,
         p.distress_score, p.distress_band,
-        c.first_name, c.last_name,
+        c.first_name, c.last_name, c.owner_type,
         (SELECT COUNT(*) FROM property_lists pl WHERE pl.property_id = p.id) AS list_count,
         (SELECT COUNT(*) FROM phones ph2
           JOIN property_contacts pc2 ON pc2.contact_id = ph2.contact_id
@@ -454,6 +488,17 @@ router.get('/', requireAuth, async (req, res) => {
       const stage = r.pipeline_stage || 'prospect';
       const stageColor = {prospect:'#f5f4f0',lead:'#e8f5ee',contract:'#fff8e1',closed:'#e8f0ff'}[stage]||'#f5f4f0';
       const stageText = {prospect:'#555',lead:'#1a7a4a',contract:'#9a6800',closed:'#2c5cc5'}[stage]||'#555';
+      // Owner-type badge (Person/Company/Trust). Different palette from Stage so
+      // a user can quickly visually scan for LLC portfolios vs individual owners.
+      const ot = r.owner_type;
+      const otColors = {
+        Person:  { bg: '#f0efe9', text: '#555'    },
+        Company: { bg: '#e8f0ff', text: '#2c5cc5' },
+        Trust:   { bg: '#f3e8ff', text: '#6f42c1' },
+      };
+      const ownerTypeCell = (ot && otColors[ot])
+        ? `<span style="background:${otColors[ot].bg};color:${otColors[ot].text};padding:3px 10px;border-radius:5px;font-size:11px;font-weight:600">${ot}</span>`
+        : '<span style="color:#ccc;font-size:12px">—</span>';
       // Distress badge
       const dScore = r.distress_score;
       const dBand = r.distress_band;
@@ -465,6 +510,7 @@ router.get('/', requireAuth, async (req, res) => {
         <td style="width:40px;padding:12px 0 12px 16px" onclick="event.stopPropagation()"><input type="checkbox" class="row-check" data-id="${r.id}" onchange="selectRow(this, this.checked)" style="cursor:pointer;width:15px;height:15px"></td>
         <td style="padding:12px"><div style="font-weight:500;font-size:13px">${r.street}</div><div style="font-size:12px;color:#888;margin-top:2px">${r.city}, ${r.state_code} ${r.zip_code}</div></td>
         <td style="padding:12px;font-size:13px;color:#555;text-align:left">${owner}</td>
+        <td style="padding:12px;text-align:left">${ownerTypeCell}</td>
         <td style="padding:12px;font-size:13px;color:#555;text-align:left">${fmt(r.property_type)}</td>
         <td style="padding:12px;font-size:13px;text-align:center">${r.phone_count || 0}</td>
         <td style="padding:12px;font-size:13px;text-align:center">${r.list_count || 0}</td>
@@ -488,6 +534,8 @@ router.get('/', requireAuth, async (req, res) => {
       add('min_distress', min_distress); add('occupancy', occupancy); add('phones', phones);
       add('min_owned', min_owned); add('max_owned', max_owned);
       add('tag', tag);
+      add('owner_type', owner_type);
+      add('mailing', mailing);
       stackList.forEach(sl => parts.push(`stack_list=${encodeURIComponent(sl)}`));
       stateList.forEach(s => parts.push(`state=${encodeURIComponent(s)}`));
       mktIncludeList.forEach(m => parts.push(`mkt_include=${encodeURIComponent(m)}`));
@@ -506,7 +554,7 @@ router.get('/', requireAuth, async (req, res) => {
       </div>` : '';
 
     // Filter count — multi-select filters count as 1 each regardless of how many values
-    const activeFilterCount = [city,zip,county,type,pipeline,prop_status,mkt_result,occupancy,phones,min_assessed,max_assessed,min_equity,max_equity,min_year,max_year,upload_from,upload_to,min_stack,min_distress,min_owned,max_owned,tag].filter(Boolean).length + (stackList.length > 0 ? 1 : 0) + (stateList.length > 0 ? 1 : 0) + (mktIncludeList.length > 0 ? 1 : 0) + (mktExcludeList.length > 0 ? 1 : 0);
+    const activeFilterCount = [city,zip,county,type,pipeline,prop_status,mkt_result,occupancy,phones,min_assessed,max_assessed,min_equity,max_equity,min_year,max_year,upload_from,upload_to,min_stack,min_distress,min_owned,max_owned,tag,owner_type,mailing].filter(Boolean).length + (stackList.length > 0 ? 1 : 0) + (stateList.length > 0 ? 1 : 0) + (mktIncludeList.length > 0 ? 1 : 0) + (mktExcludeList.length > 0 ? 1 : 0);
 
     res.send(shell('Records', `
       <div class="page-header">
@@ -673,6 +721,24 @@ router.get('/', requireAuth, async (req, res) => {
                 ${allTags.map(t => `<option value="${t.id}" ${tag == t.id ? 'selected' : ''}>${escHTML(t.name)}</option>`).join('')}
               </select>
             </div>
+            <div>
+              <label style="font-size:11px;color:#888;display:block;margin-bottom:3px">Owner Type</label>
+              <select name="owner_type" style="width:100%;padding:7px 10px;border:1px solid #ddd;border-radius:7px;font-size:13px;font-family:inherit;background:#fff">
+                <option value="">Any</option>
+                <option value="Person"  ${owner_type==='Person' ?'selected':''}>Person</option>
+                <option value="Company" ${owner_type==='Company'?'selected':''}>Company (LLC / Corp)</option>
+                <option value="Trust"   ${owner_type==='Trust'  ?'selected':''}>Trust</option>
+              </select>
+            </div>
+            <div>
+              <label style="font-size:11px;color:#888;display:block;margin-bottom:3px">Mailing Address</label>
+              <select name="mailing" style="width:100%;padding:7px 10px;border:1px solid #ddd;border-radius:7px;font-size:13px;font-family:inherit;background:#fff">
+                <option value="">Any</option>
+                <option value="clean"      ${mailing==='clean'     ?'selected':''}>Clean (complete)</option>
+                <option value="incomplete" ${mailing==='incomplete'?'selected':''}>Incomplete</option>
+              </select>
+              <div style="font-size:10px;color:#aaa;margin-top:2px">All four fields required for Clean</div>
+            </div>
 
             <!-- Marketing -->
             <div style="grid-column:1/-1;font-size:10px;font-weight:700;color:#aaa;text-transform:uppercase;letter-spacing:.1em;margin:6px 0 2px">Marketing</div>
@@ -805,19 +871,25 @@ router.get('/', requireAuth, async (req, res) => {
           </div>
           <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-bottom:1.25rem" id="col-checks">
             ${[
-              ['street','Street Address'],['city','City'],['state_code','State'],['zip_code','ZIP'],['county','County'],
-              ['first_name','Owner First Name'],['last_name','Owner Last Name'],['is_primary','Primary Owner (Yes/No)'],
-              ['mailing_address','Mailing Address'],['mailing_city','Mailing City'],['mailing_state','Mailing State'],['mailing_zip','Mailing ZIP'],['email_1','Email 1'],['email_2','Email 2'],
-              ['phones','Phones (1–15 separate columns)'],
-              ['property_type','Property Type'],['year_built','Year Built'],['sqft','Sq Ft'],['bedrooms','Bedrooms'],['bathrooms','Bathrooms'],
-              ['assessed_value','Assessed Value'],['estimated_value','Est. Value'],['equity_percent','Equity %'],
-              ['property_status','Property Status'],['owner_occupancy','Owner Occupancy'],['pipeline_stage','Pipeline Stage'],['condition','Condition'],
-              ['last_sale_date','Last Sale Date'],['last_sale_price','Last Sale Price'],
-              ['marketing_result','Marketing Result'],['source','Source'],
-              ['list_count','Lists Count'],['created_at','Date Added'],
-              ['distress_score','Distress Score'],['distress_band','Distress Band'],
-            ].map(([k,l]) => `<label style="display:flex;align-items:center;gap:8px;font-size:13px;cursor:pointer;padding:4px 0">
-              <input type="checkbox" value="${k}" class="col-check" checked style="width:14px;height:14px"> ${l}
+              ['street','Street Address',true],['city','City',true],['state_code','State',true],['zip_code','ZIP',true],['county','County',true],
+              ['first_name','Owner First Name',true],['last_name','Owner Last Name',true],['owner_type','Owner Type',true],['is_primary','Primary Owner (Yes/No)',true],
+              ['mailing_address','Mailing Address',true],['mailing_city','Mailing City',true],['mailing_state','Mailing State',true],['mailing_zip','Mailing ZIP',true],['email_1','Email 1',true],['email_2','Email 2',true],
+              ['phones','Phones (1–15 separate columns)',true],
+              ['property_type','Property Type',true],['year_built','Year Built',true],['sqft','Sq Ft',true],['bedrooms','Bedrooms',true],['bathrooms','Bathrooms',true],
+              ['assessed_value','Assessed Value',true],['estimated_value','Est. Value',true],['equity_percent','Equity %',true],
+              ['property_status','Property Status',true],['owner_occupancy','Owner Occupancy',true],['pipeline_stage','Pipeline Stage',true],['condition','Condition',true],
+              ['last_sale_date','Last Sale Date',true],['last_sale_price','Last Sale Price',true],
+              ['marketing_result','Marketing Result',true],['source','Source',true],
+              ['list_count','Lists Count',true],['created_at','Date Added',true],
+              ['distress_score','Distress Score',true],['distress_band','Distress Band',true],
+              // 2026-04-21 Feature 2: Additional Info fields. Default UNCHECKED —
+              // they bloat CSVs for typical dialer workflows (legal_description is
+              // multi-paragraph county text). Users opt in per export.
+              ['stories','Stories',false],['structure_type','Structure Type',false],['apn','APN',false],['legal_description','Legal Description',false],
+              ['total_tax_owed','Total Tax Owed',false],['tax_delinquent_year','Tax Delinquent Year',false],['tax_auction_date','Tax Auction Date',false],
+              ['deed_type','Deed Type',false],['lien_type','Lien Type',false],['lien_date','Lien Date',false],
+            ].map(([k,l,def]) => `<label style="display:flex;align-items:center;gap:8px;font-size:13px;cursor:pointer;padding:4px 0">
+              <input type="checkbox" value="${k}" class="col-check"${def ? ' checked' : ''} style="width:14px;height:14px"> ${l}
             </label>`).join('')}
           </div>
           <label style="display:flex;align-items:center;gap:8px;font-size:13px;cursor:pointer;padding:10px 12px;margin-bottom:1rem;background:#f5f4f0;border-radius:8px">
@@ -969,6 +1041,7 @@ router.get('/', requireAuth, async (req, res) => {
             <th style="width:40px;padding:10px 0 10px 16px;text-align:left"><input type="checkbox" id="select-all" onchange="selectAllOnPage(this.checked)" style="cursor:pointer;width:15px;height:15px" title="Select all on this page"></th>
             <th style="padding:10px 12px;font-size:11px;font-weight:600;color:#888;text-transform:uppercase;letter-spacing:.05em;text-align:left">Address</th>
             <th style="padding:10px 12px;font-size:11px;font-weight:600;color:#888;text-transform:uppercase;letter-spacing:.05em;text-align:left">Owner</th>
+            <th style="padding:10px 12px;font-size:11px;font-weight:600;color:#888;text-transform:uppercase;letter-spacing:.05em;text-align:left">Owner Type</th>
             <th style="padding:10px 12px;font-size:11px;font-weight:600;color:#888;text-transform:uppercase;letter-spacing:.05em;text-align:left">Type</th>
             <th style="padding:10px 12px;font-size:11px;font-weight:600;color:#888;text-transform:uppercase;letter-spacing:.05em;text-align:center">Phones</th>
             <th style="padding:10px 12px;font-size:11px;font-weight:600;color:#888;text-transform:uppercase;letter-spacing:.05em;text-align:center">Lists</th>
@@ -1253,6 +1326,31 @@ router.post('/export', requireAuth, async (req, res) => {
         conditions.push(`EXISTS (SELECT 1 FROM property_tags pt_f WHERE pt_f.property_id = p.id AND pt_f.tag_id = $${idx})`);
         params.push(parseInt(qv('tag'))); idx++;
       }
+      // 2026-04-21 Feature 1 parity: Owner Type. Mirrors main list route.
+      if (qv('owner_type') && VALID_OWNER_TYPES.includes(qv('owner_type'))) {
+        conditions.push(`c.owner_type = $${idx}`);
+        params.push(qv('owner_type')); idx++;
+      }
+      // 2026-04-21 Feature 6 parity: Clean vs Incomplete mailing address.
+      // Keep this block identical to the main list route + delete/tag/RFL —
+      // four code paths, one source of truth for the logic.
+      const mailingX = qv('mailing');
+      if (mailingX === 'clean') {
+        conditions.push(`(
+          c.mailing_address IS NOT NULL AND TRIM(c.mailing_address) <> ''
+          AND c.mailing_city IS NOT NULL AND TRIM(c.mailing_city) <> ''
+          AND c.mailing_state IS NOT NULL AND TRIM(c.mailing_state) <> ''
+          AND c.mailing_zip IS NOT NULL AND TRIM(c.mailing_zip) <> ''
+        )`);
+      } else if (mailingX === 'incomplete') {
+        conditions.push(`(
+          c.id IS NULL
+          OR c.mailing_address IS NULL OR TRIM(COALESCE(c.mailing_address,'')) = ''
+          OR c.mailing_city    IS NULL OR TRIM(COALESCE(c.mailing_city,''))    = ''
+          OR c.mailing_state   IS NULL OR TRIM(COALESCE(c.mailing_state,''))   = ''
+          OR c.mailing_zip     IS NULL OR TRIM(COALESCE(c.mailing_zip,''))     = ''
+        )`);
+      }
       const where = conditions.length ? 'WHERE ' + conditions.join(' AND ') : '';
       // 2026-04-20: one-row-per-contact export.
       // Property cap: outer CTE picks up to EXPORT_MAX_PROPS distinct properties.
@@ -1278,8 +1376,17 @@ router.post('/export', requireAuth, async (req, res) => {
           p.last_sale_date, p.last_sale_price, p.marketing_result,
           p.distress_score, p.distress_band,
           p.source, p.created_at,
+          -- 2026-04-21 Feature 2: Additional Info fields. Safe to SELECT
+          -- unconditionally — even if the checkbox is unchecked, the CSV emit
+          -- loop skips columns not in the columns array. Bytes on the wire are
+          -- negligible vs. the round-trip savings of one SELECT.
+          p.stories, p.structure_type, p.apn, p.legal_description,
+          p.total_tax_owed, p.tax_delinquent_year, p.tax_auction_date,
+          p.deed_type, p.lien_type, p.lien_date,
           c.id AS contact_id,
           c.first_name, c.last_name,
+          -- 2026-04-21 Feature 1: owner_type for export
+          c.owner_type,
           c.mailing_address, c.mailing_city, c.mailing_state, c.mailing_zip,
           c.email_1, c.email_2,
           COALESCE(pc.primary_contact, false) AS is_primary,
@@ -1309,8 +1416,13 @@ router.post('/export', requireAuth, async (req, res) => {
           p.last_sale_date, p.last_sale_price, p.marketing_result,
           p.distress_score, p.distress_band,
           p.source, p.created_at,
+          -- 2026-04-21 Feature 2: Additional Info (mirrors selectAll branch — keep in sync)
+          p.stories, p.structure_type, p.apn, p.legal_description,
+          p.total_tax_owed, p.tax_delinquent_year, p.tax_auction_date,
+          p.deed_type, p.lien_type, p.lien_date,
           c.id AS contact_id,
           c.first_name, c.last_name,
+          c.owner_type,  -- 2026-04-21 Feature 1
           c.mailing_address, c.mailing_city, c.mailing_state, c.mailing_zip,
           c.email_1, c.email_2,
           COALESCE(pc.primary_contact, false) AS is_primary,
@@ -1394,6 +1506,7 @@ router.post('/export', requireAuth, async (req, res) => {
     const colLabels = {
       street: 'Street Address', city: 'City', state_code: 'State', zip_code: 'ZIP', county: 'County',
       first_name: 'Owner First Name', last_name: 'Owner Last Name',
+      owner_type: 'Owner Type',  // 2026-04-21 Feature 1
       is_primary: 'Primary Owner',
       mailing_address: 'Mailing Address', mailing_city: 'Mailing City',
       mailing_state: 'Mailing State', mailing_zip: 'Mailing ZIP',
@@ -1407,6 +1520,10 @@ router.post('/export', requireAuth, async (req, res) => {
       marketing_result: 'Marketing Result', source: 'Source',
       list_count: 'Lists Count', created_at: 'Date Added',
       distress_score: 'Distress Score', distress_band: 'Distress Band',
+      // 2026-04-21 Feature 2: Additional Info labels
+      stories: 'Stories', structure_type: 'Structure Type', apn: 'APN', legal_description: 'Legal Description',
+      total_tax_owed: 'Total Tax Owed', tax_delinquent_year: 'Tax Delinquent Year', tax_auction_date: 'Tax Auction Date',
+      deed_type: 'Deed Type', lien_type: 'Lien Type', lien_date: 'Lien Date',
     };
 
     // Expand the single 'phones' column into INTERLEAVED:
@@ -1454,7 +1571,11 @@ router.post('/export', requireAuth, async (req, res) => {
         } else if (col.startsWith('__phone_')) {
           const slot = parseInt(col.replace('__phone_', ''), 10);
           val = phoneList[slot - 1]?.number || '';
-        } else if (col === 'last_sale_date' || col === 'created_at') {
+        } else if (col === 'last_sale_date' || col === 'created_at' || col === 'lien_date' || col === 'tax_auction_date') {
+          // 2026-04-21 Feature 2: lien_date + tax_auction_date join the existing
+          // date-render branch so they format as "M/D/YYYY" in the CSV (matching
+          // last_sale_date + created_at). Keep this list in sync with any new
+          // DATE columns added to the SELECTs above.
           val = row[col] ? new Date(row[col]).toLocaleDateString('en-US') : '';
         } else if (col === 'distress_band') {
           // Render as nice label ("Burning" not "burning")
@@ -1611,10 +1732,28 @@ router.get('/:id(\\d+)', requireAuth, async (req, res) => {
     // ── Render phones ──
     const phoneHTML = phones.length ? phones.map(ph => {
       const statusClass = {unknown:'ps-unknown',correct:'ps-correct',wrong:'ps-wrong',dead:'ps-dead'}[ph.phone_status?.toLowerCase()] || 'ps-unknown';
+      // 2026-04-21 Feature 4: phone_type chip ("mobile" / "landline" / other).
+      // Schema already had phone_type (VARCHAR default 'unknown') — the import
+      // pipeline populates it from CSV columns. Only the display was missing.
+      // Show it inline before the status chip so the user can tell at-a-glance
+      // whether a number is textable vs callable-only.
+      const ptRaw = (ph.phone_type || '').toLowerCase();
+      const ptLabel = ptRaw === 'mobile'   ? 'Mobile'
+                   : ptRaw === 'landline' ? 'Landline'
+                   : ptRaw === 'voip'     ? 'VoIP'
+                   : null;  // unknown / empty → don't render a chip at all
+      const ptColor = ptRaw === 'mobile'   ? { bg:'#e8f5ee', text:'#1a7a4a' }   // green = textable
+                    : ptRaw === 'landline' ? { bg:'#e8f0ff', text:'#2c5cc5' }   // blue = call-only
+                    : ptRaw === 'voip'     ? { bg:'#fff8e1', text:'#9a6800' }   // amber = VoIP
+                    : null;
+      const typeChip = ptLabel
+        ? `<span style="font-size:10px;font-weight:600;letter-spacing:.05em;text-transform:uppercase;padding:3px 7px;border-radius:4px;background:${ptColor.bg};color:${ptColor.text}">${ptLabel}</span>`
+        : '';
       return `<div class="phone-row">
         <span class="phone-num">${ph.phone_number}</span>
         <div style="display:flex;align-items:center;gap:8px">
-          ${ph.phone_tag ? `<span class="tag">${ph.phone_tag}</span>` : ''}
+          ${typeChip}
+          ${ph.phone_tag ? `<span class="tag">${escHTML(ph.phone_tag)}</span>` : ''}
           <span class="phone-status ${statusClass}">${ph.phone_status || 'Unknown'}</span>
         </div>
       </div>`;
@@ -1701,6 +1840,19 @@ router.get('/:id(\\d+)', requireAuth, async (req, res) => {
           <div class="kv-grid" style="margin-bottom:1.25rem">
             <div class="kv"><div class="kv-label">First Name</div><div class="kv-val">${primaryContact?.first_name || '—'}</div></div>
             <div class="kv"><div class="kv-label">Last Name</div><div class="kv-val">${primaryContact?.last_name || '—'}</div></div>
+            ${(() => {
+              // 2026-04-21 Feature 1: Owner Type badge on detail card.
+              // Matches the Records-table palette so users see the same visual cue.
+              const ot = primaryContact?.owner_type;
+              if (!ot) return '<div class="kv"><div class="kv-label">Owner Type</div><div class="kv-val" style="color:#aaa">—</div></div>';
+              const colors = {
+                Person:  { bg:'#f0efe9', text:'#555'    },
+                Company: { bg:'#e8f0ff', text:'#2c5cc5' },
+                Trust:   { bg:'#f3e8ff', text:'#6f42c1' },
+              };
+              const c = colors[ot] || colors.Person;
+              return `<div class="kv"><div class="kv-label">Owner Type</div><div class="kv-val"><span style="background:${c.bg};color:${c.text};padding:3px 10px;border-radius:5px;font-size:11px;font-weight:600;display:inline-block">${ot}</span></div></div>`;
+            })()}
             <div class="kv" style="grid-column:1/-1"><div class="kv-label">Mailing Address</div><div class="kv-val">${mailingAddr || '—'}</div></div>
             ${primaryContact?.email_1 ? `<div class="kv"><div class="kv-label">Email 1</div><div class="kv-val"><a href="mailto:${primaryContact.email_1}" style="color:#1a4a9a">${primaryContact.email_1}</a></div></div>` : ''}
             ${primaryContact?.email_2 ? `<div class="kv"><div class="kv-label">Email 2</div><div class="kv-val"><a href="mailto:${primaryContact.email_2}" style="color:#1a4a9a">${primaryContact.email_2}</a></div></div>` : ''}
@@ -1733,6 +1885,27 @@ router.get('/:id(\\d+)', requireAuth, async (req, res) => {
             <div class="kv"><div class="kv-label">Last Sale Price</div><div class="kv-val highlight">${fmtMoney(p.last_sale_price)}</div></div>
           </div>
         </div>
+      </div>
+
+      <!-- ADDITIONAL INFO (Feature 2 — new 2026-04-21) -->
+      <div class="card" style="margin-bottom:1.25rem">
+        <div class="sec-lbl">Additional Info</div>
+        <div class="kv-grid">
+          <div class="kv"><div class="kv-label">Stories</div><div class="kv-val">${fmt(p.stories)}</div></div>
+          <div class="kv"><div class="kv-label">Structure Type</div><div class="kv-val">${fmt(p.structure_type)}</div></div>
+          <div class="kv"><div class="kv-label">APN</div><div class="kv-val" style="font-family:monospace;font-size:13px">${fmt(p.apn)}</div></div>
+          <div class="kv"><div class="kv-label">Deed Type</div><div class="kv-val">${fmt(p.deed_type)}</div></div>
+          <div class="kv"><div class="kv-label">Lien Type</div><div class="kv-val" style="${p.lien_type?'color:#9a6800':''}">${fmt(p.lien_type)}</div></div>
+          <div class="kv"><div class="kv-label">Lien Date</div><div class="kv-val">${fmtDate(p.lien_date)}</div></div>
+          <div class="kv"><div class="kv-label">Total Tax Owed</div><div class="kv-val" style="${p.total_tax_owed?'color:#c0392b;font-weight:600':''}">${fmtMoney(p.total_tax_owed)}</div></div>
+          <div class="kv"><div class="kv-label">Tax Delinquent Year</div><div class="kv-val">${fmt(p.tax_delinquent_year)}</div></div>
+          <div class="kv"><div class="kv-label">Tax Auction Date</div><div class="kv-val" style="${p.tax_auction_date?'color:#c0392b;font-weight:600':''}">${fmtDate(p.tax_auction_date)}</div></div>
+        </div>
+        ${p.legal_description ? `
+        <div style="margin-top:14px;padding-top:14px;border-top:1px solid #f0efe9">
+          <div class="kv-label" style="margin-bottom:4px">Legal Description</div>
+          <div style="font-size:13px;color:#333;line-height:1.5;font-family:monospace;background:#fafaf8;padding:10px 12px;border-radius:7px;border:1px solid #f0efe9;white-space:pre-wrap">${escHTML(p.legal_description)}</div>
+        </div>` : ''}
       </div>
 
       <!-- LISTS -->
@@ -1866,12 +2039,41 @@ router.get('/:id(\\d+)', requireAuth, async (req, res) => {
                 </select>
               </div>
             </div>
+
+            <!-- 2026-04-21 Feature 2: Additional Info section in edit modal.
+                 Leave every field value empty when the underlying column is NULL
+                 so the POST handler COALESCE(NULLIF) pattern treats "user did not
+                 touch it" the same as "field is empty" and preserves the existing
+                 DB value instead of clobbering it. -->
+            <div style="font-size:12px;font-weight:600;color:#888;text-transform:uppercase;letter-spacing:.06em;margin:14px 0 10px">Additional Info</div>
+            <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:10px">
+              <div class="form-field" style="margin:0"><label>Stories</label><input type="number" min="0" max="100" name="stories" value="${p.stories||''}"></div>
+              <div class="form-field" style="margin:0"><label>Structure Type</label><input type="text" name="structure_type" value="${p.structure_type||''}" placeholder="e.g. Single Family, Duplex, Warehouse"></div>
+              <div class="form-field" style="margin:0"><label>APN</label><input type="text" name="apn" value="${p.apn||''}" placeholder="Parcel number"></div>
+              <div class="form-field" style="margin:0"><label>Deed Type</label><input type="text" name="deed_type" value="${p.deed_type||''}" placeholder="e.g. Warranty, Quitclaim"></div>
+              <div class="form-field" style="margin:0"><label>Lien Type</label><input type="text" name="lien_type" value="${p.lien_type||''}" placeholder="e.g. Tax, Mechanic, Judgment"></div>
+              <div class="form-field" style="margin:0"><label>Lien Date</label><input type="date" name="lien_date" value="${p.lien_date ? String(p.lien_date).split('T')[0] : ''}"></div>
+              <div class="form-field" style="margin:0"><label>Total Tax Owed ($)</label><input type="number" step="0.01" name="total_tax_owed" value="${p.total_tax_owed||''}"></div>
+              <div class="form-field" style="margin:0"><label>Tax Delinquent Year</label><input type="number" min="1900" max="2100" name="tax_delinquent_year" value="${p.tax_delinquent_year||''}" placeholder="YYYY"></div>
+              <div class="form-field" style="margin:0"><label>Tax Auction Date</label><input type="date" name="tax_auction_date" value="${p.tax_auction_date ? String(p.tax_auction_date).split('T')[0] : ''}"></div>
+              <div class="form-field" style="margin:0;grid-column:1/-1"><label>Legal Description</label><textarea name="legal_description" rows="2" placeholder="County legal description (lot/block/subdivision)" style="width:100%;padding:9px 12px;border:1px solid #ddd;border-radius:8px;font-size:14px;background:#fafaf8;color:#1a1a1a;font-family:inherit;resize:vertical">${p.legal_description||''}</textarea></div>
+            </div>
+
             ${primaryContact ? `
             <div style="font-size:12px;font-weight:600;color:#888;text-transform:uppercase;letter-spacing:.06em;margin:14px 0 10px">Owner</div>
             <input type="hidden" name="contact_id" value="${primaryContact.id}">
             <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:10px">
               <div class="form-field" style="margin:0"><label>First Name</label><input type="text" name="first_name" value="${primaryContact.first_name||''}"></div>
               <div class="form-field" style="margin:0"><label>Last Name</label><input type="text" name="last_name" value="${primaryContact.last_name||''}"></div>
+              <div class="form-field" style="margin:0;grid-column:1/-1"><label>Owner Type</label>
+                <select name="owner_type">
+                  <option value="">— Auto-detect on save if blank —</option>
+                  <option value="Person"  ${primaryContact.owner_type==='Person' ?'selected':''}>Person</option>
+                  <option value="Company" ${primaryContact.owner_type==='Company'?'selected':''}>Company (LLC / Corp / Inc)</option>
+                  <option value="Trust"   ${primaryContact.owner_type==='Trust'  ?'selected':''}>Trust</option>
+                </select>
+                <span style="font-size:10px;color:#aaa">Leave blank to re-infer from name on save</span>
+              </div>
               <div class="form-field" style="margin:0;grid-column:1/-1"><label>Mailing Address</label><input type="text" name="mailing_address" value="${primaryContact.mailing_address||''}"></div>
               <div class="form-field" style="margin:0"><label>Mailing City</label><input type="text" name="mailing_city" value="${primaryContact.mailing_city||''}"></div>
               <div class="form-field" style="margin:0"><label>Mailing State</label>
@@ -1880,6 +2082,7 @@ router.get('/:id(\\d+)', requireAuth, async (req, res) => {
                   ${Array.from(VALID_STATES).sort().map(s => `<option value="${s}" ${(primaryContact.mailing_state||'').toUpperCase()===s?'selected':''}>${s}</option>`).join('')}
                 </select>
               </div>
+              <div class="form-field" style="margin:0"><label>Mailing Zip</label><input type="text" name="mailing_zip" value="${primaryContact.mailing_zip||''}" maxlength="10" placeholder="5 or 9 digits"></div>
               <div class="form-field" style="margin:0;grid-column:1/-1"><label>Email 1</label><input type="email" name="email_1" value="${primaryContact.email_1||''}" placeholder="email@example.com"></div>
               <div class="form-field" style="margin:0;grid-column:1/-1"><label>Email 2</label><input type="email" name="email_2" value="${primaryContact.email_2||''}" placeholder="email@example.com"></div>
             </div>` : ''}
@@ -1936,8 +2139,15 @@ router.post('/:id(\\d+)/edit', requireAuth, async (req, res) => {
       estimated_value, vacant, last_sale_date, last_sale_price, source,
       property_status, assessed_value, equity_percent, marketing_result,
       pipeline_stage,
-      contact_id, first_name, last_name, mailing_address, mailing_city,
-      mailing_state: rawMailingState, email_1, email_2, edit_notes
+      // Feature 2 Additional Info — 10 new columns
+      stories, structure_type, apn, legal_description,
+      total_tax_owed, tax_delinquent_year, tax_auction_date,
+      deed_type, lien_type, lien_date,
+      // Owner fields (Feature 1 adds owner_type; mailing_zip was missing from old form)
+      contact_id, first_name, last_name, owner_type: rawOwnerType,
+      mailing_address, mailing_city,
+      mailing_state: rawMailingState, mailing_zip,
+      email_1, email_2, edit_notes
     } = req.body;
 
     // 2026-04-20 audit fix #4: validate mailing_state through normalizeState.
@@ -1960,6 +2170,19 @@ router.post('/:id(\\d+)/edit', requireAuth, async (req, res) => {
         console.warn(`[records/edit] rejected invalid mailing_state "${rawMailingState}" on property ${id}`);
       }
     }
+
+    // 2026-04-21 Feature 1: owner_type resolution.
+    //   - If the user explicitly picked Person / Company / Trust, honor it.
+    //   - If the user left it blank AND first/last name were provided, re-infer
+    //     from the submitted name (useful after a name correction).
+    //   - If blank and no name change, leave column untouched via blank string
+    //     → COALESCE(NULLIF($,''), owner_type) preserves prior value.
+    let owner_type = normalizeOwnerType(rawOwnerType);
+    if (!owner_type && (first_name || last_name)) {
+      owner_type = inferOwnerType(first_name, last_name);  // may return null if names were also blank
+    }
+    // Stringify back to '' when null, so the SQL preserves via NULLIF.
+    const ownerTypeSql = owner_type || '';
 
     // Capture before-state for outcome logging
     const beforeRes = await query(
@@ -1988,12 +2211,28 @@ router.post('/:id(\\d+)/edit', requireAuth, async (req, res) => {
         equity_percent = CASE WHEN $14 = '' THEN equity_percent ELSE $14::numeric END,
         marketing_result = COALESCE(NULLIF($15,''), marketing_result),
         pipeline_stage = COALESCE(NULLIF($16,''), pipeline_stage),
+        -- 2026-04-21 Feature 2: Additional Info columns. Same preserve-blank
+        -- pattern as above: empty string = user didn't touch it, keep DB value.
+        stories              = CASE WHEN $18 = '' THEN stories              ELSE $18::smallint END,
+        structure_type       = COALESCE(NULLIF($19,''), structure_type),
+        apn                  = COALESCE(NULLIF($20,''), apn),
+        legal_description    = COALESCE(NULLIF($21,''), legal_description),
+        total_tax_owed       = CASE WHEN $22 = '' THEN total_tax_owed       ELSE $22::numeric  END,
+        tax_delinquent_year  = CASE WHEN $23 = '' THEN tax_delinquent_year  ELSE $23::smallint END,
+        tax_auction_date     = CASE WHEN $24 = '' THEN tax_auction_date     ELSE $24::date     END,
+        deed_type            = COALESCE(NULLIF($25,''), deed_type),
+        lien_type            = COALESCE(NULLIF($26,''), lien_type),
+        lien_date            = CASE WHEN $27 = '' THEN lien_date            ELSE $27::date     END,
         updated_at = NOW()
       WHERE id = $17
     `, [property_type, condition, bedrooms||'', bathrooms||'', sqft||'', year_built||'',
         estimated_value||'', vacant||'', last_sale_date||'', last_sale_price||'', source,
         property_status||'', assessed_value||'', equity_percent||'',
-        marketing_result||'', pipeline_stage||'', id]);
+        marketing_result||'', pipeline_stage||'', id,
+        // New Feature 2 params — keep aligned with $18..$27 above
+        stories||'', structure_type||'', apn||'', legal_description||'',
+        total_tax_owed||'', tax_delinquent_year||'', tax_auction_date||'',
+        deed_type||'', lien_type||'', lien_date||'']);
 
     updated.push('property fields');
 
@@ -2007,9 +2246,17 @@ router.post('/:id(\\d+)/edit', requireAuth, async (req, res) => {
           mailing_state = COALESCE(NULLIF($5,''), mailing_state),
           email_1 = COALESCE(NULLIF($6,''), email_1),
           email_2 = COALESCE(NULLIF($7,''), email_2),
+          -- 2026-04-21 Feature 1: owner_type (Person/Company/Trust)
+          owner_type = COALESCE(NULLIF($9,''), owner_type),
+          -- 2026-04-21 Feature 6 enabler: mailing_zip was missing from the
+          -- prior edit form — users couldn't fix incomplete records from the
+          -- UI. Now editable; preserve-blank pattern so empty string = no-op.
+          mailing_zip = COALESCE(NULLIF($10,''), mailing_zip),
           updated_at = NOW()
         WHERE id = $8
-      `, [first_name, last_name, mailing_address, mailing_city, mailing_state, email_1||'', email_2||'', contact_id]);
+      `, [first_name, last_name, mailing_address, mailing_city, mailing_state,
+          email_1||'', email_2||'', contact_id,
+          ownerTypeSql, mailing_zip||'']);
       updated.push('owner info');
     }
 
@@ -3139,6 +3386,29 @@ router.post('/delete', requireAuth, async (req, res) => {
         conditions.push(`EXISTS (SELECT 1 FROM property_tags pt_f WHERE pt_f.property_id = p.id AND pt_f.tag_id = $${idx})`);
         params.push(parseInt(qv('tag'))); idx++;
       }
+      // 2026-04-21 Feature 1 parity: Owner Type.
+      if (qv('owner_type') && VALID_OWNER_TYPES.includes(qv('owner_type'))) {
+        conditions.push(`c.owner_type = $${idx}`);
+        params.push(qv('owner_type')); idx++;
+      }
+      // 2026-04-21 Feature 6 parity: Clean vs Incomplete mailing address.
+      const mailingDel = qv('mailing');
+      if (mailingDel === 'clean') {
+        conditions.push(`(
+          c.mailing_address IS NOT NULL AND TRIM(c.mailing_address) <> ''
+          AND c.mailing_city IS NOT NULL AND TRIM(c.mailing_city) <> ''
+          AND c.mailing_state IS NOT NULL AND TRIM(c.mailing_state) <> ''
+          AND c.mailing_zip IS NOT NULL AND TRIM(c.mailing_zip) <> ''
+        )`);
+      } else if (mailingDel === 'incomplete') {
+        conditions.push(`(
+          c.id IS NULL
+          OR c.mailing_address IS NULL OR TRIM(COALESCE(c.mailing_address,'')) = ''
+          OR c.mailing_city    IS NULL OR TRIM(COALESCE(c.mailing_city,''))    = ''
+          OR c.mailing_state   IS NULL OR TRIM(COALESCE(c.mailing_state,''))   = ''
+          OR c.mailing_zip     IS NULL OR TRIM(COALESCE(c.mailing_zip,''))     = ''
+        )`);
+      }
 
       const where = conditions.length ? 'WHERE ' + conditions.join(' AND ') : '';
       const idsRes = await query(`
@@ -3392,6 +3662,29 @@ router.post('/bulk-tag', requireAuth, async (req, res) => {
       }
 
       if (qv('tag')) { conditions.push(`EXISTS (SELECT 1 FROM property_tags pt_f WHERE pt_f.property_id = p.id AND pt_f.tag_id = $${idx})`); params.push(parseInt(qv('tag'))); idx++; }
+      // 2026-04-21 Feature 1 parity: Owner Type.
+      if (qv('owner_type') && VALID_OWNER_TYPES.includes(qv('owner_type'))) {
+        conditions.push(`c.owner_type = $${idx}`);
+        params.push(qv('owner_type')); idx++;
+      }
+      // 2026-04-21 Feature 6 parity: Clean vs Incomplete mailing address.
+      const mailingBt = qv('mailing');
+      if (mailingBt === 'clean') {
+        conditions.push(`(
+          c.mailing_address IS NOT NULL AND TRIM(c.mailing_address) <> ''
+          AND c.mailing_city IS NOT NULL AND TRIM(c.mailing_city) <> ''
+          AND c.mailing_state IS NOT NULL AND TRIM(c.mailing_state) <> ''
+          AND c.mailing_zip IS NOT NULL AND TRIM(c.mailing_zip) <> ''
+        )`);
+      } else if (mailingBt === 'incomplete') {
+        conditions.push(`(
+          c.id IS NULL
+          OR c.mailing_address IS NULL OR TRIM(COALESCE(c.mailing_address,'')) = ''
+          OR c.mailing_city    IS NULL OR TRIM(COALESCE(c.mailing_city,''))    = ''
+          OR c.mailing_state   IS NULL OR TRIM(COALESCE(c.mailing_state,''))   = ''
+          OR c.mailing_zip     IS NULL OR TRIM(COALESCE(c.mailing_zip,''))     = ''
+        )`);
+      }
       const where = conditions.length ? 'WHERE ' + conditions.join(' AND ') : '';
       const idsRes = await query(`SELECT DISTINCT p.id FROM properties p LEFT JOIN property_contacts pc ON pc.property_id = p.id AND pc.primary_contact = true LEFT JOIN contacts c ON c.id = pc.contact_id ${where}`, params);
       propertyIds = idsRes.rows.map(r => r.id);
@@ -3683,6 +3976,29 @@ router.post('/remove-from-list', requireAuth, async (req, res) => {
       if (qv('tag')) {
         conditions.push(`EXISTS (SELECT 1 FROM property_tags pt_f WHERE pt_f.property_id = p.id AND pt_f.tag_id = $${idx})`);
         params.push(parseInt(qv('tag'))); idx++;
+      }
+      // 2026-04-21 Feature 1 parity: Owner Type.
+      if (qv('owner_type') && VALID_OWNER_TYPES.includes(qv('owner_type'))) {
+        conditions.push(`c.owner_type = $${idx}`);
+        params.push(qv('owner_type')); idx++;
+      }
+      // 2026-04-21 Feature 6 parity: Clean vs Incomplete mailing address.
+      const mailingRfl = qv('mailing');
+      if (mailingRfl === 'clean') {
+        conditions.push(`(
+          c.mailing_address IS NOT NULL AND TRIM(c.mailing_address) <> ''
+          AND c.mailing_city IS NOT NULL AND TRIM(c.mailing_city) <> ''
+          AND c.mailing_state IS NOT NULL AND TRIM(c.mailing_state) <> ''
+          AND c.mailing_zip IS NOT NULL AND TRIM(c.mailing_zip) <> ''
+        )`);
+      } else if (mailingRfl === 'incomplete') {
+        conditions.push(`(
+          c.id IS NULL
+          OR c.mailing_address IS NULL OR TRIM(COALESCE(c.mailing_address,'')) = ''
+          OR c.mailing_city    IS NULL OR TRIM(COALESCE(c.mailing_city,''))    = ''
+          OR c.mailing_state   IS NULL OR TRIM(COALESCE(c.mailing_state,''))   = ''
+          OR c.mailing_zip     IS NULL OR TRIM(COALESCE(c.mailing_zip,''))     = ''
+        )`);
       }
 
       const where = conditions.length ? 'WHERE ' + conditions.join(' AND ') : '';
