@@ -1661,7 +1661,7 @@ app.get('/settings/security', requireAuth, async (req, res) => {
         </div>
       </div>
     </div>
-  `, 'setup'));
+  `, 'settings'));
 });
 
 app.post('/settings/security/delete-code', requireAuth, async (req, res) => {
