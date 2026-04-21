@@ -5,6 +5,7 @@ const distress = require('../scoring/distress');
 const settings = require('../settings');
 const { normalizeState, VALID_STATES } = require('../import/state');
 const { inferOwnerType, normalizeOwnerType, VALID_OWNER_TYPES } = require('../owner-type');
+const { normalizePhone } = require('../phone-normalize');
 
 function requireAuth(req, res, next) {
   if (req.session && req.session.authenticated) return next();
@@ -581,6 +582,8 @@ router.get('/', requireAuth, async (req, res) => {
           <div class="page-title">Records <span class="count-pill">${total.toLocaleString()}</span></div>
           <div class="page-sub">${list_id ? '<a href="/lists" style="color:#888;font-size:13px;text-decoration:none">← Back to Lists</a> &nbsp;·&nbsp; Filtered by list' : 'All properties'}</div>
         </div>
+        <!-- 2026-04-21 Feature 7: manual property creation entry point. -->
+        <div><a href="/records/_new" class="btn btn-primary" style="text-decoration:none">+ Add Property</a></div>
       </div>
 
       ${msgSafe ? `<div style="background:#eaf6ea;border:1px solid #9bd09b;border-radius:8px;padding:10px 14px;color:#1a5f1a;font-size:13px;margin-bottom:12px">✅ ${msgSafe}</div>` : ''}
@@ -978,6 +981,40 @@ router.get('/', requireAuth, async (req, res) => {
         </div>
       </div>
 
+      <!-- 2026-04-21 Feature 9: Add to List modal. Mirrors the Remove-from-List
+           flow structurally but does not require a delete code — adding to a
+           list is a non-destructive operation. Supports creating a new list
+           inline via the "+ Create new list…" option at the bottom. -->
+      <div class="modal-overlay" id="atl-modal">
+        <div class="modal" style="max-width:480px">
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:1rem">
+            <h3 style="font-size:17px;font-weight:600;margin:0;color:#1a1a1a">➕ Add to List</h3>
+            <button onclick="document.getElementById('atl-modal').classList.remove('open')" style="background:none;border:none;font-size:22px;cursor:pointer;color:#888;line-height:1">×</button>
+          </div>
+          <div id="atl-modal-msg" style="font-size:14px;margin-bottom:16px;color:#333;line-height:1.5"></div>
+          <div id="atl-modal-err" style="display:none;background:#fdeaea;border:1px solid #f5c5c5;border-radius:6px;padding:8px 12px;color:#8b1f1f;font-size:13px;margin-bottom:12px"></div>
+          <div style="margin-bottom:14px">
+            <label style="font-size:12px;color:#888;display:block;margin-bottom:4px">Select list</label>
+            <select id="atl-list-select" onchange="atlOnSelectChange(this)" style="width:100%;padding:9px 12px;border:1px solid #ddd;border-radius:8px;font-size:14px;font-family:inherit;background:#fff">
+              <option value="">— choose a list —</option>
+              ${allLists.map(l => `<option value="${l.id}">${escHTML(l.list_name)}</option>`).join('')}
+              <option value="__new__">+ Create new list…</option>
+            </select>
+          </div>
+          <div id="atl-new-list-wrap" style="display:none;margin-bottom:14px">
+            <label style="font-size:12px;color:#888;display:block;margin-bottom:4px">New list name</label>
+            <input type="text" id="atl-new-list-name" maxlength="200" placeholder="e.g. Q2 2026 Hot Leads" style="width:100%;padding:9px 12px;border:1px solid #ddd;border-radius:8px;font-size:14px;font-family:inherit" onkeydown="if(event.key==='Enter'){event.preventDefault();confirmAddToList();}">
+          </div>
+          <div style="display:flex;gap:8px;justify-content:flex-end">
+            <button onclick="document.getElementById('atl-modal').classList.remove('open')" style="padding:9px 16px;background:#fff;color:#666;border:1px solid #ddd;border-radius:8px;font-size:13px;cursor:pointer;font-family:inherit">Cancel</button>
+            <button onclick="confirmAddToList()" id="atl-confirm-btn" style="padding:9px 16px;background:#1a7a4a;color:#fff;border:none;border-radius:8px;font-size:13px;font-weight:600;cursor:pointer;font-family:inherit">Add to List</button>
+          </div>
+          <div style="font-size:11px;color:#888;margin-top:12px;line-height:1.4">
+            Properties already on the selected list are skipped (no duplicates).
+          </div>
+        </div>
+      </div>
+
       <!-- Bulk Tag modal -->
       <div class="modal-overlay" id="bulk-tag-modal">
         <div class="modal" style="max-width:480px">
@@ -1043,14 +1080,15 @@ router.get('/', requireAuth, async (req, res) => {
             <button onclick="openRemoveFromListModal()" style="display:flex;align-items:center;gap:10px;width:100%;text-align:left;padding:9px 12px;background:none;border:none;border-radius:7px;font-size:13px;font-family:inherit;color:#1a1a1a;cursor:pointer" onmouseover="this.style.background='#f5f4f0'" onmouseout="this.style.background='none'">
               <span style="font-size:14px">📋</span><span>Remove from list</span>
             </button>
+            <!-- 2026-04-21 Feature 9: Add to List (mirrors Remove from List). -->
+            <button onclick="openAddToListModal()" style="display:flex;align-items:center;gap:10px;width:100%;text-align:left;padding:9px 12px;background:none;border:none;border-radius:7px;font-size:13px;font-family:inherit;color:#1a1a1a;cursor:pointer" onmouseover="this.style.background='#f5f4f0'" onmouseout="this.style.background='none'">
+              <span style="font-size:14px">➕</span><span>Add to list</span>
+            </button>
             <button onclick="openDeleteModal()" style="display:flex;align-items:center;gap:10px;width:100%;text-align:left;padding:9px 12px;background:none;border:none;border-radius:7px;font-size:13px;font-family:inherit;color:#c0392b;cursor:pointer" onmouseover="this.style.background='#fdeaea'" onmouseout="this.style.background='none'">
               <span style="font-size:14px">🗑</span><span>Delete records</span>
             </button>
             <div style="height:1px;background:#eee;margin:4px 6px"></div>
             <div style="padding:4px 12px;font-size:10px;color:#aaa;text-transform:uppercase;letter-spacing:.08em">Coming soon</div>
-            <div style="display:flex;align-items:center;gap:10px;width:100%;padding:9px 12px;font-size:13px;color:#bbb;cursor:not-allowed" title="Coming soon">
-              <span style="font-size:14px">➕</span><span>Add to list</span>
-            </div>
             <div style="display:flex;align-items:center;gap:10px;width:100%;padding:9px 12px;font-size:13px;color:#bbb;cursor:not-allowed" title="Coming soon">
               <span style="font-size:14px">🎯</span><span>Change pipeline stage</span>
             </div>
@@ -1086,7 +1124,7 @@ router.get('/', requireAuth, async (req, res) => {
         </table>
       </div>
       ${pagination}
-      <script src="/js/records-list.js?v=3"></script>
+      <script src="/js/records-list.js?v=4"></script>
 
     `, 'records'));
   } catch (e) {
@@ -1183,6 +1221,261 @@ router.delete('/:id(\\d+)/tags/:tagId(\\d+)', requireAuth, async (req, res) => {
   } catch (e) {
     console.error('[tags/remove]', e);
     res.status(500).json({ error: e.message });
+  }
+});
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// 2026-04-21 Feature 7 — Manual property creation
+// GET  /records/_new  → form
+// POST /records/_new  → create property + contact + up to 5 phones, then redirect
+//
+// Creates exactly ONE property row, links ONE primary contact, and optionally
+// attaches phones. Uses the same normalization helpers as the CSV import path
+// (normalizeState, normalizeZip, normalizePhone) so manually-entered data
+// follows the same "clean DB" discipline.
+// ═══════════════════════════════════════════════════════════════════════════════
+router.get('/_new', requireAuth, async (req, res) => {
+  try {
+    const err = req.query.err ? String(req.query.err).slice(0, 500) : '';
+    const errSafe = err ? err.replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])) : '';
+    // Preserve any submitted values on error so the user doesn't lose data.
+    const f = req.query;
+    const v = (k) => f[k] ? String(f[k]).replace(/"/g, '&quot;') : '';
+    res.send(shell('Add Property', `
+      <div style="max-width:820px">
+        <div style="margin-bottom:1rem"><a href="/records" style="font-size:13px;color:#888;text-decoration:none">← Records</a></div>
+        <h2 style="font-size:20px;font-weight:500;margin-bottom:4px">Add Property</h2>
+        <p style="font-size:13px;color:#888;margin-bottom:1.5rem">Create a single property record manually. For bulk imports, use the Upload page instead.</p>
+        ${errSafe ? `<div style="background:#fdeaea;border:1px solid #f5c5c5;border-radius:8px;padding:10px 14px;color:#8b1f1f;font-size:13px;margin-bottom:12px">❌ ${errSafe}</div>` : ''}
+        <form method="POST" action="/records/_new" class="card" style="display:flex;flex-direction:column;gap:16px">
+          <div>
+            <div style="font-size:10px;font-weight:700;color:#aaa;text-transform:uppercase;letter-spacing:.1em;margin-bottom:8px">Property Address</div>
+            <div style="display:grid;grid-template-columns:1fr;gap:10px">
+              <div class="form-field" style="margin:0"><label>Street <span style="color:#c0392b">*</span></label><input type="text" name="street" value="${v('street')}" required maxlength="255" placeholder="123 Main St"></div>
+              <div style="display:grid;grid-template-columns:2fr 1fr 1fr;gap:10px">
+                <div class="form-field" style="margin:0"><label>City <span style="color:#c0392b">*</span></label><input type="text" name="city" value="${v('city')}" required maxlength="100"></div>
+                <div class="form-field" style="margin:0"><label>State <span style="color:#c0392b">*</span></label><input type="text" name="state_code" value="${v('state_code')}" required maxlength="2" placeholder="IN" style="text-transform:uppercase"></div>
+                <div class="form-field" style="margin:0"><label>ZIP <span style="color:#c0392b">*</span></label><input type="text" name="zip_code" value="${v('zip_code')}" required maxlength="10" placeholder="46201"></div>
+              </div>
+              <div class="form-field" style="margin:0"><label>County</label><input type="text" name="county" value="${v('county')}" maxlength="100"></div>
+            </div>
+          </div>
+
+          <div>
+            <div style="font-size:10px;font-weight:700;color:#aaa;text-transform:uppercase;letter-spacing:.1em;margin-bottom:8px">Property Details</div>
+            <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px">
+              <div class="form-field" style="margin:0"><label>Property Type</label><input type="text" name="property_type" value="${v('property_type')}" maxlength="50" placeholder="Single Family"></div>
+              <div class="form-field" style="margin:0"><label>Year Built</label><input type="number" name="year_built" value="${v('year_built')}" min="1800" max="2200"></div>
+              <div class="form-field" style="margin:0"><label>Sq Ft</label><input type="number" name="sqft" value="${v('sqft')}" min="0"></div>
+              <div class="form-field" style="margin:0"><label>Bedrooms</label><input type="number" name="bedrooms" value="${v('bedrooms')}" min="0" max="99"></div>
+              <div class="form-field" style="margin:0"><label>Bathrooms</label><input type="number" name="bathrooms" value="${v('bathrooms')}" min="0" max="99" step="0.5"></div>
+              <div class="form-field" style="margin:0"><label>Lot Size (sqft)</label><input type="number" name="lot_size" value="${v('lot_size')}" min="0"></div>
+              <div class="form-field" style="margin:0"><label>Estimated Value</label><input type="number" name="estimated_value" value="${v('estimated_value')}" min="0" step="0.01"></div>
+              <div class="form-field" style="margin:0"><label>Assessed Value</label><input type="number" name="assessed_value" value="${v('assessed_value')}" min="0" step="0.01"></div>
+              <div class="form-field" style="margin:0"><label>Last Sale Date</label><input type="date" name="last_sale_date" value="${v('last_sale_date')}"></div>
+              <div class="form-field" style="margin:0"><label>Last Sale Price</label><input type="number" name="last_sale_price" value="${v('last_sale_price')}" min="0" step="0.01"></div>
+              <div class="form-field" style="margin:0"><label>Equity %</label><input type="number" name="equity_percent" value="${v('equity_percent')}" min="-100" max="100" step="0.01"></div>
+              <div class="form-field" style="margin:0"><label>Vacant</label><select name="vacant"><option value="">—</option><option value="true" ${f.vacant==='true'?'selected':''}>Yes</option><option value="false" ${f.vacant==='false'?'selected':''}>No</option></select></div>
+            </div>
+          </div>
+
+          <div>
+            <div style="font-size:10px;font-weight:700;color:#aaa;text-transform:uppercase;letter-spacing:.1em;margin-bottom:8px">Primary Contact (optional)</div>
+            <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
+              <div class="form-field" style="margin:0"><label>First Name</label><input type="text" name="first_name" value="${v('first_name')}" maxlength="100"></div>
+              <div class="form-field" style="margin:0"><label>Last Name</label><input type="text" name="last_name" value="${v('last_name')}" maxlength="100"></div>
+            </div>
+            <div style="display:grid;grid-template-columns:2fr 1.5fr 1fr 1fr;gap:10px;margin-top:10px">
+              <div class="form-field" style="margin:0"><label>Mailing Address</label><input type="text" name="mailing_address" value="${v('mailing_address')}" maxlength="255"></div>
+              <div class="form-field" style="margin:0"><label>City</label><input type="text" name="mailing_city" value="${v('mailing_city')}" maxlength="100"></div>
+              <div class="form-field" style="margin:0"><label>State</label><input type="text" name="mailing_state" value="${v('mailing_state')}" maxlength="2" style="text-transform:uppercase"></div>
+              <div class="form-field" style="margin:0"><label>ZIP</label><input type="text" name="mailing_zip" value="${v('mailing_zip')}" maxlength="10"></div>
+            </div>
+            <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:10px">
+              <div class="form-field" style="margin:0"><label>Email 1</label><input type="email" name="email_1" value="${v('email_1')}" maxlength="255"></div>
+              <div class="form-field" style="margin:0"><label>Email 2</label><input type="email" name="email_2" value="${v('email_2')}" maxlength="255"></div>
+            </div>
+          </div>
+
+          <div>
+            <div style="font-size:10px;font-weight:700;color:#aaa;text-transform:uppercase;letter-spacing:.1em;margin-bottom:8px">Phones (optional, up to 5)</div>
+            <div style="display:grid;grid-template-columns:1fr;gap:8px">
+              ${[1,2,3,4,5].map(i => `
+              <div style="display:grid;grid-template-columns:2fr 1fr 1fr;gap:8px">
+                <input type="tel" name="phone_${i}" value="${v('phone_'+i)}" placeholder="Phone ${i} (e.g. 317-555-1234)" style="padding:7px 10px;border:1px solid #ddd;border-radius:7px;font-size:13px;font-family:inherit">
+                <select name="phone_type_${i}" style="padding:7px 10px;border:1px solid #ddd;border-radius:7px;font-size:13px;font-family:inherit;background:#fff">
+                  <option value="unknown">Type</option>
+                  <option value="mobile" ${f['phone_type_'+i]==='mobile'?'selected':''}>Mobile</option>
+                  <option value="landline" ${f['phone_type_'+i]==='landline'?'selected':''}>Landline</option>
+                  <option value="voip" ${f['phone_type_'+i]==='voip'?'selected':''}>VoIP</option>
+                </select>
+                <select name="phone_status_${i}" style="padding:7px 10px;border:1px solid #ddd;border-radius:7px;font-size:13px;font-family:inherit;background:#fff">
+                  <option value="unknown">Status</option>
+                  <option value="correct" ${f['phone_status_'+i]==='correct'?'selected':''}>Correct</option>
+                  <option value="wrong" ${f['phone_status_'+i]==='wrong'?'selected':''}>Wrong</option>
+                </select>
+              </div>`).join('')}
+            </div>
+          </div>
+
+          <div style="display:flex;gap:10px;justify-content:flex-end;border-top:1px solid #f0efe9;padding-top:14px">
+            <a href="/records" class="btn btn-ghost" style="text-decoration:none">Cancel</a>
+            <button type="submit" class="btn btn-primary">Create Property</button>
+          </div>
+        </form>
+      </div>
+    `, 'records'));
+  } catch(e) {
+    console.error('[records/_new GET]', e);
+    res.status(500).send('Error: ' + e.message);
+  }
+});
+
+router.post('/_new', requireAuth, async (req, res) => {
+  const b = req.body || {};
+  // Preserve all form values in the redirect on error so the user doesn't
+  // lose what they typed. Builds a querystring of every posted field.
+  const backQS = () => Object.keys(b).filter(k => b[k]).map(k => `${encodeURIComponent(k)}=${encodeURIComponent(b[k])}`).join('&');
+  const backWith = (msg) => `/records/_new?err=${encodeURIComponent(msg)}&${backQS()}`;
+
+  try {
+    // ── Validate required fields ───────────────────────────────────────────
+    const street = (b.street || '').trim();
+    const city   = (b.city || '').trim();
+    const stateRaw = (b.state_code || '').trim();
+    const zipRaw = (b.zip_code || '').trim();
+    if (!street) return res.redirect(backWith('Street is required'));
+    if (!city)   return res.redirect(backWith('City is required'));
+    const stateNorm = normalizeState(stateRaw);
+    if (!stateNorm) return res.redirect(backWith(`"${stateRaw}" is not a valid US state`));
+    const zipMatch = zipRaw.match(/^\d{5}/);
+    if (!zipMatch) return res.redirect(backWith('ZIP must start with 5 digits'));
+    const zipNorm = zipMatch[0];
+
+    // ── Coerce numeric fields with bounds (same rules as importer) ─────────
+    const MONEY_LIMIT = 9_999_999_999.99;
+    const toMoney = v => { if (!v) return null; const n = parseFloat(String(v).replace(/[$,%]/g,'')); if (isNaN(n) || Math.abs(n) > MONEY_LIMIT) return null; return n; };
+    const toInt   = v => { if (!v) return null; const n = parseInt(String(v).replace(/[$,%]/g,''), 10); return isNaN(n) ? null : n; };
+    const toYear  = v => { const n = toInt(v); if (n === null || n < 1800 || n > 2200) return null; return n; };
+    const toSmallInt = v => { const n = toInt(v); if (n === null || n < -32768 || n > 32767) return null; return n; };
+    const toBath  = v => { if (!v) return null; const n = parseFloat(v); if (isNaN(n) || n < 0 || n > 99) return null; return n; };
+    const toPct   = v => { if (!v) return null; const n = parseFloat(v); if (isNaN(n) || n < -100 || n > 100) return null; return n; };
+    const toBool  = v => { const s = (v||'').toLowerCase(); return s==='true' ? true : s==='false' ? false : null; };
+
+    const yearBuilt = toYear(b.year_built);
+    const sqft      = toInt(b.sqft);
+    const beds      = toSmallInt(b.bedrooms);
+    const baths     = toBath(b.bathrooms);
+    const lotSize   = toInt(b.lot_size);
+    const estValue  = toMoney(b.estimated_value);
+    const assValue  = toMoney(b.assessed_value);
+    const lastSaleP = toMoney(b.last_sale_price);
+    const equityP   = toPct(b.equity_percent);
+    const vacantV   = toBool(b.vacant);
+    const lastSaleDate = b.last_sale_date && /^\d{4}-\d{2}-\d{2}$/.test(b.last_sale_date) ? b.last_sale_date : null;
+    const propType  = (b.property_type || '').trim().slice(0, 50) || null;
+    const county    = (b.county || '').trim().slice(0, 100) || null;
+
+    // ── Lookup or create market ────────────────────────────────────────────
+    const mktRes = await query(`SELECT id FROM markets WHERE state_code = $1 LIMIT 1`, [stateNorm]);
+    let mktId = mktRes.rows[0]?.id || null;
+    if (!mktId) {
+      const ins = await query(`INSERT INTO markets (state_code, name, state_name) VALUES ($1,$1,$1) ON CONFLICT (state_code) DO UPDATE SET state_code=EXCLUDED.state_code RETURNING id`, [stateNorm]);
+      mktId = ins.rows[0].id;
+    }
+
+    // ── Insert or reuse property (ON CONFLICT on the 4-column address key) ─
+    const propRes = await query(`
+      INSERT INTO properties (street, city, state_code, zip_code, county, market_id,
+                              source, property_type, year_built, sqft, bedrooms, bathrooms, lot_size,
+                              assessed_value, estimated_value, equity_percent,
+                              last_sale_date, last_sale_price, vacant, first_seen_at)
+      VALUES ($1,$2,$3,$4,$5,$6,'manual',$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,NOW())
+      ON CONFLICT (street, city, state_code, zip_code) DO UPDATE SET
+        county = COALESCE(EXCLUDED.county, properties.county),
+        property_type = COALESCE(EXCLUDED.property_type, properties.property_type),
+        year_built = COALESCE(EXCLUDED.year_built, properties.year_built),
+        sqft = COALESCE(EXCLUDED.sqft, properties.sqft),
+        bedrooms = COALESCE(EXCLUDED.bedrooms, properties.bedrooms),
+        bathrooms = COALESCE(EXCLUDED.bathrooms, properties.bathrooms),
+        lot_size = COALESCE(EXCLUDED.lot_size, properties.lot_size),
+        assessed_value = COALESCE(EXCLUDED.assessed_value, properties.assessed_value),
+        estimated_value = COALESCE(EXCLUDED.estimated_value, properties.estimated_value),
+        equity_percent = COALESCE(EXCLUDED.equity_percent, properties.equity_percent),
+        last_sale_date = COALESCE(EXCLUDED.last_sale_date, properties.last_sale_date),
+        last_sale_price = COALESCE(EXCLUDED.last_sale_price, properties.last_sale_price),
+        vacant = COALESCE(EXCLUDED.vacant, properties.vacant),
+        updated_at = NOW()
+      RETURNING id, xmax`,
+      [street, city, stateNorm, zipNorm, county, mktId, propType, yearBuilt, sqft, beds, baths, lotSize,
+       assValue, estValue, equityP, lastSaleDate, lastSaleP, vacantV]
+    );
+    const propId = propRes.rows[0].id;
+    const wasExisting = propRes.rows[0].xmax !== '0';
+
+    // ── Optional primary contact ───────────────────────────────────────────
+    const firstName = (b.first_name || '').trim();
+    const lastName  = (b.last_name || '').trim();
+    const hasContact = firstName || lastName || b.mailing_address || b.email_1;
+    let contactId = null;
+    if (hasContact) {
+      const mStateNorm = normalizeState(b.mailing_state || '');
+      const mZipRaw = (b.mailing_zip || '').trim();
+      const mZipMatch = mZipRaw.match(/^\d{5}/);
+      const mZipNorm = mZipMatch ? mZipMatch[0] : '';
+      const ownerType = inferOwnerType(firstName, lastName);
+
+      // If property already has a primary contact, update it instead of creating new.
+      const existPC = await query(`SELECT contact_id FROM property_contacts WHERE property_id=$1 AND primary_contact=true LIMIT 1`, [propId]);
+      if (existPC.rows.length) {
+        contactId = existPC.rows[0].contact_id;
+        await query(`UPDATE contacts SET
+          first_name = COALESCE(NULLIF($1,''), first_name),
+          last_name  = COALESCE(NULLIF($2,''), last_name),
+          mailing_address = COALESCE(NULLIF($3,''), mailing_address),
+          mailing_city    = COALESCE(NULLIF($4,''), mailing_city),
+          mailing_state   = COALESCE(NULLIF($5,''), mailing_state),
+          mailing_zip     = COALESCE(NULLIF($6,''), mailing_zip),
+          email_1 = COALESCE(NULLIF($7,''), email_1),
+          email_2 = COALESCE(NULLIF($8,''), email_2),
+          owner_type = COALESCE(owner_type, $9),
+          updated_at = NOW()
+          WHERE id = $10`,
+          [firstName, lastName, (b.mailing_address||'').trim(), (b.mailing_city||'').trim(),
+           mStateNorm, mZipNorm, (b.email_1||'').trim(), (b.email_2||'').trim(), ownerType, contactId]);
+      } else {
+        const cr = await query(`INSERT INTO contacts (first_name, last_name, mailing_address, mailing_city, mailing_state, mailing_zip, email_1, email_2, owner_type)
+          VALUES ($1,$2,$3,$4,NULLIF($5,''),NULLIF($6,''),NULLIF($7,''),NULLIF($8,''),$9) RETURNING id`,
+          [firstName, lastName, (b.mailing_address||'').trim(), (b.mailing_city||'').trim(),
+           mStateNorm, mZipNorm, (b.email_1||'').trim(), (b.email_2||'').trim(), ownerType]);
+        contactId = cr.rows[0].id;
+        await query(`INSERT INTO property_contacts (property_id, contact_id, primary_contact) VALUES ($1,$2,true) ON CONFLICT (property_id, contact_id) DO UPDATE SET primary_contact=true`, [propId, contactId]);
+      }
+
+      // ── Optional phones ────────────────────────────────────────────────
+      for (let i = 1; i <= 5; i++) {
+        const raw = (b['phone_'+i] || '').trim();
+        if (!raw) continue;
+        const phoneNorm = normalizePhone(raw);
+        if (!phoneNorm || phoneNorm.length < 7) continue;  // skip malformed
+        const pType = ['mobile','landline','voip'].includes((b['phone_type_'+i]||'').toLowerCase()) ? b['phone_type_'+i].toLowerCase() : 'unknown';
+        const pStatus = ['correct','wrong'].includes((b['phone_status_'+i]||'').toLowerCase()) ? b['phone_status_'+i].toLowerCase() : 'unknown';
+        await query(`INSERT INTO phones (contact_id, phone_number, phone_index, phone_type, phone_status)
+          VALUES ($1,$2,$3,$4,$5)
+          ON CONFLICT (contact_id, phone_number) DO UPDATE SET
+            phone_type = CASE WHEN EXCLUDED.phone_type <> 'unknown' THEN EXCLUDED.phone_type ELSE phones.phone_type END,
+            phone_status = CASE WHEN EXCLUDED.phone_status <> 'unknown' THEN EXCLUDED.phone_status ELSE phones.phone_status END`,
+          [contactId, phoneNorm, i, pType, pStatus]);
+      }
+    }
+
+    const msg = wasExisting
+      ? `Updated existing property #${propId}`
+      : `Created property #${propId}`;
+    res.redirect(`/records/${propId}?msg=${encodeURIComponent(msg)}`);
+  } catch(e) {
+    console.error('[records/_new POST]', e);
+    res.redirect(backWith('Create failed: ' + (e.message || 'unknown error')));
   }
 });
 
@@ -4129,6 +4422,249 @@ router.post('/remove-from-list', requireAuth, async (req, res) => {
   } catch (e) {
     console.error('[records/remove-from-list]', e);
     res.status(500).json({ error: 'Remove failed: ' + e.message });
+  }
+});
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// 2026-04-21 Feature 9 — ADD TO LIST — POST /records/add-to-list
+// Attaches selected properties to a list. Non-destructive (no delete code).
+// Supports:
+//   • Individual checkbox selection (ids[])
+//   • Cross-page selectAll (filterParams)
+//   • Inline "create new list" via newListName
+// Skips duplicates (ON CONFLICT DO NOTHING on property_lists PK).
+// Filter-parity code block mirrors /remove-from-list — keep them in sync.
+// Key difference: does NOT force-scope to a specific list (user may be adding
+// from the global /records view), and does NOT require a delete code.
+// ═══════════════════════════════════════════════════════════════════════════════
+router.post('/add-to-list', requireAuth, async (req, res) => {
+  try {
+    const { selectAll, filterParams, listId, newListName } = req.body;
+    const ids = coerceIdArray(req.body.ids);
+
+    // Resolve target list: either existing by id, or create new by name.
+    let listIdInt = null;
+    let listName = '';
+    if (newListName && typeof newListName === 'string' && newListName.trim()) {
+      const name = newListName.trim().slice(0, 200);
+      // Case-insensitive name conflict check — surface a useful error rather
+      // than silently creating a second "Hot Leads" list.
+      const existing = await query(`SELECT id, list_name FROM lists WHERE LOWER(list_name) = LOWER($1) LIMIT 1`, [name]);
+      if (existing.rowCount) {
+        listIdInt = existing.rows[0].id;
+        listName = existing.rows[0].list_name;
+      } else {
+        // list_type is required in some installs; default to 'Custom' and let
+        // the lists schema's NOT NULL constraints surface any issue clearly.
+        const created = await query(
+          `INSERT INTO lists (list_name, list_type, source) VALUES ($1, 'Custom', 'manual') RETURNING id, list_name`,
+          [name]
+        );
+        listIdInt = created.rows[0].id;
+        listName = created.rows[0].list_name;
+      }
+    } else {
+      listIdInt = parseInt(listId);
+      if (!listIdInt || isNaN(listIdInt)) {
+        return res.status(400).json({ error: 'Pick a list or enter a new list name.' });
+      }
+      const listCheck = await query(`SELECT id, list_name FROM lists WHERE id = $1`, [listIdInt]);
+      if (!listCheck.rowCount) {
+        return res.status(404).json({ error: 'List not found.' });
+      }
+      listName = listCheck.rows[0].list_name;
+    }
+
+    let idsToAdd = [];
+    if (selectAll) {
+      // Filter-parity block — mirrors /remove-from-list exactly EXCEPT we
+      // do not force-scope to a target list (add-to-list works from any view).
+      const qs = new URLSearchParams(filterParams || '');
+      let conditions = [], params = [], idx = 1;
+      const qv = (k) => qs.get(k) || '';
+      const qvAll = (k) => qs.getAll(k).filter(v => v && String(v).trim() !== '');
+
+      if (qv('q')) {
+        conditions.push(`(p.street ILIKE $${idx} OR p.city ILIKE $${idx} OR c.first_name ILIKE $${idx} OR c.last_name ILIKE $${idx})`);
+        params.push(`%${qv('q')}%`); idx++;
+      }
+      const stateArr = qvAll('state').map(s => String(s).toUpperCase());
+      if (stateArr.length > 0) {
+        conditions.push(`p.state_code = ANY($${idx}::text[])`);
+        params.push(stateArr); idx++;
+      }
+      const splitCsv = (raw) => !raw ? [] : String(raw).split(/[,\s]+/).map(s => s.trim()).filter(Boolean);
+      const cityArr   = splitCsv(qv('city'));
+      const zipArr    = splitCsv(qv('zip'));
+      const countyArr = splitCsv(qv('county'));
+      if (cityArr.length > 0) {
+        const o = cityArr.map(() => `p.city ILIKE $${idx++}`);
+        conditions.push(`(${o.join(' OR ')})`);
+        cityArr.forEach(c => params.push(`%${c}%`));
+      }
+      if (zipArr.length > 0) {
+        const o = zipArr.map(() => `p.zip_code ILIKE $${idx++}`);
+        conditions.push(`(${o.join(' OR ')})`);
+        zipArr.forEach(z => params.push(`${z}%`));
+      }
+      if (countyArr.length > 0) {
+        const o = countyArr.map(() => `p.county ILIKE $${idx++}`);
+        conditions.push(`(${o.join(' OR ')})`);
+        countyArr.forEach(c => params.push(`%${c}%`));
+      }
+      if (qv('type'))        { conditions.push(`p.property_type = $${idx}`);     params.push(qv('type')); idx++; }
+      if (qv('pipeline'))    { conditions.push(`p.pipeline_stage = $${idx}`);    params.push(qv('pipeline')); idx++; }
+      if (qv('prop_status')) { conditions.push(`p.property_status = $${idx}`);   params.push(qv('prop_status')); idx++; }
+      if (qv('min_assessed')){ conditions.push(`p.assessed_value >= $${idx}`);   params.push(qv('min_assessed')); idx++; }
+      if (qv('max_assessed')){ conditions.push(`p.assessed_value <= $${idx}`);   params.push(qv('max_assessed')); idx++; }
+      if (qv('min_equity'))  { conditions.push(`p.equity_percent >= $${idx}`);   params.push(qv('min_equity')); idx++; }
+      if (qv('max_equity'))  { conditions.push(`p.equity_percent <= $${idx}`);   params.push(qv('max_equity')); idx++; }
+      if (qv('min_year'))    { conditions.push(`p.year_built >= $${idx}`);       params.push(qv('min_year')); idx++; }
+      if (qv('max_year'))    { conditions.push(`p.year_built <= $${idx}`);       params.push(qv('max_year')); idx++; }
+      if (qv('upload_from')) { conditions.push(`p.created_at >= $${idx}`);       params.push(qv('upload_from')); idx++; }
+      if (qv('upload_to'))   { conditions.push(`p.created_at <= $${idx}`);       params.push(qv('upload_to') + ' 23:59:59'); idx++; }
+      // Scope-by-list if user was filtering from a specific list view (list_id
+      // in the QS). Unlike RFL this is optional — user could be in "All props".
+      if (qv('list_id')) {
+        conditions.push(`EXISTS (SELECT 1 FROM property_lists pl2 WHERE pl2.property_id = p.id AND pl2.list_id = $${idx})`);
+        params.push(parseInt(qv('list_id'))); idx++;
+      }
+      const stackArr = qvAll('stack_list').map(v => parseInt(v)).filter(n => !isNaN(n));
+      if (stackArr.length > 0) {
+        conditions.push(
+          `(SELECT COUNT(DISTINCT pl_stack.list_id)
+              FROM property_lists pl_stack
+             WHERE pl_stack.property_id = p.id
+               AND pl_stack.list_id = ANY($${idx}::int[])) = $${idx+1}`
+        );
+        params.push(stackArr); params.push(stackArr.length); idx += 2;
+      }
+      if (qv('min_stack'))   { conditions.push(`(SELECT COUNT(*) FROM property_lists plc WHERE plc.property_id = p.id) >= $${idx}`); params.push(parseInt(qv('min_stack'))); idx++; }
+      if (qv('min_distress')){ conditions.push(`p.distress_score >= $${idx}`); params.push(parseInt(qv('min_distress'))); idx++; }
+      const phonesAtl = qv('phones');
+      if (phonesAtl === 'has') {
+        conditions.push(`EXISTS (SELECT 1 FROM phones ph_f JOIN property_contacts pc_f ON pc_f.contact_id = ph_f.contact_id WHERE pc_f.property_id = p.id)`);
+      } else if (phonesAtl === 'none') {
+        conditions.push(`NOT EXISTS (SELECT 1 FROM phones ph_f JOIN property_contacts pc_f ON pc_f.contact_id = ph_f.contact_id WHERE pc_f.property_id = p.id)`);
+      }
+      const occAtl = qv('occupancy');
+      if (occAtl === 'owner_occupied') {
+        conditions.push(`(c.mailing_address IS NOT NULL
+          AND COALESCE(p.street_normalized, LOWER(TRIM(p.street))) = COALESCE(c.mailing_address_normalized, LOWER(TRIM(c.mailing_address)))
+          AND LOWER(TRIM(p.city)) = LOWER(TRIM(c.mailing_city))
+          AND UPPER(TRIM(p.state_code)) = UPPER(TRIM(c.mailing_state))
+          AND SUBSTRING(TRIM(p.zip_code) FROM 1 FOR 5) = SUBSTRING(TRIM(c.mailing_zip) FROM 1 FOR 5))`);
+      } else if (occAtl === 'absent_owner') {
+        conditions.push(`(c.mailing_address IS NOT NULL AND TRIM(c.mailing_address) != ''
+          AND NOT (
+            COALESCE(p.street_normalized, LOWER(TRIM(p.street))) = COALESCE(c.mailing_address_normalized, LOWER(TRIM(c.mailing_address)))
+            AND LOWER(TRIM(p.city)) = LOWER(TRIM(c.mailing_city))
+            AND UPPER(TRIM(p.state_code)) = UPPER(TRIM(c.mailing_state))
+            AND SUBSTRING(TRIM(p.zip_code) FROM 1 FOR 5) = SUBSTRING(TRIM(c.mailing_zip) FROM 1 FOR 5)
+          ))`);
+      } else if (occAtl === 'unknown') {
+        conditions.push(`(c.mailing_address IS NULL OR TRIM(c.mailing_address) = '')`);
+      }
+      const minOwnedAtl = qv('min_owned'), maxOwnedAtl = qv('max_owned');
+      if (minOwnedAtl || maxOwnedAtl) {
+        const ownedSubAtl = `
+          CASE WHEN c.mailing_address IS NULL OR TRIM(c.mailing_address) = '' THEN 1
+          ELSE (
+            SELECT COUNT(*)
+            FROM properties p2
+            JOIN property_contacts pc2 ON pc2.property_id = p2.id AND pc2.primary_contact = true
+            JOIN contacts c2 ON c2.id = pc2.contact_id
+            WHERE c2.mailing_address IS NOT NULL AND TRIM(c2.mailing_address) != ''
+              AND COALESCE(c2.mailing_address_normalized, LOWER(TRIM(c2.mailing_address))) = COALESCE(c.mailing_address_normalized, LOWER(TRIM(c.mailing_address)))
+              AND LOWER(TRIM(c2.mailing_city)) = LOWER(TRIM(c.mailing_city))
+              AND UPPER(TRIM(p2.state_code)) = UPPER(TRIM(p.state_code))
+              AND SUBSTRING(TRIM(c2.mailing_zip) FROM 1 FOR 5) = SUBSTRING(TRIM(c.mailing_zip) FROM 1 FOR 5)
+          ) END`;
+        if (minOwnedAtl) { conditions.push(`${ownedSubAtl} >= $${idx}`); params.push(parseInt(minOwnedAtl)); idx++; }
+        if (maxOwnedAtl) { conditions.push(`${ownedSubAtl} <= $${idx}`); params.push(parseInt(maxOwnedAtl)); idx++; }
+      }
+      // 2026-04-21 Feature 3 parity: Ownership Duration.
+      const minYoAtl = qv('min_years_owned'), maxYoAtl = qv('max_years_owned');
+      if (minYoAtl) {
+        conditions.push(`p.last_sale_date IS NOT NULL AND EXTRACT(YEAR FROM AGE(CURRENT_DATE, p.last_sale_date)) >= $${idx}`);
+        params.push(parseInt(minYoAtl)); idx++;
+      }
+      if (maxYoAtl) {
+        conditions.push(`p.last_sale_date IS NOT NULL AND EXTRACT(YEAR FROM AGE(CURRENT_DATE, p.last_sale_date)) <= $${idx}`);
+        params.push(parseInt(maxYoAtl)); idx++;
+      }
+      if (qv('tag')) {
+        conditions.push(`EXISTS (SELECT 1 FROM property_tags pt_f WHERE pt_f.property_id = p.id AND pt_f.tag_id = $${idx})`);
+        params.push(parseInt(qv('tag'))); idx++;
+      }
+      if (qv('owner_type') && VALID_OWNER_TYPES.includes(qv('owner_type'))) {
+        conditions.push(`c.owner_type = $${idx}`);
+        params.push(qv('owner_type')); idx++;
+      }
+      const mailingAtl = qv('mailing');
+      if (mailingAtl === 'clean') {
+        conditions.push(`(
+          c.mailing_address IS NOT NULL AND TRIM(c.mailing_address) <> ''
+          AND c.mailing_city IS NOT NULL AND TRIM(c.mailing_city) <> ''
+          AND c.mailing_state IS NOT NULL AND TRIM(c.mailing_state) <> ''
+          AND c.mailing_zip IS NOT NULL AND TRIM(c.mailing_zip) <> ''
+        )`);
+      } else if (mailingAtl === 'incomplete') {
+        conditions.push(`(
+          c.id IS NULL
+          OR c.mailing_address IS NULL OR TRIM(COALESCE(c.mailing_address,'')) = ''
+          OR c.mailing_city    IS NULL OR TRIM(COALESCE(c.mailing_city,''))    = ''
+          OR c.mailing_state   IS NULL OR TRIM(COALESCE(c.mailing_state,''))   = ''
+          OR c.mailing_zip     IS NULL OR TRIM(COALESCE(c.mailing_zip,''))     = ''
+        )`);
+      }
+
+      const where = conditions.length ? 'WHERE ' + conditions.join(' AND ') : '';
+      const idsRes = await query(`
+        SELECT DISTINCT p.id
+        FROM properties p
+        LEFT JOIN property_contacts pc ON pc.property_id = p.id AND pc.primary_contact = true
+        LEFT JOIN contacts c ON c.id = pc.contact_id
+        ${where}
+      `, params);
+      idsToAdd = idsRes.rows.map(r => r.id);
+    } else {
+      if (ids.length === 0) {
+        return res.status(400).json({ error: 'No records selected.' });
+      }
+      idsToAdd = ids;
+    }
+
+    if (idsToAdd.length === 0) {
+      return res.status(400).json({ error: 'No valid properties to add.' });
+    }
+
+    // Count existing links first so we can report skipped count accurately.
+    const existingRes = await query(
+      `SELECT COUNT(*)::int AS n
+         FROM property_lists
+        WHERE list_id = $1 AND property_id = ANY($2::int[])`,
+      [listIdInt, idsToAdd]
+    );
+    const alreadyOnList = existingRes.rows[0].n;
+
+    // INSERT with ON CONFLICT DO NOTHING skips properties already on the list.
+    // added_at defaults in the schema; we also explicitly set it for clarity.
+    const result = await query(
+      `INSERT INTO property_lists (property_id, list_id, added_at)
+         SELECT unnest($1::int[]), $2, NOW()
+       ON CONFLICT (property_id, list_id) DO NOTHING
+       RETURNING property_id`,
+      [idsToAdd, listIdInt]
+    );
+    const added = result.rowCount;
+    const skipped = alreadyOnList;
+
+    console.log(`[records/add-to-list] Added ${added} to list "${listName}" (id=${listIdInt}); ${skipped} skipped as duplicates`);
+    res.json({ ok: true, added, skipped, listName, listId: listIdInt });
+  } catch (e) {
+    console.error('[records/add-to-list]', e);
+    res.status(500).json({ error: 'Add to list failed: ' + e.message });
   }
 });
 
