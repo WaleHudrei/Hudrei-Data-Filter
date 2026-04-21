@@ -71,6 +71,32 @@ function filterMsOptions() {
   });
 }
 
+// 2026-04-21 PM hotfix: the search input lives inside <form id="filter-form">,
+// so pressing Enter while typing submitted the form and reloaded the page —
+// user-visible effect was "the dropdown disappears when I type the name."
+// This handler (a) blocks Enter from submitting; (b) if there's exactly one
+// visible option, toggles it (Enter-to-select is the standard search-select
+// UX); (c) Escape closes the dropdown cleanly.
+function msSearchKeydown(ev) {
+  if (ev.key === 'Enter') {
+    ev.preventDefault();
+    const visible = Array.from(document.querySelectorAll('#ms-options .ms-option'))
+      .filter(o => o.style.display !== 'none');
+    if (visible.length === 1) {
+      // Simulate a click on the sole match — reuses the toggleMsOption binding
+      visible[0].click();
+      // Clear the search so the next character starts fresh
+      const s = document.getElementById('ms-search');
+      if (s) { s.value = ''; filterMsOptions(); }
+    }
+    return false;
+  }
+  if (ev.key === 'Escape') {
+    const dd = document.getElementById('ms-dropdown');
+    if (dd) dd.style.display = 'none';
+  }
+}
+
 function getSelectedStackIds() {
   const inputs = document.querySelectorAll('#ms-hidden-inputs input[name="stack_list"]');
   return Array.from(inputs).map(i => String(i.value));
@@ -185,6 +211,27 @@ function filterStateMsOptions() {
     const s = o.getAttribute('data-search') || '';
     o.style.display = s.includes(q) ? 'flex' : 'none';
   });
+}
+
+// 2026-04-21 PM hotfix: same Enter-submits-form bug as the list search above.
+// Prevents the form submit and supports Enter-to-select when the user has
+// narrowed down to a single match.
+function stateMsSearchKeydown(ev) {
+  if (ev.key === 'Enter') {
+    ev.preventDefault();
+    const visible = Array.from(document.querySelectorAll('#state-ms-options .state-ms-option'))
+      .filter(o => o.style.display !== 'none');
+    if (visible.length === 1) {
+      visible[0].click();
+      const s = document.getElementById('state-ms-search');
+      if (s) { s.value = ''; filterStateMsOptions(); }
+    }
+    return false;
+  }
+  if (ev.key === 'Escape') {
+    const dd = document.getElementById('state-ms-dropdown');
+    if (dd) dd.style.display = 'none';
+  }
 }
 
 function getSelectedStateCodes() {
