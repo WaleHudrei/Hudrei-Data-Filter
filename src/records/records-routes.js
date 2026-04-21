@@ -2218,7 +2218,7 @@ router.post('/:id(\\d+)/edit', requireAuth, async (req, res) => {
         apn                  = COALESCE(NULLIF($20,''), apn),
         legal_description    = COALESCE(NULLIF($21,''), legal_description),
         total_tax_owed       = CASE WHEN $22 = '' THEN total_tax_owed       ELSE $22::numeric  END,
-        tax_delinquent_year  = CASE WHEN $23 = '' THEN tax_delinquent_year  ELSE $23::smallint END,
+        tax_delinquent_year  = CASE WHEN $23 = '' THEN tax_delinquent_year  ELSE $23::integer END,
         tax_auction_date     = CASE WHEN $24 = '' THEN tax_auction_date     ELSE $24::date     END,
         deed_type            = COALESCE(NULLIF($25,''), deed_type),
         lien_type            = COALESCE(NULLIF($26,''), lien_type),
