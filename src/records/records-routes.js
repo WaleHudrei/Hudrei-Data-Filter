@@ -43,6 +43,18 @@ function coerceIdArray(raw) {
     .filter(n => Number.isFinite(n) && n > 0);
 }
 
+// 2026-04-21 Bug #3 fix: parseInt returns NaN on non-numeric input, and NaN
+// sent as a Postgres integer parameter throws. safeInt returns null instead,
+// which downstream callers can check or pass into nullable SQL comparisons.
+// Applies to every user-supplied numeric query param in the new Feature 3
+// and Feature 9 handlers. Not back-ported to pre-existing Loki code that
+// uses bare parseInt() — that's a separate hardening pass.
+function safeInt(v) {
+  if (v == null || v === '') return null;
+  const n = parseInt(String(v).trim(), 10);
+  return Number.isFinite(n) ? n : null;
+}
+
 
 // ── Tag Schema ──────────────────────────────────────────────────────────────
 let _tagSchemaReady = false;
@@ -346,14 +358,16 @@ router.get('/', requireAuth, async (req, res) => {
     // "doesn't match" — otherwise a min=5 filter would confusingly include
     // properties where we genuinely don't know the ownership date).
     // Applied at all 5 filter-code-path sites per the filter parity rule.
-    if (min_years_owned) {
+    const minYoMain = safeInt(min_years_owned);
+    const maxYoMain = safeInt(max_years_owned);
+    if (minYoMain !== null) {
       conditions.push(`p.last_sale_date IS NOT NULL AND EXTRACT(YEAR FROM AGE(CURRENT_DATE, p.last_sale_date)) >= $${idx}`);
-      params.push(parseInt(min_years_owned));
+      params.push(minYoMain);
       idx++;
     }
-    if (max_years_owned) {
+    if (maxYoMain !== null) {
       conditions.push(`p.last_sale_date IS NOT NULL AND EXTRACT(YEAR FROM AGE(CURRENT_DATE, p.last_sale_date)) <= $${idx}`);
-      params.push(parseInt(max_years_owned));
+      params.push(maxYoMain);
       idx++;
     }
     // Tag filter — show only properties that have a specific tag
@@ -1238,11 +1252,18 @@ router.delete('/:id(\\d+)/tags/:tagId(\\d+)', requireAuth, async (req, res) => {
 // ═══════════════════════════════════════════════════════════════════════════════
 router.get('/_new', requireAuth, async (req, res) => {
   try {
-    const err = req.query.err ? String(req.query.err).slice(0, 500) : '';
+    // 2026-04-21 Bug #1 fix: consume session flash instead of reading form
+    // values from ?err=...&field1=...&field2=... URL. Previous approach
+    // stuffed every submitted field into the query string, which could
+    // exceed browser URL limits on long inputs (e.g. 3KB legal description).
+    // Session flash is consumed once then cleared — if the user reloads
+    // the /records/_new page without a fresh error, they get an empty form.
+    const flash = (req.session && req.session.newPropertyFlash) || null;
+    if (req.session) req.session.newPropertyFlash = null;  // consume
+    const err = flash && flash.err ? String(flash.err).slice(0, 500) : '';
     const errSafe = err ? err.replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])) : '';
-    // Preserve any submitted values on error so the user doesn't lose data.
-    const f = req.query;
-    const v = (k) => f[k] ? String(f[k]).replace(/"/g, '&quot;') : '';
+    const f = (flash && flash.form) || {};
+    const v = (k) => f[k] != null ? String(f[k]).replace(/"/g, '&quot;') : '';
     res.send(shell('Add Property', `
       <div style="max-width:820px">
         <div style="margin-bottom:1rem"><a href="/records" style="font-size:13px;color:#888;text-decoration:none">← Records</a></div>
@@ -1337,8 +1358,14 @@ router.post('/_new', requireAuth, async (req, res) => {
   const b = req.body || {};
   // Preserve all form values in the redirect on error so the user doesn't
   // lose what they typed. Builds a querystring of every posted field.
-  const backQS = () => Object.keys(b).filter(k => b[k]).map(k => `${encodeURIComponent(k)}=${encodeURIComponent(b[k])}`).join('&');
-  const backWith = (msg) => `/records/_new?err=${encodeURIComponent(msg)}&${backQS()}`;
+  // 2026-04-21 Bug #1 fix: stash form + err in session flash, redirect to
+  // clean URL. GET /_new consumes + clears the flash on next render. This
+  // replaces the old pattern of stuffing every field into a query string,
+  // which overflowed on long inputs like a 3KB legal description.
+  const backWith = (msg) => {
+    if (req.session) req.session.newPropertyFlash = { err: msg, form: b };
+    return '/records/_new';
+  };
 
   try {
     // ── Validate required fields ───────────────────────────────────────────
@@ -1378,97 +1405,120 @@ router.post('/_new', requireAuth, async (req, res) => {
     const propType  = (b.property_type || '').trim().slice(0, 50) || null;
     const county    = (b.county || '').trim().slice(0, 100) || null;
 
-    // ── Lookup or create market ────────────────────────────────────────────
-    const mktRes = await query(`SELECT id FROM markets WHERE state_code = $1 LIMIT 1`, [stateNorm]);
-    let mktId = mktRes.rows[0]?.id || null;
-    if (!mktId) {
-      const ins = await query(`INSERT INTO markets (state_code, name, state_name) VALUES ($1,$1,$1) ON CONFLICT (state_code) DO UPDATE SET state_code=EXCLUDED.state_code RETURNING id`, [stateNorm]);
-      mktId = ins.rows[0].id;
-    }
+    // 2026-04-21 Bug #2 fix: wrap property + market + contact + phone writes
+    // in a single transaction. Without this, two concurrent POSTs could both
+    // observe "no primary contact exists" on line ~1445, both INSERT a new
+    // contact row, and the second's property_contacts INSERT would succeed
+    // via ON CONFLICT DO UPDATE — leaving the first request's contact as an
+    // orphan (a contact row with no property_contacts link). A transaction
+    // serializes the read-modify-write pattern so only one wins.
+    const client = await pool.connect();
+    let propId, wasExisting, contactId = null;
+    try {
+      await client.query('BEGIN');
+      // ── Lookup or create market ────────────────────────────────────────────
+      const mktRes = await client.query(`SELECT id FROM markets WHERE state_code = $1 LIMIT 1`, [stateNorm]);
+      let mktId = mktRes.rows[0]?.id || null;
+      if (!mktId) {
+        const ins = await client.query(`INSERT INTO markets (state_code, name, state_name) VALUES ($1,$1,$1) ON CONFLICT (state_code) DO UPDATE SET state_code=EXCLUDED.state_code RETURNING id`, [stateNorm]);
+        mktId = ins.rows[0].id;
+      }
 
-    // ── Insert or reuse property (ON CONFLICT on the 4-column address key) ─
-    const propRes = await query(`
-      INSERT INTO properties (street, city, state_code, zip_code, county, market_id,
-                              source, property_type, year_built, sqft, bedrooms, bathrooms, lot_size,
-                              assessed_value, estimated_value, equity_percent,
-                              last_sale_date, last_sale_price, vacant, first_seen_at)
-      VALUES ($1,$2,$3,$4,$5,$6,'manual',$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,NOW())
-      ON CONFLICT (street, city, state_code, zip_code) DO UPDATE SET
-        county = COALESCE(EXCLUDED.county, properties.county),
-        property_type = COALESCE(EXCLUDED.property_type, properties.property_type),
-        year_built = COALESCE(EXCLUDED.year_built, properties.year_built),
-        sqft = COALESCE(EXCLUDED.sqft, properties.sqft),
-        bedrooms = COALESCE(EXCLUDED.bedrooms, properties.bedrooms),
-        bathrooms = COALESCE(EXCLUDED.bathrooms, properties.bathrooms),
-        lot_size = COALESCE(EXCLUDED.lot_size, properties.lot_size),
-        assessed_value = COALESCE(EXCLUDED.assessed_value, properties.assessed_value),
-        estimated_value = COALESCE(EXCLUDED.estimated_value, properties.estimated_value),
-        equity_percent = COALESCE(EXCLUDED.equity_percent, properties.equity_percent),
-        last_sale_date = COALESCE(EXCLUDED.last_sale_date, properties.last_sale_date),
-        last_sale_price = COALESCE(EXCLUDED.last_sale_price, properties.last_sale_price),
-        vacant = COALESCE(EXCLUDED.vacant, properties.vacant),
-        updated_at = NOW()
-      RETURNING id, xmax`,
-      [street, city, stateNorm, zipNorm, county, mktId, propType, yearBuilt, sqft, beds, baths, lotSize,
-       assValue, estValue, equityP, lastSaleDate, lastSaleP, vacantV]
-    );
-    const propId = propRes.rows[0].id;
-    const wasExisting = propRes.rows[0].xmax !== '0';
-
-    // ── Optional primary contact ───────────────────────────────────────────
-    const firstName = (b.first_name || '').trim();
-    const lastName  = (b.last_name || '').trim();
-    const hasContact = firstName || lastName || b.mailing_address || b.email_1;
-    let contactId = null;
-    if (hasContact) {
-      const mStateNorm = normalizeState(b.mailing_state || '');
-      const mZipRaw = (b.mailing_zip || '').trim();
-      const mZipMatch = mZipRaw.match(/^\d{5}/);
-      const mZipNorm = mZipMatch ? mZipMatch[0] : '';
-      const ownerType = inferOwnerType(firstName, lastName);
-
-      // If property already has a primary contact, update it instead of creating new.
-      const existPC = await query(`SELECT contact_id FROM property_contacts WHERE property_id=$1 AND primary_contact=true LIMIT 1`, [propId]);
-      if (existPC.rows.length) {
-        contactId = existPC.rows[0].contact_id;
-        await query(`UPDATE contacts SET
-          first_name = COALESCE(NULLIF($1,''), first_name),
-          last_name  = COALESCE(NULLIF($2,''), last_name),
-          mailing_address = COALESCE(NULLIF($3,''), mailing_address),
-          mailing_city    = COALESCE(NULLIF($4,''), mailing_city),
-          mailing_state   = COALESCE(NULLIF($5,''), mailing_state),
-          mailing_zip     = COALESCE(NULLIF($6,''), mailing_zip),
-          email_1 = COALESCE(NULLIF($7,''), email_1),
-          email_2 = COALESCE(NULLIF($8,''), email_2),
-          owner_type = COALESCE(owner_type, $9),
+      // ── Insert or reuse property (ON CONFLICT on the 4-column address key) ─
+      const propRes = await client.query(`
+        INSERT INTO properties (street, city, state_code, zip_code, county, market_id,
+                                source, property_type, year_built, sqft, bedrooms, bathrooms, lot_size,
+                                assessed_value, estimated_value, equity_percent,
+                                last_sale_date, last_sale_price, vacant, first_seen_at)
+        VALUES ($1,$2,$3,$4,$5,$6,'manual',$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,NOW())
+        ON CONFLICT (street, city, state_code, zip_code) DO UPDATE SET
+          county = COALESCE(EXCLUDED.county, properties.county),
+          property_type = COALESCE(EXCLUDED.property_type, properties.property_type),
+          year_built = COALESCE(EXCLUDED.year_built, properties.year_built),
+          sqft = COALESCE(EXCLUDED.sqft, properties.sqft),
+          bedrooms = COALESCE(EXCLUDED.bedrooms, properties.bedrooms),
+          bathrooms = COALESCE(EXCLUDED.bathrooms, properties.bathrooms),
+          lot_size = COALESCE(EXCLUDED.lot_size, properties.lot_size),
+          assessed_value = COALESCE(EXCLUDED.assessed_value, properties.assessed_value),
+          estimated_value = COALESCE(EXCLUDED.estimated_value, properties.estimated_value),
+          equity_percent = COALESCE(EXCLUDED.equity_percent, properties.equity_percent),
+          last_sale_date = COALESCE(EXCLUDED.last_sale_date, properties.last_sale_date),
+          last_sale_price = COALESCE(EXCLUDED.last_sale_price, properties.last_sale_price),
+          vacant = COALESCE(EXCLUDED.vacant, properties.vacant),
           updated_at = NOW()
-          WHERE id = $10`,
-          [firstName, lastName, (b.mailing_address||'').trim(), (b.mailing_city||'').trim(),
-           mStateNorm, mZipNorm, (b.email_1||'').trim(), (b.email_2||'').trim(), ownerType, contactId]);
-      } else {
-        const cr = await query(`INSERT INTO contacts (first_name, last_name, mailing_address, mailing_city, mailing_state, mailing_zip, email_1, email_2, owner_type)
-          VALUES ($1,$2,$3,$4,NULLIF($5,''),NULLIF($6,''),NULLIF($7,''),NULLIF($8,''),$9) RETURNING id`,
-          [firstName, lastName, (b.mailing_address||'').trim(), (b.mailing_city||'').trim(),
-           mStateNorm, mZipNorm, (b.email_1||'').trim(), (b.email_2||'').trim(), ownerType]);
-        contactId = cr.rows[0].id;
-        await query(`INSERT INTO property_contacts (property_id, contact_id, primary_contact) VALUES ($1,$2,true) ON CONFLICT (property_id, contact_id) DO UPDATE SET primary_contact=true`, [propId, contactId]);
+        RETURNING id, xmax`,
+        [street, city, stateNorm, zipNorm, county, mktId, propType, yearBuilt, sqft, beds, baths, lotSize,
+         assValue, estValue, equityP, lastSaleDate, lastSaleP, vacantV]
+      );
+      propId = propRes.rows[0].id;
+      wasExisting = propRes.rows[0].xmax !== '0';
+
+      // ── Optional primary contact ───────────────────────────────────────────
+      const firstName = (b.first_name || '').trim();
+      const lastName  = (b.last_name || '').trim();
+      const hasContact = firstName || lastName || b.mailing_address || b.email_1;
+      if (hasContact) {
+        const mStateNorm = normalizeState(b.mailing_state || '');
+        const mZipRaw = (b.mailing_zip || '').trim();
+        const mZipMatch = mZipRaw.match(/^\d{5}/);
+        const mZipNorm = mZipMatch ? mZipMatch[0] : '';
+        const ownerType = inferOwnerType(firstName, lastName);
+
+        // FOR UPDATE lock on the property_contacts row (if any) — this forces
+        // any concurrent transaction doing the same lookup to wait for our
+        // COMMIT, so the SELECT-then-INSERT pattern becomes race-safe.
+        const existPC = await client.query(
+          `SELECT contact_id FROM property_contacts WHERE property_id=$1 AND primary_contact=true LIMIT 1 FOR UPDATE`,
+          [propId]
+        );
+        if (existPC.rows.length) {
+          contactId = existPC.rows[0].contact_id;
+          await client.query(`UPDATE contacts SET
+            first_name = COALESCE(NULLIF($1,''), first_name),
+            last_name  = COALESCE(NULLIF($2,''), last_name),
+            mailing_address = COALESCE(NULLIF($3,''), mailing_address),
+            mailing_city    = COALESCE(NULLIF($4,''), mailing_city),
+            mailing_state   = COALESCE(NULLIF($5,''), mailing_state),
+            mailing_zip     = COALESCE(NULLIF($6,''), mailing_zip),
+            email_1 = COALESCE(NULLIF($7,''), email_1),
+            email_2 = COALESCE(NULLIF($8,''), email_2),
+            owner_type = COALESCE(owner_type, $9),
+            updated_at = NOW()
+            WHERE id = $10`,
+            [firstName, lastName, (b.mailing_address||'').trim(), (b.mailing_city||'').trim(),
+             mStateNorm, mZipNorm, (b.email_1||'').trim(), (b.email_2||'').trim(), ownerType, contactId]);
+        } else {
+          const cr = await client.query(`INSERT INTO contacts (first_name, last_name, mailing_address, mailing_city, mailing_state, mailing_zip, email_1, email_2, owner_type)
+            VALUES ($1,$2,$3,$4,NULLIF($5,''),NULLIF($6,''),NULLIF($7,''),NULLIF($8,''),$9) RETURNING id`,
+            [firstName, lastName, (b.mailing_address||'').trim(), (b.mailing_city||'').trim(),
+             mStateNorm, mZipNorm, (b.email_1||'').trim(), (b.email_2||'').trim(), ownerType]);
+          contactId = cr.rows[0].id;
+          await client.query(`INSERT INTO property_contacts (property_id, contact_id, primary_contact) VALUES ($1,$2,true) ON CONFLICT (property_id, contact_id) DO UPDATE SET primary_contact=true`, [propId, contactId]);
+        }
+
+        // ── Optional phones ────────────────────────────────────────────────
+        for (let i = 1; i <= 5; i++) {
+          const raw = (b['phone_'+i] || '').trim();
+          if (!raw) continue;
+          const phoneNorm = normalizePhone(raw);
+          if (!phoneNorm || phoneNorm.length < 7) continue;  // skip malformed
+          const pType = ['mobile','landline','voip'].includes((b['phone_type_'+i]||'').toLowerCase()) ? b['phone_type_'+i].toLowerCase() : 'unknown';
+          const pStatus = ['correct','wrong'].includes((b['phone_status_'+i]||'').toLowerCase()) ? b['phone_status_'+i].toLowerCase() : 'unknown';
+          await client.query(`INSERT INTO phones (contact_id, phone_number, phone_index, phone_type, phone_status)
+            VALUES ($1,$2,$3,$4,$5)
+            ON CONFLICT (contact_id, phone_number) DO UPDATE SET
+              phone_type = CASE WHEN EXCLUDED.phone_type <> 'unknown' THEN EXCLUDED.phone_type ELSE phones.phone_type END,
+              phone_status = CASE WHEN EXCLUDED.phone_status <> 'unknown' THEN EXCLUDED.phone_status ELSE phones.phone_status END`,
+            [contactId, phoneNorm, i, pType, pStatus]);
+        }
       }
 
-      // ── Optional phones ────────────────────────────────────────────────
-      for (let i = 1; i <= 5; i++) {
-        const raw = (b['phone_'+i] || '').trim();
-        if (!raw) continue;
-        const phoneNorm = normalizePhone(raw);
-        if (!phoneNorm || phoneNorm.length < 7) continue;  // skip malformed
-        const pType = ['mobile','landline','voip'].includes((b['phone_type_'+i]||'').toLowerCase()) ? b['phone_type_'+i].toLowerCase() : 'unknown';
-        const pStatus = ['correct','wrong'].includes((b['phone_status_'+i]||'').toLowerCase()) ? b['phone_status_'+i].toLowerCase() : 'unknown';
-        await query(`INSERT INTO phones (contact_id, phone_number, phone_index, phone_type, phone_status)
-          VALUES ($1,$2,$3,$4,$5)
-          ON CONFLICT (contact_id, phone_number) DO UPDATE SET
-            phone_type = CASE WHEN EXCLUDED.phone_type <> 'unknown' THEN EXCLUDED.phone_type ELSE phones.phone_type END,
-            phone_status = CASE WHEN EXCLUDED.phone_status <> 'unknown' THEN EXCLUDED.phone_status ELSE phones.phone_status END`,
-          [contactId, phoneNorm, i, pType, pStatus]);
-      }
+      await client.query('COMMIT');
+    } catch (txErr) {
+      await client.query('ROLLBACK').catch(() => {});
+      throw txErr;
+    } finally {
+      client.release();
     }
 
     const msg = wasExisting
@@ -1648,14 +1698,14 @@ router.post('/export', requireAuth, async (req, res) => {
         if (maxOwnedX) { conditions.push(`${ownedSubX} <= $${idx}`); params.push(parseInt(maxOwnedX)); idx++; }
       }
       // 2026-04-21 Feature 3 parity: Ownership Duration. Mirrors main list.
-      const minYoX = qv('min_years_owned'), maxYoX = qv('max_years_owned');
-      if (minYoX) {
+      const minYoX = safeInt(qv('min_years_owned')), maxYoX = safeInt(qv('max_years_owned'));
+      if (minYoX !== null) {
         conditions.push(`p.last_sale_date IS NOT NULL AND EXTRACT(YEAR FROM AGE(CURRENT_DATE, p.last_sale_date)) >= $${idx}`);
-        params.push(parseInt(minYoX)); idx++;
+        params.push(minYoX); idx++;
       }
-      if (maxYoX) {
+      if (maxYoX !== null) {
         conditions.push(`p.last_sale_date IS NOT NULL AND EXTRACT(YEAR FROM AGE(CURRENT_DATE, p.last_sale_date)) <= $${idx}`);
-        params.push(parseInt(maxYoX)); idx++;
+        params.push(maxYoX); idx++;
       }
       // Tag filter
       if (qv('tag')) {
@@ -3741,14 +3791,14 @@ router.post('/delete', requireAuth, async (req, res) => {
         if (maxOwnedDel) { conditions.push(`${ownedSubDel} <= $${idx}`); params.push(parseInt(maxOwnedDel)); idx++; }
       }
       // 2026-04-21 Feature 3 parity: Ownership Duration.
-      const minYoDel = qv('min_years_owned'), maxYoDel = qv('max_years_owned');
-      if (minYoDel) {
+      const minYoDel = safeInt(qv('min_years_owned')), maxYoDel = safeInt(qv('max_years_owned'));
+      if (minYoDel !== null) {
         conditions.push(`p.last_sale_date IS NOT NULL AND EXTRACT(YEAR FROM AGE(CURRENT_DATE, p.last_sale_date)) >= $${idx}`);
-        params.push(parseInt(minYoDel)); idx++;
+        params.push(minYoDel); idx++;
       }
-      if (maxYoDel) {
+      if (maxYoDel !== null) {
         conditions.push(`p.last_sale_date IS NOT NULL AND EXTRACT(YEAR FROM AGE(CURRENT_DATE, p.last_sale_date)) <= $${idx}`);
-        params.push(parseInt(maxYoDel)); idx++;
+        params.push(maxYoDel); idx++;
       }
       // Tag filter
       if (qv('tag')) {
@@ -4030,14 +4080,14 @@ router.post('/bulk-tag', requireAuth, async (req, res) => {
         if (maxOwnedBt) { conditions.push(`${ownedSubBt} <= $${idx}`); params.push(parseInt(maxOwnedBt)); idx++; }
       }
       // 2026-04-21 Feature 3 parity: Ownership Duration.
-      const minYoBt = qv('min_years_owned'), maxYoBt = qv('max_years_owned');
-      if (minYoBt) {
+      const minYoBt = safeInt(qv('min_years_owned')), maxYoBt = safeInt(qv('max_years_owned'));
+      if (minYoBt !== null) {
         conditions.push(`p.last_sale_date IS NOT NULL AND EXTRACT(YEAR FROM AGE(CURRENT_DATE, p.last_sale_date)) >= $${idx}`);
-        params.push(parseInt(minYoBt)); idx++;
+        params.push(minYoBt); idx++;
       }
-      if (maxYoBt) {
+      if (maxYoBt !== null) {
         conditions.push(`p.last_sale_date IS NOT NULL AND EXTRACT(YEAR FROM AGE(CURRENT_DATE, p.last_sale_date)) <= $${idx}`);
-        params.push(parseInt(maxYoBt)); idx++;
+        params.push(maxYoBt); idx++;
       }
 
       if (qv('tag')) { conditions.push(`EXISTS (SELECT 1 FROM property_tags pt_f WHERE pt_f.property_id = p.id AND pt_f.tag_id = $${idx})`); params.push(parseInt(qv('tag'))); idx++; }
@@ -4352,14 +4402,14 @@ router.post('/remove-from-list', requireAuth, async (req, res) => {
         if (maxOwnedRfl) { conditions.push(`${ownedSubRfl} <= $${idx}`); params.push(parseInt(maxOwnedRfl)); idx++; }
       }
       // 2026-04-21 Feature 3 parity: Ownership Duration.
-      const minYoRfl = qv('min_years_owned'), maxYoRfl = qv('max_years_owned');
-      if (minYoRfl) {
+      const minYoRfl = safeInt(qv('min_years_owned')), maxYoRfl = safeInt(qv('max_years_owned'));
+      if (minYoRfl !== null) {
         conditions.push(`p.last_sale_date IS NOT NULL AND EXTRACT(YEAR FROM AGE(CURRENT_DATE, p.last_sale_date)) >= $${idx}`);
-        params.push(parseInt(minYoRfl)); idx++;
+        params.push(minYoRfl); idx++;
       }
-      if (maxYoRfl) {
+      if (maxYoRfl !== null) {
         conditions.push(`p.last_sale_date IS NOT NULL AND EXTRACT(YEAR FROM AGE(CURRENT_DATE, p.last_sale_date)) <= $${idx}`);
-        params.push(parseInt(maxYoRfl)); idx++;
+        params.push(maxYoRfl); idx++;
       }
       // Tag filter
       if (qv('tag')) {
@@ -4649,14 +4699,14 @@ router.post('/add-to-list', requireAuth, async (req, res) => {
         if (maxOwnedAtl) { conditions.push(`${ownedSubAtl} <= $${idx}`); params.push(parseInt(maxOwnedAtl)); idx++; }
       }
       // 2026-04-21 Feature 3 parity: Ownership Duration.
-      const minYoAtl = qv('min_years_owned'), maxYoAtl = qv('max_years_owned');
-      if (minYoAtl) {
+      const minYoAtl = safeInt(qv('min_years_owned')), maxYoAtl = safeInt(qv('max_years_owned'));
+      if (minYoAtl !== null) {
         conditions.push(`p.last_sale_date IS NOT NULL AND EXTRACT(YEAR FROM AGE(CURRENT_DATE, p.last_sale_date)) >= $${idx}`);
-        params.push(parseInt(minYoAtl)); idx++;
+        params.push(minYoAtl); idx++;
       }
-      if (maxYoAtl) {
+      if (maxYoAtl !== null) {
         conditions.push(`p.last_sale_date IS NOT NULL AND EXTRACT(YEAR FROM AGE(CURRENT_DATE, p.last_sale_date)) <= $${idx}`);
-        params.push(parseInt(maxYoAtl)); idx++;
+        params.push(maxYoAtl); idx++;
       }
       if (qv('tag')) {
         conditions.push(`EXISTS (SELECT 1 FROM property_tags pt_f WHERE pt_f.property_id = p.id AND pt_f.tag_id = $${idx})`);
