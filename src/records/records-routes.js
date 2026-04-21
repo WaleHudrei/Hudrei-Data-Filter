@@ -806,7 +806,7 @@ router.get('/', requireAuth, async (req, res) => {
           <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-bottom:1.25rem" id="col-checks">
             ${[
               ['street','Street Address'],['city','City'],['state_code','State'],['zip_code','ZIP'],['county','County'],
-              ['first_name','Owner First Name'],['last_name','Owner Last Name'],
+              ['first_name','Owner First Name'],['last_name','Owner Last Name'],['is_primary','Primary Owner (Yes/No)'],
               ['mailing_address','Mailing Address'],['mailing_city','Mailing City'],['mailing_state','Mailing State'],['mailing_zip','Mailing ZIP'],['email_1','Email 1'],['email_2','Email 2'],
               ['phones','Phones (1–15 separate columns)'],
               ['property_type','Property Type'],['year_built','Year Built'],['sqft','Sq Ft'],['bedrooms','Bedrooms'],['bathrooms','Bathrooms'],
@@ -1094,13 +1094,12 @@ router.post('/export', requireAuth, async (req, res) => {
     // Default ON if not provided — matches the checkbox default
     const excludeBadPhones = cleanPhonesOnly !== false;
 
-    // 2026-04-20 pass 12: hard cap on export size. Pre-pass-12 the selectAll
-    // branch ran with no LIMIT and could pull the entire 77k+ property table
-    // into memory as JSON. The ids branch had no bound either — sending more
-    // than Postgres's 65,535 parameter limit crashed the query with an
-    // unhelpful error. Cap both paths at 100k rows; if users need more,
-    // they should use the Bulk Import flow or do the export in chunks.
-    const EXPORT_MAX_ROWS = 100000;
+    // 2026-04-20: Export is now one-row-per-contact (co-owners each get
+    // their own row on a property). Cap is on distinct PROPERTY count, not
+    // row count — so a property with 3 co-owners counts once toward the cap
+    // but produces 3 rows in the CSV. 50k property cap keeps the worst
+    // case bounded at ~500k rows if every property had 10 contacts.
+    const EXPORT_MAX_PROPS = 50000;
 
     let props;
     if (selectAll) {
@@ -1255,8 +1254,23 @@ router.post('/export', requireAuth, async (req, res) => {
         params.push(parseInt(qv('tag'))); idx++;
       }
       const where = conditions.length ? 'WHERE ' + conditions.join(' AND ') : '';
+      // 2026-04-20: one-row-per-contact export.
+      // Property cap: outer CTE picks up to EXPORT_MAX_PROPS distinct properties.
+      // Fan-out: LEFT JOIN against all contacts (primary + co-owners). The
+      // LEFT JOIN covers properties with zero contacts — they still get one
+      // row with blank name/email columns.
+      // Ordering: primary contact first within each property so downstream
+      // consumers can rely on "first row for a property is the primary."
       props = await query(`
-        SELECT DISTINCT ON (p.id)
+        WITH limited_props AS (
+          SELECT DISTINCT p.id FROM properties p
+          LEFT JOIN property_contacts pc ON pc.property_id = p.id AND pc.primary_contact = true
+          LEFT JOIN contacts c ON c.id = pc.contact_id
+          ${where}
+          ORDER BY p.id DESC
+          LIMIT ${EXPORT_MAX_PROPS}
+        )
+        SELECT
           p.id, p.street, p.city, p.state_code, p.zip_code, p.county,
           p.property_type, p.year_built, p.sqft, p.bedrooms, p.bathrooms,
           p.assessed_value, p.estimated_value, p.equity_percent,
@@ -1264,25 +1278,25 @@ router.post('/export', requireAuth, async (req, res) => {
           p.last_sale_date, p.last_sale_price, p.marketing_result,
           p.distress_score, p.distress_band,
           p.source, p.created_at,
+          c.id AS contact_id,
           c.first_name, c.last_name,
           c.mailing_address, c.mailing_city, c.mailing_state, c.mailing_zip,
           c.email_1, c.email_2,
+          COALESCE(pc.primary_contact, false) AS is_primary,
           (SELECT COUNT(*) FROM property_lists pl WHERE pl.property_id = p.id) AS list_count
         FROM properties p
-        LEFT JOIN property_contacts pc ON pc.property_id = p.id AND pc.primary_contact = true
+        JOIN limited_props lp ON lp.id = p.id
+        LEFT JOIN property_contacts pc ON pc.property_id = p.id
         LEFT JOIN contacts c ON c.id = pc.contact_id
-        ${where}
-        ORDER BY p.id DESC
-        LIMIT ${EXPORT_MAX_ROWS}
+        ORDER BY p.id DESC, pc.primary_contact DESC NULLS LAST, c.id ASC
       `, params);
     } else {
       if (!ids || !ids.length) return res.status(400).json({ error: 'No IDs provided' });
-      // Bound the ids list — anything over 100k exceeds Postgres parameter
-      // limits anyway. Also filter to valid numeric IDs defensively.
+      // Bound the ids list — anything over EXPORT_MAX_PROPS is dropped defensively.
       const cleanIds = ids
         .map(n => parseInt(n))
         .filter(n => !isNaN(n) && n > 0)
-        .slice(0, EXPORT_MAX_ROWS);
+        .slice(0, EXPORT_MAX_PROPS);
       if (cleanIds.length === 0) return res.status(400).json({ error: 'No valid IDs' });
       // Use ANY($1::int[]) — sends a single array parameter rather than
       // expanding into 100k placeholder params that would crash PG.
@@ -1295,21 +1309,30 @@ router.post('/export', requireAuth, async (req, res) => {
           p.last_sale_date, p.last_sale_price, p.marketing_result,
           p.distress_score, p.distress_band,
           p.source, p.created_at,
+          c.id AS contact_id,
           c.first_name, c.last_name,
           c.mailing_address, c.mailing_city, c.mailing_state, c.mailing_zip,
           c.email_1, c.email_2,
+          COALESCE(pc.primary_contact, false) AS is_primary,
           (SELECT COUNT(*) FROM property_lists pl WHERE pl.property_id = p.id) AS list_count
         FROM properties p
-        LEFT JOIN property_contacts pc ON pc.property_id = p.id AND pc.primary_contact = true
+        LEFT JOIN property_contacts pc ON pc.property_id = p.id
         LEFT JOIN contacts c ON c.id = pc.contact_id
         WHERE p.id = ANY($1::int[])
+        ORDER BY p.id DESC, pc.primary_contact DESC NULLS LAST, c.id ASC
       `, [cleanIds]);
     }
 
-    // Fetch phones (number + status, stored together so we can interleave in CSV)
-    const allIds = props.rows.map(r => r.id);
-    const phoneMap = {};
-    if (columns.includes('phones') && allIds.length) {
+    // Fetch phones per CONTACT (one-row-per-contact export — each row
+    // shows only the phones for the contact on that row, not the pool of
+    // every contact's phones on the property).
+    // Collect unique contact_ids from props.rows (some may be null if a
+    // property has zero contacts — those rows show blank phones).
+    const allContactIds = [...new Set(
+      props.rows.map(r => r.contact_id).filter(cid => cid != null)
+    )];
+    const phoneMapByContact = {};
+    if (columns.includes('phones') && allContactIds.length) {
       // LEFT JOIN against nis_numbers so we can mark phones as "dead" even if
       // the master phones.phone_status wasn't synced from the campaign flow.
       // is_nis = true for any phone that appears in the NIS registry (any count).
@@ -1319,17 +1342,16 @@ router.post('/export', requireAuth, async (req, res) => {
           ph.phone_status,
           ph.phone_index,
           ph.wrong_number,
-          pc.property_id,
+          ph.contact_id,
           (nis.phone_number IS NOT NULL) AS is_nis
         FROM phones ph
-        JOIN property_contacts pc ON pc.contact_id = ph.contact_id
         LEFT JOIN nis_numbers nis ON nis.phone_number = ph.phone_number
-        WHERE pc.property_id = ANY($1::int[])
+        WHERE ph.contact_id = ANY($1::int[])
         ORDER BY ph.phone_index ASC
-      `, [allIds]);
+      `, [allContactIds]);
       phoneRes.rows.forEach(ph => {
-        if (!phoneMap[ph.property_id]) phoneMap[ph.property_id] = [];
-        phoneMap[ph.property_id].push({
+        if (!phoneMapByContact[ph.contact_id]) phoneMapByContact[ph.contact_id] = [];
+        phoneMapByContact[ph.contact_id].push({
           number: ph.phone_number,
           status: ph.phone_status || '',
           isNis:  !!ph.is_nis,
@@ -1356,22 +1378,23 @@ router.post('/export', requireAuth, async (req, res) => {
           return v === 'wrong' || v === 'dead' || v === 'dead_number';
         };
         let removed = 0;
-        for (const pid in phoneMap) {
-          const before = phoneMap[pid].length;
-          phoneMap[pid] = phoneMap[pid].filter(p =>
+        for (const cid in phoneMapByContact) {
+          const before = phoneMapByContact[cid].length;
+          phoneMapByContact[cid] = phoneMapByContact[cid].filter(p =>
             !isBadStatus(p.status) && !p.isNis && !p.isWrong
           );
-          removed += (before - phoneMap[pid].length);
+          removed += (before - phoneMapByContact[cid].length);
         }
         console.log(`[export] Clean-phones mode: removed ${removed} wrong/dead/NIS phones, shifted remaining up`);
       }
 
-      console.log(`[export] Fetched ${phoneRes.rows.length} phones across ${Object.keys(phoneMap).length}/${allIds.length} properties`);
+      console.log(`[export] Fetched ${phoneRes.rows.length} phones across ${Object.keys(phoneMapByContact).length}/${allContactIds.length} contacts`);
     }
 
     const colLabels = {
       street: 'Street Address', city: 'City', state_code: 'State', zip_code: 'ZIP', county: 'County',
       first_name: 'Owner First Name', last_name: 'Owner Last Name',
+      is_primary: 'Primary Owner',
       mailing_address: 'Mailing Address', mailing_city: 'Mailing City',
       mailing_state: 'Mailing State', mailing_zip: 'Mailing ZIP',
       email_1: 'Email 1', email_2: 'Email 2',
@@ -1420,7 +1443,9 @@ router.post('/export', requireAuth, async (req, res) => {
     };
 
     const csvRows = props.rows.map(row => {
-      const phoneList = phoneMap[row.id] || [];
+      // Phones belong to the CONTACT on this row, not the property.
+      // If the row has no contact_id (property with zero contacts), no phones.
+      const phoneList = (row.contact_id && phoneMapByContact[row.contact_id]) || [];
       return expandedColumns.map(col => {
         let val = '';
         if (col.startsWith('__phonestatus_')) {
@@ -1435,6 +1460,9 @@ router.post('/export', requireAuth, async (req, res) => {
           // Render as nice label ("Burning" not "burning")
           const labels = { burning: 'Burning', hot: 'Hot', warm: 'Warm', cold: 'Cold' };
           val = row[col] ? (labels[row[col]] || row[col]) : '';
+        } else if (col === 'is_primary') {
+          // Render the co-owner flag as a human-readable Yes/No
+          val = row.is_primary ? 'Yes' : 'No';
         } else if (col === 'owner_occupancy') {
           // Derive at export time from property + mailing address fields already in row
           const occ = computeOwnerOccupancy(
