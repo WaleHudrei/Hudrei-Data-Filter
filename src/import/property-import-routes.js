@@ -1096,10 +1096,29 @@ router.post('/commit', requireAuth, async (req, res) => {
     // Normalize ZIP to 5-digit only — strips ZIP+4 suffixes ("47303-3111" → "47303")
     // and any whitespace. Prevents duplicates when same property is exported by
     // different providers (PropStream uses 5-digit, REISift uses ZIP+4, etc.).
+    //
+    // 2026-04-21 PM hotfix: if the value does not start with 5 digits it is
+    // almost certainly garbage from a column-shift leak (PropStream sends
+    // "is_corporate_owner" in the owner_address_zip column on some rows).
+    // Return '' for non-numeric input rather than truncating to a 10-char
+    // garbage string — NULLIF then preserves the existing DB value.
     const normalizeZip = v => {
       if (!v) return '';
-      const m = String(v).trim().match(/^\d{5}/);
-      return m ? m[0] : String(v).trim().slice(0, 10);
+      const s = String(v).trim();
+      const m = s.match(/^\d{5}/);
+      return m ? m[0] : '';
+    };
+    // 2026-04-21 Feature 4 hotfix: phone_type normalizer. PropStream sends
+    // "Wireless" / "Landline" but the detail-page chip renderer expects
+    // lowercase "mobile" / "landline" / "voip". Without this map, chips do
+    // not render on PropStream-sourced data even though phone_type is set.
+    const normalizePhoneType = v => {
+      const s = String(v || '').toLowerCase().trim();
+      if (!s) return 'unknown';
+      if (s === 'wireless' || s === 'cell' || s === 'cellular' || s === 'mobile') return 'mobile';
+      if (s === 'landline' || s === 'land line' || s === 'fixed' || s === 'residential') return 'landline';
+      if (s === 'voip' || s === 'voice over ip') return 'voip';
+      return 'unknown';
     };
 
     // ── Bulk upsert properties ───────────────────────────────────────────────
@@ -1265,6 +1284,14 @@ router.post('/commit', requireAuth, async (req, res) => {
           // with a null inference. Existing rows stay as they are if inference
           // returns null (defensive; should rarely happen when firstName||lastName).
           const inferredOT = inferOwnerType(firstName, lastName);
+          // 2026-04-21 PM hotfix: normalize mailing_state BEFORE hitting the
+          // DB. mailing_state is CHAR(2) — PropStream CSVs occasionally leak
+          // non-state values like "Owner Occupied" (14 chars) or "Absentee
+          // Owner" into this column (column-shift export bug). normalizeState
+          // returns '' for garbage, which NULLIF treats as no-op (preserves
+          // existing DB value). Same fix applied at all 4 mailing_state
+          // write sites in this file + the bulk-import path.
+          const mStateNorm = normalizeState(get(row,'mailing_state'));
           const existPC = await query(`SELECT contact_id FROM property_contacts WHERE property_id=$1 AND primary_contact=true LIMIT 1`,[propertyId]);
           let contactId;
           if (existPC.rows.length) {
@@ -1278,12 +1305,12 @@ router.post('/commit', requireAuth, async (req, res) => {
               updated_at=NOW()
               WHERE id=$9`,
               [firstName,lastName,get(row,'mailing_address'),get(row,'mailing_city'),
-               get(row,'mailing_state'),get(row,'mailing_zip'),get(row,'email_1')||'',get(row,'email_2')||'',contactId,inferredOT]);
+               mStateNorm,normalizeZip(get(row,'mailing_zip')),get(row,'email_1')||'',get(row,'email_2')||'',contactId,inferredOT]);
           } else {
             const cr = await query(`INSERT INTO contacts (first_name,last_name,mailing_address,mailing_city,mailing_state,mailing_zip,email_1,email_2,owner_type)
-              VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING id`,
+              VALUES ($1,$2,$3,$4,NULLIF($5,''),NULLIF($6,''),$7,$8,$9) RETURNING id`,
               [firstName,lastName,get(row,'mailing_address'),get(row,'mailing_city'),
-               get(row,'mailing_state'),get(row,'mailing_zip'),get(row,'email_1')||null,get(row,'email_2')||null,inferredOT]);
+               mStateNorm,normalizeZip(get(row,'mailing_zip')),get(row,'email_1')||null,get(row,'email_2')||null,inferredOT]);
             contactId = cr.rows[0].id;
             await query(`INSERT INTO property_contacts (property_id,contact_id,primary_contact) VALUES ($1,$2,true) ON CONFLICT DO NOTHING`,[propertyId,contactId]);
           }
@@ -1292,7 +1319,12 @@ router.post('/commit', requireAuth, async (req, res) => {
           for (let i=1;i<=10;i++) {
             const phoneRaw = cleanPhone(get(row,`phone_${i}`));
             if (!phoneRaw||phoneRaw.length<7) continue;
-            const pType   = (get(row,`phone_type_${i}`)||'unknown').toLowerCase().trim();
+            // 2026-04-21 Feature 4 hotfix: use normalizePhoneType so PropStream
+            // "Wireless"/"Landline" map to "mobile"/"landline" — the values
+            // the detail-page chip renderer expects. Without this, chips do
+            // not render on PropStream-sourced phones even though phone_type
+            // is populated.
+            const pType   = normalizePhoneType(get(row,`phone_type_${i}`));
             const pStatus = (get(row,`phone_status_${i}`)||'unknown').toLowerCase().trim();
             await query(`INSERT INTO phones (contact_id,phone_number,phone_index,phone_type,phone_status)
               VALUES ($1,$2,$3,$4,$5) ON CONFLICT (contact_id,phone_number) DO UPDATE SET
@@ -1477,10 +1509,27 @@ async function runBackgroundImport(jobId, allRows, mapping, filename, resolvedLi
     // Normalize ZIP to 5-digit only — strips ZIP+4 suffixes ("47303-3111" → "47303")
     // and any whitespace. Prevents duplicates when same property is exported by
     // different providers (PropStream uses 5-digit, REISift uses ZIP+4, etc.).
+    //
+    // 2026-04-21 PM hotfix: mirror the /commit path — reject non-numeric
+    // input rather than truncating to garbage. PropStream leaks non-ZIP
+    // values like "is_corporate_owner" into owner_address_zip on some rows.
     const normalizeZip = v => {
       if (!v) return '';
-      const m = String(v).trim().match(/^\d{5}/);
-      return m ? m[0] : String(v).trim().slice(0, 10);
+      const s = String(v).trim();
+      const m = s.match(/^\d{5}/);
+      return m ? m[0] : '';
+    };
+    // 2026-04-21 Feature 4 hotfix: phone_type normalizer. Maps PropStream's
+    // "Wireless" / "Landline" to the lowercase "mobile" / "landline" / "voip"
+    // values that the detail-page chip renderer recognizes. Unknown/empty
+    // inputs return 'unknown' so they match the DB column default.
+    const normalizePhoneType = v => {
+      const s = String(v || '').toLowerCase().trim();
+      if (!s) return 'unknown';
+      if (s === 'wireless' || s === 'cell' || s === 'cellular' || s === 'mobile') return 'mobile';
+      if (s === 'landline' || s === 'land line' || s === 'fixed' || s === 'residential') return 'landline';
+      if (s === 'voip' || s === 'voice over ip') return 'voip';
+      return 'unknown';
     };
     // normalizeState used here is the module-level wrapper at the top of
     // this file; delegates to the shared helper in ./state.js. The local
@@ -1832,6 +1881,15 @@ async function runBackgroundImport(jobId, allRows, mapping, filename, resolvedLi
           if (!rowFn && !rowLn) continue;
           // Compute once per row and reuse across all three push branches below.
           const rowOwnerType = inferOwnerType(rowFn, rowLn);
+          // 2026-04-21 PM hotfix: normalize mailing_state before pushing into
+          // the UNNEST array. CHAR(2) will refuse values like "Owner Occupied"
+          // (PropStream column-shift leak). normalizeState returns '' for
+          // garbage, which the bulk UPDATE/INSERT's NULLIF then treats as
+          // no-op (preserves existing DB value or leaves NULL respectively).
+          const rowMailingState = normalizeState(get(row,'mailing_state'));
+          // Same treatment for mailing_zip — VARCHAR(10), PropStream leaks
+          // "is_corporate_owner" (18 chars) into owner_address_zip on some rows.
+          const rowMailingZip = normalizeZip(get(row,'mailing_zip'));
 
           if (existingPC.has(propId)) {
             const cid = existingPC.get(propId);
@@ -1841,8 +1899,8 @@ async function runBackgroundImport(jobId, allRows, mapping, filename, resolvedLi
             updLns.push(get(row,'last_name') || '');
             updMaddr.push(get(row,'mailing_address') || '');
             updMcity.push(get(row,'mailing_city') || '');
-            updMstate.push(get(row,'mailing_state') || '');
-            updMzip.push(get(row,'mailing_zip') || '');
+            updMstate.push(rowMailingState);
+            updMzip.push(rowMailingZip);
             updE1.push(get(row,'email_1') || '');
             updE2.push(get(row,'email_2') || '');
             updOt.push(rowOwnerType);  // null → COALESCE preserves existing
@@ -1870,8 +1928,8 @@ async function runBackgroundImport(jobId, allRows, mapping, filename, resolvedLi
             updLns.push(get(row,'last_name') || '');
             updMaddr.push(get(row,'mailing_address') || '');
             updMcity.push(get(row,'mailing_city') || '');
-            updMstate.push(get(row,'mailing_state') || '');
-            updMzip.push(get(row,'mailing_zip') || '');
+            updMstate.push(rowMailingState);
+            updMzip.push(rowMailingZip);
             updE1.push(get(row,'email_1') || '');
             updE2.push(get(row,'email_2') || '');
             updOt.push(rowOwnerType);
@@ -1890,8 +1948,8 @@ async function runBackgroundImport(jobId, allRows, mapping, filename, resolvedLi
             newLns.push(get(row,'last_name') || '');
             newMaddr.push(get(row,'mailing_address') || '');
             newMcity.push(get(row,'mailing_city') || '');
-            newMstate.push(get(row,'mailing_state') || '');
-            newMzip.push(get(row,'mailing_zip') || '');
+            newMstate.push(rowMailingState);
+            newMzip.push(rowMailingZip);
             newE1.push(get(row,'email_1') || null);
             newE2.push(get(row,'email_2') || null);
             newOt.push(rowOwnerType);
@@ -1981,7 +2039,9 @@ async function runBackgroundImport(jobId, allRows, mapping, filename, resolvedLi
           for (let i = 1; i <= 10; i++) {
             const phoneRaw = cleanPhone(get(row, `phone_${i}`));
             if (!phoneRaw || phoneRaw.length < 7) continue;
-            const pType   = (get(row, `phone_type_${i}`)   || 'unknown').toLowerCase().trim();
+            // 2026-04-21 Feature 4 hotfix: normalize PropStream "Wireless"/
+            // "Landline" to lowercase "mobile"/"landline" so chip renders.
+            const pType   = normalizePhoneType(get(row, `phone_type_${i}`));
             const pStatus = (get(row, `phone_status_${i}`) || 'unknown').toLowerCase().trim();
             const key = `${cid}|${phoneRaw}`;
             const existing = phoneBucket.get(key);
@@ -2148,8 +2208,10 @@ async function runBackgroundImport(jobId, allRows, mapping, filename, resolvedLi
               coUpdateTasks.map(t => get(t.row,'last_name')  || ''),
               coUpdateTasks.map(t => get(t.row,'mailing_address') || ''),
               coUpdateTasks.map(t => get(t.row,'mailing_city')    || ''),
-              coUpdateTasks.map(t => get(t.row,'mailing_state')   || ''),
-              coUpdateTasks.map(t => get(t.row,'mailing_zip')     || ''),
+              // 2026-04-21 PM hotfix: normalize per above — CHAR(2) column.
+              coUpdateTasks.map(t => normalizeState(get(t.row,'mailing_state'))),
+              // 2026-04-21 PM hotfix: normalize mailing_zip — VARCHAR(10) column.
+              coUpdateTasks.map(t => normalizeZip(get(t.row,'mailing_zip'))),
               coUpdateTasks.map(t => get(t.row,'email_1') || ''),
               coUpdateTasks.map(t => get(t.row,'email_2') || ''),
             ]);
@@ -2194,8 +2256,10 @@ async function runBackgroundImport(jobId, allRows, mapping, filename, resolvedLi
               coNewTasks.map(t => get(t.row,'last_name')  || ''),
               coNewTasks.map(t => get(t.row,'mailing_address') || ''),
               coNewTasks.map(t => get(t.row,'mailing_city')    || ''),
-              coNewTasks.map(t => get(t.row,'mailing_state')   || ''),
-              coNewTasks.map(t => get(t.row,'mailing_zip')     || ''),
+              // 2026-04-21 PM hotfix: normalize per above — CHAR(2) column.
+              coNewTasks.map(t => normalizeState(get(t.row,'mailing_state'))),
+              // 2026-04-21 PM hotfix: normalize mailing_zip — VARCHAR(10) column.
+              coNewTasks.map(t => normalizeZip(get(t.row,'mailing_zip'))),
               coNewTasks.map(t => get(t.row,'email_1') || null),
               coNewTasks.map(t => get(t.row,'email_2') || null),
             ]);
@@ -2227,7 +2291,8 @@ async function runBackgroundImport(jobId, allRows, mapping, filename, resolvedLi
             for (let i = 1; i <= 10; i++) {
               const phoneRaw = cleanPhone(get(t.row, `phone_${i}`));
               if (!phoneRaw || phoneRaw.length < 7) continue;
-              const pType   = (get(t.row, `phone_type_${i}`)   || 'unknown').toLowerCase().trim();
+              // 2026-04-21 Feature 4 hotfix: normalize for chip-render match.
+              const pType   = normalizePhoneType(get(t.row, `phone_type_${i}`));
               const pStatus = (get(t.row, `phone_status_${i}`) || 'unknown').toLowerCase().trim();
               const key = `${t.cid}|${phoneRaw}`;
               if (coPhoneBucket.has(key)) continue;  // first occurrence wins within batch
