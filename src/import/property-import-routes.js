@@ -1553,12 +1553,27 @@ async function runBackgroundImport(jobId, allRows, mapping, filename, resolvedLi
 
         // Build row → property_id lookup keyed by the same composite we used
         // for dedup. We'll walk dedupedRows and assemble per-phase arrays.
+        //
+        // 2026-04-21 critical bug fix: propMap keys are built with a single
+        // .toLowerCase() on the whole concatenated string (line 1541), so
+        // state_code="IN" lands in the key as "in". But rowKey() only
+        // lowercased street and city — state (via normalizeState, always
+        // uppercase) and zip stayed as-is. Result: lookup key
+        // "...|clayton|IN|46118" never matched propMap key
+        // "...|clayton|in|46118", every property row fell through the
+        // `if (!prop) continue` gate below, and NO CONTACTS were created
+        // for any background (`/start-job`) import. The foreground
+        // (`/commit`) path at line 1170 was unaffected because its rowKey
+        // equivalent lowercases the entire concatenation. This caused
+        // every DealMachine/large-file upload to produce properties with
+        // no linked primary contact. Wrapping the whole expression in
+        // .toLowerCase() matches the propMap format.
         const rowKey = (r) => (
-          get(r,'street').toLowerCase() + '|' +
-          get(r,'city').toLowerCase() + '|' +
+          get(r,'street') + '|' +
+          get(r,'city') + '|' +
           normalizeState(get(r,'state_code')) + '|' +
           normalizeZip(get(r,'zip_code'))
-        );
+        ).toLowerCase();
 
         // Collect rows that have owner data, keyed by property_id
         const rowByPropId = new Map();    // propId → row
