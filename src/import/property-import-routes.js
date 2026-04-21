@@ -1003,8 +1003,89 @@ router.post('/commit', requireAuth, async (req, res) => {
       return col ? (row[col] || '').toString().trim() : '';
     };
 
-    const toNum = v => v && !isNaN(v) ? parseFloat(v.replace(/[$,%]/g, '')) : null;
-    const toInt = v => v && !isNaN(v) ? parseInt(v) : null;
+    // 2026-04-21 PM hotfix: the old `toNum = v && !isNaN(v) ? parseFloat(v.replace(...)) : null`
+    // was BROKEN for any input with a $ or % prefix. isNaN("$189,000") is true,
+    // so the function returned null for every currency-formatted value —
+    // meaning every PropStream / DealMachine import through the /commit
+    // foreground path was silently storing NULL for assessed_value,
+    // estimated_value, last_sale_price, and equity_percent. The background
+    // /start-job path got this right (stripped before isNaN). Now unified.
+    const toNum = (v) => {
+      if (!v) return null;
+      const s = String(v).replace(/[$,%]/g, '').trim();
+      if (!s || isNaN(s)) return null;
+      return parseFloat(s);
+    };
+    const toInt = (v) => {
+      if (!v) return null;
+      const s = String(v).replace(/[$,%]/g, '').trim();
+      if (!s || isNaN(s)) return null;
+      return parseInt(s, 10);
+    };
+    // 2026-04-21 PM hotfix: equity_percent column is NUMERIC(8,2) post-hotfix
+    // but even widened, a value like "$403,382" from a PropStream export is
+    // obviously wrong — a percent should be in [-100, 100]. Anything outside
+    // that range is almost certainly a dollar amount that leaked into the
+    // percent column (PropStream column-shift bug), so clamp to NULL rather
+    // than storing garbage. Logged for visibility. Applied to equity_percent
+    // in both the /commit path and the /start-job background path.
+    const toPercent = v => {
+      const n = toNum(v);
+      if (n == null) return null;
+      if (n < -100 || n > 100) {
+        console.warn(`[property-import] out-of-range percent value ${JSON.stringify(v)} → NULL`);
+        return null;
+      }
+      return n;
+    };
+    // 2026-04-21 PM hotfix: bounded-money helper for NUMERIC(12,2) columns.
+    // Max absolute value 9,999,999,999.99 (~$10B) — any row exceeding this is
+    // garbage (wrong-column, extra-zero typo, scientific notation). Used for
+    // assessed_value, estimated_value, last_sale_price, total_tax_owed.
+    const MONEY_LIMIT = 9_999_999_999.99;
+    const toMoney = v => {
+      const n = toNum(v);
+      if (n == null) return null;
+      if (Math.abs(n) > MONEY_LIMIT) {
+        console.warn(`[property-import] out-of-range money value ${JSON.stringify(v)} → NULL`);
+        return null;
+      }
+      return n;
+    };
+    // Bounded-year helper. Year values MUST be a 4-digit year — PropStream
+    // sometimes leaks money values ($57,142) into year columns. Clamp to a
+    // wide-but-sane window to catch that.
+    const toYear = v => {
+      const n = toNum(v);
+      if (n == null) return null;
+      const y = Math.round(n);
+      if (y < 1800 || y > 2200) {
+        console.warn(`[property-import] invalid year value ${JSON.stringify(v)} → NULL`);
+        return null;
+      }
+      return y;
+    };
+    // Bounded smallint helper (-32,768 to 32,767). Clamp to NULL if exceeded
+    // — a bedroom count, stories count, or similar should never approach this.
+    const toSmallInt = v => {
+      const n = toInt(v);
+      if (n == null) return null;
+      if (n < -32_768 || n > 32_767) {
+        console.warn(`[property-import] out-of-range smallint value ${JSON.stringify(v)} → NULL`);
+        return null;
+      }
+      return n;
+    };
+    // Bounded bathroom helper. NUMERIC(3,1) max 99.9. Cap at 99 to be safe.
+    const toBathrooms = v => {
+      const n = toNum(v);
+      if (n == null) return null;
+      if (n < 0 || n > 99) {
+        console.warn(`[property-import] out-of-range bathrooms value ${JSON.stringify(v)} → NULL`);
+        return null;
+      }
+      return n;
+    };
     const toDate = v => {
       if (!v) return null;
       const d = new Date(v);
@@ -1099,18 +1180,18 @@ router.post('/commit', requireAuth, async (req, res) => {
       mktIds.push(mktMap[state]||null);
       sources.push(get(row,'source')||filename||null);
       propTypes.push(get(row,'property_type')||null);
-      yearBuilts.push(toInt(get(row,'year_built')));
+      yearBuilts.push(toYear(get(row,'year_built')));
       sqfts.push(toInt(get(row,'sqft')));
-      bedrooms.push(toInt(get(row,'bedrooms')));
-      bathrooms.push(toNum(get(row,'bathrooms')));
+      bedrooms.push(toSmallInt(get(row,'bedrooms')));
+      bathrooms.push(toBathrooms(get(row,'bathrooms')));
       lotSizes.push(toInt(get(row,'lot_size')));
-      assessedVals.push(toNum(get(row,'assessed_value')));
-      estVals.push(toNum(get(row,'estimated_value')));
-      equityPcts.push(toNum(get(row,'equity_percent')));
+      assessedVals.push(toMoney(get(row,'assessed_value')));
+      estVals.push(toMoney(get(row,'estimated_value')));
+      equityPcts.push(toPercent(get(row,'equity_percent')));
       propStatuses.push(get(row,'property_status')||null);
       conditions.push(get(row,'condition')||null);
       lastSaleDates.push(toDate(get(row,'last_sale_date')));
-      lastSalePrices.push(toNum(get(row,'last_sale_price')));
+      lastSalePrices.push(toMoney(get(row,'last_sale_price')));
       vacants.push(toBool(get(row,'vacant')));
     }
 
@@ -1336,6 +1417,60 @@ async function runBackgroundImport(jobId, allRows, mapping, filename, resolvedLi
     const get = (row, key) => { const col = mapping[key]; return col ? (row[col] || '').toString().trim() : ''; };
     const toNum = v => v && !isNaN(String(v).replace(/[$,%]/g,'')) ? parseFloat(String(v).replace(/[$,%]/g,'')) : null;
     const toInt = v => v && !isNaN(v) ? parseInt(v) : null;
+    // 2026-04-21 PM hotfix: clamp percent values to [-100, 100]. See the
+    // /commit path's toPercent for full rationale — PropStream column-shift
+    // bug puts dollar amounts into the equity_percent column on some rows.
+    const toPercent = v => {
+      const n = toNum(v);
+      if (n == null) return null;
+      if (n < -100 || n > 100) {
+        console.warn(`[start-job] out-of-range percent value ${JSON.stringify(v)} → NULL`);
+        return null;
+      }
+      return n;
+    };
+    // 2026-04-21 PM hotfix: bounded-money/year/smallint/bathrooms helpers.
+    // All clamp out-of-range values to NULL and log. Keeps this background
+    // path in lockstep with /commit's safety. See /commit toMoney/toYear/
+    // toSmallInt/toBathrooms for full rationale.
+    const MONEY_LIMIT = 9_999_999_999.99;
+    const toMoney = v => {
+      const n = toNum(v);
+      if (n == null) return null;
+      if (Math.abs(n) > MONEY_LIMIT) {
+        console.warn(`[start-job] out-of-range money value ${JSON.stringify(v)} → NULL`);
+        return null;
+      }
+      return n;
+    };
+    const toYear = v => {
+      const n = toNum(v);
+      if (n == null) return null;
+      const y = Math.round(n);
+      if (y < 1800 || y > 2200) {
+        console.warn(`[start-job] invalid year value ${JSON.stringify(v)} → NULL`);
+        return null;
+      }
+      return y;
+    };
+    const toSmallInt = v => {
+      const n = toInt(v);
+      if (n == null) return null;
+      if (n < -32_768 || n > 32_767) {
+        console.warn(`[start-job] out-of-range smallint value ${JSON.stringify(v)} → NULL`);
+        return null;
+      }
+      return n;
+    };
+    const toBathrooms = v => {
+      const n = toNum(v);
+      if (n == null) return null;
+      if (n < 0 || n > 99) {
+        console.warn(`[start-job] out-of-range bathrooms value ${JSON.stringify(v)} → NULL`);
+        return null;
+      }
+      return n;
+    };
     const toDate = v => { if (!v) return null; const d = new Date(v); return isNaN(d) ? null : d.toISOString().split('T')[0]; };
     const toBool = v => { const s=(v||'').toLowerCase(); return s==='yes'||s==='true'||s==='1'||s==='y'?true:s==='no'||s==='false'||s==='0'||s==='n'?false:null; };
     const cleanPhone = v => normalizePhone(v);
@@ -1522,13 +1657,13 @@ async function runBackgroundImport(jobId, allRows, mapping, filename, resolvedLi
           streets.push(get(row,'street')); cities.push(get(row,'city')); states.push(state);
           zips.push(normalizeZip(get(row,'zip_code'))); counties.push(get(row,'county')||null);
           mktIds.push(mktMap[state]||null); sources.push(get(row,'source')||filename||null);
-          propTypes.push(get(row,'property_type')||null); yearBuilts.push(toInt(get(row,'year_built')));
-          sqfts.push(toInt(get(row,'sqft'))); beds.push(toInt(get(row,'bedrooms')));
-          baths.push(toNum(get(row,'bathrooms'))); lots.push(toInt(get(row,'lot_size')));
-          assessed.push(toNum(get(row,'assessed_value'))); estVals.push(toNum(get(row,'estimated_value')));
-          equity.push(toNum(get(row,'equity_percent'))); propStatus.push(get(row,'property_status')||null);
+          propTypes.push(get(row,'property_type')||null); yearBuilts.push(toYear(get(row,'year_built')));
+          sqfts.push(toInt(get(row,'sqft'))); beds.push(toSmallInt(get(row,'bedrooms')));
+          baths.push(toBathrooms(get(row,'bathrooms'))); lots.push(toInt(get(row,'lot_size')));
+          assessed.push(toMoney(get(row,'assessed_value'))); estVals.push(toMoney(get(row,'estimated_value')));
+          equity.push(toPercent(get(row,'equity_percent'))); propStatus.push(get(row,'property_status')||null);
           conds.push(get(row,'condition')||null); lastSaleDates.push(toDate(get(row,'last_sale_date')));
-          lastSalePrices.push(toNum(get(row,'last_sale_price'))); vacants.push(toBool(get(row,'vacant')));
+          lastSalePrices.push(toMoney(get(row,'last_sale_price'))); vacants.push(toBool(get(row,'vacant')));
         }
 
         const propRes = await query(`
