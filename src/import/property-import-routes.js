@@ -1359,29 +1359,35 @@ async function runBackgroundImport(jobId, allRows, mapping, filename, resolvedLi
       // Dedup within this batch — Postgres ON CONFLICT can't act on the
       // same unique-key row twice in one INSERT statement.
       //
-      // 2026-04-20 UX fix: instead of silently dropping duplicate rows
-      // (and losing any contact data on them), we MERGE them into the
-      // keeper. County-sourced files like "Active Lien" exports often
-      // have one row per lien-holder or per owner for a single parcel —
-      // keeping only the first row throws away every other person's
-      // phones/emails. Now: keeper wins on every field where it already
-      // has a value; duplicate rows backfill blank keeper fields.
+      // 2026-04-20 UX fix + multi-owner support:
+      // When two rows share an address:
+      //   • SAME person (identical normalized name, OR one side blank):
+      //     merge backfill-only into the keeper (keeper wins non-empty).
+      //   • DIFFERENT person (both have a non-empty name and they differ):
+      //     the duplicate is a CO-OWNER. Stash it on the keeper's
+      //     __secondaryOwners[] so the contact-insertion phase below
+      //     creates a second contacts row linked with primary_contact=false.
+      //     Phones/emails on the co-owner row attach to THAT contact, not
+      //     the primary — important for accurate outbound call attribution.
       //
-      // Counters are tracked separately so the end-of-import banner can
-      // distinguish "1052 duplicates merged" from "3 rows skipped due to
-      // oversize state_code" — lumped together they were misleading.
+      // Strict equality rule: trim + collapse whitespace + lowercase,
+      // then compare byte-for-byte. No fuzzy matching. "John" vs "Jon",
+      // "John" vs "John Jr", "J Doe" vs "John Doe" all count as distinct
+      // people to avoid false-negative merges that permanently erase a
+      // real owner. Users can still manually merge via the existing
+      // /records/_duplicates UI if they later determine two contacts
+      // are actually the same person.
       // ──────────────────────────────────────────────────────────────────
       const seenKeys = new Map();  // key → index into dedupedRows
       const dedupedRows = [];
       let duplicatesMergedCount = 0;
+      let secondaryOwnersCount = 0;
 
-      // Helper: return first non-empty trimmed value from the list.
-      const firstNonEmpty = (...vals) => {
-        for (const v of vals) {
-          const s = (v == null ? '' : String(v)).trim();
-          if (s !== '') return v;
-        }
-        return vals[0];
+      // Normalize a person's full name for equality comparison.
+      const normName = (row) => {
+        const fn = (get(row,'first_name') || '').trim().toLowerCase().replace(/\s+/g, ' ');
+        const ln = (get(row,'last_name')  || '').trim().toLowerCase().replace(/\s+/g, ' ');
+        return { fn, ln, full: (fn + '|' + ln).trim() };
       };
 
       for (const row of validRows) {
@@ -1392,45 +1398,92 @@ async function runBackgroundImport(jobId, allRows, mapping, filename, resolvedLi
           normalizeZip(get(row,'zip_code')),
         ].join('|');
         if (seenKeys.has(key)) {
-          // Merge duplicate into keeper. We mutate the source CSV row
-          // object in-place (under its mapped column names) so the
-          // downstream property-attribute and contact-linking passes
-          // pick up the enriched values without needing to know a merge
-          // happened.
           const keeperIdx = seenKeys.get(key);
           const keeper = dedupedRows[keeperIdx];
-          const mergeKey = (k) => {
-            const col = mapping[k];
-            if (!col) return;
-            const keeperVal = (keeper[col] == null ? '' : String(keeper[col])).trim();
-            if (keeperVal !== '') return;  // keeper wins when non-empty
-            const dupVal = (row[col] == null ? '' : String(row[col])).trim();
-            if (dupVal !== '') keeper[col] = row[col];
-          };
-          // Owner/contact identity — backfill only if keeper blank
-          ['first_name', 'last_name',
-           'mailing_address', 'mailing_city', 'mailing_state', 'mailing_zip',
-           'email_1', 'email_2'
-          ].forEach(mergeKey);
-          // Phone slots 1-10 + their type/status columns — backfill each
-          // independently. Order is preserved (keeper's phone_1 stays as
-          // phone_1; dup only fills slots the keeper left blank).
-          for (let i = 1; i <= 10; i++) {
-            mergeKey(`phone_${i}`);
-            mergeKey(`phone_type_${i}`);
-            mergeKey(`phone_status_${i}`);
+          const keeperName = normName(keeper);
+          const dupName = normName(row);
+
+          // Decide: merge into keeper, or treat as co-owner?
+          //
+          // Merge ("same person"):
+          //   - keeper name and dup name normalize to the same string, OR
+          //   - one side is missing (no first AND no last) — treat the
+          //     named side as the identity and take the other row as
+          //     supplemental data.
+          //
+          // Co-owner ("different person"):
+          //   - both sides have non-empty names AND they differ after
+          //     normalization.
+          const bothNamed = keeperName.full !== '|' && dupName.full !== '|';
+          const sameNormalizedName = keeperName.full === dupName.full;
+          const isSamePerson = sameNormalizedName || !bothNamed;
+
+          if (isSamePerson) {
+            // MERGE into keeper — backfill blank fields only.
+            const mergeKey = (k) => {
+              const col = mapping[k];
+              if (!col) return;
+              const keeperVal = (keeper[col] == null ? '' : String(keeper[col])).trim();
+              if (keeperVal !== '') return;  // keeper wins when non-empty
+              const dupVal = (row[col] == null ? '' : String(row[col])).trim();
+              if (dupVal !== '') keeper[col] = row[col];
+            };
+            ['first_name', 'last_name',
+             'mailing_address', 'mailing_city', 'mailing_state', 'mailing_zip',
+             'email_1', 'email_2'
+            ].forEach(mergeKey);
+            for (let i = 1; i <= 10; i++) {
+              mergeKey(`phone_${i}`);
+              mergeKey(`phone_type_${i}`);
+              mergeKey(`phone_status_${i}`);
+            }
+            duplicatesMergedCount++;
+          } else {
+            // CO-OWNER — stash the whole row on the keeper for the
+            // insertion phase to process. We attach an underscore-prefixed
+            // property directly on the source CSV row object (ugly but
+            // pragmatic — doesn't require a parallel data structure and
+            // the keeper stays a plain row for the existing code paths).
+            // Also dedup co-owners by normalized name so repeated
+            // appearances of the same secondary owner don't spawn
+            // multiple contacts.
+            if (!keeper.__secondaryOwners) keeper.__secondaryOwners = [];
+            const seenCoNames = new Set();
+            // Seed the set with names already stashed
+            for (const s of keeper.__secondaryOwners) {
+              seenCoNames.add(normName(s).full);
+            }
+            if (!seenCoNames.has(dupName.full)) {
+              keeper.__secondaryOwners.push(row);
+              secondaryOwnersCount++;
+            } else {
+              // Same co-owner name reappearing — merge into that stashed row
+              const existing = keeper.__secondaryOwners.find(s => normName(s).full === dupName.full);
+              if (existing) {
+                const mergeKey = (k) => {
+                  const col = mapping[k];
+                  if (!col) return;
+                  const exVal = (existing[col] == null ? '' : String(existing[col])).trim();
+                  if (exVal !== '') return;
+                  const dupVal = (row[col] == null ? '' : String(row[col])).trim();
+                  if (dupVal !== '') existing[col] = row[col];
+                };
+                ['mailing_address','mailing_city','mailing_state','mailing_zip','email_1','email_2'].forEach(mergeKey);
+                for (let i = 1; i <= 10; i++) {
+                  mergeKey(`phone_${i}`); mergeKey(`phone_type_${i}`); mergeKey(`phone_status_${i}`);
+                }
+                duplicatesMergedCount++;
+              }
+            }
           }
-          duplicatesMergedCount++;
           continue;
         }
         seenKeys.set(key, dedupedRows.length);
         dedupedRows.push(row);
       }
 
-      // Summary line written once per batch (not per-row) so the error_log
-      // stays readable when there are thousands of duplicates.
-      if (duplicatesMergedCount > 0) {
-        console.log(`[property-import] batch: merged ${duplicatesMergedCount} duplicate row(s) into existing keeper rows`);
+      if (duplicatesMergedCount > 0 || secondaryOwnersCount > 0) {
+        console.log(`[property-import] batch: merged ${duplicatesMergedCount} same-person dup(s), flagged ${secondaryOwnersCount} co-owner row(s) for secondary contact insertion`);
         totalDuplicatesMerged += duplicatesMergedCount;
       }
 
@@ -1502,7 +1555,16 @@ async function runBackgroundImport(jobId, allRows, mapping, filename, resolvedLi
           const prop = propMap[rowKey(row)];
           if (!prop) continue;
           const fn = get(row,'first_name'), ln = get(row,'last_name');
-          if (!fn && !ln) continue;
+          // 2026-04-20 bug #1 fix: don't skip rows whose keeper has no name
+          // if they have co-owners stashed. Pre-fix, `if (!fn && !ln) continue`
+          // dropped the keeper from rowByPropId entirely, and the co-owner
+          // processing phase below (which iterates rowByPropId) never saw
+          // the __secondaryOwners. Co-owners on blank-keeper parcels were
+          // silently lost. Now: include the row so co-owners get processed;
+          // the primary-contact arrays still skip blank-name rows via a
+          // separate gate below.
+          const hasCoOwners = Array.isArray(row.__secondaryOwners) && row.__secondaryOwners.length > 0;
+          if (!fn && !ln && !hasCoOwners) continue;
           // If multiple rows landed on the same property_id (same address),
           // last-row-wins — matches old per-row loop behavior.
           rowByPropId.set(prop.id, row);
@@ -1540,10 +1602,28 @@ async function runBackgroundImport(jobId, allRows, mapping, filename, resolvedLi
         {
           const batchPhones = new Set();
           for (const [propId, row] of rowByPropId) {
-            if (existingPC.has(propId)) continue;  // already has a primary — skip
-            for (let i = 1; i <= 10; i++) {
-              const p = cleanPhone(get(row, `phone_${i}`));
-              if (p && p.length >= 7) batchPhones.add(p);
+            if (!existingPC.has(propId)) {
+              // Primary row phones — only scanned if no primary exists yet
+              // (if one exists, primary path won't create/reuse a contact).
+              for (let i = 1; i <= 10; i++) {
+                const p = cleanPhone(get(row, `phone_${i}`));
+                if (p && p.length >= 7) batchPhones.add(p);
+              }
+            }
+            // 2026-04-20 bug #2 fix: also scan co-owner phones. Previously
+            // only primary row phones were queried, so the phone-reuse path
+            // for co-owners (coReuseTasks) was dead code — the Map never
+            // contained co-owner numbers for it to match. Unlike primary,
+            // we always scan co-owner phones regardless of existingPC
+            // because co-owners exist *alongside* the primary, not instead
+            // of it.
+            if (Array.isArray(row.__secondaryOwners)) {
+              for (const coRow of row.__secondaryOwners) {
+                for (let i = 1; i <= 10; i++) {
+                  const p = cleanPhone(get(coRow, `phone_${i}`));
+                  if (p && p.length >= 7) batchPhones.add(p);
+                }
+              }
             }
           }
           if (batchPhones.size > 0) {
@@ -1567,6 +1647,13 @@ async function runBackgroundImport(jobId, allRows, mapping, filename, resolvedLi
         let reusedContactCount = 0;
 
         for (const [propId, row] of rowByPropId) {
+          // 2026-04-20 bug #1 fix: skip blank-name rows from primary-contact
+          // processing. They only exist in rowByPropId so the co-owner phase
+          // can find their __secondaryOwners — no primary contact should be
+          // created/updated from a row without a name.
+          const rowFn = get(row,'first_name'), rowLn = get(row,'last_name');
+          if (!rowFn && !rowLn) continue;
+
           if (existingPC.has(propId)) {
             const cid = existingPC.get(propId);
             contactIdByProp.set(propId, cid);
@@ -1736,6 +1823,222 @@ async function runBackgroundImport(jobId, allRows, mapping, filename, resolvedLi
 
         if (phoneDupesCollapsed > 0) {
           console.log(`[property-import] collapsed ${phoneDupesCollapsed} duplicate phone entries in batch`);
+        }
+
+        // ──────────────────────────────────────────────────────────────────
+        // 2026-04-20 multi-owner support: insert co-owners from
+        // __secondaryOwners[] as additional contacts linked with
+        // primary_contact=false. Each secondary owner gets their own
+        // contacts row; their phones/emails attach to that contact,
+        // never to the primary. Respects the phone-reuse path so a
+        // co-owner whose phone already matches a global contact reuses
+        // that contact.
+        //
+        // 2026-04-20 re-import support: before creating a new co-owner,
+        // check if a co-owner with the same normalized name is ALREADY
+        // linked to this property (from a prior import of the same CSV
+        // or a different list with overlapping contacts). If yes, reuse
+        // that existing contact, backfill blank name/address/email
+        // fields only, and let the phones UPSERT path add any new phone
+        // numbers as additional rows. Old phones stay — history is
+        // preserved, no overwrites.
+        // ──────────────────────────────────────────────────────────────────
+        // Flatten __secondaryOwners into per-owner tasks
+        const coOwnerTasks = [];  // {propId, row}
+        for (const [propId, row] of rowByPropId) {
+          if (!row.__secondaryOwners) continue;
+          for (const coRow of row.__secondaryOwners) {
+            coOwnerTasks.push({ propId, row: coRow });
+          }
+        }
+
+        if (coOwnerTasks.length > 0) {
+          // Pre-load all existing NON-primary contacts attached to the
+          // batch's properties, keyed by (property_id, normalized_name).
+          // One query regardless of batch size.
+          const coExistingByKey = new Map();  // `${propId}|${fn}|${ln}` → contact_id
+          const normNameStr = (fn, ln) => (
+            (fn || '').trim().toLowerCase().replace(/\s+/g, ' ') + '|' +
+            (ln || '').trim().toLowerCase().replace(/\s+/g, ' ')
+          );
+          const coPropIds = Array.from(new Set(coOwnerTasks.map(t => t.propId)));
+          if (coPropIds.length > 0) {
+            const coExRes = await query(
+              `SELECT pc.property_id, pc.contact_id, c.first_name, c.last_name
+                 FROM property_contacts pc
+                 JOIN contacts c ON c.id = pc.contact_id
+                WHERE pc.property_id = ANY($1::int[])
+                  AND pc.primary_contact = false`,
+              [coPropIds]
+            );
+            for (const r of coExRes.rows) {
+              const nkey = normNameStr(r.first_name, r.last_name);
+              if (nkey === '|') continue;  // skip blank-name existing rows
+              coExistingByKey.set(`${r.property_id}|${nkey}`, r.contact_id);
+            }
+          }
+
+          // Three buckets:
+          //   coUpdateTasks — co-owner already exists on this property, reuse existing contact,
+          //                   backfill blanks only (never overwrite), phones will add via UPSERT
+          //   coReuseTasks  — phone matches a global contact elsewhere, reuse that contact,
+          //                   link it to THIS property with primary_contact=false
+          //   coNewTasks    — genuinely new co-owner, create contact from scratch
+          const coUpdateTasks = [];  // {propId, contactId, row}
+          const coReuseTasks  = [];  // {propId, contactId, row}
+          const coNewTasks    = [];  // {propId, row}
+
+          for (const t of coOwnerTasks) {
+            const fn = get(t.row, 'first_name');
+            const ln = get(t.row, 'last_name');
+            const nkey = normNameStr(fn, ln);
+
+            // Check existing co-owner on this property by name first
+            const existingCid = (nkey !== '|') ? coExistingByKey.get(`${t.propId}|${nkey}`) : undefined;
+            if (existingCid) {
+              coUpdateTasks.push({ propId: t.propId, contactId: existingCid, row: t.row });
+              continue;
+            }
+
+            // Fall back to phone-reuse (same logic as primary)
+            let reusedCid = null;
+            for (let i = 1; i <= 10; i++) {
+              const p = cleanPhone(get(t.row, `phone_${i}`));
+              if (p && p.length >= 7 && phoneToExistingContact.has(p)) {
+                reusedCid = phoneToExistingContact.get(p);
+                break;
+              }
+            }
+            if (reusedCid) {
+              coReuseTasks.push({ propId: t.propId, contactId: reusedCid, row: t.row });
+            } else {
+              coNewTasks.push({ propId: t.propId, row: t.row });
+            }
+          }
+
+          // Backfill-only UPDATE for existing co-owners already on this property.
+          // COALESCE(NULLIF(new,''), existing) preserves prior non-empty values —
+          // new skip-trace data that fills in blanks is applied; anything already
+          // populated is NOT overwritten. Phones are handled by the bulk UPSERT
+          // below (add new phone_number rows, keep existing ones).
+          if (coUpdateTasks.length > 0) {
+            await query(`
+              UPDATE contacts SET
+                first_name      = COALESCE(NULLIF(t.first_name,''),      contacts.first_name),
+                last_name       = COALESCE(NULLIF(t.last_name,''),       contacts.last_name),
+                mailing_address = COALESCE(NULLIF(t.mailing_address,''), contacts.mailing_address),
+                mailing_city    = COALESCE(NULLIF(t.mailing_city,''),    contacts.mailing_city),
+                mailing_state   = COALESCE(NULLIF(t.mailing_state,''),   contacts.mailing_state),
+                mailing_zip     = COALESCE(NULLIF(t.mailing_zip,''),     contacts.mailing_zip),
+                email_1         = COALESCE(NULLIF(t.email_1,''),         contacts.email_1),
+                email_2         = COALESCE(NULLIF(t.email_2,''),         contacts.email_2),
+                updated_at      = NOW()
+              FROM UNNEST(
+                $1::int[], $2::text[], $3::text[], $4::text[], $5::text[],
+                $6::text[], $7::text[], $8::text[], $9::text[]
+              ) AS t(id, first_name, last_name, mailing_address, mailing_city,
+                     mailing_state, mailing_zip, email_1, email_2)
+              WHERE contacts.id = t.id
+            `, [
+              coUpdateTasks.map(t => t.contactId),
+              coUpdateTasks.map(t => get(t.row,'first_name') || ''),
+              coUpdateTasks.map(t => get(t.row,'last_name')  || ''),
+              coUpdateTasks.map(t => get(t.row,'mailing_address') || ''),
+              coUpdateTasks.map(t => get(t.row,'mailing_city')    || ''),
+              coUpdateTasks.map(t => get(t.row,'mailing_state')   || ''),
+              coUpdateTasks.map(t => get(t.row,'mailing_zip')     || ''),
+              coUpdateTasks.map(t => get(t.row,'email_1') || ''),
+              coUpdateTasks.map(t => get(t.row,'email_2') || ''),
+            ]);
+          }
+
+          // Link reused contacts with primary_contact=false
+          if (coReuseTasks.length > 0) {
+            await query(`
+              INSERT INTO property_contacts (property_id, contact_id, primary_contact)
+              SELECT t.property_id, t.contact_id, false
+                FROM UNNEST($1::int[], $2::int[]) AS t(property_id, contact_id)
+              ON CONFLICT (property_id, contact_id) DO NOTHING
+            `, [
+              coReuseTasks.map(t => t.propId),
+              coReuseTasks.map(t => t.contactId),
+            ]);
+          }
+
+          // Create new co-owner contacts + link with primary_contact=false
+          const coContactIds = [];  // parallel to coNewTasks
+          if (coNewTasks.length > 0) {
+            const coRes = await query(`
+              INSERT INTO contacts (first_name,last_name,mailing_address,mailing_city,mailing_state,mailing_zip,email_1,email_2)
+              SELECT * FROM UNNEST(
+                $1::text[],$2::text[],$3::text[],$4::text[],$5::text[],$6::text[],$7::text[],$8::text[]
+              ) AS t(first_name,last_name,mailing_address,mailing_city,mailing_state,mailing_zip,email_1,email_2)
+              RETURNING id
+            `, [
+              coNewTasks.map(t => get(t.row,'first_name') || ''),
+              coNewTasks.map(t => get(t.row,'last_name')  || ''),
+              coNewTasks.map(t => get(t.row,'mailing_address') || ''),
+              coNewTasks.map(t => get(t.row,'mailing_city')    || ''),
+              coNewTasks.map(t => get(t.row,'mailing_state')   || ''),
+              coNewTasks.map(t => get(t.row,'mailing_zip')     || ''),
+              coNewTasks.map(t => get(t.row,'email_1') || null),
+              coNewTasks.map(t => get(t.row,'email_2') || null),
+            ]);
+            for (const r of coRes.rows) coContactIds.push(r.id);
+
+            await query(`
+              INSERT INTO property_contacts (property_id, contact_id, primary_contact)
+              SELECT t.property_id, t.contact_id, false
+                FROM UNNEST($1::int[], $2::int[]) AS t(property_id, contact_id)
+              ON CONFLICT (property_id, contact_id) DO NOTHING
+            `, [
+              coNewTasks.map(t => t.propId),
+              coContactIds,
+            ]);
+          }
+
+          // Attach phones for all co-owner tasks (update + reuse + new).
+          // Existing phones stay (ON CONFLICT on (contact_id, phone_number)
+          // only updates status/type, never deletes). New phones from a
+          // skip-trace re-import land as additional phone rows under the
+          // same contact_id — history preserved.
+          const coPhoneBucket = new Map();
+          const allCoTasks = [
+            ...coUpdateTasks.map(t => ({ cid: t.contactId, row: t.row })),
+            ...coReuseTasks.map(t  => ({ cid: t.contactId, row: t.row })),
+            ...coNewTasks.map((t, i) => ({ cid: coContactIds[i], row: t.row })),
+          ];
+          for (const t of allCoTasks) {
+            if (!t.cid) continue;
+            for (let i = 1; i <= 10; i++) {
+              const phoneRaw = cleanPhone(get(t.row, `phone_${i}`));
+              if (!phoneRaw || phoneRaw.length < 7) continue;
+              const pType   = (get(t.row, `phone_type_${i}`)   || 'unknown').toLowerCase().trim();
+              const pStatus = (get(t.row, `phone_status_${i}`) || 'unknown').toLowerCase().trim();
+              const key = `${t.cid}|${phoneRaw}`;
+              if (coPhoneBucket.has(key)) continue;  // first occurrence wins within batch
+              coPhoneBucket.set(key, { cid: t.cid, phone: phoneRaw, idx: i, type: pType, status: pStatus });
+            }
+          }
+
+          if (coPhoneBucket.size > 0) {
+            const cCids=[], cNums=[], cIdxs=[], cTypes=[], cStats=[];
+            for (const p of coPhoneBucket.values()) {
+              cCids.push(p.cid); cNums.push(p.phone); cIdxs.push(p.idx);
+              cTypes.push(p.type); cStats.push(p.status);
+            }
+            await query(`
+              INSERT INTO phones (contact_id, phone_number, phone_index, phone_type, phone_status)
+              SELECT * FROM UNNEST($1::int[], $2::text[], $3::int[], $4::text[], $5::text[])
+                AS t(contact_id, phone_number, phone_index, phone_type, phone_status)
+              ON CONFLICT (contact_id, phone_number) DO UPDATE SET
+                phone_type   = CASE WHEN EXCLUDED.phone_type   != 'unknown' THEN EXCLUDED.phone_type   ELSE phones.phone_type   END,
+                phone_status = CASE WHEN EXCLUDED.phone_status != 'unknown' THEN EXCLUDED.phone_status ELSE phones.phone_status END,
+                updated_at   = NOW()
+            `, [cCids, cNums, cIdxs, cTypes, cStats]);
+          }
+
+          console.log(`[property-import] attached ${coOwnerTasks.length} co-owner(s): ${coUpdateTasks.length} existing (updated), ${coReuseTasks.length} reused, ${coNewTasks.length} new`);
         }
 
         // Bulk INSERT property_lists links for every property in the batch
