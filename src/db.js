@@ -294,11 +294,80 @@ async function initSchema() {
 
     `ALTER TABLE lists ADD COLUMN IF NOT EXISTS source VARCHAR(100)`,
     `ALTER TABLE phones ADD COLUMN IF NOT EXISTS phone_type VARCHAR(50) DEFAULT 'unknown'`,
+
+    // ── 2026-04-21 Feature 1: owner_type on contacts ────────────────────────
+    // Values: 'Person' | 'Company' | 'Trust'. NULLable — inferred on import
+    // via src/owner-type.js from first_name/last_name patterns. Existing rows
+    // stay NULL and render as "—" until re-imported or manually edited.
+    `ALTER TABLE contacts ADD COLUMN IF NOT EXISTS owner_type VARCHAR(20)`,
+    `CREATE INDEX IF NOT EXISTS idx_contacts_owner_type ON contacts(owner_type) WHERE owner_type IS NOT NULL`,
+
+    // ── 2026-04-21 Feature 2: property "Additional Info" fields ─────────────
+    // 10 new columns, all NULLable, all populated via CSV import mapping or
+    // the manual edit form. `year_built` is NOT in this block — it already
+    // exists from an earlier migration (line ~280). Safe_merge upsert logic
+    // will backfill empty columns only; won't overwrite user-entered values.
+    `ALTER TABLE properties ADD COLUMN IF NOT EXISTS stories SMALLINT`,
+    `ALTER TABLE properties ADD COLUMN IF NOT EXISTS structure_type VARCHAR(50)`,
+    `ALTER TABLE properties ADD COLUMN IF NOT EXISTS apn VARCHAR(50)`,
+    `ALTER TABLE properties ADD COLUMN IF NOT EXISTS legal_description TEXT`,
+    `ALTER TABLE properties ADD COLUMN IF NOT EXISTS total_tax_owed NUMERIC(12,2)`,
+    `ALTER TABLE properties ADD COLUMN IF NOT EXISTS tax_delinquent_year SMALLINT`,
+    `ALTER TABLE properties ADD COLUMN IF NOT EXISTS tax_auction_date DATE`,
+    `ALTER TABLE properties ADD COLUMN IF NOT EXISTS deed_type VARCHAR(50)`,
+    `ALTER TABLE properties ADD COLUMN IF NOT EXISTS lien_type VARCHAR(50)`,
+    `ALTER TABLE properties ADD COLUMN IF NOT EXISTS lien_date DATE`,
+    // apn gets an index — it's a natural secondary key and we'll eventually use
+    // it as a match key in Feature 8 (safe-merge upsert via address OR apn).
+    `CREATE INDEX IF NOT EXISTS idx_properties_apn ON properties(apn) WHERE apn IS NOT NULL`,
   ];
 
   for (const sql of migrations) {
     try { await query(sql); }
     catch (e) { if (!e.message.includes('already exists')) console.error('Migration warning:', e.message); }
+  }
+
+  // ── 2026-04-21 Feature 1: owner_type backfill ───────────────────────────────
+  // Classifies existing contacts into Person/Company/Trust by scanning their
+  // first_name + last_name against the same keyword lists used by the JS
+  // inferOwnerType() helper in src/owner-type.js. Keep the two lists in sync.
+  //
+  // SAFETY:
+  //   - Guarded by `WHERE owner_type IS NULL` → never overwrites a manual or
+  //     previously-inferred classification. Safe to run on every boot.
+  //   - Gated by a cheap COUNT first so we skip the UPDATE entirely once every
+  //     row is classified (no table-scan churn on subsequent boots).
+  //   - Non-fatal on error — logs and moves on so import/UI still come up.
+  //   - Strips periods/commas before matching so "L.L.C." matches "LLC".
+  //   - Trust pattern is checked first (takes precedence over Company) — same
+  //     order as the JS helper, so e.g. "SMITH FAMILY TRUST LLC" classifies as
+  //     Trust (the more specific/senior legal form wins).
+  try {
+    const pending = await query(
+      `SELECT COUNT(*)::int AS n FROM contacts
+        WHERE owner_type IS NULL
+          AND (COALESCE(first_name,'') <> '' OR COALESCE(last_name,'') <> '')`
+    );
+    const pendingN = pending.rows[0]?.n || 0;
+    if (pendingN > 0) {
+      const res = await query(`
+        UPDATE contacts SET owner_type =
+          CASE
+            WHEN REGEXP_REPLACE(COALESCE(first_name,'') || ' ' || COALESCE(last_name,''), '[.,]', '', 'g')
+                 ~* '\\y(TRUST|TRUSTEE|LIVING\\s+TRUST|FAMILY\\s+TRUST|REVOCABLE\\s+TRUST|IRREVOCABLE\\s+TRUST|TESTAMENTARY\\s+TRUST)\\y'
+              THEN 'Trust'
+            WHEN REGEXP_REPLACE(COALESCE(first_name,'') || ' ' || COALESCE(last_name,''), '[.,]', '', 'g')
+                 ~* '\\y(LLC|INC|INCORPORATED|CORP|CORPORATION|COMPANY|LP|LLP|LTD|LIMITED|PROPERTIES|PROPS|INVESTMENTS?|HOLDINGS?|GROUP|ENTERPRISES|VENTURES|MANAGEMENT|MGMT|DEVELOPMENT|DEVELOPERS|PARTNERS|PARTNERSHIP|REALTY|ASSOCIATES|CAPITAL|REAL\\s+ESTATE)\\y'
+              THEN 'Company'
+            ELSE 'Person'
+          END
+        WHERE owner_type IS NULL
+          AND (COALESCE(first_name,'') <> '' OR COALESCE(last_name,'') <> '')
+      `);
+      console.log(`[db] owner_type backfill: classified ${res.rowCount.toLocaleString()} of ${pendingN.toLocaleString()} unclassified contact(s)`);
+    }
+  } catch (e) {
+    console.error('[db] owner_type backfill warning (non-fatal):', e.message);
   }
 
   // ── Fix: garbage state_codes (Audit issue #3 / decision #2) ────────────────
