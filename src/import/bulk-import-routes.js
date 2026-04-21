@@ -57,7 +57,50 @@ async function primeMarketCache() {
 function mapReisiftRow(row) {
   const get = (key) => (row[key] || '').toString().trim();
   const toNum  = (v) => { const n = parseFloat(String(v).replace(/[$,%]/g,'')); return isNaN(n) ? null : n; };
-  const toInt  = (v) => { const n = parseInt(v); return isNaN(n) ? null : n; };
+  const toInt  = (v) => { const n = parseInt(String(v).replace(/[$,%]/g,''), 10); return isNaN(n) ? null : n; };
+  // 2026-04-21 PM hotfix: bounded helpers — same semantics as
+  // property-import-routes.js. Out-of-range values clamp to NULL rather
+  // than crashing the whole batch with `numeric field overflow`. REISift
+  // exports are usually cleaner than PropStream, but defense-in-depth
+  // applies equally here. See property-import-routes.js for full rationale.
+  const MONEY_LIMIT = 9_999_999_999.99;
+  const toMoney = (v) => {
+    const n = toNum(v);
+    if (n == null) return null;
+    if (Math.abs(n) > MONEY_LIMIT) {
+      console.warn(`[bulk-import] out-of-range money value ${JSON.stringify(v)} → NULL`);
+      return null;
+    }
+    return n;
+  };
+  const toYear = (v) => {
+    const n = toNum(v);
+    if (n == null) return null;
+    const y = Math.round(n);
+    if (y < 1800 || y > 2200) {
+      console.warn(`[bulk-import] invalid year value ${JSON.stringify(v)} → NULL`);
+      return null;
+    }
+    return y;
+  };
+  const toSmallInt = (v) => {
+    const n = toInt(v);
+    if (n == null) return null;
+    if (n < -32_768 || n > 32_767) {
+      console.warn(`[bulk-import] out-of-range smallint value ${JSON.stringify(v)} → NULL`);
+      return null;
+    }
+    return n;
+  };
+  const toBathrooms = (v) => {
+    const n = toNum(v);
+    if (n == null) return null;
+    if (n < 0 || n > 99) {
+      console.warn(`[bulk-import] out-of-range bathrooms value ${JSON.stringify(v)} → NULL`);
+      return null;
+    }
+    return n;
+  };
   const toDate = (v) => { if (!v) return null; const d = new Date(v); return isNaN(d) ? null : d.toISOString().split('T')[0]; };
   const toBool = (v) => { const s = (v||'').toLowerCase(); return s==='true'||s==='yes'||s==='1' ? true : s==='false'||s==='no'||s==='0' ? false : null; };
   const cleanPhone = (v) => normalizePhone(v);
@@ -81,13 +124,13 @@ function mapReisiftRow(row) {
     county:          get('Property county'),
     vacant:          toBool(get('Property vacant')),
     property_type:   null,
-    bedrooms:        toInt(get('Bedrooms')),
-    bathrooms:       toNum(get('Bathrooms')),
+    bedrooms:        toSmallInt(get('Bedrooms')),
+    bathrooms:       toBathrooms(get('Bathrooms')),
     sqft:            toInt(get('Sqft')),
-    year_built:      toInt(get('Year')),
+    year_built:      toYear(get('Year')),
     lot_size:        toInt(get('Lot size')),
-    estimated_value: toNum(get('Estimated value')),
-    last_sale_price: toNum(get('Last sale price')),
+    estimated_value: toMoney(get('Estimated value')),
+    last_sale_price: toMoney(get('Last sale price')),
     last_sale_date:  toDate(get('Last sold')),
     property_status: get('Status') || null,
     source:          'REISift',
