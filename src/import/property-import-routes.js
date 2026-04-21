@@ -9,6 +9,10 @@ const { normalizeState: sharedNormalizeState } = require('./state');
 // 2026-04-20 pass 12: shared phone normalizer — see phone-normalize.js.
 const { normalizePhone } = require('../phone-normalize');
 const { bufferToCsvText } = require('../csv-utils');
+// 2026-04-21 Feature 1: owner_type inference (Person / Company / Trust).
+// Used in both the single-row INSERT path (~line 1190) and the bulk-UNNEST path
+// (~line 1792) so every contact created via CSV import gets classified.
+const { inferOwnerType } = require('../owner-type');
 
 // Wrapper: callers rely on string truthiness (empty string = skip). The
 // shared helper returns null for garbage — we normalize that to '' here
@@ -1174,6 +1178,12 @@ router.post('/commit', requireAuth, async (req, res) => {
         const firstName = get(row,'first_name');
         const lastName  = get(row,'last_name');
         if (firstName || lastName) {
+          // 2026-04-21 Feature 1: infer owner_type from name patterns.
+          // Returns 'Person' | 'Company' | 'Trust' | null. Null passes through
+          // COALESCE unchanged — we never overwrite a manual classification
+          // with a null inference. Existing rows stay as they are if inference
+          // returns null (defensive; should rarely happen when firstName||lastName).
+          const inferredOT = inferOwnerType(firstName, lastName);
           const existPC = await query(`SELECT contact_id FROM property_contacts WHERE property_id=$1 AND primary_contact=true LIMIT 1`,[propertyId]);
           let contactId;
           if (existPC.rows.length) {
@@ -1182,15 +1192,17 @@ router.post('/commit', requireAuth, async (req, res) => {
               first_name=COALESCE(NULLIF($1,''),first_name),last_name=COALESCE(NULLIF($2,''),last_name),
               mailing_address=COALESCE(NULLIF($3,''),mailing_address),mailing_city=COALESCE(NULLIF($4,''),mailing_city),
               mailing_state=COALESCE(NULLIF($5,''),mailing_state),mailing_zip=COALESCE(NULLIF($6,''),mailing_zip),
-              email_1=COALESCE(NULLIF($7,''),email_1),email_2=COALESCE(NULLIF($8,''),email_2),updated_at=NOW()
+              email_1=COALESCE(NULLIF($7,''),email_1),email_2=COALESCE(NULLIF($8,''),email_2),
+              owner_type=COALESCE(owner_type, $10),
+              updated_at=NOW()
               WHERE id=$9`,
               [firstName,lastName,get(row,'mailing_address'),get(row,'mailing_city'),
-               get(row,'mailing_state'),get(row,'mailing_zip'),get(row,'email_1')||'',get(row,'email_2')||'',contactId]);
+               get(row,'mailing_state'),get(row,'mailing_zip'),get(row,'email_1')||'',get(row,'email_2')||'',contactId,inferredOT]);
           } else {
-            const cr = await query(`INSERT INTO contacts (first_name,last_name,mailing_address,mailing_city,mailing_state,mailing_zip,email_1,email_2)
-              VALUES ($1,$2,$3,$4,$5,$6,$7,$8) RETURNING id`,
+            const cr = await query(`INSERT INTO contacts (first_name,last_name,mailing_address,mailing_city,mailing_state,mailing_zip,email_1,email_2,owner_type)
+              VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING id`,
               [firstName,lastName,get(row,'mailing_address'),get(row,'mailing_city'),
-               get(row,'mailing_state'),get(row,'mailing_zip'),get(row,'email_1')||null,get(row,'email_2')||null]);
+               get(row,'mailing_state'),get(row,'mailing_zip'),get(row,'email_1')||null,get(row,'email_2')||null,inferredOT]);
             contactId = cr.rows[0].id;
             await query(`INSERT INTO property_contacts (property_id,contact_id,primary_contact) VALUES ($1,$2,true) ON CONFLICT DO NOTHING`,[propertyId,contactId]);
           }
@@ -1669,6 +1681,10 @@ async function runBackgroundImport(jobId, allRows, mapping, filename, resolvedLi
         // Split into update-existing vs insert-new
         const updIds=[], updFns=[], updLns=[], updMaddr=[], updMcity=[], updMstate=[], updMzip=[], updE1=[], updE2=[];
         const newPropIds=[], newFns=[], newLns=[], newMaddr=[], newMcity=[], newMstate=[], newMzip=[], newE1=[], newE2=[];
+        // 2026-04-21 Feature 1: parallel owner_type arrays. inferOwnerType()
+        // returns 'Person' | 'Company' | 'Trust' | null. Null flows through
+        // COALESCE unchanged so we never clobber a manual classification.
+        const updOt=[], newOt=[];
         const contactIdByProp = new Map();
         let reusedContactCount = 0;
 
@@ -1679,6 +1695,8 @@ async function runBackgroundImport(jobId, allRows, mapping, filename, resolvedLi
           // created/updated from a row without a name.
           const rowFn = get(row,'first_name'), rowLn = get(row,'last_name');
           if (!rowFn && !rowLn) continue;
+          // Compute once per row and reuse across all three push branches below.
+          const rowOwnerType = inferOwnerType(rowFn, rowLn);
 
           if (existingPC.has(propId)) {
             const cid = existingPC.get(propId);
@@ -1692,6 +1710,7 @@ async function runBackgroundImport(jobId, allRows, mapping, filename, resolvedLi
             updMzip.push(get(row,'mailing_zip') || '');
             updE1.push(get(row,'email_1') || '');
             updE2.push(get(row,'email_2') || '');
+            updOt.push(rowOwnerType);  // null → COALESCE preserves existing
             continue;
           }
 
@@ -1720,6 +1739,7 @@ async function runBackgroundImport(jobId, allRows, mapping, filename, resolvedLi
             updMzip.push(get(row,'mailing_zip') || '');
             updE1.push(get(row,'email_1') || '');
             updE2.push(get(row,'email_2') || '');
+            updOt.push(rowOwnerType);
             // Create the primary property_contacts link — safe via ON CONFLICT
             // on (property_id, contact_id).
             await query(
@@ -1739,6 +1759,7 @@ async function runBackgroundImport(jobId, allRows, mapping, filename, resolvedLi
             newMzip.push(get(row,'mailing_zip') || '');
             newE1.push(get(row,'email_1') || null);
             newE2.push(get(row,'email_2') || null);
+            newOt.push(rowOwnerType);
           }
         }
 
@@ -1758,14 +1779,19 @@ async function runBackgroundImport(jobId, allRows, mapping, filename, resolvedLi
               mailing_zip     = COALESCE(NULLIF(t.mailing_zip,''),     contacts.mailing_zip),
               email_1         = COALESCE(NULLIF(t.email_1,''),         contacts.email_1),
               email_2         = COALESCE(NULLIF(t.email_2,''),         contacts.email_2),
+              -- 2026-04-21 Feature 1: owner_type. t.owner_type arrives as a
+              -- VARCHAR (nulls preserved in the ::varchar[] cast), not a text
+              -- literal — so COALESCE preserves existing classification unless
+              -- the row had a non-null inference. No NULLIF needed here.
+              owner_type      = COALESCE(contacts.owner_type, t.owner_type),
               updated_at      = NOW()
             FROM UNNEST(
               $1::int[], $2::text[], $3::text[], $4::text[], $5::text[],
-              $6::text[], $7::text[], $8::text[], $9::text[]
+              $6::text[], $7::text[], $8::text[], $9::text[], $10::varchar[]
             ) AS t(id, first_name, last_name, mailing_address, mailing_city,
-                   mailing_state, mailing_zip, email_1, email_2)
+                   mailing_state, mailing_zip, email_1, email_2, owner_type)
             WHERE contacts.id = t.id
-          `, [updIds, updFns, updLns, updMaddr, updMcity, updMstate, updMzip, updE1, updE2]);
+          `, [updIds, updFns, updLns, updMaddr, updMcity, updMstate, updMzip, updE1, updE2, updOt]);
         }
 
         // Bulk INSERT new contacts + property_contacts links
@@ -1789,11 +1815,11 @@ async function runBackgroundImport(jobId, allRows, mapping, filename, resolvedLi
           );
           const newIds = idRes.rows.map(r => Number(r.id));
           await query(`
-            INSERT INTO contacts (id, first_name, last_name, mailing_address, mailing_city, mailing_state, mailing_zip, email_1, email_2)
+            INSERT INTO contacts (id, first_name, last_name, mailing_address, mailing_city, mailing_state, mailing_zip, email_1, email_2, owner_type)
             SELECT * FROM UNNEST(
-              $1::int[], $2::text[], $3::text[], $4::text[], $5::text[], $6::text[], $7::text[], $8::text[], $9::text[]
-            ) AS t(id, first_name, last_name, mailing_address, mailing_city, mailing_state, mailing_zip, email_1, email_2)
-          `, [newIds, newFns, newLns, newMaddr, newMcity, newMstate, newMzip, newE1, newE2]);
+              $1::int[], $2::text[], $3::text[], $4::text[], $5::text[], $6::text[], $7::text[], $8::text[], $9::text[], $10::varchar[]
+            ) AS t(id, first_name, last_name, mailing_address, mailing_city, mailing_state, mailing_zip, email_1, email_2, owner_type)
+          `, [newIds, newFns, newLns, newMaddr, newMcity, newMstate, newMzip, newE1, newE2, newOt]);
           await query(`
             INSERT INTO property_contacts (property_id, contact_id, primary_contact)
             SELECT property_id, contact_id, true
