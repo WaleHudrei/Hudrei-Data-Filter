@@ -704,32 +704,25 @@ async function getDashboardStats() {
     (SELECT COUNT(*) FROM phones WHERE LOWER(phone_status) = 'wrong' OR wrong_number = true) AS wrong_phones,
     (SELECT COUNT(*) FROM phones WHERE LOWER(phone_status) IN ('dead','dead_number')) AS dead_phones,
     (SELECT COUNT(*) FROM lists) AS total_lists,
-    (
-      -- Leads = same definition as /campaigns per-campaign counter.
-      -- See the longer comment on the /dashboard caller below.
-      SELECT COUNT(*) FROM (
-        SELECT 'cc:' || cc.id::text AS key
-          FROM campaign_contacts cc
-          JOIN campaign_contact_phones ccp ON ccp.contact_id = cc.id
-          JOIN campaign_numbers cn ON cn.phone_number = ccp.phone_number
-                                  AND cn.campaign_id = cc.campaign_id
-         WHERE cn.last_disposition_normalized = 'transfer'
-        UNION
-        SELECT 'p:' || p.id::text AS key
-          FROM properties p
-         WHERE p.pipeline_stage = 'lead'
-           AND NOT EXISTS (
-             SELECT 1
-               FROM campaign_contacts cc2
-               JOIN campaign_contact_phones ccp2 ON ccp2.contact_id = cc2.id
-               JOIN campaign_numbers cn2 ON cn2.phone_number = ccp2.phone_number
-                                        AND cn2.campaign_id = cc2.campaign_id
-              WHERE cn2.last_disposition_normalized = 'transfer'
-                AND cc2.property_address_normalized = p.street_normalized
-                AND UPPER(TRIM(cc2.property_state)) = UPPER(TRIM(p.state_code))
-           )
-      ) lead_union
-    ) AS leads,
+    -- 2026-04-21 PM v3 fix: Leads = SUM(campaigns.total_transfers).
+    --
+    -- History: this query went through 3 iterations today because Loki had
+    -- THREE different "lead" counters that each counted differently:
+    --   v1 (old): COUNT properties.pipeline_stage='lead' + cc.marketing_result='Lead'
+    --             → 41 (too narrow; missed most SMS leads)
+    --   v2:       JOIN campaign_numbers.last_disposition_normalized='transfer'
+    --             → 74 (still missed SMS — SMS path never writes campaign_numbers)
+    --   v3 (now): SUM(campaigns.total_transfers)
+    --             → 147 (matches what campaign detail pages already show —
+    --                    the number users have been trusting all along)
+    --
+    -- campaigns.total_transfers is incremented at ingest time (filtration.js)
+    -- on every transfer/potential_lead/sold/listed outcome, across BOTH
+    -- cold-call AND SMS paths. It's the broadest and most accurate counter,
+    -- and since it's pre-aggregated a simple SUM beats any join-based query
+    -- for speed. Same definition also drives the /campaigns list column and
+    -- the per-campaign detail page — single source of truth.
+    (SELECT COALESCE(SUM(total_transfers), 0)::int FROM campaigns) AS leads,
     (SELECT COUNT(*) FROM properties WHERE pipeline_stage = 'contract') AS contracts,
     (SELECT COUNT(*) FROM properties WHERE pipeline_stage = 'closed') AS closed,
     (SELECT COUNT(*) FROM properties WHERE state_code = 'IN') AS indiana_props,
@@ -1955,7 +1948,11 @@ function campaignsPage(list, tab) {
   // same lead_contacts field the per-campaign detail page + the dashboard
   // both read — single source of truth (filtration.getContactStats, which
   // counts campaign_numbers.last_disposition_normalized='transfer').
-  const totalLeads = list.reduce((sum, c) => sum + parseInt(c.contact_counts?.lead_contacts || 0), 0);
+  // 2026-04-21 PM v3: total uses c.total_transfers — same source as the
+  // per-row Leads column and the dashboard "Leads" card. All three stats
+  // now reconcile to SUM(campaigns.total_transfers). See comment on
+  // getDashboardStats() for the full history of why this changed.
+  const totalLeads = list.reduce((sum, c) => sum + parseInt(c.total_transfers || 0), 0);
   const rows = display.map(c => {
     const totalContacts = parseInt(c.contact_counts?.total_contacts||0);
     const totalPhones = parseInt(c.contact_counts?.total_phones||0);
@@ -1970,7 +1967,14 @@ function campaignsPage(list, tab) {
     const connected = parseInt(c.total_connected||0);
     const transfers = parseInt(c.total_transfers||0);
     const lgr = connected > 0 ? ((transfers / connected) * 100).toFixed(2) : '0.00';
-    const leadContacts = parseInt(c.contact_counts?.lead_contacts || 0);
+    // 2026-04-21 PM v3: Leads column reads c.total_transfers — the same
+    // counter shown on the campaign detail page. Previously the column
+    // read contact_counts.lead_contacts (the narrow campaign_numbers
+    // transfer query) which missed SMS leads. c.total_transfers is
+    // incremented at ingest for transfer + potential_lead + sold + listed
+    // across BOTH cold-call and SMS paths, so the column matches what
+    // users see when they click into any individual campaign.
+    const leadContacts = transfers;
     return `
     <tr onclick="location.href='/campaigns/${c.id}'" style="cursor:pointer">
       <td><strong>${c.name}</strong><br><span style="font-size:11px;color:#888">${c.list_type} · ${c.market_name}</span></td>
