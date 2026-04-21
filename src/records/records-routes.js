@@ -750,8 +750,8 @@ router.get('/', requireAuth, async (req, res) => {
             </div>
             <div>
               <label style="font-size:11px;color:#888;display:block;margin-bottom:3px">Tag</label>
-              <select name="tag" style="width:100%;padding:7px 10px;border:1px solid #ddd;border-radius:7px;font-size:13px;font-family:inherit;background:#fff">
-                <option value="">Any</option>
+              <select name="tag" style="width:100%;padding:7px 10px;border:1px solid #ddd;border-radius:7px;font-size:13px;font-family:inherit;background:#fff" ${allTags.length === 0 ? 'disabled title="No tags exist yet — add tags from any property\'s detail page or via Manage → Add Tags"' : ''}>
+                <option value="">${allTags.length === 0 ? 'No tags yet' : 'Any'}</option>
                 ${allTags.map(t => `<option value="${t.id}" ${tag == t.id ? 'selected' : ''}>${escHTML(t.name)}</option>`).join('')}
               </select>
             </div>
@@ -1028,9 +1028,11 @@ router.get('/', requireAuth, async (req, res) => {
           <!-- Add mode: free-text input with suggestions -->
           <div id="bulk-tag-add-section">
             <div style="position:relative;margin-bottom:10px">
-              <input type="text" id="bulk-tag-input" placeholder="Type a tag name…" autocomplete="off"
+              <input type="text" id="bulk-tag-input" placeholder="Click to browse, or type a tag name…" autocomplete="off"
                 style="width:100%;padding:9px 12px;border:1px solid #ddd;border-radius:8px;font-size:14px;font-family:inherit"
                 oninput="bulkTagSuggest(this.value)"
+                onfocus="bulkTagSuggestOnFocus()"
+                onclick="bulkTagSuggestOnFocus()"
                 onkeydown="if(event.key==='Enter'){event.preventDefault();bulkTagAdd();}"
               >
               <div id="bulk-tag-suggestions" style="display:none;position:absolute;top:100%;left:0;right:0;margin-top:4px;background:#fff;border:1px solid #ddd;border-radius:8px;box-shadow:0 4px 16px rgba(0,0,0,.08);max-height:160px;overflow-y:auto;z-index:50"></div>
@@ -1124,7 +1126,7 @@ router.get('/', requireAuth, async (req, res) => {
         </table>
       </div>
       ${pagination}
-      <script src="/js/records-list.js?v=4"></script>
+      <script src="/js/records-list.js?v=5"></script>
 
     `, 'records'));
   } catch (e) {
@@ -2282,9 +2284,11 @@ router.get('/:id(\\d+)', requireAuth, async (req, res) => {
           ${tagsRes.rows.length === 0 ? '<span style="color:#aaa;font-size:12px">No tags yet</span>' : ''}
         </div>
         <div style="display:flex;gap:6px;position:relative">
-          <input type="text" id="tag-input" placeholder="Type to add a tag…" autocomplete="off"
+          <input type="text" id="tag-input" placeholder="Click to browse, or type to add a tag…" autocomplete="off"
             style="flex:1;padding:7px 10px;border:1px solid #ddd;border-radius:7px;font-size:13px;font-family:inherit"
             oninput="suggestTags(this.value)"
+            onfocus="suggestTagsOnFocus()"
+            onclick="suggestTagsOnFocus()"
             onkeydown="if(event.key==='Enter'){event.preventDefault();addTagFromInput(${p.id});}"
           >
           <button onclick="addTagFromInput(${p.id})" style="padding:7px 14px;background:#1a1a1a;color:#fff;border:none;border-radius:7px;font-size:12px;font-weight:600;cursor:pointer;font-family:inherit">Add</button>
@@ -2475,7 +2479,7 @@ router.get('/:id(\\d+)', requireAuth, async (req, res) => {
         </div>
       </div>
 
-      <script src="/js/records-detail.js?v=2"></script>
+      <script src="/js/records-detail.js?v=3"></script>
     `, 'records'));
   } catch (e) {
     console.error(e);
@@ -4515,6 +4519,67 @@ router.post('/add-to-list', requireAuth, async (req, res) => {
       if (qv('type'))        { conditions.push(`p.property_type = $${idx}`);     params.push(qv('type')); idx++; }
       if (qv('pipeline'))    { conditions.push(`p.pipeline_stage = $${idx}`);    params.push(qv('pipeline')); idx++; }
       if (qv('prop_status')) { conditions.push(`p.property_status = $${idx}`);   params.push(qv('prop_status')); idx++; }
+      // 2026-04-21 filter-parity fix: Add to List was missing mkt_result /
+      // mkt_include / mkt_exclude. Without these, a user filtering by
+      // "Marketing Result = Lead" and hitting selectAll would add too many
+      // properties because the SQL scope was wider than what they saw on screen.
+      // Mirrors the RFL handler exactly.
+      if (qv('mkt_result'))  { conditions.push(`(
+        EXISTS (
+          SELECT 1 FROM campaign_contacts cc_mkt
+          WHERE cc_mkt.property_address_normalized = p.street_normalized
+            AND UPPER(TRIM(cc_mkt.property_state)) = UPPER(TRIM(p.state_code))
+            AND cc_mkt.marketing_result IS NOT NULL
+            AND LOWER(TRIM(split_part(cc_mkt.marketing_result, ' — ', 1))) = ANY($${idx}::text[])
+        )
+        OR EXISTS (
+          SELECT 1 FROM campaign_numbers cn_mkt
+          JOIN phones ph_mkt ON ph_mkt.phone_number = cn_mkt.phone_number
+          JOIN property_contacts pc_mkt ON pc_mkt.contact_id = ph_mkt.contact_id AND pc_mkt.property_id = p.id
+          WHERE cn_mkt.marketing_result IS NOT NULL
+            AND LOWER(TRIM(split_part(cn_mkt.marketing_result, ' — ', 1))) = ANY($${idx}::text[])
+        )
+      )`); params.push(normMktList([qv('mkt_result')])); idx++; }
+      const mktIncAtl = qvAll('mkt_include');
+      const mktExcAtl = qvAll('mkt_exclude');
+      if (mktIncAtl.length > 0) {
+        conditions.push(`(
+        EXISTS (
+          SELECT 1 FROM campaign_contacts cc_mkt
+          WHERE cc_mkt.property_address_normalized = p.street_normalized
+            AND UPPER(TRIM(cc_mkt.property_state)) = UPPER(TRIM(p.state_code))
+            AND cc_mkt.marketing_result IS NOT NULL
+            AND LOWER(TRIM(split_part(cc_mkt.marketing_result, ' — ', 1))) = ANY($${idx}::text[])
+        )
+        OR EXISTS (
+          SELECT 1 FROM campaign_numbers cn_mkt
+          JOIN phones ph_mkt ON ph_mkt.phone_number = cn_mkt.phone_number
+          JOIN property_contacts pc_mkt ON pc_mkt.contact_id = ph_mkt.contact_id AND pc_mkt.property_id = p.id
+          WHERE cn_mkt.marketing_result IS NOT NULL
+            AND LOWER(TRIM(split_part(cn_mkt.marketing_result, ' — ', 1))) = ANY($${idx}::text[])
+        )
+      )`);
+        params.push(normMktList(mktIncAtl)); idx++;
+      }
+      if (mktExcAtl.length > 0) {
+        conditions.push(`NOT (
+        EXISTS (
+          SELECT 1 FROM campaign_contacts cc_mkt
+          WHERE cc_mkt.property_address_normalized = p.street_normalized
+            AND UPPER(TRIM(cc_mkt.property_state)) = UPPER(TRIM(p.state_code))
+            AND cc_mkt.marketing_result IS NOT NULL
+            AND LOWER(TRIM(split_part(cc_mkt.marketing_result, ' — ', 1))) = ANY($${idx}::text[])
+        )
+        OR EXISTS (
+          SELECT 1 FROM campaign_numbers cn_mkt
+          JOIN phones ph_mkt ON ph_mkt.phone_number = cn_mkt.phone_number
+          JOIN property_contacts pc_mkt ON pc_mkt.contact_id = ph_mkt.contact_id AND pc_mkt.property_id = p.id
+          WHERE cn_mkt.marketing_result IS NOT NULL
+            AND LOWER(TRIM(split_part(cn_mkt.marketing_result, ' — ', 1))) = ANY($${idx}::text[])
+        )
+      )`);
+        params.push(normMktList(mktExcAtl)); idx++;
+      }
       if (qv('min_assessed')){ conditions.push(`p.assessed_value >= $${idx}`);   params.push(qv('min_assessed')); idx++; }
       if (qv('max_assessed')){ conditions.push(`p.assessed_value <= $${idx}`);   params.push(qv('max_assessed')); idx++; }
       if (qv('min_equity'))  { conditions.push(`p.equity_percent >= $${idx}`);   params.push(qv('min_equity')); idx++; }
