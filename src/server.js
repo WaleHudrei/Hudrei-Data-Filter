@@ -155,6 +155,8 @@ const listsRoutes = require('./lists/lists-routes');
 const importRoutes = require('./import/property-import-routes');
 const bulkImportRoutes = require('./import/bulk-import-routes');
 const activityRoutes = require('./activity-routes');
+// 2026-04-21 Feature 5: owner dashboard routes (/owners/:id)
+const ownersRoutes = require('./owners/owners-routes');
 
 const COL = { phone:'Phone', dispo:'Log Type', listname:'Original lead file', date:'Log Time', fname:'First Name', lname:'Last Name', addr:'Address', city:'City', state:'State', zip:'Zip Code', notes:'Call Notes' };
 
@@ -682,6 +684,8 @@ app.use('/lists', listsRoutes);
 app.use('/import/property', importRoutes);
 app.use('/import/bulk', bulkImportRoutes);
 app.use('/activity', activityRoutes);
+// 2026-04-21 Feature 5: owner dashboard
+app.use('/owners', ownersRoutes);
 
 
 
