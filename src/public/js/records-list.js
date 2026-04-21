@@ -643,9 +643,9 @@ async function confirmAddToList() {
     // Compose a useful flash message
     var msg = 'Added ' + data.added + ' propert' + (data.added===1?'y':'ies') + ' to "' + data.listName + '"';
     if (data.skipped > 0) msg += ' (' + data.skipped + ' already on the list, skipped)';
-    // Preserve current filter state in the redirect — same pattern as RFL
+    // Preserve current filter state in the redirect — window.location.search
+    // is either '' or starts with '?' so we just append ?msg or &msg.
     var qs = window.location.search;
-    var sep = qs ? (qs.includes('?') ? '&' : '&') : '?';
     if (!qs) qs = '?msg=' + encodeURIComponent(msg);
     else qs = qs + '&msg=' + encodeURIComponent(msg);
     window.location.href = '/records' + qs;
@@ -709,14 +709,27 @@ var _bulkTagSuggestTimer = null;
 function bulkTagSuggest(q) {
   clearTimeout(_bulkTagSuggestTimer);
   var box = document.getElementById('bulk-tag-suggestions');
-  if (!q || !q.trim()) { box.style.display = 'none'; return; }
+  // 2026-04-21 fix: when q is empty, still query the server — it returns the
+  // top 50 tags alphabetically. Previously this early-returned and the
+  // dropdown stayed hidden until the user typed something, which felt like
+  // "0 results" on first click. Now clicking the field (or clearing it)
+  // shows the full list so users can browse, not just search-by-prefix.
   _bulkTagSuggestTimer = setTimeout(async function() {
     try {
-      var res = await fetch('/records/tags/suggest?q=' + encodeURIComponent(q.trim()));
+      var res = await fetch('/records/tags/suggest?q=' + encodeURIComponent((q||'').trim()));
       var tags = await res.json();
       var queued = _bulkTagQueue.map(function(t){ return t.id; });
       tags = tags.filter(function(t){ return queued.indexOf(t.id) === -1; });
-      if (!tags.length) { box.style.display = 'none'; return; }
+      if (!tags.length) {
+        // Real empty state — user has typed something with no matches, OR
+        // every tag in the DB is already queued. Show a helpful message
+        // instead of silently hiding the box (the "0 results" bug).
+        box.innerHTML = '<div style="padding:10px 12px;font-size:12px;color:#aaa;font-style:italic">'
+          + (q && q.trim() ? 'No matching tags — press Enter to create "' + _esc(q.trim()) + '"' : 'No tags exist yet — type a name and press Enter to create one')
+          + '</div>';
+        box.style.display = 'block';
+        return;
+      }
       box.innerHTML = tags.map(function(t){
         return '<div onclick="bulkTagPick(' + t.id + ', \'' + _esc(t.name).replace(/'/g,"\\'") + '\', \'' + (t.color||'#6b7280') + '\')" style="padding:8px 12px;cursor:pointer;font-size:13px;display:flex;align-items:center;gap:8px" onmouseover="this.style.background=\'#f5f4f0\'" onmouseout="this.style.background=\'none\'">'
           + '<span style="width:10px;height:10px;border-radius:50%;background:' + (t.color||'#6b7280') + '"></span>'
@@ -725,6 +738,14 @@ function bulkTagSuggest(q) {
       box.style.display = 'block';
     } catch(e) { box.style.display = 'none'; }
   }, 200);
+}
+
+// 2026-04-21: wire up focus and click to trigger suggest with current value.
+// This way the dropdown appears immediately when the user clicks into the
+// field, not only after they've typed.
+function bulkTagSuggestOnFocus() {
+  var input = document.getElementById('bulk-tag-input');
+  if (input) bulkTagSuggest(input.value || '');
 }
 
 function bulkTagPick(id, name, color) {
