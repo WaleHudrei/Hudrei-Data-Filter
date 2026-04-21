@@ -605,7 +605,7 @@ router.get('/', requireAuth, async (req, res) => {
                   <span style="position:absolute;right:8px;top:50%;transform:translateY(-50%);color:#888;font-size:10px;pointer-events:none">▾</span>
                 </div>
                 <div id="state-ms-dropdown" style="display:none;position:absolute;top:calc(100% + 4px);left:0;right:0;background:#fff;border:1px solid #ddd;border-radius:7px;box-shadow:0 4px 16px rgba(0,0,0,.08);max-height:240px;overflow:hidden;z-index:100;flex-direction:column">
-                  <input type="text" id="state-ms-search" placeholder="Search state…" oninput="filterStateMsOptions()" onclick="event.stopPropagation()" style="width:100%;padding:7px 9px;border:none;border-bottom:1px solid #eee;font-size:13px;font-family:inherit;outline:none;box-sizing:border-box">
+                  <input type="text" id="state-ms-search" placeholder="Search state…" oninput="filterStateMsOptions()" onclick="event.stopPropagation()" onkeydown="stateMsSearchKeydown(event)" style="width:100%;padding:7px 9px;border:none;border-bottom:1px solid #eee;font-size:13px;font-family:inherit;outline:none;box-sizing:border-box">
                   <div id="state-ms-options" style="overflow-y:auto;flex:1">
                     ${allStates.length === 0
                       ? '<div style="color:#aaa;font-size:13px;padding:10px">No states found</div>'
@@ -812,7 +812,7 @@ router.get('/', requireAuth, async (req, res) => {
                   <span style="position:absolute;right:10px;top:50%;transform:translateY(-50%);color:#888;font-size:11px;pointer-events:none">▾</span>
                 </div>
                 <div id="ms-dropdown" style="display:none;position:absolute;top:calc(100% + 4px);left:0;right:0;background:#fff;border:1px solid #ddd;border-radius:7px;box-shadow:0 4px 16px rgba(0,0,0,.08);max-height:240px;overflow:hidden;z-index:100;flex-direction:column">
-                  <input type="text" id="ms-search" placeholder="Search lists…" oninput="filterMsOptions()" onclick="event.stopPropagation()" style="width:100%;padding:8px 10px;border:none;border-bottom:1px solid #eee;font-size:13px;font-family:inherit;outline:none;box-sizing:border-box">
+                  <input type="text" id="ms-search" placeholder="Search lists…" oninput="filterMsOptions()" onclick="event.stopPropagation()" onkeydown="msSearchKeydown(event)" style="width:100%;padding:8px 10px;border:none;border-bottom:1px solid #eee;font-size:13px;font-family:inherit;outline:none;box-sizing:border-box">
                   <div id="ms-options" style="overflow-y:auto;flex:1">
                     ${allLists.length === 0
                       ? '<div style="color:#aaa;font-size:13px;padding:10px">No lists available yet</div>'
@@ -1055,7 +1055,7 @@ router.get('/', requireAuth, async (req, res) => {
         </table>
       </div>
       ${pagination}
-      <script src="/js/records-list.js?v=2"></script>
+      <script src="/js/records-list.js?v=3"></script>
 
     `, 'records'));
   } catch (e) {
