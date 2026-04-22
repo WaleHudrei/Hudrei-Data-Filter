@@ -3134,7 +3134,7 @@ router.post('/_state_cleanup/fix', requireAuth, async (req, res) => {
   try {
     const code = req.body.code || '';
     const verified = await settings.verifyDeleteCode(code);
-    if (!verified) { client.release(); return res.status(403).json({ error: 'Invalid delete code.' }); }
+    if (!verified) { return res.status(403).json({ error: 'Invalid delete code.' }); }
 
     // 1) Re-scan bad rows
     const validArr = Array.from(VALID_STATES);
@@ -3156,7 +3156,7 @@ router.post('/_state_cleanup/fix', requireAuth, async (req, res) => {
         zip_code: r.zip_code,
       });
     }
-    if (candidates.length === 0) { client.release(); return res.json({ ok: true, fixed: 0, deleted: 0 }); }
+    if (candidates.length === 0) { return res.json({ ok: true, fixed: 0, deleted: 0 }); }
 
     // 2) Detect collisions. For each candidate, check if a row already
     // exists at the TARGET (street, city, target_state, zip_code). That
