@@ -3067,7 +3067,7 @@ router.get('/_state_cleanup', requireAuth, async (req, res) => {
       <div id="state-fix-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.4);z-index:9999;align-items:center;justify-content:center">
         <div style="background:#fff;max-width:420px;border-radius:10px;padding:18px;box-shadow:0 12px 32px rgba(0,0,0,.2)">
           <div style="font-size:15px;font-weight:600;margin-bottom:6px">Apply ${high.toLocaleString()} state fixes</div>
-          <div style="font-size:12px;color:#666;margin-bottom:12px;line-height:1.5">This updates <code>state_code</code> on ${high.toLocaleString()} property rows. Enter your delete code to confirm.</div>
+          <div style="font-size:12px;color:#666;margin-bottom:12px;line-height:1.5">This updates <code>state_code</code> on up to ${high.toLocaleString()} property rows. If a row conflicts with a correct duplicate that already exists, the bad row will be <strong>deleted</strong> (the correct one stays). Enter your admin code to confirm.</div>
           <div id="state-fix-err" style="display:none;background:#fdeaea;border:1px solid #f5c5c5;border-radius:6px;padding:8px 12px;color:#8b1f1f;font-size:12px;margin-bottom:10px"></div>
           <input type="password" id="state-fix-code" autocomplete="off" placeholder="Delete code" style="width:100%;padding:9px 12px;border:1px solid #ddd;border-radius:7px;font-size:13px;font-family:inherit;box-sizing:border-box" onkeydown="if(event.key==='Enter'){event.preventDefault();applyStateFix();}">
           <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:14px">
@@ -3098,7 +3098,9 @@ router.get('/_state_cleanup', requireAuth, async (req, res) => {
             });
             var data = await res.json();
             if (!res.ok || data.error) { showStateFixErr(data.error || 'Fix failed'); btn.disabled=false; btn.textContent='Apply fixes'; return; }
-            window.location.href = '/records/_state_cleanup?msg=' + encodeURIComponent('Fixed ' + data.fixed + ' properties');
+            var msg = 'Fixed ' + data.fixed + ' properties';
+            if (data.deleted && data.deleted > 0) msg += ' (deleted ' + data.deleted + ' duplicate rows)';
+            window.location.href = '/records/_state_cleanup?msg=' + encodeURIComponent(msg);
           } catch(e) { showStateFixErr('Network error: ' + e.message); btn.disabled=false; btn.textContent='Apply fixes'; }
         }
         function showStateFixErr(m) {
@@ -3114,34 +3116,91 @@ router.get('/_state_cleanup', requireAuth, async (req, res) => {
 });
 
 router.post('/_state_cleanup/fix', requireAuth, async (req, res) => {
+  // 2026-04-21 Collision-aware state fix. When we update a row's state_code
+  // to its ZIP-derived value, the (street, city, state_code, zip_code)
+  // unique index can conflict if a *correct* version of the same property
+  // already exists. Per user direction: auto-delete the bad duplicate so
+  // the correct row stays.
+  //
+  // Strategy:
+  //   1. Build the full list of candidate fixes (id + target_state) in JS
+  //   2. Ask Postgres: for each bad row, does a correct row already exist
+  //      at (street, city, target_state, zip_code)? If yes → collision.
+  //   3. Partition into safeUpdates (no conflict) and collisionDeletes
+  //      (bad row is redundant, drop it).
+  //   4. One transaction: bulk-update the safe set, bulk-delete the
+  //      collision set, commit or roll back together.
+  const client = await pool.connect();
   try {
     const code = req.body.code || '';
     const verified = await settings.verifyDeleteCode(code);
-    if (!verified) return res.status(403).json({ error: 'Invalid delete code.' });
+    if (!verified) { client.release(); return res.status(403).json({ error: 'Invalid delete code.' }); }
 
-    // Re-scan — do not trust the count from the GET page; the DB may have
-    // changed since it rendered. Only rows whose ZIP currently maps to a
-    // valid state get fixed. Process in a single transaction so a partial
-    // failure doesn't leave half the rows fixed and half not.
+    // 1) Re-scan bad rows
     const validArr = Array.from(VALID_STATES);
-    const badRes = await query(
-      `SELECT id, zip_code FROM properties
+    const badRes = await client.query(
+      `SELECT id, street, city, state_code, zip_code FROM properties
         WHERE state_code IS NULL
            OR TRIM(state_code) = ''
            OR NOT (UPPER(TRIM(state_code)) = ANY($1::text[]))`,
       [validArr]
     );
-    const fixes = [];
+    const candidates = [];
     for (const r of badRes.rows) {
       const suggested = lookupStateByZip(r.zip_code);
-      if (suggested) fixes.push({ id: r.id, state: suggested });
+      if (suggested) candidates.push({
+        id: r.id,
+        street: r.street,
+        city: r.city,
+        target_state: suggested,
+        zip_code: r.zip_code,
+      });
     }
-    if (fixes.length === 0) return res.json({ ok: true, fixed: 0 });
+    if (candidates.length === 0) { client.release(); return res.json({ ok: true, fixed: 0, deleted: 0 }); }
 
-    // Market lookup — build a map of state → market_id. Create any missing
-    // markets up front to keep the inner update loop hot.
-    const neededStates = [...new Set(fixes.map(f => f.state))];
-    const mktRes = await query(
+    // 2) Detect collisions. For each candidate, check if a row already
+    // exists at the TARGET (street, city, target_state, zip_code). That
+    // row might be the candidate itself (no, because candidate.state_code
+    // != target_state — that's why it's a candidate) or a separate row
+    // that's the "correct" version. We use a batched IN() lookup.
+    //
+    // Build tuple arrays parallel to `candidates` so we can zip them back.
+    const streets = candidates.map(c => c.street);
+    const cities  = candidates.map(c => c.city);
+    const states  = candidates.map(c => c.target_state);
+    const zips    = candidates.map(c => c.zip_code);
+    const existRes = await client.query(
+      `SELECT id, LOWER(TRIM(street)) || '|' || LOWER(TRIM(city)) || '|' || UPPER(TRIM(state_code)) || '|' || SUBSTRING(TRIM(zip_code) FROM 1 FOR 5) AS k
+         FROM properties
+        WHERE (street, city, state_code, zip_code) IN (
+          SELECT * FROM UNNEST($1::text[], $2::text[], $3::text[], $4::text[])
+        )`,
+      [streets, cities, states, zips]
+    );
+    const existingByKey = {};
+    for (const r of existRes.rows) existingByKey[r.k] = r.id;
+
+    const safeUpdates = [];       // { id, target_state }
+    const collisionDeletes = [];  // { id, target_state, kept_id }
+    for (const c of candidates) {
+      const key = [
+        (c.street||'').toLowerCase().trim(),
+        (c.city||'').toLowerCase().trim(),
+        (c.target_state||'').toUpperCase(),
+        String(c.zip_code||'').trim().slice(0,5),
+      ].join('|');
+      const existingId = existingByKey[key];
+      if (existingId && existingId !== c.id) {
+        // A "correct" row already exists at this target address. Drop the bad one.
+        collisionDeletes.push({ id: c.id, target_state: c.target_state, kept_id: existingId });
+      } else {
+        safeUpdates.push({ id: c.id, target_state: c.target_state });
+      }
+    }
+
+    // 3) Market-id map for all target states
+    const neededStates = [...new Set(candidates.map(c => c.target_state))];
+    const mktRes = await client.query(
       `SELECT state_code, id FROM markets WHERE state_code = ANY($1::text[])`,
       [neededStates]
     );
@@ -3149,7 +3208,7 @@ router.post('/_state_cleanup/fix', requireAuth, async (req, res) => {
     for (const m of mktRes.rows) mktMap[m.state_code] = m.id;
     for (const s of neededStates) {
       if (mktMap[s]) continue;
-      const ins = await query(
+      const ins = await client.query(
         `INSERT INTO markets (state_code, name, state_name) VALUES ($1,$1,$1)
          ON CONFLICT (state_code) DO UPDATE SET state_code=EXCLUDED.state_code RETURNING id`,
         [s]
@@ -3157,26 +3216,47 @@ router.post('/_state_cleanup/fix', requireAuth, async (req, res) => {
       mktMap[s] = ins.rows[0].id;
     }
 
-    // Apply updates grouped by state so we do N queries (one per state)
-    // instead of one per property. Each query hits only the rows for that
-    // state via ANY($ids::int[]).
-    const byState = {};
-    for (const f of fixes) { (byState[f.state] = byState[f.state] || []).push(f.id); }
-    let fixed = 0;
-    for (const [state, ids] of Object.entries(byState)) {
-      const r = await query(
-        `UPDATE properties SET state_code = $1, market_id = $2, updated_at = NOW()
-          WHERE id = ANY($3::int[])`,
-        [state, mktMap[state], ids]
-      );
-      fixed += r.rowCount;
+    // 4) Transaction: updates + deletes together
+    let updated = 0, deleted = 0;
+    await client.query('BEGIN');
+    try {
+      // Safe updates, grouped by state
+      const byState = {};
+      for (const u of safeUpdates) { (byState[u.target_state] = byState[u.target_state] || []).push(u.id); }
+      for (const [state, ids] of Object.entries(byState)) {
+        const r = await client.query(
+          `UPDATE properties SET state_code = $1, market_id = $2, updated_at = NOW()
+            WHERE id = ANY($3::int[])`,
+          [state, mktMap[state], ids]
+        );
+        updated += r.rowCount;
+      }
+
+      // Collision deletes — the bad row is redundant because a correct
+      // version already exists. FK cascades handle property_contacts,
+      // property_tags, property_lists, property_phones (if any).
+      if (collisionDeletes.length > 0) {
+        const deleteIds = collisionDeletes.map(d => d.id);
+        const dr = await client.query(
+          `DELETE FROM properties WHERE id = ANY($1::int[])`,
+          [deleteIds]
+        );
+        deleted = dr.rowCount;
+      }
+
+      await client.query('COMMIT');
+    } catch (txErr) {
+      await client.query('ROLLBACK').catch(() => {});
+      throw txErr;
     }
 
-    console.log(`[records/_state_cleanup/fix] Fixed ${fixed} properties across ${Object.keys(byState).length} states`);
-    res.json({ ok: true, fixed });
+    console.log(`[records/_state_cleanup/fix] Fixed ${updated} properties, deleted ${deleted} collision duplicates`);
+    res.json({ ok: true, fixed: updated, deleted });
   } catch (e) {
     console.error('[records/_state_cleanup/fix]', e);
     res.status(500).json({ error: e.message });
+  } finally {
+    client.release();
   }
 });
 
