@@ -2935,18 +2935,17 @@ router.get('/_state_cleanup', requireAuth, async (req, res) => {
     const msgSafe = msg.replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
     const errSafe = err.replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 
-    // Pull every row whose state_code is NULL or not in the valid set. Rather
-    // than filtering in SQL against the 50-state list (awkward to construct
-    // parameterized), fetch the full candidate set and filter in Node — the
-    // set of bad rows is typically small (thousands, not hundreds of thousands).
-    // If it explodes, we can switch to a server-side ANY($1::text[]) check.
+    // Pull every row whose state_code is NULL or not in the valid set.
+    // NOTE: `<> ANY(array)` is a common SQL footgun — it returns TRUE if the
+    // value differs from ANY one element, which is true for every row (IN
+    // differs from AL, AK, etc). We want `NOT = ANY` / `<> ALL` instead.
     const validArr = Array.from(VALID_STATES);
     const badRes = await query(
       `SELECT id, street, city, state_code, zip_code, county, created_at
          FROM properties
         WHERE state_code IS NULL
            OR TRIM(state_code) = ''
-           OR UPPER(TRIM(state_code)) <> ANY($1::text[])
+           OR NOT (UPPER(TRIM(state_code)) = ANY($1::text[]))
         ORDER BY created_at DESC
         LIMIT 5000`,
       [validArr]
@@ -3129,7 +3128,7 @@ router.post('/_state_cleanup/fix', requireAuth, async (req, res) => {
       `SELECT id, zip_code FROM properties
         WHERE state_code IS NULL
            OR TRIM(state_code) = ''
-           OR UPPER(TRIM(state_code)) <> ANY($1::text[])`,
+           OR NOT (UPPER(TRIM(state_code)) = ANY($1::text[]))`,
       [validArr]
     );
     const fixes = [];
