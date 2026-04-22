@@ -1083,6 +1083,31 @@ router.post('/commit', requireAuth, async (req, res) => {
       return col ? (row[col] || '').toString().trim() : '';
     };
 
+    // 2026-04-21 Crash prevention: VARCHAR columns have finite widths in the
+    // schema, but user CSVs can contain arbitrarily long strings in any cell
+    // (misaligned columns, junk pastes, malformed exports). When a row's
+    // value exceeds the VARCHAR limit, Postgres raises `value too long for
+    // type character varying(N)` and aborts the batch. This helper clips
+    // values to the schema limit before INSERT so the import never crashes
+    // on oversized data — we'd rather truncate than lose the row entirely.
+    // Field limits mirror src/db.js schema exactly.
+    const FIELD_LIMITS = {
+      street: 255, city: 100, county: 100, property_type: 50, source: 100,
+      condition: 50, property_status: 50, structure_type: 50, apn: 50,
+      deed_type: 50, lien_type: 50,
+      first_name: 100, last_name: 100,
+      email_1: 255, email_2: 255,
+      mailing_address: 255, mailing_city: 100,
+      phone_status: 50, phone_type: 50, owner_type: 20,
+      list_name: 255, list_type: 100,
+      zip_code: 10, mailing_zip: 10,
+    };
+    const getClip = (row, key) => {
+      const v = get(row, key);
+      const n = FIELD_LIMITS[key];
+      return n && v.length > n ? v.slice(0, n) : v;
+    };
+
     // 2026-04-21 PM hotfix: the old `toNum = v && !isNaN(v) ? parseFloat(v.replace(...)) : null`
     // was BROKEN for any input with a $ or % prefix. isNaN("$189,000") is true,
     // so the function returned null for every currency-formatted value —
@@ -1318,14 +1343,14 @@ router.post('/commit', requireAuth, async (req, res) => {
 
     for (const row of dedupedRows) {
       const state = normalizeState(get(row,'state_code'), get(row,'zip_code'));
-      streets.push(get(row,'street'));
-      cities.push(get(row,'city'));
+      streets.push(getClip(row,'street'));
+      cities.push(getClip(row,'city'));
       states.push(state);
       zips.push(normalizeZip(get(row,'zip_code')));
-      counties.push(get(row,'county')||null);
+      counties.push(getClip(row,'county')||null);
       mktIds.push(mktMap[state]||null);
-      sources.push(get(row,'source')||filename||null);
-      propTypes.push(get(row,'property_type')||null);
+      sources.push(getClip(row,'source')||filename||null);
+      propTypes.push(getClip(row,'property_type')||null);
       yearBuilts.push(toYear(get(row,'year_built')));
       sqfts.push(toInt(get(row,'sqft')));
       bedrooms.push(toSmallInt(get(row,'bedrooms')));
@@ -1334,8 +1359,8 @@ router.post('/commit', requireAuth, async (req, res) => {
       assessedVals.push(toMoney(get(row,'assessed_value')));
       estVals.push(toMoney(get(row,'estimated_value')));
       equityPcts.push(toPercent(get(row,'equity_percent')));
-      propStatuses.push(get(row,'property_status')||null);
-      conditions.push(get(row,'condition')||null);
+      propStatuses.push(getClip(row,'property_status')||null);
+      conditions.push(getClip(row,'condition')||null);
       lastSaleDates.push(toDate(get(row,'last_sale_date')));
       lastSalePrices.push(toMoney(get(row,'last_sale_price')));
       vacants.push(toBool(get(row,'vacant')));
@@ -1439,7 +1464,7 @@ router.post('/commit', requireAuth, async (req, res) => {
         if (!prop) continue;
         const propertyId = prop.id;
 
-        const firstName = get(row,'first_name');
+        const firstName = getClip(row,'first_name');
         const lastName  = get(row,'last_name');
         if (firstName || lastName) {
           // 2026-04-21 Feature 1: infer owner_type from name patterns.
@@ -1468,13 +1493,13 @@ router.post('/commit', requireAuth, async (req, res) => {
               owner_type=COALESCE(owner_type, $10),
               updated_at=NOW()
               WHERE id=$9`,
-              [firstName,lastName,get(row,'mailing_address'),get(row,'mailing_city'),
-               mStateNorm,normalizeZip(get(row,'mailing_zip')),get(row,'email_1')||'',get(row,'email_2')||'',contactId,inferredOT]);
+              [firstName,lastName,getClip(row,'mailing_address'),getClip(row,'mailing_city'),
+               mStateNorm,normalizeZip(get(row,'mailing_zip')),getClip(row,'email_1')||'',getClip(row,'email_2')||'',contactId,inferredOT]);
           } else {
             const cr = await query(`INSERT INTO contacts (first_name,last_name,mailing_address,mailing_city,mailing_state,mailing_zip,email_1,email_2,owner_type)
               VALUES ($1,$2,$3,$4,NULLIF($5,''),NULLIF($6,''),$7,$8,$9) RETURNING id`,
-              [firstName,lastName,get(row,'mailing_address'),get(row,'mailing_city'),
-               mStateNorm,normalizeZip(get(row,'mailing_zip')),get(row,'email_1')||null,get(row,'email_2')||null,inferredOT]);
+              [firstName,lastName,getClip(row,'mailing_address'),getClip(row,'mailing_city'),
+               mStateNorm,normalizeZip(get(row,'mailing_zip')),getClip(row,'email_1')||null,getClip(row,'email_2')||null,inferredOT]);
             contactId = cr.rows[0].id;
             await query(`INSERT INTO property_contacts (property_id,contact_id,primary_contact) VALUES ($1,$2,true) ON CONFLICT DO NOTHING`,[propertyId,contactId]);
           }
@@ -1622,6 +1647,25 @@ async function runBackgroundImport(jobId, allRows, mapping, filename, resolvedLi
     mktRes.rows.forEach(m => { mktMap[m.state_code] = m.id; });
 
     const get = (row, key) => { const col = mapping[key]; return col ? (row[col] || '').toString().trim() : ''; };
+    // 2026-04-21 Crash prevention: same as /commit — clip values to their
+    // schema VARCHAR limit before INSERT. See FIELD_LIMITS comment in the
+    // /commit handler for rationale.
+    const FIELD_LIMITS = {
+      street: 255, city: 100, county: 100, property_type: 50, source: 100,
+      condition: 50, property_status: 50, structure_type: 50, apn: 50,
+      deed_type: 50, lien_type: 50,
+      first_name: 100, last_name: 100,
+      email_1: 255, email_2: 255,
+      mailing_address: 255, mailing_city: 100,
+      phone_status: 50, phone_type: 50, owner_type: 20,
+      list_name: 255, list_type: 100,
+      zip_code: 10, mailing_zip: 10,
+    };
+    const getClip = (row, key) => {
+      const v = get(row, key);
+      const n = FIELD_LIMITS[key];
+      return n && v.length > n ? v.slice(0, n) : v;
+    };
     const toNum = v => v && !isNaN(String(v).replace(/[$,%]/g,'')) ? parseFloat(String(v).replace(/[$,%]/g,'')) : null;
     const toInt = v => v && !isNaN(v) ? parseInt(v) : null;
     // 2026-04-21 PM hotfix: clamp percent values to [-100, 100]. See the
@@ -1716,6 +1760,19 @@ async function runBackgroundImport(jobId, allRows, mapping, filename, resolvedLi
     // Normalize state: full name → abbreviation
     for (let offset = 0; offset < allRows.length; offset += BATCH) {
       const rows = allRows.slice(offset, offset + BATCH);
+      // 2026-04-21 Crash prevention: wrap the entire batch in try/catch so a
+      // single bad batch (unexpected NULL in required column, FK violation
+      // from a deleted market, Postgres numeric overflow) doesn't abort the
+      // whole import job. Without this, one bad row poisons the remaining
+      // rows by throwing out of the for-loop. With it, the bad batch is
+      // logged and skipped; the next batch continues fresh.
+      //
+      // This is a safety net, not a transaction — individual queries inside
+      // the batch that succeeded before the throw stay committed. The clip
+      // helper above removes the most common trigger (oversize VARCHAR), so
+      // this catch should rarely fire in practice. When it does, the log
+      // tells us what new failure mode to address.
+      try {
       const validRows = [];
       for (const row of rows) {
         const street = get(row,'street');
@@ -1932,15 +1989,15 @@ async function runBackgroundImport(jobId, allRows, mapping, filename, resolvedLi
 
         for (const row of dedupedRows) {
           const state = normalizeState(get(row,'state_code'), get(row,'zip_code'));
-          streets.push(get(row,'street')); cities.push(get(row,'city')); states.push(state);
-          zips.push(normalizeZip(get(row,'zip_code'))); counties.push(get(row,'county')||null);
-          mktIds.push(mktMap[state]||null); sources.push(get(row,'source')||filename||null);
-          propTypes.push(get(row,'property_type')||null); yearBuilts.push(toYear(get(row,'year_built')));
+          streets.push(getClip(row,'street')); cities.push(getClip(row,'city')); states.push(state);
+          zips.push(normalizeZip(get(row,'zip_code'))); counties.push(getClip(row,'county')||null);
+          mktIds.push(mktMap[state]||null); sources.push(getClip(row,'source')||filename||null);
+          propTypes.push(getClip(row,'property_type')||null); yearBuilts.push(toYear(get(row,'year_built')));
           sqfts.push(toInt(get(row,'sqft'))); beds.push(toSmallInt(get(row,'bedrooms')));
           baths.push(toBathrooms(get(row,'bathrooms'))); lots.push(toInt(get(row,'lot_size')));
           assessed.push(toMoney(get(row,'assessed_value'))); estVals.push(toMoney(get(row,'estimated_value')));
-          equity.push(toPercent(get(row,'equity_percent'))); propStatus.push(get(row,'property_status')||null);
-          conds.push(get(row,'condition')||null); lastSaleDates.push(toDate(get(row,'last_sale_date')));
+          equity.push(toPercent(get(row,'equity_percent'))); propStatus.push(getClip(row,'property_status')||null);
+          conds.push(getClip(row,'condition')||null); lastSaleDates.push(toDate(get(row,'last_sale_date')));
           lastSalePrices.push(toMoney(get(row,'last_sale_price'))); vacants.push(toBool(get(row,'vacant')));
           // Feature 8 additions
           apns.push((get(row,'apn')||'').slice(0, 50) || null);
@@ -2141,14 +2198,14 @@ async function runBackgroundImport(jobId, allRows, mapping, filename, resolvedLi
             const cid = existingPC.get(propId);
             contactIdByProp.set(propId, cid);
             updIds.push(cid);
-            updFns.push(get(row,'first_name') || '');
-            updLns.push(get(row,'last_name') || '');
-            updMaddr.push(get(row,'mailing_address') || '');
-            updMcity.push(get(row,'mailing_city') || '');
+            updFns.push(getClip(row,'first_name') || '');
+            updLns.push(getClip(row,'last_name') || '');
+            updMaddr.push(getClip(row,'mailing_address') || '');
+            updMcity.push(getClip(row,'mailing_city') || '');
             updMstate.push(rowMailingState);
             updMzip.push(rowMailingZip);
-            updE1.push(get(row,'email_1') || '');
-            updE2.push(get(row,'email_2') || '');
+            updE1.push(getClip(row,'email_1') || '');
+            updE2.push(getClip(row,'email_2') || '');
             updOt.push(rowOwnerType);  // null → COALESCE preserves existing
             continue;
           }
@@ -2170,14 +2227,14 @@ async function runBackgroundImport(jobId, allRows, mapping, filename, resolvedLi
             // owner fields from this row (COALESCE preserves prior non-empty).
             contactIdByProp.set(propId, reusedCid);
             updIds.push(reusedCid);
-            updFns.push(get(row,'first_name') || '');
-            updLns.push(get(row,'last_name') || '');
-            updMaddr.push(get(row,'mailing_address') || '');
-            updMcity.push(get(row,'mailing_city') || '');
+            updFns.push(getClip(row,'first_name') || '');
+            updLns.push(getClip(row,'last_name') || '');
+            updMaddr.push(getClip(row,'mailing_address') || '');
+            updMcity.push(getClip(row,'mailing_city') || '');
             updMstate.push(rowMailingState);
             updMzip.push(rowMailingZip);
-            updE1.push(get(row,'email_1') || '');
-            updE2.push(get(row,'email_2') || '');
+            updE1.push(getClip(row,'email_1') || '');
+            updE2.push(getClip(row,'email_2') || '');
             updOt.push(rowOwnerType);
             // Create the primary property_contacts link — safe via ON CONFLICT
             // on (property_id, contact_id).
@@ -2190,14 +2247,14 @@ async function runBackgroundImport(jobId, allRows, mapping, filename, resolvedLi
             reusedContactCount++;
           } else {
             newPropIds.push(propId);
-            newFns.push(get(row,'first_name') || '');
-            newLns.push(get(row,'last_name') || '');
-            newMaddr.push(get(row,'mailing_address') || '');
-            newMcity.push(get(row,'mailing_city') || '');
+            newFns.push(getClip(row,'first_name') || '');
+            newLns.push(getClip(row,'last_name') || '');
+            newMaddr.push(getClip(row,'mailing_address') || '');
+            newMcity.push(getClip(row,'mailing_city') || '');
             newMstate.push(rowMailingState);
             newMzip.push(rowMailingZip);
-            newE1.push(get(row,'email_1') || null);
-            newE2.push(get(row,'email_2') || null);
+            newE1.push(getClip(row,'email_1') || null);
+            newE2.push(getClip(row,'email_2') || null);
             newOt.push(rowOwnerType);
           }
         }
@@ -2580,6 +2637,16 @@ async function runBackgroundImport(jobId, allRows, mapping, filename, resolvedLi
       processed += rows.length;
       await query(`UPDATE bulk_import_jobs SET processed_rows=$1,inserted=$2,updated=$3,errors=$4,updated_at=NOW() WHERE id=$5`,
         [processed, inserted, updated, errors, jobId]);
+      } catch (batchErr) {
+        // One batch exploded — log, count, keep going. The next batch starts
+        // fresh with its own array builders, so this failure is contained.
+        console.error(`[property-import] job ${jobId} batch at offset ${offset} failed:`, batchErr.message);
+        allSkipped.push(`Batch at row ${offset + 1}-${offset + rows.length} failed: ${batchErr.message}`);
+        errors += rows.length;  // conservative — count every row in the failed batch as errored
+        processed += rows.length;
+        await query(`UPDATE bulk_import_jobs SET processed_rows=$1,inserted=$2,updated=$3,errors=$4,updated_at=NOW() WHERE id=$5`,
+          [processed, inserted, updated, errors, jobId]).catch(() => {});
+      }
     }
 
     // ────────────────────────────────────────────────────────────────────────
