@@ -4,6 +4,7 @@ const { query, pool } = require('../db');
 const distress = require('../scoring/distress');
 const settings = require('../settings');
 const { normalizeState, VALID_STATES } = require('../import/state');
+const { lookupStateByZip } = require('../import/zip-to-state');
 const { inferOwnerType, normalizeOwnerType, VALID_OWNER_TYPES } = require('../owner-type');
 const { normalizePhone } = require('../phone-normalize');
 
@@ -2916,6 +2917,267 @@ router.post('/:id(\\d+)/edit', requireAuth, async (req, res) => {
   } catch (e) {
     console.error(e);
     res.redirect(`/records/${req.params.id}?msg=error`);
+  }
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 2026-04-21 State Cleanup — audit properties with invalid state_code values
+// and offer to recover them from ZIP (high confidence) or keep for manual
+// review. Delete-code gated on the fix endpoint.
+//
+// GET  /records/_state_cleanup       → audit page (counts, samples, fix button)
+// POST /records/_state_cleanup/fix   → apply high-confidence fixes (delete-code)
+// ─────────────────────────────────────────────────────────────────────────────
+router.get('/_state_cleanup', requireAuth, async (req, res) => {
+  try {
+    const msg = req.query.msg ? String(req.query.msg).slice(0, 300) : '';
+    const err = req.query.err ? String(req.query.err).slice(0, 300) : '';
+    const msgSafe = msg.replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+    const errSafe = err.replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+
+    // Pull every row whose state_code is NULL or not in the valid set. Rather
+    // than filtering in SQL against the 50-state list (awkward to construct
+    // parameterized), fetch the full candidate set and filter in Node — the
+    // set of bad rows is typically small (thousands, not hundreds of thousands).
+    // If it explodes, we can switch to a server-side ANY($1::text[]) check.
+    const validArr = Array.from(VALID_STATES);
+    const badRes = await query(
+      `SELECT id, street, city, state_code, zip_code, county, created_at
+         FROM properties
+        WHERE state_code IS NULL
+           OR TRIM(state_code) = ''
+           OR UPPER(TRIM(state_code)) <> ANY($1::text[])
+        ORDER BY created_at DESC
+        LIMIT 5000`,
+      [validArr]
+    );
+    const bad = badRes.rows;
+
+    // Classify each bad row into a confidence bucket.
+    //   high   — ZIP lookup returns a state → safe to auto-fix
+    //   low    — ZIP is missing or unmappable → needs manual review
+    // Keep a rollup by current (bad) state_code value so the user can see
+    // patterns ("Owner Occupied" × 846, "AN" × 2, blank × 12).
+    let high = 0, low = 0;
+    const byBadValue = {};
+    const highSamples = [];
+    const lowSamples = [];
+    for (const r of bad) {
+      const suggested = lookupStateByZip(r.zip_code);
+      const conf = suggested ? 'high' : 'low';
+      r.suggested_state = suggested;
+      r.confidence = conf;
+      if (conf === 'high') { high++; if (highSamples.length < 10) highSamples.push(r); }
+      else { low++; if (lowSamples.length < 10) lowSamples.push(r); }
+      const bv = (r.state_code == null || r.state_code === '') ? '(blank)' : String(r.state_code);
+      byBadValue[bv] = (byBadValue[bv] || 0) + 1;
+    }
+    const totalBad = bad.length;
+    const topBadValues = Object.entries(byBadValue).sort((a,b) => b[1]-a[1]).slice(0, 15);
+
+    const sampleRow = (r) => `<tr style="border-bottom:1px solid #f0efe9">
+      <td style="padding:7px 10px;font-size:12px"><a href="/records/${r.id}" style="color:#1a4a9a;text-decoration:none">${escHTML(r.street || '(no street)')}, ${escHTML(r.city || '—')}</a></td>
+      <td style="padding:7px 10px;font-size:12px;color:#888">${escHTML(r.zip_code || '—')}</td>
+      <td style="padding:7px 10px;font-size:12px"><code style="background:#fdeaea;color:#8b1f1f;padding:2px 6px;border-radius:3px">${escHTML(r.state_code == null ? '(null)' : r.state_code === '' ? '(blank)' : r.state_code)}</code></td>
+      <td style="padding:7px 10px;font-size:12px">${r.suggested_state ? `<code style="background:#e8f5ee;color:#1a7a4a;padding:2px 6px;border-radius:3px">${r.suggested_state}</code>` : '<span style="color:#aaa">—</span>'}</td>
+    </tr>`;
+
+    res.send(shell('State Cleanup', `
+      <div style="max-width:1100px">
+        <div style="margin-bottom:1rem"><a href="/records" style="font-size:13px;color:#888;text-decoration:none">← Records</a></div>
+        <h2 style="font-size:22px;font-weight:500;margin:0 0 4px 0">State Cleanup</h2>
+        <p style="font-size:13px;color:#888;margin-bottom:1.5rem">Finds properties with invalid state codes (anything outside the 50 states + DC) and suggests the correct one based on the ZIP code.</p>
+
+        ${msgSafe ? `<div style="background:#eaf6ea;border:1px solid #9bd09b;border-radius:8px;padding:10px 14px;color:#1a5f1a;font-size:13px;margin-bottom:12px">✅ ${msgSafe}</div>` : ''}
+        ${errSafe ? `<div style="background:#fdeaea;border:1px solid #f5c5c5;border-radius:8px;padding:10px 14px;color:#8b1f1f;font-size:13px;margin-bottom:12px">❌ ${errSafe}</div>` : ''}
+
+        <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin-bottom:1.5rem">
+          <div style="background:#fff;border:1px solid #f0efe9;border-radius:10px;padding:14px 16px">
+            <div style="font-size:10px;font-weight:600;color:#888;text-transform:uppercase;letter-spacing:.08em;margin-bottom:6px">Total bad rows</div>
+            <div style="font-size:28px;font-weight:500;color:#1a1a1a">${totalBad.toLocaleString()}</div>
+            ${totalBad >= 5000 ? '<div style="font-size:11px;color:#c07a1a;margin-top:2px">Capped at 5000 — more may exist</div>' : ''}
+          </div>
+          <div style="background:#fff;border:1px solid #f0efe9;border-radius:10px;padding:14px 16px">
+            <div style="font-size:10px;font-weight:600;color:#888;text-transform:uppercase;letter-spacing:.08em;margin-bottom:6px">Fixable from ZIP</div>
+            <div style="font-size:28px;font-weight:500;color:#1a7a4a">${high.toLocaleString()}</div>
+            <div style="font-size:11px;color:#888;margin-top:2px">Safe to auto-fix</div>
+          </div>
+          <div style="background:#fff;border:1px solid #f0efe9;border-radius:10px;padding:14px 16px">
+            <div style="font-size:10px;font-weight:600;color:#888;text-transform:uppercase;letter-spacing:.08em;margin-bottom:6px">Need manual review</div>
+            <div style="font-size:28px;font-weight:500;color:#c07a1a">${low.toLocaleString()}</div>
+            <div style="font-size:11px;color:#888;margin-top:2px">ZIP is missing or invalid</div>
+          </div>
+        </div>
+
+        ${high > 0 ? `
+        <div class="card" style="margin-bottom:1.5rem;background:#f8faf6;border:1px solid #c9e0c9">
+          <div style="display:flex;justify-content:space-between;align-items:center;gap:14px;flex-wrap:wrap">
+            <div>
+              <div style="font-size:14px;font-weight:600;color:#1a5f1a;margin-bottom:4px">Ready to auto-fix ${high.toLocaleString()} properties</div>
+              <div style="font-size:12px;color:#555">Every row in this set has a ZIP that maps to exactly one state. Applying the fix updates <code>state_code</code> and re-links <code>market_id</code>. Original data stays in the audit log.</div>
+            </div>
+            <button onclick="confirmStateFix()" style="padding:10px 18px;background:#1a7a4a;color:#fff;border:none;border-radius:8px;font-size:13px;font-weight:600;cursor:pointer;font-family:inherit;white-space:nowrap">Apply ${high.toLocaleString()} fixes →</button>
+          </div>
+        </div>` : ''}
+
+        ${topBadValues.length ? `
+        <div class="card" style="margin-bottom:1.5rem">
+          <div style="font-size:11px;font-weight:600;color:#888;text-transform:uppercase;letter-spacing:.08em;margin-bottom:10px">Bad values (most common)</div>
+          <div style="display:flex;flex-wrap:wrap;gap:6px">
+            ${topBadValues.map(([v,n]) => `<span style="font-size:12px;background:#fdeaea;color:#8b1f1f;padding:4px 10px;border-radius:5px"><code>${escHTML(v)}</code> × ${n.toLocaleString()}</span>`).join('')}
+          </div>
+        </div>` : ''}
+
+        ${high > 0 ? `
+        <div class="card" style="margin-bottom:1.5rem">
+          <div style="font-size:11px;font-weight:600;color:#888;text-transform:uppercase;letter-spacing:.08em;margin-bottom:10px">High-confidence sample (first 10 of ${high.toLocaleString()})</div>
+          <table style="width:100%;border-collapse:collapse">
+            <thead><tr style="background:#fafaf8">
+              <th style="padding:8px 10px;text-align:left;font-size:10px;font-weight:600;color:#888;text-transform:uppercase">Address</th>
+              <th style="padding:8px 10px;text-align:left;font-size:10px;font-weight:600;color:#888;text-transform:uppercase">ZIP</th>
+              <th style="padding:8px 10px;text-align:left;font-size:10px;font-weight:600;color:#888;text-transform:uppercase">Current</th>
+              <th style="padding:8px 10px;text-align:left;font-size:10px;font-weight:600;color:#888;text-transform:uppercase">Suggested</th>
+            </tr></thead>
+            <tbody>${highSamples.map(sampleRow).join('')}</tbody>
+          </table>
+        </div>` : ''}
+
+        ${low > 0 ? `
+        <div class="card" style="margin-bottom:1.5rem">
+          <div style="font-size:11px;font-weight:600;color:#888;text-transform:uppercase;letter-spacing:.08em;margin-bottom:10px">Needs manual review — first 10 of ${low.toLocaleString()}</div>
+          <p style="font-size:12px;color:#666;margin:0 0 10px 0">These rows have missing or malformed ZIP codes, so we can't recover the state automatically. Click into each to review and fix manually.</p>
+          <table style="width:100%;border-collapse:collapse">
+            <thead><tr style="background:#fafaf8">
+              <th style="padding:8px 10px;text-align:left;font-size:10px;font-weight:600;color:#888;text-transform:uppercase">Address</th>
+              <th style="padding:8px 10px;text-align:left;font-size:10px;font-weight:600;color:#888;text-transform:uppercase">ZIP</th>
+              <th style="padding:8px 10px;text-align:left;font-size:10px;font-weight:600;color:#888;text-transform:uppercase">Current</th>
+              <th style="padding:8px 10px;text-align:left;font-size:10px;font-weight:600;color:#888;text-transform:uppercase">Suggested</th>
+            </tr></thead>
+            <tbody>${lowSamples.map(sampleRow).join('')}</tbody>
+          </table>
+        </div>` : ''}
+
+        ${totalBad === 0 ? `
+        <div style="text-align:center;padding:40px;background:#fafaf8;border-radius:10px;color:#888">
+          <div style="font-size:14px;color:#1a7a4a;font-weight:500;margin-bottom:4px">✓ All clear</div>
+          <div style="font-size:12px">Every property has a valid state code.</div>
+        </div>` : ''}
+      </div>
+
+      <!-- Delete code modal -->
+      <div id="state-fix-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.4);z-index:9999;align-items:center;justify-content:center">
+        <div style="background:#fff;max-width:420px;border-radius:10px;padding:18px;box-shadow:0 12px 32px rgba(0,0,0,.2)">
+          <div style="font-size:15px;font-weight:600;margin-bottom:6px">Apply ${high.toLocaleString()} state fixes</div>
+          <div style="font-size:12px;color:#666;margin-bottom:12px;line-height:1.5">This updates <code>state_code</code> on ${high.toLocaleString()} property rows. Enter your delete code to confirm.</div>
+          <div id="state-fix-err" style="display:none;background:#fdeaea;border:1px solid #f5c5c5;border-radius:6px;padding:8px 12px;color:#8b1f1f;font-size:12px;margin-bottom:10px"></div>
+          <input type="password" id="state-fix-code" autocomplete="off" placeholder="Delete code" style="width:100%;padding:9px 12px;border:1px solid #ddd;border-radius:7px;font-size:13px;font-family:inherit;box-sizing:border-box" onkeydown="if(event.key==='Enter'){event.preventDefault();applyStateFix();}">
+          <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:14px">
+            <button onclick="document.getElementById('state-fix-modal').style.display='none'" style="padding:8px 14px;background:#fff;color:#666;border:1px solid #ddd;border-radius:7px;font-size:12px;cursor:pointer;font-family:inherit">Cancel</button>
+            <button onclick="applyStateFix()" id="state-fix-confirm" style="padding:8px 14px;background:#1a7a4a;color:#fff;border:none;border-radius:7px;font-size:12px;font-weight:600;cursor:pointer;font-family:inherit">Apply fixes</button>
+          </div>
+        </div>
+      </div>
+
+      <script>
+        function confirmStateFix() {
+          var m = document.getElementById('state-fix-modal');
+          m.style.display = 'flex';
+          document.getElementById('state-fix-err').style.display = 'none';
+          document.getElementById('state-fix-code').value = '';
+          setTimeout(function(){ document.getElementById('state-fix-code').focus(); }, 50);
+        }
+        async function applyStateFix() {
+          var code = document.getElementById('state-fix-code').value;
+          if (!code) { showStateFixErr('Delete code required'); return; }
+          var btn = document.getElementById('state-fix-confirm');
+          btn.disabled = true; btn.textContent = 'Applying…';
+          try {
+            var res = await fetch('/records/_state_cleanup/fix', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ code: code })
+            });
+            var data = await res.json();
+            if (!res.ok || data.error) { showStateFixErr(data.error || 'Fix failed'); btn.disabled=false; btn.textContent='Apply fixes'; return; }
+            window.location.href = '/records/_state_cleanup?msg=' + encodeURIComponent('Fixed ' + data.fixed + ' properties');
+          } catch(e) { showStateFixErr('Network error: ' + e.message); btn.disabled=false; btn.textContent='Apply fixes'; }
+        }
+        function showStateFixErr(m) {
+          var el = document.getElementById('state-fix-err');
+          el.textContent = m; el.style.display='block';
+        }
+      </script>
+    `, 'records'));
+  } catch (e) {
+    console.error('[records/_state_cleanup]', e);
+    res.status(500).send('Error: ' + (e.message || 'unknown'));
+  }
+});
+
+router.post('/_state_cleanup/fix', requireAuth, async (req, res) => {
+  try {
+    const code = req.body.code || '';
+    const verified = await settings.verifyDeleteCode(code);
+    if (!verified) return res.status(403).json({ error: 'Invalid delete code.' });
+
+    // Re-scan — do not trust the count from the GET page; the DB may have
+    // changed since it rendered. Only rows whose ZIP currently maps to a
+    // valid state get fixed. Process in a single transaction so a partial
+    // failure doesn't leave half the rows fixed and half not.
+    const validArr = Array.from(VALID_STATES);
+    const badRes = await query(
+      `SELECT id, zip_code FROM properties
+        WHERE state_code IS NULL
+           OR TRIM(state_code) = ''
+           OR UPPER(TRIM(state_code)) <> ANY($1::text[])`,
+      [validArr]
+    );
+    const fixes = [];
+    for (const r of badRes.rows) {
+      const suggested = lookupStateByZip(r.zip_code);
+      if (suggested) fixes.push({ id: r.id, state: suggested });
+    }
+    if (fixes.length === 0) return res.json({ ok: true, fixed: 0 });
+
+    // Market lookup — build a map of state → market_id. Create any missing
+    // markets up front to keep the inner update loop hot.
+    const neededStates = [...new Set(fixes.map(f => f.state))];
+    const mktRes = await query(
+      `SELECT state_code, id FROM markets WHERE state_code = ANY($1::text[])`,
+      [neededStates]
+    );
+    const mktMap = {};
+    for (const m of mktRes.rows) mktMap[m.state_code] = m.id;
+    for (const s of neededStates) {
+      if (mktMap[s]) continue;
+      const ins = await query(
+        `INSERT INTO markets (state_code, name, state_name) VALUES ($1,$1,$1)
+         ON CONFLICT (state_code) DO UPDATE SET state_code=EXCLUDED.state_code RETURNING id`,
+        [s]
+      );
+      mktMap[s] = ins.rows[0].id;
+    }
+
+    // Apply updates grouped by state so we do N queries (one per state)
+    // instead of one per property. Each query hits only the rows for that
+    // state via ANY($ids::int[]).
+    const byState = {};
+    for (const f of fixes) { (byState[f.state] = byState[f.state] || []).push(f.id); }
+    let fixed = 0;
+    for (const [state, ids] of Object.entries(byState)) {
+      const r = await query(
+        `UPDATE properties SET state_code = $1, market_id = $2, updated_at = NOW()
+          WHERE id = ANY($3::int[])`,
+        [state, mktMap[state], ids]
+      );
+      fixed += r.rowCount;
+    }
+
+    console.log(`[records/_state_cleanup/fix] Fixed ${fixed} properties across ${Object.keys(byState).length} states`);
+    res.json({ ok: true, fixed });
+  } catch (e) {
+    console.error('[records/_state_cleanup/fix]', e);
+    res.status(500).json({ error: e.message });
   }
 });
 
