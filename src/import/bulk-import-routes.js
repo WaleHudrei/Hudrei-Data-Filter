@@ -304,6 +304,17 @@ router.post('/start', requireAuth, upload.single('csvfile'), async (req, res) =>
     // invisible U+FEFF prefix.
     const head = stripBom(req.file.buffer.toString('utf8', 0, Math.min(8192, req.file.buffer.length)));
     const firstPass = Papa.parse(head, { header: true, skipEmptyLines: true, preview: 1 });
+    // 2026-04-21 Gap #6 parity: surface malformed-CSV errors before we go
+    // any further. A fatal parse error at the head (unmatched quote,
+    // delimiter confusion) means every downstream step — header validation,
+    // row counting, streamed commit — is operating on garbage.
+    const headFatalErr = (firstPass.errors || []).find(e => e.type === 'Quotes' || e.type === 'Delimiter');
+    if (headFatalErr) {
+      const rowHint = (headFatalErr.row != null) ? ` near row ${headFatalErr.row + 1}` : '';
+      return res.status(400).json({
+        error: `CSV is malformed${rowHint}: ${headFatalErr.message}. This usually means an unmatched quote or the file isn't comma-separated. Open it in a text editor, fix the bad row, and re-upload.`
+      });
+    }
     const headers = firstPass.meta.fields || [];
     if (!headers.includes('Property address') && !headers.includes('First Name')) {
       return res.status(400).json({ error: 'This doesn\'t look like a REISift export. Expected columns: First Name, Property address, etc.' });
@@ -313,11 +324,21 @@ router.post('/start', requireAuth, upload.single('csvfile'), async (req, res) =>
     // hold the full buffer once while writing to disk; after that, the in-
     // memory copy is eligible for GC.
     let totalRows = 0;
-    Papa.parse(bufferToCsvText(req.file.buffer), {
+    let mismatchCount = 0;
+    const countPass = Papa.parse(bufferToCsvText(req.file.buffer), {
       header: true,
       skipEmptyLines: true,
-      step: () => { totalRows++; }
+      step: (result) => {
+        totalRows++;
+        // Count per-row errors during the count pass so we can warn the user
+        // up front how many rows will get dropped/misaligned. Non-fatal —
+        // the commit step logs individual rows.
+        if (result.errors && result.errors.length) mismatchCount += result.errors.length;
+      }
     });
+    if (mismatchCount > 0) {
+      console.warn(`[bulk-import/parse] ${mismatchCount} rows had field-count mismatches (rows may have misaligned values)`);
+    }
 
     // Write CSV to a temp file so the closure for processImport doesn't keep
     // the whole string pinned in RAM for the job's lifetime.
