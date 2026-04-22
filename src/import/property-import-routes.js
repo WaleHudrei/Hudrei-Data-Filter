@@ -20,8 +20,22 @@ const { inferOwnerType } = require('../owner-type');
 // pass through untouched. This replaces the three older in-file copies that
 // used raw .slice(0,2) fallback (which poisoned the markets table with "46"
 // from ZIP codes that landed in the State column). (Audit #3.)
-function normalizeState(v) {
-  return sharedNormalizeState(v) || '';
+const { lookupStateByZip } = require('./zip-to-state');
+
+// 2026-04-21 State Cleanup: when the state column is garbage ("Owner Occupied",
+// blank, single-letter, etc.) but the ZIP is valid, recover the state from
+// the ZIP prefix rather than skipping the row. This prevents good data from
+// being lost during import when the CSV is messy. Only triggers when the
+// primary normalizeState() returns empty — never overrides a valid explicit
+// state code in the source.
+function normalizeState(v, zipFallback) {
+  const primary = sharedNormalizeState(v);
+  if (primary) return primary;
+  if (zipFallback) {
+    const fromZip = lookupStateByZip(zipFallback);
+    if (fromZip) return fromZip;
+  }
+  return '';
 }
 
 // 2026-04-18 audit fix #21: add fileFilter to reject non-CSV uploads.
@@ -1200,7 +1214,7 @@ router.post('/commit', requireAuth, async (req, res) => {
     for (const row of rows) {
       const street = get(row, 'street');
       const city   = get(row, 'city');
-      const state  = normalizeState(get(row,'state_code'));
+      const state  = normalizeState(get(row,'state_code'), get(row,'zip_code'));
       const zip    = get(row, 'zip_code') || '';
       if (!street || !city || !state) { errors++; continue; }
       // Length guards
@@ -1233,7 +1247,7 @@ router.post('/commit', requireAuth, async (req, res) => {
       const key = [
         (get(row,'street')||'').toLowerCase().trim(),
         (get(row,'city')||'').toLowerCase().trim(),
-        normalizeState(get(row,'state_code')),
+        normalizeState(get(row,'state_code'), get(row,'zip_code')),
         normalizeZip(get(row,'zip_code')),
       ].join('|');
       if (seenKeysSync.has(key)) {
@@ -1252,7 +1266,7 @@ router.post('/commit', requireAuth, async (req, res) => {
     if ((MODE === 'add_only' || MODE === 'update_only') && dedupedRows.length) {
       const tupStreets = dedupedRows.map(r => get(r,'street'));
       const tupCities  = dedupedRows.map(r => get(r,'city'));
-      const tupStates  = dedupedRows.map(r => normalizeState(get(r,'state_code')));
+      const tupStates  = dedupedRows.map(r => normalizeState(get(r,'state_code'), get(r,'zip_code')));
       const tupZips    = dedupedRows.map(r => normalizeZip(get(r,'zip_code')));
       const existsRes = await query(
         `SELECT DISTINCT
@@ -1269,7 +1283,7 @@ router.post('/commit', requireAuth, async (req, res) => {
         const rk = [
           (get(row,'street')||'').toLowerCase().trim(),
           (get(row,'city')||'').toLowerCase().trim(),
-          (normalizeState(get(row,'state_code'))||'').toUpperCase(),
+          (normalizeState(get(row,'state_code'), get(row,'zip_code'))||'').toUpperCase(),
           (normalizeZip(get(row,'zip_code'))||'').slice(0,5),
         ].join('|');
         const isExisting = existing.has(rk);
@@ -1303,7 +1317,7 @@ router.post('/commit', requireAuth, async (req, res) => {
     const deedTypes=[], lienTypes=[], lienDates=[];
 
     for (const row of dedupedRows) {
-      const state = normalizeState(get(row,'state_code'));
+      const state = normalizeState(get(row,'state_code'), get(row,'zip_code'));
       streets.push(get(row,'street'));
       cities.push(get(row,'city'));
       states.push(state);
@@ -1418,7 +1432,7 @@ router.post('/commit', requireAuth, async (req, res) => {
       try {
         const street = get(row,'street');
         const city   = get(row,'city');
-        const state  = normalizeState(get(row,'state_code'));
+        const state  = normalizeState(get(row,'state_code'), get(row,'zip_code'));
         const zip    = normalizeZip(get(row,'zip_code'));
         const key    = (street+'|'+city+'|'+state+'|'+zip).toLowerCase();
         const prop   = propMap[key];
@@ -1762,7 +1776,7 @@ async function runBackgroundImport(jobId, allRows, mapping, filename, resolvedLi
         const key = [
           (get(row,'street')||'').toLowerCase().trim(),
           (get(row,'city')||'').toLowerCase().trim(),
-          normalizeState(get(row,'state_code')),
+          normalizeState(get(row,'state_code'), get(row,'zip_code')),
           normalizeZip(get(row,'zip_code')),
         ].join('|');
         if (seenKeys.has(key)) {
@@ -1869,7 +1883,7 @@ async function runBackgroundImport(jobId, allRows, mapping, filename, resolvedLi
       if ((MODE === 'add_only' || MODE === 'update_only') && dedupedRows.length) {
         const tupStreets = dedupedRows.map(r => get(r,'street'));
         const tupCities  = dedupedRows.map(r => get(r,'city'));
-        const tupStates  = dedupedRows.map(r => normalizeState(get(r,'state_code')));
+        const tupStates  = dedupedRows.map(r => normalizeState(get(r,'state_code'), get(r,'zip_code')));
         const tupZips    = dedupedRows.map(r => normalizeZip(get(r,'zip_code')));
         const existsRes = await query(
           `SELECT DISTINCT
@@ -1886,7 +1900,7 @@ async function runBackgroundImport(jobId, allRows, mapping, filename, resolvedLi
           const rk = [
             (get(row,'street')||'').toLowerCase().trim(),
             (get(row,'city')||'').toLowerCase().trim(),
-            (normalizeState(get(row,'state_code'))||'').toUpperCase(),
+            (normalizeState(get(row,'state_code'), get(row,'zip_code'))||'').toUpperCase(),
             (normalizeZip(get(row,'zip_code'))||'').slice(0,5),
           ].join('|');
           const isExisting = existing.has(rk);
@@ -1917,7 +1931,7 @@ async function runBackgroundImport(jobId, allRows, mapping, filename, resolvedLi
         const deedTypes=[], lienTypes=[], lienDates=[];
 
         for (const row of dedupedRows) {
-          const state = normalizeState(get(row,'state_code'));
+          const state = normalizeState(get(row,'state_code'), get(row,'zip_code'));
           streets.push(get(row,'street')); cities.push(get(row,'city')); states.push(state);
           zips.push(normalizeZip(get(row,'zip_code'))); counties.push(get(row,'county')||null);
           mktIds.push(mktMap[state]||null); sources.push(get(row,'source')||filename||null);
@@ -1999,7 +2013,7 @@ async function runBackgroundImport(jobId, allRows, mapping, filename, resolvedLi
         const rowKey = (r) => (
           get(r,'street') + '|' +
           get(r,'city') + '|' +
-          normalizeState(get(r,'state_code')) + '|' +
+          normalizeState(get(r,'state_code'), get(r,'zip_code')) + '|' +
           normalizeZip(get(r,'zip_code'))
         ).toLowerCase();
 
