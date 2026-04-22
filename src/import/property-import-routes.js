@@ -529,6 +529,35 @@ router.post('/parse', requireAuth, upload.single('csvfile'), async (req, res) =>
     const parsed = Papa.parse(bufferToCsvText(req.file.buffer), { header: true, skipEmptyLines: true });
     const columns = parsed.meta.fields || [];
     const rows = parsed.data;
+
+    // 2026-04-21 Gap #6: Papa.parse never throws — it returns warnings in
+    // parsed.errors. Previously we ignored that array entirely and handed
+    // potentially garbage rows to the downstream pipeline (mapping modal,
+    // preview, eventual INSERT). Two error classes matter:
+    //   • Quotes / Delimiter errors signal the whole file is mis-parsed
+    //     (unmatched quote cascades — every row after the break is
+    //     misaligned). These are FATAL — refuse the upload and tell the
+    //     user exactly which row broke.
+    //   • FieldMismatch errors mean individual rows have too few or too
+    //     many commas vs. the header. These are per-row and survivable —
+    //     the row just has misaligned values but the rest of the file is
+    //     fine. We surface the count in the response so the user knows
+    //     their CSV has dirty rows, but don't block the import.
+    const parseErrors = parsed.errors || [];
+    const fatalErr = parseErrors.find(e => e.type === 'Quotes' || e.type === 'Delimiter');
+    if (fatalErr) {
+      const rowHint = (fatalErr.row != null) ? ` near row ${fatalErr.row + 1}` : '';
+      return res.status(400).json({
+        error: `CSV is malformed${rowHint}: ${fatalErr.message}. This usually means an unmatched quote or wrong delimiter. Open the file in a text editor, find the bad row, and resave — or re-export the source CSV.`
+      });
+    }
+    const mismatchCount = parseErrors.filter(e => e.type === 'FieldMismatch').length;
+    // Expose the mismatch count downstream so the preview page can warn the
+    // user. Non-fatal — the import continues.
+    if (mismatchCount > 0) {
+      console.warn(`[import/parse] ${mismatchCount} rows had field-count mismatches (ignored, but rows may be misaligned)`);
+    }
+
     if (!rows.length) return res.status(400).json({ error: 'File is empty.' });
     const MAX_ROWS = 100000;
     if (rows.length > MAX_ROWS) {
