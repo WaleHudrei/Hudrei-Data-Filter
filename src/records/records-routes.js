@@ -214,6 +214,23 @@ router.get('/', requireAuth, async (req, res) => {
     };
     const mktIncludeList = normalizeArr(req.query.mkt_include);
     const mktExcludeList = normalizeArr(req.query.mkt_exclude);
+    // 2026-04-23 tag include/exclude filters — multi-select replacing the
+    // old single-select `tag` / `phone_tag` params. Back-compat: if an old
+    // URL still passes `?tag=123`, fold it into tagIncludeList so bookmarks
+    // and sidebar links keep working.
+    const tagIncludeList      = normalizeArr(req.query.tag_include).map(v => parseInt(v,10)).filter(Number.isFinite);
+    const tagExcludeList      = normalizeArr(req.query.tag_exclude).map(v => parseInt(v,10)).filter(Number.isFinite);
+    const phoneTagIncludeList = normalizeArr(req.query.phone_tag_include).map(v => parseInt(v,10)).filter(Number.isFinite);
+    const phoneTagExcludeList = normalizeArr(req.query.phone_tag_exclude).map(v => parseInt(v,10)).filter(Number.isFinite);
+    // Legacy single-select fallback — merge into the include list if present
+    if (tag) {
+      const tagInt = parseInt(tag, 10);
+      if (Number.isFinite(tagInt) && !tagIncludeList.includes(tagInt)) tagIncludeList.push(tagInt);
+    }
+    if (phone_tag) {
+      const ptInt = parseInt(phone_tag, 10);
+      if (Number.isFinite(ptInt) && !phoneTagIncludeList.includes(ptInt)) phoneTagIncludeList.push(ptInt);
+    }
 
     // Helper: parse comma- or whitespace-separated values into an array of trimmed strings.
     // "46218, 46219 46220" => ['46218','46219','46220']
@@ -395,10 +412,18 @@ router.get('/', requireAuth, async (req, res) => {
       params.push(maxYoMain);
       idx++;
     }
-    // Tag filter — show only properties that have a specific tag
-    if (tag) {
-      conditions.push(`EXISTS (SELECT 1 FROM property_tags pt_f WHERE pt_f.property_id = p.id AND pt_f.tag_id = $${idx})`);
-      params.push(parseInt(tag)); idx++;
+    // 2026-04-23 Tag Include/Exclude filters (replaced single-select).
+    // INCLUDE: property must have at least ONE of the tags in the list (OR).
+    // EXCLUDE: property must have NONE of the tags (NOT EXISTS).
+    // The legacy single `tag` param (if passed) has already been folded
+    // into tagIncludeList upstream.
+    if (tagIncludeList.length > 0) {
+      conditions.push(`EXISTS (SELECT 1 FROM property_tags pt_f WHERE pt_f.property_id = p.id AND pt_f.tag_id = ANY($${idx}::int[]))`);
+      params.push(tagIncludeList); idx++;
+    }
+    if (tagExcludeList.length > 0) {
+      conditions.push(`NOT EXISTS (SELECT 1 FROM property_tags pt_x WHERE pt_x.property_id = p.id AND pt_x.tag_id = ANY($${idx}::int[]))`);
+      params.push(tagExcludeList); idx++;
     }
     // 2026-04-21 Phone Type filter. "Any linked phone matches" semantics —
     // show properties where at least one phone on the primary contact has
@@ -413,16 +438,24 @@ router.get('/', requireAuth, async (req, res) => {
       )`);
       params.push(phone_type); idx++;
     }
-    // 2026-04-21 Phone Tag filter. Any linked phone with this phone_tag_id.
-    const phoneTagId = safeInt(phone_tag);
-    if (phoneTagId !== null) {
+    // 2026-04-23 Phone Tag Include/Exclude filters (replaced single-select).
+    if (phoneTagIncludeList.length > 0) {
       conditions.push(`EXISTS (
         SELECT 1 FROM phone_tag_links ptl_f
         JOIN phones ph_ptl ON ph_ptl.id = ptl_f.phone_id
         JOIN property_contacts pc_ptl ON pc_ptl.contact_id = ph_ptl.contact_id
-        WHERE pc_ptl.property_id = p.id AND ptl_f.phone_tag_id = $${idx}
+        WHERE pc_ptl.property_id = p.id AND ptl_f.phone_tag_id = ANY($${idx}::int[])
       )`);
-      params.push(phoneTagId); idx++;
+      params.push(phoneTagIncludeList); idx++;
+    }
+    if (phoneTagExcludeList.length > 0) {
+      conditions.push(`NOT EXISTS (
+        SELECT 1 FROM phone_tag_links ptl_x
+        JOIN phones ph_ptlx ON ph_ptlx.id = ptl_x.phone_id
+        JOIN property_contacts pc_ptlx ON pc_ptlx.contact_id = ph_ptlx.contact_id
+        WHERE pc_ptlx.property_id = p.id AND ptl_x.phone_tag_id = ANY($${idx}::int[])
+      )`);
+      params.push(phoneTagExcludeList); idx++;
     }
     // 2026-04-21 Feature 1: Owner Type filter (Person/Company/Trust). Matches
     // on the primary contact's owner_type. Empty string or 'any' = no filter.
@@ -627,6 +660,11 @@ router.get('/', requireAuth, async (req, res) => {
       stateList.forEach(s => parts.push(`state=${encodeURIComponent(s)}`));
       mktIncludeList.forEach(m => parts.push(`mkt_include=${encodeURIComponent(m)}`));
       mktExcludeList.forEach(m => parts.push(`mkt_exclude=${encodeURIComponent(m)}`));
+      // 2026-04-23 Tag/Phone Tag Include+Exclude arrays
+      tagIncludeList.forEach(v => parts.push(`tag_include=${encodeURIComponent(v)}`));
+      tagExcludeList.forEach(v => parts.push(`tag_exclude=${encodeURIComponent(v)}`));
+      phoneTagIncludeList.forEach(v => parts.push(`phone_tag_include=${encodeURIComponent(v)}`));
+      phoneTagExcludeList.forEach(v => parts.push(`phone_tag_exclude=${encodeURIComponent(v)}`));
       parts.push(`page=${newPage}`);
       return '/records?' + parts.join('&');
     };
@@ -641,7 +679,7 @@ router.get('/', requireAuth, async (req, res) => {
       </div>` : '';
 
     // Filter count — multi-select filters count as 1 each regardless of how many values
-    const activeFilterCount = [city,zip,county,type,pipeline,prop_status,mkt_result,occupancy,phones,min_assessed,max_assessed,min_equity,max_equity,min_year,max_year,upload_from,upload_to,min_stack,min_distress,min_owned,max_owned,min_years_owned,max_years_owned,tag,phone_type,phone_tag,owner_type,mailing].filter(Boolean).length + (stackList.length > 0 ? 1 : 0) + (stateList.length > 0 ? 1 : 0) + (mktIncludeList.length > 0 ? 1 : 0) + (mktExcludeList.length > 0 ? 1 : 0);
+    const activeFilterCount = [city,zip,county,type,pipeline,prop_status,mkt_result,occupancy,phones,min_assessed,max_assessed,min_equity,max_equity,min_year,max_year,upload_from,upload_to,min_stack,min_distress,min_owned,max_owned,min_years_owned,max_years_owned,phone_type,owner_type,mailing].filter(Boolean).length + (stackList.length > 0 ? 1 : 0) + (stateList.length > 0 ? 1 : 0) + (mktIncludeList.length > 0 ? 1 : 0) + (mktExcludeList.length > 0 ? 1 : 0) + (tagIncludeList.length > 0 ? 1 : 0) + (tagExcludeList.length > 0 ? 1 : 0) + (phoneTagIncludeList.length > 0 ? 1 : 0) + (phoneTagExcludeList.length > 0 ? 1 : 0);
 
     res.send(shell('Records', `
       <div class="page-header">
@@ -808,11 +846,18 @@ router.get('/', requireAuth, async (req, res) => {
               </select>
             </div>
             <div>
-              <label style="font-size:11px;color:#888;display:block;margin-bottom:3px">Phone Tag</label>
-              <select name="phone_tag" style="width:100%;padding:7px 10px;border:1px solid #ddd;border-radius:7px;font-size:13px;font-family:inherit;background:#fff" ${allPhoneTags.length === 0 ? 'disabled title="No phone tags yet — add them from any property\'s phone card"' : ''}>
-                <option value="">${allPhoneTags.length === 0 ? 'No phone tags yet' : 'Any'}</option>
-                ${allPhoneTags.map(t => `<option value="${t.id}" ${phone_tag == t.id ? 'selected' : ''}>${escHTML(t.name)}</option>`).join('')}
+              <label style="font-size:11px;color:#888;display:block;margin-bottom:3px">Phone Tag — Include</label>
+              <select name="phone_tag_include" multiple size="3" style="width:100%;padding:5px 10px;border:1px solid #ddd;border-radius:7px;font-size:12px;font-family:inherit;background:#fff" ${allPhoneTags.length === 0 ? 'disabled' : ''}>
+                ${allPhoneTags.map(t => `<option value="${t.id}" ${phoneTagIncludeList.includes(t.id) ? 'selected' : ''}>${escHTML(t.name)}</option>`).join('')}
               </select>
+              <div style="font-size:10px;color:#aaa;margin-top:2px">Ctrl/Cmd-click to multi-select · has ANY of these</div>
+            </div>
+            <div>
+              <label style="font-size:11px;color:#888;display:block;margin-bottom:3px">Phone Tag — Exclude</label>
+              <select name="phone_tag_exclude" multiple size="3" style="width:100%;padding:5px 10px;border:1px solid #ddd;border-radius:7px;font-size:12px;font-family:inherit;background:#fff" ${allPhoneTags.length === 0 ? 'disabled' : ''}>
+                ${allPhoneTags.map(t => `<option value="${t.id}" ${phoneTagExcludeList.includes(t.id) ? 'selected' : ''}>${escHTML(t.name)}</option>`).join('')}
+              </select>
+              <div style="font-size:10px;color:#aaa;margin-top:2px">Hide if has ANY of these</div>
             </div>
             <div>
               <label style="font-size:11px;color:#888;display:block;margin-bottom:3px">Properties Owned</label>
@@ -836,11 +881,18 @@ router.get('/', requireAuth, async (req, res) => {
               <div style="font-size:10px;color:#aaa;margin-top:2px">Since last sale date</div>
             </div>
             <div>
-              <label style="font-size:11px;color:#888;display:block;margin-bottom:3px">Tag</label>
-              <select name="tag" style="width:100%;padding:7px 10px;border:1px solid #ddd;border-radius:7px;font-size:13px;font-family:inherit;background:#fff" ${allTags.length === 0 ? 'disabled title="No tags exist yet — add tags from any property\'s detail page or via Manage → Add Tags"' : ''}>
-                <option value="">${allTags.length === 0 ? 'No tags yet' : 'Any'}</option>
-                ${allTags.map(t => `<option value="${t.id}" ${tag == t.id ? 'selected' : ''}>${escHTML(t.name)}</option>`).join('')}
+              <label style="font-size:11px;color:#888;display:block;margin-bottom:3px">Tag — Include</label>
+              <select name="tag_include" multiple size="3" style="width:100%;padding:5px 10px;border:1px solid #ddd;border-radius:7px;font-size:12px;font-family:inherit;background:#fff" ${allTags.length === 0 ? 'disabled' : ''}>
+                ${allTags.map(t => `<option value="${t.id}" ${tagIncludeList.includes(t.id) ? 'selected' : ''}>${escHTML(t.name)}</option>`).join('')}
               </select>
+              <div style="font-size:10px;color:#aaa;margin-top:2px">Ctrl/Cmd-click to multi-select · has ANY of these</div>
+            </div>
+            <div>
+              <label style="font-size:11px;color:#888;display:block;margin-bottom:3px">Tag — Exclude</label>
+              <select name="tag_exclude" multiple size="3" style="width:100%;padding:5px 10px;border:1px solid #ddd;border-radius:7px;font-size:12px;font-family:inherit;background:#fff" ${allTags.length === 0 ? 'disabled' : ''}>
+                ${allTags.map(t => `<option value="${t.id}" ${tagExcludeList.includes(t.id) ? 'selected' : ''}>${escHTML(t.name)}</option>`).join('')}
+              </select>
+              <div style="font-size:10px;color:#aaa;margin-top:2px">Hide if has ANY of these</div>
             </div>
             <div>
               <label style="font-size:11px;color:#888;display:block;margin-bottom:3px">Owner Type</label>
@@ -1878,9 +1930,19 @@ router.post('/export', requireAuth, async (req, res) => {
         params.push(maxYoX); idx++;
       }
       // Tag filter
-      if (qv('tag')) {
-        conditions.push(`EXISTS (SELECT 1 FROM property_tags pt_f WHERE pt_f.property_id = p.id AND pt_f.tag_id = $${idx})`);
-        params.push(parseInt(qv('tag'))); idx++;
+      // 2026-04-23 Tag Include/Exclude parity.
+      const tagIncArr = qvAll('tag_include').map(v => parseInt(v,10)).filter(Number.isFinite);
+      const tagExcArr = qvAll('tag_exclude').map(v => parseInt(v,10)).filter(Number.isFinite);
+      // Legacy single-select fallback
+      const legacyTag = parseInt(qv('tag'),10);
+      if (Number.isFinite(legacyTag) && !tagIncArr.includes(legacyTag)) tagIncArr.push(legacyTag);
+      if (tagIncArr.length > 0) {
+        conditions.push(`EXISTS (SELECT 1 FROM property_tags pt_f WHERE pt_f.property_id = p.id AND pt_f.tag_id = ANY($${idx}::int[]))`);
+        params.push(tagIncArr); idx++;
+      }
+      if (tagExcArr.length > 0) {
+        conditions.push(`NOT EXISTS (SELECT 1 FROM property_tags pt_x WHERE pt_x.property_id = p.id AND pt_x.tag_id = ANY($${idx}::int[]))`);
+        params.push(tagExcArr); idx++;
       }
       // 2026-04-21 phone_type + phone_tag parity filters.
       const VPT_SA = ['mobile','landline','voip','unknown'];
@@ -1889,10 +1951,18 @@ router.post('/export', requireAuth, async (req, res) => {
         conditions.push(`EXISTS (SELECT 1 FROM phones ph_pt JOIN property_contacts pc_pt ON pc_pt.contact_id = ph_pt.contact_id WHERE pc_pt.property_id = p.id AND LOWER(ph_pt.phone_type) = $${idx})`);
         params.push(ptSA); idx++;
       }
-      const ptagSA = safeInt(qv('phone_tag'));
-      if (ptagSA !== null) {
-        conditions.push(`EXISTS (SELECT 1 FROM phone_tag_links ptl_f JOIN phones ph_ptl ON ph_ptl.id = ptl_f.phone_id JOIN property_contacts pc_ptl ON pc_ptl.contact_id = ph_ptl.contact_id WHERE pc_ptl.property_id = p.id AND ptl_f.phone_tag_id = $${idx})`);
-        params.push(ptagSA); idx++;
+      // 2026-04-23 Phone Tag Include/Exclude parity.
+      const ptagIncArr = qvAll('phone_tag_include').map(v => parseInt(v,10)).filter(Number.isFinite);
+      const ptagExcArr = qvAll('phone_tag_exclude').map(v => parseInt(v,10)).filter(Number.isFinite);
+      const legacyPtag = parseInt(qv('phone_tag'),10);
+      if (Number.isFinite(legacyPtag) && !ptagIncArr.includes(legacyPtag)) ptagIncArr.push(legacyPtag);
+      if (ptagIncArr.length > 0) {
+        conditions.push(`EXISTS (SELECT 1 FROM phone_tag_links ptl_f JOIN phones ph_ptl ON ph_ptl.id = ptl_f.phone_id JOIN property_contacts pc_ptl ON pc_ptl.contact_id = ph_ptl.contact_id WHERE pc_ptl.property_id = p.id AND ptl_f.phone_tag_id = ANY($${idx}::int[]))`);
+        params.push(ptagIncArr); idx++;
+      }
+      if (ptagExcArr.length > 0) {
+        conditions.push(`NOT EXISTS (SELECT 1 FROM phone_tag_links ptl_x JOIN phones ph_ptlx ON ph_ptlx.id = ptl_x.phone_id JOIN property_contacts pc_ptlx ON pc_ptlx.contact_id = ph_ptlx.contact_id WHERE pc_ptlx.property_id = p.id AND ptl_x.phone_tag_id = ANY($${idx}::int[]))`);
+        params.push(ptagExcArr); idx++;
       }
       // 2026-04-21 Feature 1 parity: Owner Type. Mirrors main list route.
       if (qv('owner_type') && VALID_OWNER_TYPES.includes(qv('owner_type'))) {
@@ -4427,9 +4497,19 @@ router.post('/delete', requireAuth, async (req, res) => {
         params.push(maxYoDel); idx++;
       }
       // Tag filter
-      if (qv('tag')) {
-        conditions.push(`EXISTS (SELECT 1 FROM property_tags pt_f WHERE pt_f.property_id = p.id AND pt_f.tag_id = $${idx})`);
-        params.push(parseInt(qv('tag'))); idx++;
+      // 2026-04-23 Tag Include/Exclude parity.
+      const tagIncArr = qvAll('tag_include').map(v => parseInt(v,10)).filter(Number.isFinite);
+      const tagExcArr = qvAll('tag_exclude').map(v => parseInt(v,10)).filter(Number.isFinite);
+      // Legacy single-select fallback
+      const legacyTag = parseInt(qv('tag'),10);
+      if (Number.isFinite(legacyTag) && !tagIncArr.includes(legacyTag)) tagIncArr.push(legacyTag);
+      if (tagIncArr.length > 0) {
+        conditions.push(`EXISTS (SELECT 1 FROM property_tags pt_f WHERE pt_f.property_id = p.id AND pt_f.tag_id = ANY($${idx}::int[]))`);
+        params.push(tagIncArr); idx++;
+      }
+      if (tagExcArr.length > 0) {
+        conditions.push(`NOT EXISTS (SELECT 1 FROM property_tags pt_x WHERE pt_x.property_id = p.id AND pt_x.tag_id = ANY($${idx}::int[]))`);
+        params.push(tagExcArr); idx++;
       }
       // 2026-04-21 phone_type + phone_tag parity filters.
       const VPT_SA = ['mobile','landline','voip','unknown'];
@@ -4438,10 +4518,18 @@ router.post('/delete', requireAuth, async (req, res) => {
         conditions.push(`EXISTS (SELECT 1 FROM phones ph_pt JOIN property_contacts pc_pt ON pc_pt.contact_id = ph_pt.contact_id WHERE pc_pt.property_id = p.id AND LOWER(ph_pt.phone_type) = $${idx})`);
         params.push(ptSA); idx++;
       }
-      const ptagSA = safeInt(qv('phone_tag'));
-      if (ptagSA !== null) {
-        conditions.push(`EXISTS (SELECT 1 FROM phone_tag_links ptl_f JOIN phones ph_ptl ON ph_ptl.id = ptl_f.phone_id JOIN property_contacts pc_ptl ON pc_ptl.contact_id = ph_ptl.contact_id WHERE pc_ptl.property_id = p.id AND ptl_f.phone_tag_id = $${idx})`);
-        params.push(ptagSA); idx++;
+      // 2026-04-23 Phone Tag Include/Exclude parity.
+      const ptagIncArr = qvAll('phone_tag_include').map(v => parseInt(v,10)).filter(Number.isFinite);
+      const ptagExcArr = qvAll('phone_tag_exclude').map(v => parseInt(v,10)).filter(Number.isFinite);
+      const legacyPtag = parseInt(qv('phone_tag'),10);
+      if (Number.isFinite(legacyPtag) && !ptagIncArr.includes(legacyPtag)) ptagIncArr.push(legacyPtag);
+      if (ptagIncArr.length > 0) {
+        conditions.push(`EXISTS (SELECT 1 FROM phone_tag_links ptl_f JOIN phones ph_ptl ON ph_ptl.id = ptl_f.phone_id JOIN property_contacts pc_ptl ON pc_ptl.contact_id = ph_ptl.contact_id WHERE pc_ptl.property_id = p.id AND ptl_f.phone_tag_id = ANY($${idx}::int[]))`);
+        params.push(ptagIncArr); idx++;
+      }
+      if (ptagExcArr.length > 0) {
+        conditions.push(`NOT EXISTS (SELECT 1 FROM phone_tag_links ptl_x JOIN phones ph_ptlx ON ph_ptlx.id = ptl_x.phone_id JOIN property_contacts pc_ptlx ON pc_ptlx.contact_id = ph_ptlx.contact_id WHERE pc_ptlx.property_id = p.id AND ptl_x.phone_tag_id = ANY($${idx}::int[]))`);
+        params.push(ptagExcArr); idx++;
       }
       // 2026-04-21 Feature 1 parity: Owner Type.
       if (qv('owner_type') && VALID_OWNER_TYPES.includes(qv('owner_type'))) {
@@ -4728,17 +4816,38 @@ router.post('/bulk-tag', requireAuth, async (req, res) => {
         params.push(maxYoBt); idx++;
       }
 
-      if (qv('tag')) { conditions.push(`EXISTS (SELECT 1 FROM property_tags pt_f WHERE pt_f.property_id = p.id AND pt_f.tag_id = $${idx})`); params.push(parseInt(qv('tag'))); idx++; }
+      // 2026-04-23 Tag Include/Exclude parity.
+      const tagIncArr = qvAll('tag_include').map(v => parseInt(v,10)).filter(Number.isFinite);
+      const tagExcArr = qvAll('tag_exclude').map(v => parseInt(v,10)).filter(Number.isFinite);
+      // Legacy single-select fallback
+      const legacyTag = parseInt(qv('tag'),10);
+      if (Number.isFinite(legacyTag) && !tagIncArr.includes(legacyTag)) tagIncArr.push(legacyTag);
+      if (tagIncArr.length > 0) {
+        conditions.push(`EXISTS (SELECT 1 FROM property_tags pt_f WHERE pt_f.property_id = p.id AND pt_f.tag_id = ANY($${idx}::int[]))`);
+        params.push(tagIncArr); idx++;
+      }
+      if (tagExcArr.length > 0) {
+        conditions.push(`NOT EXISTS (SELECT 1 FROM property_tags pt_x WHERE pt_x.property_id = p.id AND pt_x.tag_id = ANY($${idx}::int[]))`);
+        params.push(tagExcArr); idx++;
+      }
       const VPT_SA = ['mobile','landline','voip','unknown'];
       const ptSA = qv('phone_type');
       if (ptSA && VPT_SA.includes(ptSA)) {
         conditions.push(`EXISTS (SELECT 1 FROM phones ph_pt JOIN property_contacts pc_pt ON pc_pt.contact_id = ph_pt.contact_id WHERE pc_pt.property_id = p.id AND LOWER(ph_pt.phone_type) = $${idx})`);
         params.push(ptSA); idx++;
       }
-      const ptagSA = safeInt(qv('phone_tag'));
-      if (ptagSA !== null) {
-        conditions.push(`EXISTS (SELECT 1 FROM phone_tag_links ptl_f JOIN phones ph_ptl ON ph_ptl.id = ptl_f.phone_id JOIN property_contacts pc_ptl ON pc_ptl.contact_id = ph_ptl.contact_id WHERE pc_ptl.property_id = p.id AND ptl_f.phone_tag_id = $${idx})`);
-        params.push(ptagSA); idx++;
+      // 2026-04-23 Phone Tag Include/Exclude parity.
+      const ptagIncArr = qvAll('phone_tag_include').map(v => parseInt(v,10)).filter(Number.isFinite);
+      const ptagExcArr = qvAll('phone_tag_exclude').map(v => parseInt(v,10)).filter(Number.isFinite);
+      const legacyPtag = parseInt(qv('phone_tag'),10);
+      if (Number.isFinite(legacyPtag) && !ptagIncArr.includes(legacyPtag)) ptagIncArr.push(legacyPtag);
+      if (ptagIncArr.length > 0) {
+        conditions.push(`EXISTS (SELECT 1 FROM phone_tag_links ptl_f JOIN phones ph_ptl ON ph_ptl.id = ptl_f.phone_id JOIN property_contacts pc_ptl ON pc_ptl.contact_id = ph_ptl.contact_id WHERE pc_ptl.property_id = p.id AND ptl_f.phone_tag_id = ANY($${idx}::int[]))`);
+        params.push(ptagIncArr); idx++;
+      }
+      if (ptagExcArr.length > 0) {
+        conditions.push(`NOT EXISTS (SELECT 1 FROM phone_tag_links ptl_x JOIN phones ph_ptlx ON ph_ptlx.id = ptl_x.phone_id JOIN property_contacts pc_ptlx ON pc_ptlx.contact_id = ph_ptlx.contact_id WHERE pc_ptlx.property_id = p.id AND ptl_x.phone_tag_id = ANY($${idx}::int[]))`);
+        params.push(ptagExcArr); idx++;
       }
       // 2026-04-21 Feature 1 parity: Owner Type.
       if (qv('owner_type') && VALID_OWNER_TYPES.includes(qv('owner_type'))) {
@@ -5061,9 +5170,19 @@ router.post('/remove-from-list', requireAuth, async (req, res) => {
         params.push(maxYoRfl); idx++;
       }
       // Tag filter
-      if (qv('tag')) {
-        conditions.push(`EXISTS (SELECT 1 FROM property_tags pt_f WHERE pt_f.property_id = p.id AND pt_f.tag_id = $${idx})`);
-        params.push(parseInt(qv('tag'))); idx++;
+      // 2026-04-23 Tag Include/Exclude parity.
+      const tagIncArr = qvAll('tag_include').map(v => parseInt(v,10)).filter(Number.isFinite);
+      const tagExcArr = qvAll('tag_exclude').map(v => parseInt(v,10)).filter(Number.isFinite);
+      // Legacy single-select fallback
+      const legacyTag = parseInt(qv('tag'),10);
+      if (Number.isFinite(legacyTag) && !tagIncArr.includes(legacyTag)) tagIncArr.push(legacyTag);
+      if (tagIncArr.length > 0) {
+        conditions.push(`EXISTS (SELECT 1 FROM property_tags pt_f WHERE pt_f.property_id = p.id AND pt_f.tag_id = ANY($${idx}::int[]))`);
+        params.push(tagIncArr); idx++;
+      }
+      if (tagExcArr.length > 0) {
+        conditions.push(`NOT EXISTS (SELECT 1 FROM property_tags pt_x WHERE pt_x.property_id = p.id AND pt_x.tag_id = ANY($${idx}::int[]))`);
+        params.push(tagExcArr); idx++;
       }
       // 2026-04-21 phone_type + phone_tag parity filters.
       const VPT_SA = ['mobile','landline','voip','unknown'];
@@ -5072,10 +5191,18 @@ router.post('/remove-from-list', requireAuth, async (req, res) => {
         conditions.push(`EXISTS (SELECT 1 FROM phones ph_pt JOIN property_contacts pc_pt ON pc_pt.contact_id = ph_pt.contact_id WHERE pc_pt.property_id = p.id AND LOWER(ph_pt.phone_type) = $${idx})`);
         params.push(ptSA); idx++;
       }
-      const ptagSA = safeInt(qv('phone_tag'));
-      if (ptagSA !== null) {
-        conditions.push(`EXISTS (SELECT 1 FROM phone_tag_links ptl_f JOIN phones ph_ptl ON ph_ptl.id = ptl_f.phone_id JOIN property_contacts pc_ptl ON pc_ptl.contact_id = ph_ptl.contact_id WHERE pc_ptl.property_id = p.id AND ptl_f.phone_tag_id = $${idx})`);
-        params.push(ptagSA); idx++;
+      // 2026-04-23 Phone Tag Include/Exclude parity.
+      const ptagIncArr = qvAll('phone_tag_include').map(v => parseInt(v,10)).filter(Number.isFinite);
+      const ptagExcArr = qvAll('phone_tag_exclude').map(v => parseInt(v,10)).filter(Number.isFinite);
+      const legacyPtag = parseInt(qv('phone_tag'),10);
+      if (Number.isFinite(legacyPtag) && !ptagIncArr.includes(legacyPtag)) ptagIncArr.push(legacyPtag);
+      if (ptagIncArr.length > 0) {
+        conditions.push(`EXISTS (SELECT 1 FROM phone_tag_links ptl_f JOIN phones ph_ptl ON ph_ptl.id = ptl_f.phone_id JOIN property_contacts pc_ptl ON pc_ptl.contact_id = ph_ptl.contact_id WHERE pc_ptl.property_id = p.id AND ptl_f.phone_tag_id = ANY($${idx}::int[]))`);
+        params.push(ptagIncArr); idx++;
+      }
+      if (ptagExcArr.length > 0) {
+        conditions.push(`NOT EXISTS (SELECT 1 FROM phone_tag_links ptl_x JOIN phones ph_ptlx ON ph_ptlx.id = ptl_x.phone_id JOIN property_contacts pc_ptlx ON pc_ptlx.contact_id = ph_ptlx.contact_id WHERE pc_ptlx.property_id = p.id AND ptl_x.phone_tag_id = ANY($${idx}::int[]))`);
+        params.push(ptagExcArr); idx++;
       }
       // 2026-04-21 Feature 1 parity: Owner Type.
       if (qv('owner_type') && VALID_OWNER_TYPES.includes(qv('owner_type'))) {
@@ -5369,9 +5496,19 @@ router.post('/add-to-list', requireAuth, async (req, res) => {
         conditions.push(`p.last_sale_date IS NOT NULL AND EXTRACT(YEAR FROM AGE(CURRENT_DATE, p.last_sale_date)) <= $${idx}`);
         params.push(maxYoAtl); idx++;
       }
-      if (qv('tag')) {
-        conditions.push(`EXISTS (SELECT 1 FROM property_tags pt_f WHERE pt_f.property_id = p.id AND pt_f.tag_id = $${idx})`);
-        params.push(parseInt(qv('tag'))); idx++;
+      // 2026-04-23 Tag Include/Exclude parity.
+      const tagIncArr = qvAll('tag_include').map(v => parseInt(v,10)).filter(Number.isFinite);
+      const tagExcArr = qvAll('tag_exclude').map(v => parseInt(v,10)).filter(Number.isFinite);
+      // Legacy single-select fallback
+      const legacyTag = parseInt(qv('tag'),10);
+      if (Number.isFinite(legacyTag) && !tagIncArr.includes(legacyTag)) tagIncArr.push(legacyTag);
+      if (tagIncArr.length > 0) {
+        conditions.push(`EXISTS (SELECT 1 FROM property_tags pt_f WHERE pt_f.property_id = p.id AND pt_f.tag_id = ANY($${idx}::int[]))`);
+        params.push(tagIncArr); idx++;
+      }
+      if (tagExcArr.length > 0) {
+        conditions.push(`NOT EXISTS (SELECT 1 FROM property_tags pt_x WHERE pt_x.property_id = p.id AND pt_x.tag_id = ANY($${idx}::int[]))`);
+        params.push(tagExcArr); idx++;
       }
       // 2026-04-21 phone_type + phone_tag parity filters.
       const VPT_SA = ['mobile','landline','voip','unknown'];
@@ -5380,10 +5517,18 @@ router.post('/add-to-list', requireAuth, async (req, res) => {
         conditions.push(`EXISTS (SELECT 1 FROM phones ph_pt JOIN property_contacts pc_pt ON pc_pt.contact_id = ph_pt.contact_id WHERE pc_pt.property_id = p.id AND LOWER(ph_pt.phone_type) = $${idx})`);
         params.push(ptSA); idx++;
       }
-      const ptagSA = safeInt(qv('phone_tag'));
-      if (ptagSA !== null) {
-        conditions.push(`EXISTS (SELECT 1 FROM phone_tag_links ptl_f JOIN phones ph_ptl ON ph_ptl.id = ptl_f.phone_id JOIN property_contacts pc_ptl ON pc_ptl.contact_id = ph_ptl.contact_id WHERE pc_ptl.property_id = p.id AND ptl_f.phone_tag_id = $${idx})`);
-        params.push(ptagSA); idx++;
+      // 2026-04-23 Phone Tag Include/Exclude parity.
+      const ptagIncArr = qvAll('phone_tag_include').map(v => parseInt(v,10)).filter(Number.isFinite);
+      const ptagExcArr = qvAll('phone_tag_exclude').map(v => parseInt(v,10)).filter(Number.isFinite);
+      const legacyPtag = parseInt(qv('phone_tag'),10);
+      if (Number.isFinite(legacyPtag) && !ptagIncArr.includes(legacyPtag)) ptagIncArr.push(legacyPtag);
+      if (ptagIncArr.length > 0) {
+        conditions.push(`EXISTS (SELECT 1 FROM phone_tag_links ptl_f JOIN phones ph_ptl ON ph_ptl.id = ptl_f.phone_id JOIN property_contacts pc_ptl ON pc_ptl.contact_id = ph_ptl.contact_id WHERE pc_ptl.property_id = p.id AND ptl_f.phone_tag_id = ANY($${idx}::int[]))`);
+        params.push(ptagIncArr); idx++;
+      }
+      if (ptagExcArr.length > 0) {
+        conditions.push(`NOT EXISTS (SELECT 1 FROM phone_tag_links ptl_x JOIN phones ph_ptlx ON ph_ptlx.id = ptl_x.phone_id JOIN property_contacts pc_ptlx ON pc_ptlx.contact_id = ph_ptlx.contact_id WHERE pc_ptlx.property_id = p.id AND ptl_x.phone_tag_id = ANY($${idx}::int[]))`);
+        params.push(ptagExcArr); idx++;
       }
       if (qv('owner_type') && VALID_OWNER_TYPES.includes(qv('owner_type'))) {
         conditions.push(`c.owner_type = $${idx}`);
