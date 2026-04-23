@@ -76,7 +76,7 @@ function renderFilterPanel(opts) {
                           return `<div class="state-ms-option" data-id="${s.code}" data-search="${(s.code+' '+s.name).toLowerCase()}" onclick="toggleStateMsOption(event,'${s.code}','${safeName}')" style="padding:6px 10px;font-size:13px;cursor:pointer;display:flex;align-items:center;gap:8px;${isSel ? 'background:#f0f7ff;color:#1a4a9a;font-weight:500' : ''}" onmouseover="if(!this.classList.contains('state-ms-selected'))this.style.background='#fafaf8'" onmouseout="if(!this.classList.contains('state-ms-selected'))this.style.background=''">
                             <span style="width:14px;display:inline-block">${isSel ? '✓' : ''}</span>
                             <span style="font-weight:500;font-family:monospace;width:28px">${s.code}</span>
-                            <span style="color:#888">${s.name}</span>
+                            <span style="color:#888">${escHTML(s.name || '')}</span>
                           </div>`;
                         }).join('')}
                   </div>
@@ -311,7 +311,7 @@ function renderFilterPanel(opts) {
                     ${stackList.length === 0 ? '<span id="ms-placeholder" style="color:#aaa;font-size:13px;padding:4px 2px">Select lists…</span>' : ''}
                     ${allLists.filter(l => stackList.includes(String(l.id))).map(l => `
                       <span class="ms-pill" data-id="${l.id}" style="display:inline-flex;align-items:center;gap:5px;background:#e8f0ff;color:#1a4a9a;padding:3px 8px;border-radius:5px;font-size:12px;font-weight:500">
-                        ${l.list_name}
+                        ${escHTML(l.list_name)}
                         <button type="button" onclick="removeMsPill(event, ${l.id})" style="background:none;border:none;color:#1a4a9a;cursor:pointer;padding:0;font-size:14px;line-height:1;font-family:inherit">×</button>
                       </span>
                     `).join('')}
@@ -325,9 +325,13 @@ function renderFilterPanel(opts) {
                       ? '<div style="color:#aaa;font-size:13px;padding:10px">No lists available yet</div>'
                       : allLists.map(l => {
                           const isSel = stackList.includes(String(l.id));
-                          return `<div class="ms-option" data-id="${l.id}" data-name="${l.list_name.toLowerCase()}" onclick="toggleMsOption(event, ${l.id}, '${l.list_name.replace(/'/g, "\\'")}')" style="padding:8px 12px;font-size:13px;cursor:pointer;display:flex;align-items:center;gap:8px;${isSel ? 'background:#f0f7ff;color:#1a4a9a;font-weight:500' : ''}" onmouseover="if(!this.classList.contains('ms-selected'))this.style.background='#fafaf8'" onmouseout="if(!this.classList.contains('ms-selected'))this.style.background=''">
+                          // Escape list_name for HTML context AND for JS string
+                          // context inside the onclick handler.
+                          const nameHtml = escHTML(l.list_name || '');
+                          const nameJs   = String(l.list_name || '').replace(/\\/g, '\\\\').replace(/'/g, "\\'").replace(/</g, '\\x3C');
+                          return `<div class="ms-option" data-id="${l.id}" data-name="${nameHtml.toLowerCase()}" onclick="toggleMsOption(event, ${l.id}, '${nameJs}')" style="padding:8px 12px;font-size:13px;cursor:pointer;display:flex;align-items:center;gap:8px;${isSel ? 'background:#f0f7ff;color:#1a4a9a;font-weight:500' : ''}" onmouseover="if(!this.classList.contains('ms-selected'))this.style.background='#fafaf8'" onmouseout="if(!this.classList.contains('ms-selected'))this.style.background=''">
                             <span style="width:14px;display:inline-block">${isSel ? '✓' : ''}</span>
-                            <span>${l.list_name}</span>
+                            <span>${nameHtml}</span>
                           </div>`;
                         }).join('')}
                   </div>
