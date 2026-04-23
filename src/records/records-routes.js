@@ -2505,14 +2505,14 @@ router.get('/:id(\\d+)', requireAuth, async (req, res) => {
           const scOtC = scOtColors[scOt] || scOtColors.Person;
           // Bug fix 2026-04-23: escape all DB-sourced values before rendering —
           // CSV imports can contain arbitrary strings including HTML.
-          const scFirstSafe = esc(sc.first_name || '');
-          const scLastSafe  = esc(sc.last_name  || '');
-          const scEmail1Safe = esc(sc.email_1 || '');
+          const scFirstSafe = escHTML(sc.first_name || '');
+          const scLastSafe  = escHTML(sc.last_name  || '');
+          const scEmail1Safe = escHTML(sc.email_1 || '');
           // Secondary contacts created from Owner 2 columns don't carry a
           // separate mailing address — the CSV has one mailing address per row
           // (Owner 1's). Show mailing addr only if it's actually populated.
           const scMailingParts = [sc.mailing_address, sc.mailing_city, sc.mailing_state, sc.mailing_zip].filter(Boolean);
-          const scMailingAddrSafe = scMailingParts.length ? esc(scMailingParts.join(', ')) : '';
+          const scMailingAddrSafe = scMailingParts.length ? escHTML(scMailingParts.join(', ')) : '';
           return `<div class="card" style="border-left:3px solid #e8f0ff">
             <div class="sec-lbl" style="display:flex;align-items:center;gap:8px">
               Co-Owner
@@ -2521,7 +2521,7 @@ router.get('/:id(\\d+)', requireAuth, async (req, res) => {
             <div class="kv-grid" style="margin-bottom:1.25rem">
               <div class="kv"><div class="kv-label">First Name</div><div class="kv-val">${scFirstSafe || '—'}</div></div>
               <div class="kv"><div class="kv-label">Last Name</div><div class="kv-val">${scLastSafe || '—'}</div></div>
-              ${scOt ? `<div class="kv"><div class="kv-label">Owner Type</div><div class="kv-val"><span style="background:${scOtC.bg};color:${scOtC.text};padding:3px 10px;border-radius:5px;font-size:11px;font-weight:600;display:inline-block">${esc(scOt)}</span></div></div>` : ''}
+              ${scOt ? `<div class="kv"><div class="kv-label">Owner Type</div><div class="kv-val"><span style="background:${scOtC.bg};color:${scOtC.text};padding:3px 10px;border-radius:5px;font-size:11px;font-weight:600;display:inline-block">${escHTML(scOt)}</span></div></div>` : ''}
               ${scMailingAddrSafe ? `<div class="kv" style="grid-column:1/-1"><div class="kv-label">Mailing Address</div><div class="kv-val">${scMailingAddrSafe}</div></div>` : ''}
               ${scEmail1Safe ? `<div class="kv"><div class="kv-label">Email 1</div><div class="kv-val" style="word-break:break-all;overflow-wrap:anywhere;min-width:0"><a href="mailto:${scEmail1Safe}" style="color:#1a4a9a">${scEmail1Safe}</a></div></div>` : ''}
             </div>
