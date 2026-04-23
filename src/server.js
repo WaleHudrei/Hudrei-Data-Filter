@@ -157,6 +157,7 @@ const bulkImportRoutes = require('./import/bulk-import-routes');
 const activityRoutes = require('./activity-routes');
 // 2026-04-21 Feature 5: owner dashboard routes (/owners/:id)
 const ownersRoutes = require('./owners/owners-routes');
+const listTypesRoutes = require('./lists/list-types-routes');
 
 const COL = { phone:'Phone', dispo:'Log Type', listname:'Original lead file', date:'Log Time', fname:'First Name', lname:'Last Name', addr:'Address', city:'City', state:'State', zip:'Zip Code', notes:'Call Notes' };
 
@@ -686,6 +687,7 @@ app.use('/import/bulk', bulkImportRoutes);
 app.use('/activity', activityRoutes);
 // 2026-04-21 Feature 5: owner dashboard
 app.use('/owners', ownersRoutes);
+app.use('/lists', listTypesRoutes);
 
 
 
@@ -800,6 +802,22 @@ app.get('/dashboard', requireAuth, async (req, res) => {
       GROUP BY l.id, l.list_name
       ORDER BY prop_count DESC LIMIT 5
     `);
+
+    // 2026-04-23 List Registry widget — overdue/due-soon counts
+    let listRegistryStats = { overdue: 0, dueSoon: 0, total: 0 };
+    try {
+      const ltRes = await dbQuery(`SELECT last_pull_date, frequency_days FROM list_templates WHERE action = 'pull'`);
+      const today = new Date();
+      const weekOut = new Date(); weekOut.setDate(weekOut.getDate() + 7);
+      for (const r of ltRes.rows) {
+        if (!r.last_pull_date || !r.frequency_days) continue;
+        const next = new Date(r.last_pull_date);
+        next.setDate(next.getDate() + parseInt(r.frequency_days, 10));
+        if (next < today) listRegistryStats.overdue++;
+        else if (next <= weekOut) listRegistryStats.dueSoon++;
+      }
+      listRegistryStats.total = ltRes.rows.length;
+    } catch(e) { /* table may not exist on first deploy */ }
 
     const fmtNum = n => Number(n||0).toLocaleString();
     const fmtDate = v => v ? new Date(v).toLocaleDateString('en-US',{month:'short',day:'numeric',year:'numeric'}) : '—';
@@ -986,6 +1004,37 @@ app.get('/dashboard', requireAuth, async (req, res) => {
           <div class="sec-lbl" style="margin-bottom:0">Top Lists</div>
           <div style="margin-top:10px">${listRows}</div>
           <a href="/lists" style="font-size:12px;color:#888;text-decoration:none;display:block;margin-top:10px">View all lists →</a>
+        </div>
+
+        <!-- 2026-04-23 List Registry widget -->
+        <div class="card" style="border:1px solid ${listRegistryStats.overdue>0?'#f5c5c5':listRegistryStats.dueSoon>0?'#ffe0a0':'#f0efe9'}">
+          <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px">
+            <div class="sec-lbl" style="margin-bottom:0">List Registry</div>
+            <a href="/lists/types" style="font-size:11px;color:#888;text-decoration:none">View all →</a>
+          </div>
+          ${listRegistryStats.total === 0
+            ? `<div style="font-size:12px;color:#aaa">No list types set up yet. <a href="/lists/types" style="color:#1a4a9a">Get started →</a></div>`
+            : `<div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px">
+                <div style="text-align:center;padding:8px;background:${listRegistryStats.overdue>0?'#fdeaea':'#fafaf8'};border-radius:7px">
+                  <div style="font-size:20px;font-weight:600;color:${listRegistryStats.overdue>0?'#c0392b':'#aaa'}">${listRegistryStats.overdue}</div>
+                  <div style="font-size:10px;color:#888;margin-top:2px">Overdue</div>
+                </div>
+                <div style="text-align:center;padding:8px;background:${listRegistryStats.dueSoon>0?'#fffdf0':'#fafaf8'};border-radius:7px">
+                  <div style="font-size:20px;font-weight:600;color:${listRegistryStats.dueSoon>0?'#c07a1a':'#aaa'}">${listRegistryStats.dueSoon}</div>
+                  <div style="font-size:10px;color:#888;margin-top:2px">Due This Week</div>
+                </div>
+                <div style="text-align:center;padding:8px;background:#fafaf8;border-radius:7px">
+                  <div style="font-size:20px;font-weight:600;color:#555">${listRegistryStats.total}</div>
+                  <div style="font-size:10px;color:#888;margin-top:2px">Total Lists</div>
+                </div>
+              </div>
+              ${listRegistryStats.overdue > 0
+                ? `<div style="margin-top:10px;font-size:11px;color:#c0392b;font-weight:500">⚠ ${listRegistryStats.overdue} list${listRegistryStats.overdue>1?'s are':' is'} overdue for a pull. <a href="/lists/types" style="color:#c0392b">Review →</a></div>`
+                : listRegistryStats.dueSoon > 0
+                  ? `<div style="margin-top:10px;font-size:11px;color:#c07a1a;font-weight:500">⏰ ${listRegistryStats.dueSoon} list${listRegistryStats.dueSoon>1?'s are':' is'} due this week. <a href="/lists/types" style="color:#c07a1a">Review →</a></div>`
+                  : `<div style="margin-top:10px;font-size:11px;color:#1a7a4a">✓ All lists are up to date.</div>`
+              }`
+          }
         </div>
       </div>
 
