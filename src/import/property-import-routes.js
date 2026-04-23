@@ -2698,40 +2698,112 @@ async function runBackgroundImport(jobId, allRows, mapping, filename, resolvedLi
           console.log(`[property-import] attached ${coOwnerTasks.length} co-owner(s): ${coUpdateTasks.length} existing (updated), ${coReuseTasks.length} reused, ${coNewTasks.length} new`);
         }
 
-        // 2026-04-23 Owner 2 — create secondary contacts from mapped
-        // owner_2_first_name / owner_2_last_name fields. Row-by-row because
-        // we need per-property duplicate checks. The batch size is small
-        // enough that N queries here is not a performance concern.
+        // 2026-04-23 Owner 2 — BULK pattern (rewritten after N+1 disaster).
+        //
+        // Previous implementation did SELECT + INSERT + INSERT per row, which
+        // produced ~1500 round-trips per 500-row batch. A 19k-row import
+        // hung for hours. This version does 3 queries per batch total:
+        //   1. Bulk SELECT existing Owner 2 contacts on these properties
+        //      (one query returns the set of (property_id, normalized name)
+        //      pairs that already exist — we filter in JS)
+        //   2. Bulk reserve contact IDs via generate_series (one query)
+        //   3. Bulk INSERT new contacts via UNNEST (one query)
+        //   4. Bulk INSERT property_contacts links via UNNEST (one query)
+        //
+        // This mirrors the proven pattern used for primary contacts + co-owners
+        // above. Safe to re-run — dedup against existing Owner 2s by
+        // (property_id, LOWER(TRIM(first_name)), LOWER(TRIM(last_name))).
+
+        // Step 1: Collect Owner 2 candidates from this batch's rows
+        const o2Candidates = [];  // { propId, firstName, lastName, normKey }
         for (const row of dedupedRows) {
           const o2First = getClip(row, 'owner_2_first_name');
           const o2Last  = getClip(row, 'owner_2_last_name');
           if (!o2First && !o2Last) continue;
-          // Use the same rowKey() function the primary pipeline uses so the
-          // lookup is guaranteed to match propMap exactly.
           const prop = propMap[rowKey(row)];
           if (!prop) continue;
-          // Check if a secondary contact with this exact name already exists
-          const existO2 = await query(
-            `SELECT c.id FROM contacts c
-             JOIN property_contacts pc ON pc.contact_id = c.id
-             WHERE pc.property_id = $1
-               AND pc.primary_contact = false
-               AND LOWER(TRIM(c.first_name)) = LOWER(TRIM($2))
-               AND LOWER(TRIM(c.last_name))  = LOWER(TRIM($3))
-             LIMIT 1`,
-            [prop.id, o2First, o2Last]
+          const normKey = prop.id + '|' +
+            (o2First||'').toLowerCase().trim() + '|' +
+            (o2Last ||'').toLowerCase().trim();
+          o2Candidates.push({
+            propId: prop.id,
+            firstName: o2First,
+            lastName: o2Last,
+            normKey,
+          });
+        }
+
+        if (o2Candidates.length > 0) {
+          // 2026-04-23 intra-batch dedup: if the CSV has the same (property_id,
+          // owner2_name) tuple twice in this batch (e.g. duplicate rows that
+          // both made it through earlier dedup), we must only insert once.
+          // Without this, the bulk INSERT below would create two contact rows,
+          // then the property_contacts link would ON CONFLICT DO NOTHING the
+          // second — leaving one orphaned contact per duplicate.
+          const seenKeys = new Set();
+          const uniqCandidates = [];
+          for (const c of o2Candidates) {
+            if (seenKeys.has(c.normKey)) continue;
+            seenKeys.add(c.normKey);
+            uniqCandidates.push(c);
+          }
+
+          // Step 2: One SELECT to find which candidates already have a
+          // secondary contact with that name on that property.
+          const existRes = await query(
+            `SELECT pc.property_id,
+                    LOWER(TRIM(c.first_name)) AS fn,
+                    LOWER(TRIM(c.last_name))  AS ln
+               FROM property_contacts pc
+               JOIN contacts c ON c.id = pc.contact_id
+              WHERE pc.property_id = ANY($1::int[])
+                AND pc.primary_contact = false`,
+            [uniqCandidates.map(c => c.propId)]
           );
-          if (existO2.rows.length) continue;  // already there, skip
-          const o2Inferred = inferOwnerType(o2First, o2Last);
-          const o2r = await query(
-            `INSERT INTO contacts (first_name, last_name, owner_type) VALUES ($1, $2, $3) RETURNING id`,
-            [o2First, o2Last, o2Inferred]
-          );
-          await query(
-            `INSERT INTO property_contacts (property_id, contact_id, primary_contact)
-             VALUES ($1, $2, false) ON CONFLICT DO NOTHING`,
-            [prop.id, o2r.rows[0].id]
-          );
+          const existingSet = new Set();
+          for (const r of existRes.rows) {
+            existingSet.add(r.property_id + '|' + (r.fn||'') + '|' + (r.ln||''));
+          }
+
+          // Filter to genuinely new ones
+          const newOnes = uniqCandidates.filter(c => !existingSet.has(c.normKey));
+
+          if (newOnes.length > 0) {
+            // Step 3: Reserve contact IDs in bulk
+            const idRes = await query(
+              `SELECT nextval(pg_get_serial_sequence('contacts', 'id')) AS id
+                 FROM generate_series(1, $1)`,
+              [newOnes.length]
+            );
+            const newIds = idRes.rows.map(r => Number(r.id));
+
+            // Step 4: Bulk INSERT contacts via UNNEST
+            await query(
+              `INSERT INTO contacts (id, first_name, last_name, owner_type)
+               SELECT * FROM UNNEST($1::int[], $2::text[], $3::text[], $4::text[])
+                 AS t(id, first_name, last_name, owner_type)`,
+              [
+                newIds,
+                newOnes.map(c => c.firstName),
+                newOnes.map(c => c.lastName),
+                newOnes.map(c => inferOwnerType(c.firstName, c.lastName)),
+              ]
+            );
+
+            // Step 5: Bulk INSERT property_contacts links via UNNEST
+            await query(
+              `INSERT INTO property_contacts (property_id, contact_id, primary_contact)
+               SELECT property_id, contact_id, false
+                 FROM UNNEST($1::int[], $2::int[]) AS t(property_id, contact_id)
+               ON CONFLICT (property_id, contact_id) DO NOTHING`,
+              [
+                newOnes.map(c => c.propId),
+                newIds,
+              ]
+            );
+
+            console.log(`[property-import] batch: inserted ${newOnes.length} Owner 2 contact(s)`);
+          }
         }
 
         // Bulk INSERT property_lists links for every property in the batch
