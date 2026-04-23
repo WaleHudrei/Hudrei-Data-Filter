@@ -599,6 +599,31 @@ async function initSchema() {
   _schemaReady = true;
   console.log('Database schema initialized + migrations applied');
 
+  // 2026-04-23 list_templates — the List Registry feature. Stores each
+  // recurring list type (Tax Sale, Probate, etc.) with its pull cadence,
+  // source, tier, and when it was last/next pulled. Separate from the
+  // `lists` table which tracks individual import instances — list_templates
+  // is the abstract "type of list we pull repeatedly", lists is each pull.
+  await query(`
+    CREATE TABLE IF NOT EXISTS list_templates (
+      id              SERIAL PRIMARY KEY,
+      action          VARCHAR(20),
+      state_code      CHAR(2),
+      list_name       VARCHAR(100) NOT NULL,
+      list_tier       VARCHAR(20),
+      source          VARCHAR(50),
+      frequency_days  INTEGER,
+      require_bot     BOOLEAN,
+      last_pull_date  DATE,
+      notes           TEXT,
+      sort_order      INTEGER DEFAULT 0,
+      created_at      TIMESTAMPTZ DEFAULT NOW(),
+      updated_at      TIMESTAMPTZ DEFAULT NOW()
+    );
+  `);
+  // next_pull_date is always derived: last_pull_date + frequency_days.
+  // Not stored — avoids sync bugs when either field changes.
+
   // ── 2026-04-20 audit fix #6: phone-based contact dedup ─────────────────────
   // Dry-run by default. Gated by LOKI_DEDUP_PHONES env var — see
   // maintenance.js for semantics. Non-fatal on any failure (won't block boot).
