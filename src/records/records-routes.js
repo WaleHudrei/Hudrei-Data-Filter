@@ -2200,7 +2200,12 @@ router.get('/:id(\\d+)', requireAuth, async (req, res) => {
       ORDER BY pc.primary_contact DESC
     `, [id]);
 
-    const primaryContact = contactRes.rows[0] || null;
+    // 2026-04-23 Owner 2: split contacts by primary_contact flag, not row
+    // position. rows[0] is the primary ONLY when primary_contact=true — if a
+    // property somehow has only secondary contacts (blank Owner 1 name on
+    // import), rows[0] would be a secondary and we'd render it wrong.
+    const primaryContact    = contactRes.rows.find(r => r.primary_contact) || null;
+    const secondaryContacts = contactRes.rows.filter(r => !r.primary_contact);
     let phones = [];
     if (primaryContact) {
       const phoneRes = await query(`
@@ -2226,6 +2231,15 @@ router.get('/:id(\\d+)', requireAuth, async (req, res) => {
         }
         for (const p of phones) p.tags = tagsByPhone[p.id] || [];
       }
+    }
+
+    // 2026-04-23 Owner 2: fetch phones for each secondary contact.
+    for (const sc of secondaryContacts) {
+      const scPhoneRes = await query(
+        `SELECT * FROM phones WHERE contact_id = $1 ORDER BY phone_index ASC`,
+        [sc.id]
+      );
+      sc.phones = scPhoneRes.rows;
     }
 
     // Lists
@@ -2466,6 +2480,55 @@ router.get('/:id(\\d+)', requireAuth, async (req, res) => {
           <div class="sec-lbl">Phone Numbers <span class="count-pill">${phones.length}</span></div>
           ${phoneHTML}
         </div>
+
+        ${secondaryContacts.map(sc => {
+          const scPhoneHTML = sc.phones && sc.phones.length ? sc.phones.map(ph => {
+            const statusClass = {unknown:'ps-unknown',correct:'ps-correct',wrong:'ps-wrong',dead:'ps-dead'}[ph.phone_status?.toLowerCase()] || 'ps-unknown';
+            const ptRaw   = (ph.phone_type || 'unknown').toLowerCase();
+            const ptLabel = ptRaw === 'mobile' ? 'Mobile' : ptRaw === 'landline' ? 'Landline' : ptRaw === 'voip' ? 'VoIP' : 'Unknown';
+            const ptColor = ptRaw === 'mobile'   ? { bg:'#e8f5ee', text:'#1a7a4a' }
+                          : ptRaw === 'landline' ? { bg:'#e8f0ff', text:'#2c5cc5' }
+                          : ptRaw === 'voip'     ? { bg:'#fff8e1', text:'#9a6800' }
+                          :                        { bg:'#f0efe9', text:'#888'    };
+            return `<div class="phone-row" style="flex-direction:column;align-items:stretch;gap:4px">
+              <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;flex-wrap:wrap">
+                <span class="phone-num">${ph.phone_number}</span>
+                <div style="display:flex;align-items:center;gap:6px">
+                  <span style="font-size:10px;font-weight:600;letter-spacing:.05em;text-transform:uppercase;padding:3px 7px;border-radius:4px;background:${ptColor.bg};color:${ptColor.text}">${ptLabel}</span>
+                  <span class="phone-status ${statusClass}">${ph.phone_status || 'Unknown'}</span>
+                </div>
+              </div>
+            </div>`;
+          }).join('') : '<div style="color:#aaa;font-size:13px">No phones on record</div>';
+          const scOt = sc.owner_type;
+          const scOtColors = { Person:{bg:'#f0efe9',text:'#555'}, Company:{bg:'#e8f0ff',text:'#2c5cc5'}, Trust:{bg:'#f3e8ff',text:'#6f42c1'} };
+          const scOtC = scOtColors[scOt] || scOtColors.Person;
+          // Bug fix 2026-04-23: escape all DB-sourced values before rendering —
+          // CSV imports can contain arbitrary strings including HTML.
+          const scFirstSafe = esc(sc.first_name || '');
+          const scLastSafe  = esc(sc.last_name  || '');
+          const scEmail1Safe = esc(sc.email_1 || '');
+          // Secondary contacts created from Owner 2 columns don't carry a
+          // separate mailing address — the CSV has one mailing address per row
+          // (Owner 1's). Show mailing addr only if it's actually populated.
+          const scMailingParts = [sc.mailing_address, sc.mailing_city, sc.mailing_state, sc.mailing_zip].filter(Boolean);
+          const scMailingAddrSafe = scMailingParts.length ? esc(scMailingParts.join(', ')) : '';
+          return `<div class="card" style="border-left:3px solid #e8f0ff">
+            <div class="sec-lbl" style="display:flex;align-items:center;gap:8px">
+              Co-Owner
+              <span style="font-size:10px;font-weight:500;color:#888;text-transform:none;letter-spacing:0">(Owner 2)</span>
+            </div>
+            <div class="kv-grid" style="margin-bottom:1.25rem">
+              <div class="kv"><div class="kv-label">First Name</div><div class="kv-val">${scFirstSafe || '—'}</div></div>
+              <div class="kv"><div class="kv-label">Last Name</div><div class="kv-val">${scLastSafe || '—'}</div></div>
+              ${scOt ? `<div class="kv"><div class="kv-label">Owner Type</div><div class="kv-val"><span style="background:${scOtC.bg};color:${scOtC.text};padding:3px 10px;border-radius:5px;font-size:11px;font-weight:600;display:inline-block">${esc(scOt)}</span></div></div>` : ''}
+              ${scMailingAddrSafe ? `<div class="kv" style="grid-column:1/-1"><div class="kv-label">Mailing Address</div><div class="kv-val">${scMailingAddrSafe}</div></div>` : ''}
+              ${scEmail1Safe ? `<div class="kv"><div class="kv-label">Email 1</div><div class="kv-val" style="word-break:break-all;overflow-wrap:anywhere;min-width:0"><a href="mailto:${scEmail1Safe}" style="color:#1a4a9a">${scEmail1Safe}</a></div></div>` : ''}
+            </div>
+            <div class="sec-lbl">Phone Numbers <span class="count-pill">${sc.phones ? sc.phones.length : 0}</span></div>
+            ${scPhoneHTML}
+          </div>`;
+        }).join('')}
 
         <div class="card">
           <div class="sec-lbl">Property Details</div>
