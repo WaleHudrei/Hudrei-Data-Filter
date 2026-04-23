@@ -2453,8 +2453,8 @@ router.get('/:id(\\d+)', requireAuth, async (req, res) => {
         </div>
       </div>
 
-      <!-- OWNER + PHONES -->
-      <div class="grid-2" style="margin-bottom:1.25rem">
+      <!-- OWNER 1 + OWNER 2 side by side -->
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:1.25rem;margin-bottom:1.25rem;align-items:start">
         <div class="card">
           <div class="sec-lbl">Owner ${primaryContact?.id ? `<a href="/owners/${primaryContact.id}" style="font-size:11px;color:#1a4a9a;text-decoration:none;font-weight:500;margin-left:8px;text-transform:none;letter-spacing:0">→ View Owner Dashboard</a>` : ''}</div>
           <div class="kv-grid" style="margin-bottom:1.25rem">
@@ -2529,7 +2529,10 @@ router.get('/:id(\\d+)', requireAuth, async (req, res) => {
             ${scPhoneHTML}
           </div>`;
         }).join('')}
+      </div>
 
+      <!-- PROPERTY DETAILS + OTHER CARDS -->
+      <div class="grid-2" style="margin-bottom:1.25rem">
         <div class="card">
           <div class="sec-lbl">Property Details</div>
           <div class="kv-grid" style="margin-bottom:1.25rem">
