@@ -242,14 +242,19 @@ const LOKI_FIELDS = [
   { key: 'lien_type',           label: 'Lien Type',          required: false, group: 'Additional Info' },
   { key: 'lien_date',           label: 'Lien Date',          required: false, group: 'Additional Info' },
   // Owner
-  { key: 'first_name',      label: 'Owner First Name',  required: false, group: 'Owner' },
-  { key: 'last_name',       label: 'Owner Last Name',   required: false, group: 'Owner' },
-  { key: 'mailing_address', label: 'Mailing Address',   required: false, group: 'Owner' },
-  { key: 'mailing_city',    label: 'Mailing City',      required: false, group: 'Owner' },
-  { key: 'mailing_state',   label: 'Mailing State',     required: false, group: 'Owner' },
-  { key: 'mailing_zip',     label: 'Mailing ZIP',       required: false, group: 'Owner' },
-  { key: 'email_1',          label: 'Email 1',           required: false, group: 'Owner' },
-  { key: 'email_2',          label: 'Email 2',           required: false, group: 'Owner' },
+  { key: 'first_name',        label: 'Owner First Name',    required: false, group: 'Owner' },
+  { key: 'last_name',         label: 'Owner Last Name',     required: false, group: 'Owner' },
+  // 2026-04-23 Owner 2 — creates a secondary contact linked to the same
+  // property with primary_contact=false. Dealmachine exports include
+  // "Owner 2 First Name" / "Owner 2 Last Name" columns for co-owners/spouses.
+  { key: 'owner_2_first_name', label: 'Owner 2 First Name', required: false, group: 'Owner' },
+  { key: 'owner_2_last_name',  label: 'Owner 2 Last Name',  required: false, group: 'Owner' },
+  { key: 'mailing_address',   label: 'Mailing Address',     required: false, group: 'Owner' },
+  { key: 'mailing_city',      label: 'Mailing City',        required: false, group: 'Owner' },
+  { key: 'mailing_state',     label: 'Mailing State',       required: false, group: 'Owner' },
+  { key: 'mailing_zip',       label: 'Mailing ZIP',         required: false, group: 'Owner' },
+  { key: 'email_1',           label: 'Email 1',             required: false, group: 'Owner' },
+  { key: 'email_2',           label: 'Email 2',             required: false, group: 'Owner' },
   // Phones
   { key: 'phone_1',         label: 'Phone 1',           required: false, group: 'Phones' },
   { key: 'phone_type_1',    label: 'Phone 1 Type',      required: false, group: 'Phones' },
@@ -322,8 +327,11 @@ function autoMap(csvColumns) {
     deed_type:           ['deedtype','typeofdeed','documenttype','deed','typedeed'],
     lien_type:           ['lientype','typeoflien','lien','lientitle'],
     lien_date:           ['liendate','dateoflien','lienrecorded','recordingdate'],
-    first_name: ['firstname','ownerfirst','ownersfirstname','first'],
-    last_name: ['lastname','ownerlast','ownerslastname','last'],
+    first_name: ['firstname','ownerfirst','ownersfirstname','first','owner1firstname','owner1first','owner1fn'],
+    last_name: ['lastname','ownerlast','ownerslastname','last','owner1lastname','owner1last','owner1ln'],
+    // 2026-04-23 Owner 2 — Dealmachine exports as "Owner 2 First Name" / "Owner 2 Last Name"
+    owner_2_first_name: ['owner2firstname','owner2first','owner2fn','co-ownerfirstname','coownerfirst','secondownerfirst'],
+    owner_2_last_name:  ['owner2lastname','owner2last','owner2ln','co-ownerlastname','coownerlast','secondownerlast'],
     mailing_address: ['mailingaddress','owneraddress','mailaddress'],
     mailing_city: ['mailingcity','ownercity','mailcity'],
     mailing_state: ['mailingstate','ownerstate','mailstate'],
@@ -1552,6 +1560,44 @@ router.post('/commit', requireAuth, async (req, res) => {
           }
         }
 
+        // 2026-04-23 Owner 2 — create/update a secondary contact if the CSV
+        // has Owner 2 First/Last Name. Uses the same COALESCE-safe-merge
+        // pattern as Owner 1 so re-importing doesn't overwrite existing data.
+        // Secondary contacts share the same mailing address as Owner 1 since
+        // Dealmachine only provides one mailing address per property row.
+        const o2First = getClip(row, 'owner_2_first_name');
+        const o2Last  = getClip(row, 'owner_2_last_name');
+        if (o2First || o2Last) {
+          const o2InferredOT = inferOwnerType(o2First, o2Last);
+          // Check if a secondary contact with this name already exists for
+          // this property — avoid creating duplicates on re-import.
+          const existO2 = await query(
+            `SELECT c.id FROM contacts c
+             JOIN property_contacts pc ON pc.contact_id = c.id
+             WHERE pc.property_id = $1
+               AND pc.primary_contact = false
+               AND LOWER(TRIM(c.first_name)) = LOWER(TRIM($2))
+               AND LOWER(TRIM(c.last_name))  = LOWER(TRIM($3))
+             LIMIT 1`,
+            [propertyId, o2First, o2Last]
+          );
+          if (existO2.rows.length) {
+            // Secondary contact already exists — no-op (don't overwrite)
+          } else {
+            const o2r = await query(
+              `INSERT INTO contacts (first_name, last_name, owner_type)
+               VALUES ($1, $2, $3) RETURNING id`,
+              [o2First, o2Last, o2InferredOT]
+            );
+            const o2Id = o2r.rows[0].id;
+            await query(
+              `INSERT INTO property_contacts (property_id, contact_id, primary_contact)
+               VALUES ($1, $2, false) ON CONFLICT DO NOTHING`,
+              [propertyId, o2Id]
+            );
+          }
+        }
+
         // Tag to list
         if (resolvedListId) {
           await query(`INSERT INTO property_lists (property_id,list_id,added_at) VALUES ($1,$2,NOW()) ON CONFLICT DO NOTHING`,
@@ -2650,6 +2696,42 @@ async function runBackgroundImport(jobId, allRows, mapping, filename, resolvedLi
           }
 
           console.log(`[property-import] attached ${coOwnerTasks.length} co-owner(s): ${coUpdateTasks.length} existing (updated), ${coReuseTasks.length} reused, ${coNewTasks.length} new`);
+        }
+
+        // 2026-04-23 Owner 2 — create secondary contacts from mapped
+        // owner_2_first_name / owner_2_last_name fields. Row-by-row because
+        // we need per-property duplicate checks. The batch size is small
+        // enough that N queries here is not a performance concern.
+        for (const row of dedupedRows) {
+          const o2First = getClip(row, 'owner_2_first_name');
+          const o2Last  = getClip(row, 'owner_2_last_name');
+          if (!o2First && !o2Last) continue;
+          // Use the same rowKey() function the primary pipeline uses so the
+          // lookup is guaranteed to match propMap exactly.
+          const prop = propMap[rowKey(row)];
+          if (!prop) continue;
+          // Check if a secondary contact with this exact name already exists
+          const existO2 = await query(
+            `SELECT c.id FROM contacts c
+             JOIN property_contacts pc ON pc.contact_id = c.id
+             WHERE pc.property_id = $1
+               AND pc.primary_contact = false
+               AND LOWER(TRIM(c.first_name)) = LOWER(TRIM($2))
+               AND LOWER(TRIM(c.last_name))  = LOWER(TRIM($3))
+             LIMIT 1`,
+            [prop.id, o2First, o2Last]
+          );
+          if (existO2.rows.length) continue;  // already there, skip
+          const o2Inferred = inferOwnerType(o2First, o2Last);
+          const o2r = await query(
+            `INSERT INTO contacts (first_name, last_name, owner_type) VALUES ($1, $2, $3) RETURNING id`,
+            [o2First, o2Last, o2Inferred]
+          );
+          await query(
+            `INSERT INTO property_contacts (property_id, contact_id, primary_contact)
+             VALUES ($1, $2, false) ON CONFLICT DO NOTHING`,
+            [prop.id, o2r.rows[0].id]
+          );
         }
 
         // Bulk INSERT property_lists links for every property in the batch
