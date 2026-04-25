@@ -1010,4 +1010,160 @@
 .ocu-timeline-meta {
   font-size: 12px;
   color: var(--ocu-text-3);
-                                }
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   PROPERTY DETAIL — Session 1 write actions
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+/* Editable pills (status, type) — clickable buttons styled as pills */
+.ocu-pill-editable {
+  display: inline-flex;
+  align-items: center;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  padding: 3px 8px;
+  border-radius: 4px;
+  text-transform: uppercase;
+  border: none;
+  cursor: pointer;
+  font-family: inherit;
+  transition: filter 0.1s, transform 0.05s;
+}
+.ocu-pill-editable:hover { filter: brightness(0.95); }
+.ocu-pill-editable:active { transform: scale(0.97); }
+
+/* Popover for picking from options */
+.ocu-popover {
+  position: absolute;
+  background: var(--ocu-bg);
+  border: 1px solid var(--ocu-border-strong);
+  border-radius: 8px;
+  padding: 6px;
+  box-shadow: 0 6px 24px rgba(0,0,0,0.12);
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  z-index: 100;
+  min-width: 140px;
+}
+.ocu-popover-opt {
+  display: block;
+  width: 100%;
+  text-align: left;
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  padding: 6px 10px;
+  border-radius: 4px;
+  text-transform: uppercase;
+  border: 1px solid transparent;
+  cursor: pointer;
+  font-family: inherit;
+}
+.ocu-popover-opt:hover { filter: brightness(0.93); }
+.ocu-popover-opt.active {
+  outline: 2px solid var(--ocu-accent);
+  outline-offset: 1px;
+}
+
+/* Removable tag pill — show × on hover */
+.ocu-tag-removable { padding-right: 4px; }
+.ocu-tag-remove {
+  background: none;
+  border: none;
+  cursor: pointer;
+  padding: 0 2px 0 4px;
+  color: inherit;
+  font-size: 14px;
+  line-height: 1;
+  opacity: 0.5;
+  font-family: inherit;
+}
+.ocu-tag-removable:hover .ocu-tag-remove { opacity: 1; }
+
+/* Add chip ("+ tag" button) */
+.ocu-add-chip {
+  font-size: 11px;
+  font-weight: 500;
+  padding: 3px 9px;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--ocu-text-3);
+  border: 1px dashed var(--ocu-border-strong);
+  cursor: pointer;
+  font-family: inherit;
+}
+.ocu-add-chip:hover {
+  color: var(--ocu-accent);
+  border-color: var(--ocu-accent);
+}
+
+/* Inline tag-name input (replaces "+ tag" while typing) */
+.ocu-tag-input {
+  font-size: 12px;
+  padding: 3px 8px;
+  border: 1px solid var(--ocu-accent);
+  border-radius: 4px;
+  font-family: inherit;
+  outline: none;
+  width: 140px;
+  background: var(--ocu-bg);
+  color: var(--ocu-text-1);
+}
+
+/* Pipeline dropdown in header */
+.ocu-pipeline-wrap {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.ocu-pipeline-label {
+  font-size: 10.5px;
+  color: var(--ocu-text-3);
+  font-weight: 500;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+.ocu-pipeline-select {
+  font-family: var(--ocu-display);
+  font-size: 13.5px;
+  font-weight: 500;
+  color: var(--ocu-text-1);
+  background: var(--ocu-bg);
+  border: 1px solid var(--ocu-border);
+  border-radius: 7px;
+  padding: 7px 28px 7px 12px;
+  cursor: pointer;
+  appearance: none;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%239CA3AF' stroke-width='2'%3E%3Cpolyline points='6 9 12 15 18 9'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 8px center;
+  background-size: 14px;
+  transition: border-color 0.12s;
+}
+.ocu-pipeline-select:hover { border-color: var(--ocu-border-strong); }
+.ocu-pipeline-select:focus {
+  outline: none;
+  border-color: var(--ocu-accent);
+}
+
+/* Toast — bottom-right, fades in/out */
+.ocu-toast {
+  position: fixed;
+  bottom: 24px;
+  right: 24px;
+  padding: 10px 16px;
+  border-radius: 8px;
+  font-size: 13px;
+  font-weight: 500;
+  font-family: var(--ocu-display);
+  z-index: 200;
+  opacity: 0;
+  transition: opacity 0.2s;
+  box-shadow: 0 6px 24px rgba(0,0,0,0.15);
+  max-width: 360px;
+}
+.ocu-toast.ok  { background: var(--ocu-text-1); color: var(--ocu-bg); }
+.ocu-toast.err { background: var(--ocu-danger); color: white; }
