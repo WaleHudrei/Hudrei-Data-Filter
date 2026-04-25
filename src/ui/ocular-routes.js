@@ -367,11 +367,8 @@ router.get('/records', requireAuth, async (req, res) => {
     `, [...params, limit, offset]);
 
     // ── Lookup data for filter dropdowns ───────────────────────────────────
-    const allStatesRes = await query(`
-      SELECT DISTINCT state_code AS code FROM properties
-      WHERE state_code IS NOT NULL AND state_code <> ''
-      ORDER BY state_code ASC
-    `);
+    // States are hardcoded in records-filters.js (all 50 + DC) so we don't
+    // need to query the DB for them here anymore.
     const allTagsRes = await query(`SELECT id, name FROM tags ORDER BY name ASC LIMIT 200`).catch(() => ({ rows: [] }));
     const allListsRes = await query(`SELECT id, list_name FROM lists ORDER BY list_name ASC LIMIT 200`);
 
@@ -388,7 +385,6 @@ router.get('/records', requireAuth, async (req, res) => {
         owner_type, occupancy, min_year, max_year, min_equity, max_equity, phone_type,
         tagIncludeList, tagExcludeList,
       },
-      allStates: allStatesRes.rows,
       allTags:   allTagsRes.rows,
       allLists:  allListsRes.rows,
       user:      getUser(req),
