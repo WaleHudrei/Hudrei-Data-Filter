@@ -714,3 +714,300 @@
   color: var(--ocu-text-2);
 }
 .ocu-btn-ghost:hover { background: var(--ocu-surface); color: var(--ocu-text-1); }
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   PROPERTY DETAIL PAGE — components added 2026-04-25
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+/* ─── Header ────────────────────────────────────────────────────────────── */
+.ocu-detail-header {
+  margin-bottom: 24px;
+}
+.ocu-detail-backlink {
+  display: inline-block;
+  font-size: 13px;
+  color: var(--ocu-text-2);
+  text-decoration: none;
+  margin-bottom: 12px;
+}
+.ocu-detail-backlink:hover { color: var(--ocu-accent); }
+
+.ocu-detail-header-main {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 24px;
+  flex-wrap: wrap;
+}
+.ocu-detail-title-block { flex: 1; min-width: 0; }
+.ocu-detail-title {
+  font-family: var(--ocu-display);
+  font-size: 28px;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  color: var(--ocu-text-1);
+  line-height: 1.2;
+}
+.ocu-detail-subtitle {
+  font-size: 14px;
+  color: var(--ocu-text-2);
+  margin-top: 6px;
+}
+.ocu-detail-header-right {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+/* Distress badge — color comes from inline style based on band */
+.ocu-distress-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 14px;
+  border-radius: 8px;
+  border: 1px solid;
+}
+.ocu-distress-badge-num {
+  font-family: var(--ocu-mono);
+  font-size: 22px;
+  font-weight: 700;
+  line-height: 1;
+}
+.ocu-distress-badge-band {
+  font-size: 12px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+/* ─── Detail page grid ─────────────────────────────────────────────────── */
+.ocu-detail-grid {
+  display: grid;
+  grid-template-columns: 2fr 1fr;
+  gap: 14px;
+  margin-bottom: 14px;
+}
+@media (max-width: 1024px) {
+  .ocu-detail-grid { grid-template-columns: 1fr; }
+}
+.ocu-detail-main { display: flex; flex-direction: column; gap: 14px; }
+.ocu-detail-side { display: flex; flex-direction: column; gap: 14px; }
+
+/* ─── Property info: fact grid ──────────────────────────────────────────── */
+.ocu-fact-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+  gap: 16px 24px;
+}
+.ocu-fact { min-width: 0; }
+.ocu-fact-label {
+  font-size: 11.5px;
+  color: var(--ocu-text-3);
+  margin-bottom: 4px;
+  font-weight: 500;
+}
+.ocu-fact-value {
+  font-size: 14px;
+  color: var(--ocu-text-1);
+  font-weight: 500;
+}
+.ocu-fact-value.mono {
+  font-family: var(--ocu-mono);
+  font-weight: 600;
+}
+
+/* ─── Owner cards ──────────────────────────────────────────────────────── */
+.ocu-owner-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+  gap: 14px;
+}
+.ocu-owner-card {
+  /* uses .ocu-card base styling */
+}
+.ocu-owner-card-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 14px;
+}
+.ocu-owner-label {
+  font-size: 11.5px;
+  color: var(--ocu-text-3);
+  margin-bottom: 4px;
+  font-weight: 500;
+}
+.ocu-owner-name {
+  font-size: 17px;
+  font-weight: 600;
+  color: var(--ocu-text-1);
+  line-height: 1.3;
+}
+.ocu-owner-mailing {
+  margin-bottom: 16px;
+  padding-bottom: 16px;
+  border-bottom: 1px solid var(--ocu-border);
+  font-size: 13px;
+  color: var(--ocu-text-1);
+}
+.ocu-owner-mailing > div { margin-top: 4px; }
+
+.ocu-phones-block { display: flex; flex-direction: column; gap: 10px; }
+.ocu-phone-row {
+  background: var(--ocu-bg);
+  border: 1px solid var(--ocu-border);
+  border-radius: 8px;
+  padding: 10px 12px;
+}
+.ocu-phone-line {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.ocu-phone-num {
+  font-family: var(--ocu-mono);
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--ocu-text-1);
+}
+.ocu-phone-meta {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.ocu-phone-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-top: 8px;
+}
+
+/* ─── Generic pill (status, type, list-type) ───────────────────────────── */
+.ocu-pill {
+  display: inline-flex;
+  align-items: center;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  padding: 3px 8px;
+  border-radius: 4px;
+  text-transform: uppercase;
+}
+
+/* Tag pill — colored border + tinted bg */
+.ocu-tag-pill {
+  display: inline-flex;
+  align-items: center;
+  font-size: 11.5px;
+  font-weight: 500;
+  padding: 3px 9px;
+  border: 1px solid;
+  border-radius: 4px;
+}
+.ocu-tag-cluster { display: flex; flex-wrap: wrap; gap: 6px; }
+
+/* ─── Distress breakdown list ──────────────────────────────────────────── */
+.ocu-distress-list {
+  display: flex;
+  flex-direction: column;
+}
+.ocu-signal-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 0;
+  border-bottom: 1px solid var(--ocu-border);
+}
+.ocu-signal-row:last-child { border-bottom: none; padding-bottom: 0; }
+.ocu-signal-row:first-child { padding-top: 0; }
+.ocu-signal-label {
+  font-size: 13px;
+  color: var(--ocu-text-1);
+}
+.ocu-signal-weight {
+  font-family: var(--ocu-mono);
+  font-size: 13px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+.ocu-distress-empty {
+  text-align: center;
+  padding: 20px 0;
+}
+
+/* ─── List membership ──────────────────────────────────────────────────── */
+.ocu-list-membership { display: flex; flex-direction: column; }
+.ocu-membership-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 0;
+  border-bottom: 1px solid var(--ocu-border);
+}
+.ocu-membership-row:last-child { border-bottom: none; padding-bottom: 0; }
+.ocu-membership-row:first-child { padding-top: 0; }
+.ocu-membership-name {
+  font-size: 13px;
+  color: var(--ocu-text-1);
+  font-weight: 500;
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.ocu-membership-meta {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+}
+.ocu-membership-time {
+  font-size: 12px;
+  color: var(--ocu-text-3);
+}
+
+/* ─── Activity timeline ────────────────────────────────────────────────── */
+.ocu-timeline { display: flex; flex-direction: column; }
+.ocu-timeline-row {
+  display: grid;
+  grid-template-columns: 28px 1fr;
+  gap: 12px;
+  padding: 12px 0;
+  border-bottom: 1px solid var(--ocu-border);
+}
+.ocu-timeline-row:last-child { border-bottom: none; padding-bottom: 0; }
+.ocu-timeline-row:first-child { padding-top: 0; }
+.ocu-timeline-icon {
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  background: var(--ocu-surface-2);
+  color: var(--ocu-text-2);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.ocu-timeline-body { min-width: 0; }
+.ocu-timeline-line {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-bottom: 4px;
+}
+.ocu-timeline-campaign {
+  font-size: 13px;
+  color: var(--ocu-text-1);
+  font-weight: 500;
+}
+.ocu-timeline-meta {
+  font-size: 12px;
+  color: var(--ocu-text-3);
+                                }
