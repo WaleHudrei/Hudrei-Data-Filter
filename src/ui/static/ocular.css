@@ -265,6 +265,10 @@
 .sidebar-collapsed .ocu-user { display: none; }
 
 /* Sidebar collapse button */
+/* Collapse button — sits half-on/half-off the sidebar's right edge.
+   2026-04-25 brightened — was nearly invisible at the prior subtle styling.
+   Now uses the cyan accent so it reads as an interactive control, with a
+   subtle shadow to lift it off the dark sidebar. */
 .ocu-collapse-btn {
   position: absolute;
   top: 18px;
@@ -272,19 +276,24 @@
   width: 24px;
   height: 24px;
   border-radius: 50%;
-  background: var(--ocu-dark-surface);
-  border: 1px solid var(--ocu-dark-border);
-  color: var(--ocu-dark-text-2);
+  background: var(--ocu-bg);
+  border: 1.5px solid var(--ocu-accent-bright);
+  color: var(--ocu-accent-bright);
   display: flex;
   align-items: center;
   justify-content: center;
   cursor: pointer;
   z-index: 20;
   transition: all 0.12s;
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.2);
+  font-weight: 700;
+  font-size: 14px;
+  line-height: 1;
 }
 .ocu-collapse-btn:hover {
-  background: var(--ocu-dark-bg);
-  color: var(--ocu-accent-bright);
+  background: var(--ocu-accent-bright);
+  color: var(--ocu-dark-bg);
+  transform: scale(1.08);
 }
 
 /* ─── Main content area ─────────────────────────────────────────────────── */
