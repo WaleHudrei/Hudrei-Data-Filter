@@ -1,119 +1,264 @@
-/* ═══════════════════════════════════════════════════════════════════════════
-   ui/static/records-filters.js
-   Filter bar interactions for /ocular/records:
-     - Toggle the filter panel open/closed (state persisted in localStorage)
-     - State multi-select popover with type-to-filter search
-     - Auto-open the panel if any filter is active on initial load
-   Loaded only on the records list page.
-   ═══════════════════════════════════════════════════════════════════════════ */
-(function() {
-  'use strict';
+// ui/components/records-filters.js
+// Top filter bar — collapsed by default. Click "Filters" → panel slides down
+// with a compact grid layout. State persists in localStorage.
+//
+// 2026-04-25 Restructured: was a left sidebar, now a top bar. Compact grid
+// inside the panel. State filter is now a searchable multi-select dropdown
+// covering all 50 states + DC, not just states currently in the DB.
+const { escHTML } = require('../_helpers');
 
-  const STORAGE_KEY = 'ocularFilterPanelOpen';
+// Full US states + DC. Hardcoded so future imports (GA, FL, TX, etc.) are
+// pickable before any data lands.
+const ALL_STATES = [
+  ['AL','Alabama'],['AK','Alaska'],['AZ','Arizona'],['AR','Arkansas'],['CA','California'],
+  ['CO','Colorado'],['CT','Connecticut'],['DE','Delaware'],['DC','District of Columbia'],
+  ['FL','Florida'],['GA','Georgia'],['HI','Hawaii'],['ID','Idaho'],['IL','Illinois'],
+  ['IN','Indiana'],['IA','Iowa'],['KS','Kansas'],['KY','Kentucky'],['LA','Louisiana'],
+  ['ME','Maine'],['MD','Maryland'],['MA','Massachusetts'],['MI','Michigan'],['MN','Minnesota'],
+  ['MS','Mississippi'],['MO','Missouri'],['MT','Montana'],['NE','Nebraska'],['NV','Nevada'],
+  ['NH','New Hampshire'],['NJ','New Jersey'],['NM','New Mexico'],['NY','New York'],
+  ['NC','North Carolina'],['ND','North Dakota'],['OH','Ohio'],['OK','Oklahoma'],
+  ['OR','Oregon'],['PA','Pennsylvania'],['RI','Rhode Island'],['SC','South Carolina'],
+  ['SD','South Dakota'],['TN','Tennessee'],['TX','Texas'],['UT','Utah'],['VT','Vermont'],
+  ['VA','Virginia'],['WA','Washington'],['WV','West Virginia'],['WI','Wisconsin'],['WY','Wyoming'],
+];
 
-  const toggle  = document.getElementById('ocu-filter-toggle');
-  const panel   = document.getElementById('ocu-filter-panel');
-  if (!toggle || !panel) return;
+function recordsFilters(opts = {}) {
+  const f = opts.filters || {};
+  const allTags  = Array.isArray(opts.allTags)  ? opts.allTags  : [];
+  const allLists = Array.isArray(opts.allLists) ? opts.allLists : [];
+  const activeFilterCount = countActive(f);
 
-  // ─── Panel open/close ─────────────────────────────────────────────────────
-  function setPanelOpen(open) {
-    panel.hidden = !open;
-    toggle.setAttribute('aria-expanded', open ? 'true' : 'false');
-    toggle.classList.toggle('open', open);
-    try { localStorage.setItem(STORAGE_KEY, open ? '1' : '0'); } catch (_) {}
-  }
+  // ── State multi-select: rendered as a searchable popover dropdown ─────
+  // The popover is purely a UI affordance — we still emit hidden <input
+  // type="checkbox" name="state" value="IN"> for each selected state so
+  // form submission works without extra JS plumbing.
+  const selectedStates = new Set((f.stateList || []).map(s => String(s).toUpperCase()));
+  const stateRowsHTML = ALL_STATES.map(([code, name]) => {
+    const checked = selectedStates.has(code);
+    return `
+      <label class="ocu-state-opt" data-search="${escHTML((code + ' ' + name).toLowerCase())}">
+        <input type="checkbox" name="state" value="${code}"${checked ? ' checked' : ''}>
+        <span class="ocu-state-code">${escHTML(code)}</span>
+        <span class="ocu-state-name">${escHTML(name)}</span>
+      </label>`;
+  }).join('');
+  const selectedStatePills = [...selectedStates].map(code => {
+    const name = (ALL_STATES.find(([c]) => c === code) || [code, code])[1];
+    return `<span class="ocu-state-pill" title="${escHTML(name)}">${escHTML(code)}</span>`;
+  }).join('');
+  const stateButtonLabel = selectedStates.size === 0
+    ? 'Any state'
+    : (selectedStates.size === 1 ? '1 state' : selectedStates.size + ' states');
 
-  // Initial state: open if any filter is active (so users see why the count
-  // badge is non-zero), or if localStorage previously had it open.
-  // Otherwise default to closed.
-  const hasActiveFilters = !!toggle.querySelector('.ocu-filter-toggle-count');
-  let initialOpen = false;
-  try {
-    const stored = localStorage.getItem(STORAGE_KEY);
-    if (stored === '1') initialOpen = true;
-  } catch (_) {}
-  if (hasActiveFilters) initialOpen = true;
-  setPanelOpen(initialOpen);
+  // ── Tag include/exclude as multi-checkbox lists (kept compact) ────────
+  const tagInc = (f.tagIncludeList || []).map(String);
+  const tagExc = (f.tagExcludeList || []).map(String);
+  const tagIncludeChecks = allTags.map(t => `
+    <label class="ocu-check ocu-check-line">
+      <input type="checkbox" name="tag_include" value="${t.id}"${tagInc.includes(String(t.id)) ? ' checked' : ''}>
+      <span>${escHTML(t.name)}</span>
+    </label>`).join('');
+  const tagExcludeChecks = allTags.map(t => `
+    <label class="ocu-check ocu-check-line">
+      <input type="checkbox" name="tag_exclude" value="${t.id}"${tagExc.includes(String(t.id)) ? ' checked' : ''}>
+      <span>${escHTML(t.name)}</span>
+    </label>`).join('');
 
-  toggle.addEventListener('click', () => setPanelOpen(panel.hidden));
+  const listOptions = allLists.map(l =>
+    `<option value="${l.id}"${String(f.list_id || '') === String(l.id) ? ' selected' : ''}>${escHTML(l.list_name)}</option>`
+  ).join('');
 
-  // ─── State multi-select popover ───────────────────────────────────────────
-  const stateBtn      = document.getElementById('ocu-state-button');
-  const statePopover  = document.getElementById('ocu-state-popover');
-  const stateSearch   = document.getElementById('ocu-state-search');
-  const stateList     = document.getElementById('ocu-state-list');
-  const stateClear    = document.getElementById('ocu-state-clear');
-  const stateDone     = document.getElementById('ocu-state-done');
-  const stateBtnText  = stateBtn ? stateBtn.querySelector('.ocu-state-button-text') : null;
-  const stateBtnPills = stateBtn ? stateBtn.querySelector('.ocu-state-button-pills') : null;
+  const opt = (sel, value, label) =>
+    `<option value="${value}"${sel === value ? ' selected' : ''}>${escHTML(label)}</option>`;
 
-  if (stateBtn && statePopover) {
-    function openStatePopover() {
-      statePopover.hidden = false;
-      stateBtn.setAttribute('aria-expanded', 'true');
-      // Reset search filter every time we open
-      stateSearch.value = '';
-      filterStateOptions('');
-      // Defer focus so click that opened the popover doesn't immediately blur
-      setTimeout(() => stateSearch.focus(), 0);
-    }
-    function closeStatePopover() {
-      statePopover.hidden = true;
-      stateBtn.setAttribute('aria-expanded', 'false');
-    }
-    stateBtn.addEventListener('click', e => {
-      e.stopPropagation();
-      if (statePopover.hidden) openStatePopover();
-      else closeStatePopover();
-    });
-    document.addEventListener('click', e => {
-      if (statePopover.hidden) return;
-      if (statePopover.contains(e.target) || stateBtn.contains(e.target)) return;
-      closeStatePopover();
-    });
-    // Escape key closes popover
-    document.addEventListener('keydown', e => {
-      if (e.key === 'Escape' && !statePopover.hidden) closeStatePopover();
-    });
+  // ── The bar itself ─────────────────────────────────────────────────────
+  return `
+    <div class="ocu-filter-bar">
+      <button type="button" class="ocu-filter-toggle" id="ocu-filter-toggle"
+              aria-expanded="false" aria-controls="ocu-filter-panel">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" aria-hidden="true">
+          <line x1="4" y1="6" x2="20" y2="6"/><line x1="7" y1="12" x2="17" y2="12"/><line x1="10" y1="18" x2="14" y2="18"/>
+        </svg>
+        <span>Filters</span>
+        ${activeFilterCount > 0 ? `<span class="ocu-filter-toggle-count">${activeFilterCount}</span>` : ''}
+        <svg class="ocu-filter-toggle-chev" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" aria-hidden="true">
+          <polyline points="6 9 12 15 18 9"/>
+        </svg>
+      </button>
 
-    // Type-to-filter the option list. Each option has data-search="code name lc".
-    function filterStateOptions(query) {
-      const q = String(query || '').toLowerCase().trim();
-      stateList.querySelectorAll('.ocu-state-opt').forEach(opt => {
-        const haystack = opt.dataset.search || '';
-        opt.hidden = q && haystack.indexOf(q) === -1;
-      });
-    }
-    stateSearch.addEventListener('input', () => filterStateOptions(stateSearch.value));
+      <form id="ocu-filter-panel" class="ocu-filter-panel" method="GET" action="/ocular/records" hidden>
+        <div class="ocu-filter-grid">
 
-    // Update the button label whenever a checkbox flips
-    function refreshStateButton() {
-      const checked = stateList.querySelectorAll('input[name="state"]:checked');
-      const codes = Array.from(checked).map(i => i.value);
-      stateBtnText.textContent = codes.length === 0
-        ? 'Any state'
-        : (codes.length === 1 ? '1 state' : codes.length + ' states');
-      stateBtnPills.innerHTML = codes
-        .map(c => '<span class="ocu-state-pill">' + escapeHTML(c) + '</span>')
-        .join('');
-    }
-    stateList.addEventListener('change', e => {
-      if (e.target && e.target.matches('input[name="state"]')) refreshStateButton();
-    });
+          <div class="ocu-filter">
+            <label class="ocu-filter-label">Search</label>
+            <input type="text" name="q" value="${escHTML(f.q || '')}"
+                   placeholder="Address, city, name…" class="ocu-filter-input" autocomplete="off">
+          </div>
 
-    // Clear / Done buttons
-    stateClear.addEventListener('click', () => {
-      stateList.querySelectorAll('input[name="state"]').forEach(i => { i.checked = false; });
-      refreshStateButton();
-    });
-    stateDone.addEventListener('click', closeStatePopover);
-  }
+          <div class="ocu-filter ocu-filter-state">
+            <label class="ocu-filter-label">State</label>
+            <button type="button" class="ocu-filter-input ocu-state-button" id="ocu-state-button" aria-expanded="false">
+              <span class="ocu-state-button-text">${stateButtonLabel}</span>
+              <span class="ocu-state-button-pills">${selectedStatePills}</span>
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="6 9 12 15 18 9"/></svg>
+            </button>
+            <div class="ocu-state-popover" id="ocu-state-popover" hidden>
+              <div class="ocu-state-search-wrap">
+                <input type="text" class="ocu-state-search" id="ocu-state-search"
+                       placeholder="Search states…" autocomplete="off">
+              </div>
+              <div class="ocu-state-list" id="ocu-state-list">
+                ${stateRowsHTML}
+              </div>
+              <div class="ocu-state-footer">
+                <button type="button" class="ocu-state-clear" id="ocu-state-clear">Clear</button>
+                <button type="button" class="ocu-state-done"  id="ocu-state-done">Done</button>
+              </div>
+            </div>
+          </div>
 
-  // Tiny HTML-escape for client-side rendering of state codes (always 2 letters,
-  // but we still escape defensively in case of unexpected values).
-  function escapeHTML(s) {
-    return String(s == null ? '' : s)
-      .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
-      .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
-  }
-})();
+          <div class="ocu-filter">
+            <label class="ocu-filter-label">City</label>
+            <input type="text" name="city" value="${escHTML(f.city || '')}"
+                   placeholder="Indianapolis…" class="ocu-filter-input">
+          </div>
+
+          <div class="ocu-filter">
+            <label class="ocu-filter-label">ZIP</label>
+            <input type="text" name="zip" value="${escHTML(f.zip || '')}"
+                   placeholder="46218, 46219…" class="ocu-filter-input">
+          </div>
+
+          <div class="ocu-filter">
+            <label class="ocu-filter-label">County</label>
+            <input type="text" name="county" value="${escHTML(f.county || '')}"
+                   placeholder="Marion, Lake…" class="ocu-filter-input">
+          </div>
+
+          <div class="ocu-filter">
+            <label class="ocu-filter-label">Pipeline stage</label>
+            <select name="pipeline" class="ocu-filter-input">
+              ${opt(f.pipeline || '', '', 'Any')}
+              ${opt(f.pipeline || '', 'prospect', 'Prospect')}
+              ${opt(f.pipeline || '', 'lead', 'Lead')}
+              ${opt(f.pipeline || '', 'contract', 'Contract')}
+              ${opt(f.pipeline || '', 'closed', 'Closed')}
+            </select>
+          </div>
+
+          <div class="ocu-filter">
+            <label class="ocu-filter-label">Owner type</label>
+            <select name="owner_type" class="ocu-filter-input">
+              ${opt(f.owner_type || '', '', 'Any')}
+              ${opt(f.owner_type || '', 'Person', 'Person')}
+              ${opt(f.owner_type || '', 'Company', 'Company')}
+              ${opt(f.owner_type || '', 'Trust', 'Trust')}
+            </select>
+          </div>
+
+          <div class="ocu-filter">
+            <label class="ocu-filter-label">Occupancy</label>
+            <select name="occupancy" class="ocu-filter-input">
+              ${opt(f.occupancy || '', '', 'Any')}
+              ${opt(f.occupancy || '', 'owner_occupied', 'Owner occupied')}
+              ${opt(f.occupancy || '', 'absent_owner', 'Absent owner')}
+              ${opt(f.occupancy || '', 'unknown', 'Unknown')}
+            </select>
+          </div>
+
+          <div class="ocu-filter">
+            <label class="ocu-filter-label">Min distress</label>
+            <input type="number" name="min_distress" value="${escHTML(f.min_distress || '')}"
+                   min="0" max="100" placeholder="0–100" class="ocu-filter-input">
+          </div>
+
+          <div class="ocu-filter">
+            <label class="ocu-filter-label">Equity ($)</label>
+            <div class="ocu-filter-pair">
+              <input type="number" name="min_equity" value="${escHTML(f.min_equity || '')}" placeholder="Min" class="ocu-filter-input">
+              <input type="number" name="max_equity" value="${escHTML(f.max_equity || '')}" placeholder="Max" class="ocu-filter-input">
+            </div>
+          </div>
+
+          <div class="ocu-filter">
+            <label class="ocu-filter-label">Year built</label>
+            <div class="ocu-filter-pair">
+              <input type="number" name="min_year" value="${escHTML(f.min_year || '')}" placeholder="From" class="ocu-filter-input">
+              <input type="number" name="max_year" value="${escHTML(f.max_year || '')}" placeholder="To" class="ocu-filter-input">
+            </div>
+          </div>
+
+          <div class="ocu-filter">
+            <label class="ocu-filter-label">Phones</label>
+            <select name="phones" class="ocu-filter-input">
+              ${opt(f.phones || '', '', 'Any')}
+              ${opt(f.phones || '', 'has', 'Has phones')}
+              ${opt(f.phones || '', 'none', 'No phones')}
+              ${opt(f.phones || '', 'correct', 'Correct phones only')}
+            </select>
+          </div>
+
+          <div class="ocu-filter">
+            <label class="ocu-filter-label">Phone type</label>
+            <select name="phone_type" class="ocu-filter-input">
+              ${opt(f.phone_type || '', '', 'Any')}
+              ${opt(f.phone_type || '', 'mobile', 'Mobile')}
+              ${opt(f.phone_type || '', 'landline', 'Landline')}
+              ${opt(f.phone_type || '', 'voip', 'VoIP')}
+            </select>
+          </div>
+
+          ${allLists.length > 0 ? `
+          <div class="ocu-filter">
+            <label class="ocu-filter-label">On list</label>
+            <select name="list_id" class="ocu-filter-input">
+              <option value="">Any</option>
+              ${listOptions}
+            </select>
+          </div>` : ''}
+
+          ${allTags.length > 0 ? `
+          <details class="ocu-filter ocu-filter-details">
+            <summary class="ocu-filter-label">Tags include (${tagInc.length || 'any'})</summary>
+            <div class="ocu-check-list">${tagIncludeChecks}</div>
+          </details>
+          <details class="ocu-filter ocu-filter-details">
+            <summary class="ocu-filter-label">Tags exclude (${tagExc.length || 'none'})</summary>
+            <div class="ocu-check-list">${tagExcludeChecks}</div>
+          </details>` : ''}
+
+        </div>
+
+        <div class="ocu-filter-actions">
+          <a href="/ocular/records" class="ocu-filters-clear">Clear all</a>
+          <button type="submit" class="ocu-btn ocu-btn-primary">Apply filters</button>
+        </div>
+      </form>
+    </div>
+  `;
+}
+
+// Count active filters so the toggle button can show a badge
+function countActive(f) {
+  let n = 0;
+  if (f.q) n++;
+  if (Array.isArray(f.stateList) && f.stateList.length) n += f.stateList.length;
+  if (f.city) n++;
+  if (f.zip) n++;
+  if (f.county) n++;
+  if (f.pipeline) n++;
+  if (f.owner_type) n++;
+  if (f.occupancy) n++;
+  if (f.min_distress) n++;
+  if (f.min_equity || f.max_equity) n++;
+  if (f.min_year || f.max_year) n++;
+  if (f.phones) n++;
+  if (f.phone_type) n++;
+  if (f.list_id) n++;
+  if (Array.isArray(f.tagIncludeList) && f.tagIncludeList.length) n += f.tagIncludeList.length;
+  if (Array.isArray(f.tagExcludeList) && f.tagExcludeList.length) n += f.tagExcludeList.length;
+  return n;
+}
+
+module.exports = { recordsFilters };
