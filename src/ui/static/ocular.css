@@ -117,6 +117,16 @@
   display: flex;
   align-items: center;
   line-height: 1;
+  /* Logo wraps an <a> for navigation, but we don't want the browser's
+     default link underline + visited-purple to bleed through. */
+  text-decoration: none;
+  color: inherit;
+}
+.ocu-logo:visited,
+.ocu-logo:hover,
+.ocu-logo:active {
+  text-decoration: none;
+  color: inherit;
 }
 .ocu-logo-mark {
   width: 32px;
