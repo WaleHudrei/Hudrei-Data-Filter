@@ -158,6 +158,7 @@ const activityRoutes = require('./activity-routes');
 // 2026-04-21 Feature 5: owner dashboard routes (/owners/:id)
 const ownersRoutes = require('./owners/owners-routes');
 const listTypesRoutes = require('./lists/list-types-routes');
+const ocularRoutes = require('./ui/ocular-routes');
 
 const COL = { phone:'Phone', dispo:'Log Type', listname:'Original lead file', date:'Log Time', fname:'First Name', lname:'Last Name', addr:'Address', city:'City', state:'State', zip:'Zip Code', notes:'Call Notes' };
 
@@ -688,6 +689,11 @@ app.use('/activity', activityRoutes);
 // 2026-04-21 Feature 5: owner dashboard
 app.use('/owners', ownersRoutes);
 app.use('/lists', listTypesRoutes);
+
+// 2026-04-23 Ocular UI — new design system at /ocular/*. Old Loki routes
+// untouched. Static CSS at /ocular-static/ocular.css.
+app.use('/ocular-static', express.static(path.join(__dirname, 'ui/static'), { maxAge: '1d' }));
+app.use('/ocular', ocularRoutes);
 
 
 
