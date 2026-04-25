@@ -169,6 +169,142 @@ router.get('/dashboard', requireAuth, async (req, res) => {
   }
 });
 
+// ─── /ocular/records/:id — Property detail page ───────────────────────────
+// Read-only view in Ocular. Edit/delete still use old Loki routes via
+// "Edit in Loki" button on the page header. Mounted BEFORE the /records
+// placeholder so the more-specific :id route wins.
+router.get('/records/:id(\\d+)', requireAuth, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { propertyDetail } = require('./pages/property-detail');
+
+    // Property
+    const propRes = await query(`SELECT * FROM properties WHERE id = $1`, [id]);
+    if (!propRes.rows.length) {
+      return res.status(404).send('Property not found');
+    }
+    const p = propRes.rows[0];
+
+    // Contacts (Owner 1 + any Owner 2+)
+    const contactRes = await query(`
+      SELECT c.*, pc.role, pc.primary_contact
+        FROM contacts c
+        JOIN property_contacts pc ON pc.contact_id = c.id
+       WHERE pc.property_id = $1
+       ORDER BY pc.primary_contact DESC, c.id ASC
+    `, [id]);
+    const primaryContact   = contactRes.rows.find(r => r.primary_contact) || null;
+    const secondaryContacts = contactRes.rows.filter(r => !r.primary_contact);
+
+    // Phones for the primary contact, with phone_tags attached
+    let phones = [];
+    if (primaryContact) {
+      const phoneRes = await query(
+        `SELECT * FROM phones WHERE contact_id = $1 ORDER BY phone_index ASC`,
+        [primaryContact.id]
+      );
+      phones = phoneRes.rows;
+      if (phones.length) {
+        const phoneIds = phones.map(ph => ph.id);
+        const ptRes = await query(`
+          SELECT ptl.phone_id, pt.id, pt.name, pt.color
+            FROM phone_tag_links ptl
+            JOIN phone_tags pt ON pt.id = ptl.phone_tag_id
+           WHERE ptl.phone_id = ANY($1::int[])
+           ORDER BY pt.name ASC
+        `, [phoneIds]).catch(() => ({ rows: [] }));
+        const tagsByPhone = {};
+        for (const r of ptRes.rows) {
+          if (!tagsByPhone[r.phone_id]) tagsByPhone[r.phone_id] = [];
+          tagsByPhone[r.phone_id].push({ id: r.id, name: r.name, color: r.color });
+        }
+        for (const ph of phones) ph.tags = tagsByPhone[ph.id] || [];
+      }
+    }
+
+    // Phones for each secondary contact (Owner 2+)
+    for (const sc of secondaryContacts) {
+      const scPhoneRes = await query(
+        `SELECT * FROM phones WHERE contact_id = $1 ORDER BY phone_index ASC`,
+        [sc.id]
+      );
+      sc.phones = scPhoneRes.rows;
+    }
+
+    // Lists membership
+    const listsRes = await query(`
+      SELECT l.list_name, l.list_type, l.source, pl.added_at
+        FROM property_lists pl
+        JOIN lists l ON l.id = pl.list_id
+       WHERE pl.property_id = $1
+       ORDER BY pl.added_at DESC
+    `, [id]).catch(() => ({ rows: [] }));
+
+    // Property tags
+    const tagsRes = await query(`
+      SELECT t.id, t.name, t.color
+        FROM property_tags pt
+        JOIN tags t ON t.id = pt.tag_id
+       WHERE pt.property_id = $1
+       ORDER BY t.name ASC
+    `, [id]).catch(() => ({ rows: [] }));
+
+    // Distress breakdown — already stored as JSON on the property row
+    let distressBreakdown = p.distress_breakdown;
+    if (typeof distressBreakdown === 'string') {
+      try { distressBreakdown = JSON.parse(distressBreakdown); }
+      catch { distressBreakdown = []; }
+    }
+    if (!Array.isArray(distressBreakdown)) distressBreakdown = [];
+
+    // Campaign activity (calls + sms, most recent first, capped)
+    const activityRes = await query(`
+      SELECT
+        cl.campaign_name,
+        'call' AS channel,
+        cl.disposition,
+        cl.disposition_normalized,
+        cl.call_date AS activity_date,
+        cl.agent_name
+      FROM call_logs cl
+      JOIN phones ph ON ph.id = cl.phone_id
+      JOIN contacts ct ON ct.id = ph.contact_id
+      JOIN property_contacts pc ON pc.contact_id = ct.id
+      WHERE pc.property_id = $1 AND cl.campaign_name IS NOT NULL
+      UNION ALL
+      SELECT
+        sl.campaign_name,
+        'sms' AS channel,
+        sl.disposition,
+        NULL AS disposition_normalized,
+        sl.sent_at AS activity_date,
+        NULL AS agent_name
+      FROM sms_logs sl
+      JOIN phones ph ON ph.id = sl.phone_id
+      JOIN contacts ct ON ct.id = ph.contact_id
+      JOIN property_contacts pc ON pc.contact_id = ct.id
+      WHERE pc.property_id = $1 AND sl.campaign_name IS NOT NULL
+      ORDER BY activity_date DESC NULLS LAST
+      LIMIT 50
+    `, [id]).catch(() => ({ rows: [] }));
+
+    res.send(propertyDetail({
+      property:           p,
+      primaryContact,
+      secondaryContacts,
+      phones,
+      lists:              listsRes.rows,
+      tags:               tagsRes.rows,
+      distressBreakdown,
+      activity:           activityRes.rows,
+      user:               getUser(req),
+    }));
+  } catch (e) {
+    console.error('[ocular/records/:id]', e);
+    res.status(500).send('Error loading property: ' + e.message);
+  }
+});
+
 // ─── Placeholder routes for unbuilt pages ──────────────────────────────────
 // These exist so the sidebar doesn't 404 if you click around. Each shows
 // "Coming next session" until we wire up the real implementation.
