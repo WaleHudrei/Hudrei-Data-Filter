@@ -1167,3 +1167,456 @@
 }
 .ocu-toast.ok  { background: var(--ocu-text-1); color: var(--ocu-bg); }
 .ocu-toast.err { background: var(--ocu-danger); color: white; }
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   RECORDS LIST PAGE — Phase 1 (added 2026-04-25)
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+/* Header strip above the grid */
+.ocu-records-header {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 20px;
+}
+.ocu-records-title {
+  font-family: var(--ocu-display);
+  font-size: 28px;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  color: var(--ocu-text-1);
+  line-height: 1.1;
+}
+.ocu-records-subtitle {
+  font-size: 13px;
+  color: var(--ocu-text-2);
+  margin-top: 4px;
+  font-family: var(--ocu-mono);
+}
+
+/* Filter chips bar — shows active filters with × to remove individually */
+.ocu-filter-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: 14px;
+}
+.ocu-filter-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  padding: 4px 10px;
+  border-radius: 5px;
+  background: var(--ocu-surface);
+  border: 1px solid var(--ocu-border);
+  color: var(--ocu-text-1);
+  text-decoration: none;
+  font-weight: 500;
+}
+.ocu-filter-chip:hover {
+  border-color: var(--ocu-accent);
+  color: var(--ocu-accent);
+}
+.ocu-filter-chip-x {
+  color: var(--ocu-text-3);
+  font-size: 14px;
+  line-height: 1;
+}
+.ocu-filter-chip:hover .ocu-filter-chip-x { color: var(--ocu-accent); }
+
+/* Two-column grid: filters | table */
+.ocu-records-grid {
+  display: grid;
+  grid-template-columns: 260px 1fr;
+  gap: 14px;
+  align-items: start;
+}
+@media (max-width: 980px) {
+  .ocu-records-grid { grid-template-columns: 1fr; }
+}
+.ocu-records-sidebar {
+  /* sticky on desktop so filters stay visible while scrolling */
+  position: sticky;
+  top: 14px;
+}
+@media (max-width: 980px) {
+  .ocu-records-sidebar { position: static; }
+}
+
+/* Filter panel itself */
+.ocu-filters {
+  background: var(--ocu-bg);
+  border: 1px solid var(--ocu-border);
+  border-radius: 10px;
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+.ocu-filters-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 4px;
+}
+.ocu-filters-title {
+  font-family: var(--ocu-display);
+  font-weight: 700;
+  font-size: 14px;
+  color: var(--ocu-text-1);
+  letter-spacing: 0.02em;
+}
+.ocu-filters-clear {
+  font-size: 12px;
+  color: var(--ocu-text-2);
+  text-decoration: none;
+}
+.ocu-filters-clear:hover { color: var(--ocu-accent); }
+
+.ocu-filter { display: flex; flex-direction: column; gap: 5px; }
+.ocu-filter-label {
+  font-size: 11px;
+  color: var(--ocu-text-3);
+  font-weight: 500;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.ocu-filter-input {
+  font-family: var(--ocu-display);
+  font-size: 13px;
+  padding: 7px 10px;
+  border: 1px solid var(--ocu-border);
+  border-radius: 6px;
+  background: var(--ocu-bg);
+  color: var(--ocu-text-1);
+  outline: none;
+  transition: border-color 0.12s;
+}
+.ocu-filter-input:focus { border-color: var(--ocu-accent); }
+.ocu-filter-input::placeholder { color: var(--ocu-text-3); }
+
+/* Compact state checkbox grid */
+.ocu-check-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(48px, 1fr));
+  gap: 4px;
+}
+.ocu-check {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 12px;
+  cursor: pointer;
+  padding: 3px 6px;
+  border-radius: 4px;
+  border: 1px solid transparent;
+  font-family: var(--ocu-mono);
+}
+.ocu-check:hover { background: var(--ocu-surface); }
+.ocu-check input { cursor: pointer; }
+
+.ocu-filter-submit {
+  margin-top: 4px;
+  width: 100%;
+  font-size: 13px;
+  padding: 9px 12px;
+}
+
+/* Records table */
+.ocu-records-main { min-width: 0; }  /* allow overflow-x in table */
+.ocu-table-wrap {
+  background: var(--ocu-bg);
+  border: 1px solid var(--ocu-border);
+  border-radius: 10px;
+  overflow: auto;
+  margin-bottom: 14px;
+}
+.ocu-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+.ocu-th {
+  text-align: left;
+  font-weight: 600;
+  font-size: 11.5px;
+  color: var(--ocu-text-2);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  padding: 12px 14px;
+  background: var(--ocu-surface);
+  border-bottom: 1px solid var(--ocu-border);
+  white-space: nowrap;
+}
+.ocu-th-num  { text-align: center; }
+.ocu-th-date { text-align: right; }
+.ocu-th-sort {
+  color: inherit;
+  text-decoration: none;
+}
+.ocu-th-sort:hover { color: var(--ocu-accent); }
+.ocu-th-sort.active { color: var(--ocu-text-1); }
+.ocu-th-arrow {
+  font-family: var(--ocu-mono);
+  font-weight: 700;
+}
+
+.ocu-tr-clickable {
+  cursor: pointer;
+  border-bottom: 1px solid var(--ocu-border);
+  transition: background 0.08s;
+}
+.ocu-tr-clickable:hover { background: var(--ocu-surface); }
+.ocu-tr-clickable:last-child { border-bottom: none; }
+.ocu-td {
+  padding: 12px 14px;
+  vertical-align: middle;
+}
+.ocu-td-text { color: var(--ocu-text-1); }
+.ocu-td-num  { text-align: center; }
+.ocu-td-date {
+  text-align: right;
+  font-family: var(--ocu-mono);
+  font-size: 12px;
+  color: var(--ocu-text-3);
+  white-space: nowrap;
+}
+.ocu-td-primary {
+  font-weight: 500;
+  color: var(--ocu-text-1);
+}
+.ocu-td-meta {
+  font-size: 12px;
+  color: var(--ocu-text-3);
+  margin-top: 2px;
+}
+
+.ocu-empty-table {
+  background: var(--ocu-bg);
+  border: 1px solid var(--ocu-border);
+  border-radius: 10px;
+  padding: 60px 24px;
+  text-align: center;
+}
+.ocu-empty-title {
+  font-size: 16px;
+  font-weight: 600;
+  color: var(--ocu-text-1);
+  margin-bottom: 4px;
+}
+.ocu-empty-sub {
+  font-size: 13px;
+  color: var(--ocu-text-3);
+}
+
+/* Pagination */
+.ocu-pagination {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 8px 4px;
+  flex-wrap: wrap;
+}
+.ocu-pagination-info {
+  font-size: 13px;
+  color: var(--ocu-text-2);
+}
+.ocu-pagination-info strong {
+  color: var(--ocu-text-1);
+  font-weight: 600;
+  font-family: var(--ocu-mono);
+}
+.ocu-pagination-nav {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+.ocu-page-link {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 30px;
+  padding: 5px 10px;
+  font-size: 13px;
+  color: var(--ocu-text-2);
+  text-decoration: none;
+  border: 1px solid var(--ocu-border);
+  border-radius: 5px;
+  background: var(--ocu-bg);
+  font-family: var(--ocu-mono);
+}
+.ocu-page-link:hover {
+  border-color: var(--ocu-accent);
+  color: var(--ocu-accent);
+}
+.ocu-page-link.active {
+  background: var(--ocu-accent);
+  color: white;
+  border-color: var(--ocu-accent);
+}
+.ocu-page-link.disabled {
+  color: var(--ocu-text-3);
+  border-color: var(--ocu-border);
+  cursor: default;
+  pointer-events: none;
+}
+.ocu-page-ellipsis {
+  padding: 0 4px;
+  color: var(--ocu-text-3);
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   RECORDS LIST PHASE 2 — bulk selection + action bar (added 2026-04-25)
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+/* Checkbox column — narrow */
+.ocu-th-check, .ocu-td-check {
+  width: 36px;
+  padding-left: 14px;
+  padding-right: 0;
+  text-align: center;
+}
+.ocu-row-check, .ocu-row-checkall {
+  cursor: pointer;
+  width: 15px;
+  height: 15px;
+  accent-color: var(--ocu-accent);
+}
+
+/* Filter detail expanders (tags include/exclude) */
+.ocu-filter-details {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  border: 1px solid var(--ocu-border);
+  border-radius: 6px;
+  padding: 8px 10px;
+}
+.ocu-filter-details[open] { padding-bottom: 10px; }
+.ocu-filter-details summary {
+  list-style: none;
+}
+.ocu-filter-details summary::-webkit-details-marker { display: none; }
+.ocu-filter-details summary::after {
+  content: '▾';
+  float: right;
+  color: var(--ocu-text-3);
+  font-size: 10px;
+}
+.ocu-filter-details[open] summary::after { content: '▴'; }
+.ocu-check-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  max-height: 180px;
+  overflow-y: auto;
+  margin-top: 8px;
+  font-size: 12px;
+}
+.ocu-check-list .ocu-check { font-family: var(--ocu-display); }
+
+/* Min/max pair input — equity, year built */
+.ocu-filter-pair {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 6px;
+}
+
+/* ─── Bulk action bar ────────────────────────────────────────────────── */
+.ocu-bulk-bar {
+  position: fixed;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  background: var(--ocu-text-1);
+  color: var(--ocu-bg);
+  z-index: 80;
+  transform: translateY(100%);
+  transition: transform 0.18s ease-out;
+  box-shadow: 0 -8px 24px rgba(0,0,0,0.18);
+}
+.ocu-bulk-bar[data-active="true"] { transform: translateY(0); }
+.ocu-bulk-bar-inner {
+  max-width: 1280px;
+  margin: 0 auto;
+  padding: 14px 24px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  flex-wrap: wrap;
+}
+.ocu-bulk-status {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  font-size: 14px;
+}
+.ocu-bulk-count {
+  font-family: var(--ocu-mono);
+  font-weight: 700;
+  font-size: 18px;
+  color: var(--ocu-accent-bright);
+}
+.ocu-bulk-label {
+  color: var(--ocu-bg);
+  opacity: 0.8;
+}
+.ocu-bulk-selectall-link {
+  background: transparent;
+  border: 1px solid rgba(255,255,255,0.2);
+  color: var(--ocu-accent-bright);
+  font-size: 12px;
+  padding: 4px 10px;
+  border-radius: 5px;
+  cursor: pointer;
+  font-family: inherit;
+}
+.ocu-bulk-selectall-link:hover {
+  background: rgba(34,211,238,0.1);
+  border-color: var(--ocu-accent-bright);
+}
+.ocu-bulk-clear {
+  background: transparent;
+  border: none;
+  color: var(--ocu-bg);
+  opacity: 0.6;
+  font-size: 13px;
+  padding: 4px 8px;
+  cursor: pointer;
+  text-decoration: underline;
+  font-family: inherit;
+}
+.ocu-bulk-clear:hover { opacity: 1; }
+.ocu-bulk-actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.ocu-bulk-actions .ocu-btn {
+  font-size: 13px;
+  padding: 7px 14px;
+}
+/* Override secondary btn for dark bar */
+.ocu-bulk-actions .ocu-btn-secondary {
+  background: rgba(255,255,255,0.1);
+  color: var(--ocu-bg);
+  border-color: rgba(255,255,255,0.2);
+}
+.ocu-bulk-actions .ocu-btn-secondary:hover {
+  background: rgba(255,255,255,0.18);
+  border-color: rgba(255,255,255,0.4);
+}
+.ocu-bulk-actions .ocu-btn-danger {
+  background: var(--ocu-danger);
+  color: white;
+  border: 1px solid var(--ocu-danger);
+}
+.ocu-bulk-actions .ocu-btn-danger:hover { filter: brightness(1.08); }
+
+/* Add bottom padding to body when action bar is sticky to avoid covering content */
+body { padding-bottom: 0; }
+.ocu-records-main { padding-bottom: 80px; }
