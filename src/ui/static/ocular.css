@@ -1236,55 +1236,82 @@
 .ocu-filter-chip:hover .ocu-filter-chip-x { color: var(--ocu-accent); }
 
 /* Two-column grid: filters | table */
-.ocu-records-grid {
-  display: grid;
-  grid-template-columns: 260px 1fr;
-  gap: 14px;
-  align-items: start;
+/* Top-bar layout: filter bar full-width, then table full-width below */
+.ocu-records-main-fullwidth { min-width: 0; }
+
+/* ── Filter bar (collapsed by default) ──────────────────────────────── */
+.ocu-filter-bar {
+  margin-bottom: 14px;
 }
-@media (max-width: 980px) {
-  .ocu-records-grid { grid-template-columns: 1fr; }
+.ocu-filter-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  background: var(--ocu-bg);
+  border: 1px solid var(--ocu-border);
+  border-radius: 8px;
+  padding: 8px 14px;
+  font-family: var(--ocu-display);
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--ocu-text-1);
+  cursor: pointer;
+  transition: border-color 0.12s, color 0.12s;
 }
-.ocu-records-sidebar {
-  /* sticky on desktop so filters stay visible while scrolling */
-  position: sticky;
-  top: 14px;
-}
-@media (max-width: 980px) {
-  .ocu-records-sidebar { position: static; }
+.ocu-filter-toggle:hover { border-color: var(--ocu-accent); color: var(--ocu-accent); }
+.ocu-filter-toggle.open  { border-color: var(--ocu-accent); color: var(--ocu-accent); }
+.ocu-filter-toggle.open .ocu-filter-toggle-chev { transform: rotate(180deg); }
+.ocu-filter-toggle-chev { transition: transform 0.15s; }
+.ocu-filter-toggle-count {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 20px;
+  height: 20px;
+  padding: 0 6px;
+  border-radius: 10px;
+  background: var(--ocu-accent);
+  color: white;
+  font-family: var(--ocu-mono);
+  font-size: 11px;
+  font-weight: 700;
 }
 
-/* Filter panel itself */
-.ocu-filters {
+/* The panel (hidden by default — JS toggles `hidden`) */
+.ocu-filter-panel {
   background: var(--ocu-bg);
   border: 1px solid var(--ocu-border);
   border-radius: 10px;
-  padding: 16px;
-  display: flex;
-  flex-direction: column;
-  gap: 14px;
+  padding: 16px 18px;
+  margin-top: 8px;
 }
-.ocu-filters-header {
+
+/* Compact grid: 4–5 fields per row depending on viewport width */
+.ocu-filter-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+  gap: 12px 14px;
+  align-items: start;
+}
+
+.ocu-filter-actions {
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  margin-bottom: 4px;
-}
-.ocu-filters-title {
-  font-family: var(--ocu-display);
-  font-weight: 700;
-  font-size: 14px;
-  color: var(--ocu-text-1);
-  letter-spacing: 0.02em;
+  justify-content: flex-end;
+  gap: 12px;
+  margin-top: 14px;
+  padding-top: 14px;
+  border-top: 1px solid var(--ocu-border);
 }
 .ocu-filters-clear {
-  font-size: 12px;
+  font-size: 13px;
   color: var(--ocu-text-2);
   text-decoration: none;
 }
 .ocu-filters-clear:hover { color: var(--ocu-accent); }
 
-.ocu-filter { display: flex; flex-direction: column; gap: 5px; }
+/* Filter cells (label + input stacked) */
+.ocu-filter { display: flex; flex-direction: column; gap: 5px; min-width: 0; }
 .ocu-filter-label {
   font-size: 11px;
   color: var(--ocu-text-3);
@@ -1302,39 +1329,145 @@
   color: var(--ocu-text-1);
   outline: none;
   transition: border-color 0.12s;
+  width: 100%;
+  box-sizing: border-box;
 }
 .ocu-filter-input:focus { border-color: var(--ocu-accent); }
 .ocu-filter-input::placeholder { color: var(--ocu-text-3); }
 
-/* Compact state checkbox grid */
-.ocu-check-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(48px, 1fr));
-  gap: 4px;
+/* ── State multi-select ──────────────────────────────────────────────── */
+.ocu-filter-state { position: relative; }
+.ocu-state-button {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  text-align: left;
+  cursor: pointer;
+  font-family: var(--ocu-display);
+  min-height: 34px;
 }
+.ocu-state-button-text {
+  flex: 0 0 auto;
+  color: var(--ocu-text-2);
+  font-size: 13px;
+}
+.ocu-state-button-pills {
+  flex: 1 1 auto;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 3px;
+  overflow: hidden;
+  min-width: 0;
+}
+.ocu-state-pill {
+  display: inline-flex;
+  align-items: center;
+  font-family: var(--ocu-mono);
+  font-size: 11px;
+  font-weight: 600;
+  padding: 1px 6px;
+  border-radius: 3px;
+  background: var(--ocu-accent);
+  color: white;
+}
+.ocu-state-popover {
+  position: absolute;
+  top: calc(100% + 4px);
+  left: 0;
+  right: 0;
+  min-width: 240px;
+  background: var(--ocu-bg);
+  border: 1px solid var(--ocu-border-strong);
+  border-radius: 8px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.12);
+  z-index: 50;
+  display: flex;
+  flex-direction: column;
+  max-height: 360px;
+  overflow: hidden;
+}
+.ocu-state-search-wrap {
+  padding: 8px;
+  border-bottom: 1px solid var(--ocu-border);
+}
+.ocu-state-search {
+  width: 100%;
+  font-family: var(--ocu-display);
+  font-size: 13px;
+  padding: 6px 10px;
+  border: 1px solid var(--ocu-border);
+  border-radius: 5px;
+  outline: none;
+  box-sizing: border-box;
+}
+.ocu-state-search:focus { border-color: var(--ocu-accent); }
+.ocu-state-list {
+  flex: 1;
+  overflow-y: auto;
+  padding: 4px 6px;
+}
+.ocu-state-opt {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 8px;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 13px;
+}
+.ocu-state-opt:hover { background: var(--ocu-surface); }
+.ocu-state-opt input { cursor: pointer; }
+.ocu-state-code {
+  font-family: var(--ocu-mono);
+  font-weight: 600;
+  color: var(--ocu-text-1);
+  min-width: 26px;
+}
+.ocu-state-name {
+  color: var(--ocu-text-2);
+  flex: 1;
+}
+.ocu-state-footer {
+  display: flex;
+  justify-content: space-between;
+  padding: 8px;
+  border-top: 1px solid var(--ocu-border);
+  background: var(--ocu-surface);
+}
+.ocu-state-clear, .ocu-state-done {
+  font-family: var(--ocu-display);
+  font-size: 12px;
+  padding: 5px 12px;
+  border-radius: 5px;
+  cursor: pointer;
+  border: 1px solid var(--ocu-border);
+  background: var(--ocu-bg);
+  color: var(--ocu-text-1);
+}
+.ocu-state-clear:hover { color: var(--ocu-danger); border-color: var(--ocu-danger); }
+.ocu-state-done {
+  background: var(--ocu-accent);
+  color: white;
+  border-color: var(--ocu-accent);
+}
+.ocu-state-done:hover { filter: brightness(0.95); }
+
+/* Generic checkbox styling (used inside Tags include/exclude details) */
 .ocu-check {
   display: inline-flex;
   align-items: center;
-  gap: 4px;
+  gap: 6px;
   font-size: 12px;
   cursor: pointer;
   padding: 3px 6px;
   border-radius: 4px;
-  border: 1px solid transparent;
-  font-family: var(--ocu-mono);
 }
 .ocu-check:hover { background: var(--ocu-surface); }
 .ocu-check input { cursor: pointer; }
-
-.ocu-filter-submit {
-  margin-top: 4px;
-  width: 100%;
-  font-size: 13px;
-  padding: 9px 12px;
-}
+.ocu-check-line { width: 100%; }
 
 /* Records table */
-.ocu-records-main { min-width: 0; }  /* allow overflow-x in table */
+/* (removed: .ocu-records-main rule — class no longer used) */
 .ocu-table-wrap {
   background: var(--ocu-bg);
   border: 1px solid var(--ocu-border);
@@ -1628,4 +1761,4 @@
 
 /* Add bottom padding to body when action bar is sticky to avoid covering content */
 body { padding-bottom: 0; }
-.ocu-records-main { padding-bottom: 80px; }
+.ocu-records-main-fullwidth { padding-bottom: 80px; }
