@@ -32,6 +32,7 @@ async function initCampaignSchema() {
   await query(`
     CREATE TABLE IF NOT EXISTS campaigns (
       id SERIAL PRIMARY KEY,
+      tenant_id INT NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
       name VARCHAR(255) NOT NULL,
       list_type VARCHAR(100) NOT NULL,
       market_name VARCHAR(100) NOT NULL,
@@ -62,6 +63,7 @@ async function initCampaignSchema() {
 
     CREATE TABLE IF NOT EXISTS campaign_uploads (
       id SERIAL PRIMARY KEY,
+      tenant_id INT NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
       campaign_id INTEGER NOT NULL REFERENCES campaigns(id) ON DELETE CASCADE,
       filename VARCHAR(255),
       source_list_name VARCHAR(255),
@@ -82,6 +84,7 @@ async function initCampaignSchema() {
 
     CREATE TABLE IF NOT EXISTS campaign_numbers (
       id SERIAL PRIMARY KEY,
+      tenant_id INT NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
       campaign_id INTEGER NOT NULL REFERENCES campaigns(id) ON DELETE CASCADE,
       phone_number VARCHAR(20) NOT NULL,
       first_seen_at TIMESTAMPTZ DEFAULT NOW(),
@@ -105,6 +108,7 @@ async function initCampaignSchema() {
 
     CREATE TABLE IF NOT EXISTS campaign_contacts (
       id SERIAL PRIMARY KEY,
+      tenant_id INT NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
       campaign_id INTEGER NOT NULL REFERENCES campaigns(id) ON DELETE CASCADE,
       first_name VARCHAR(100),
       last_name VARCHAR(100),
@@ -126,6 +130,7 @@ async function initCampaignSchema() {
 
     CREATE TABLE IF NOT EXISTS campaign_contact_phones (
       id SERIAL PRIMARY KEY,
+      tenant_id INT NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
       campaign_id INTEGER NOT NULL REFERENCES campaigns(id) ON DELETE CASCADE,
       contact_id INTEGER NOT NULL REFERENCES campaign_contacts(id) ON DELETE CASCADE,
       phone_number VARCHAR(20) NOT NULL,
@@ -147,11 +152,13 @@ async function initCampaignSchema() {
 
     CREATE TABLE IF NOT EXISTS custom_list_types (
       id SERIAL PRIMARY KEY,
+      tenant_id INT NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
       name VARCHAR(100) NOT NULL UNIQUE,
       created_at TIMESTAMPTZ DEFAULT NOW()
     );
 
     CREATE TABLE IF NOT EXISTS nis_numbers (
+      tenant_id INT NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
       phone_number VARCHAR(20) PRIMARY KEY,
       first_seen_nis DATE,
       last_seen_nis DATE,
@@ -343,15 +350,17 @@ async function initCampaignSchema() {
   _campaignSchemaReady = true;
 }
 
-async function getCampaigns() {
-  const res = await query(`SELECT * FROM campaigns ORDER BY created_at DESC`);
+async function getCampaigns(tenantId) {
+  if (!Number.isInteger(tenantId)) throw new Error('getCampaigns: tenantId required');
+  const res = await query(`SELECT * FROM campaigns WHERE tenant_id = $1 ORDER BY created_at DESC`, [tenantId]);
   return res.rows;
 }
 
-async function getCampaign(id) {
-  const c = await query(`SELECT * FROM campaigns WHERE id=$1`, [id]);
+async function getCampaign(tenantId, id) {
+  if (!Number.isInteger(tenantId)) throw new Error('getCampaign: tenantId required');
+  const c = await query(`SELECT * FROM campaigns WHERE id=$1 AND tenant_id=$2`, [id, tenantId]);
   if (!c.rows.length) return null;
-  const uploads = await query(`SELECT * FROM campaign_uploads WHERE campaign_id=$1 ORDER BY uploaded_at DESC LIMIT 30`, [id]);
+  const uploads = await query(`SELECT * FROM campaign_uploads WHERE campaign_id=$1 AND tenant_id=$2 ORDER BY uploaded_at DESC LIMIT 30`, [id, tenantId]);
   // Union call-log dispositions (from campaign_numbers) with SMS labels
   // (from campaign_contact_phones.last_disposition). Legacy raw "C2|Label 📞"
   // values are cleaned on the fly. After filtration.js's write-time-normalize
@@ -360,60 +369,65 @@ async function getCampaign(id) {
     SELECT disposition, SUM(count)::int AS count FROM (
       SELECT last_disposition_normalized AS disposition, COUNT(*) AS count
         FROM campaign_numbers
-       WHERE campaign_id = $1 AND last_disposition_normalized IS NOT NULL
+       WHERE campaign_id = $1 AND tenant_id = $2 AND last_disposition_normalized IS NOT NULL
        GROUP BY last_disposition_normalized
       UNION ALL
       SELECT TRIM(REGEXP_REPLACE(REGEXP_REPLACE(last_disposition, '^[^|]*\\|', ''), '[^A-Za-z ]+$', '')) AS disposition,
              COUNT(*) AS count
         FROM campaign_contact_phones
-       WHERE campaign_id = $1 AND last_disposition IS NOT NULL
+       WHERE campaign_id = $1 AND tenant_id = $2 AND last_disposition IS NOT NULL
        GROUP BY TRIM(REGEXP_REPLACE(REGEXP_REPLACE(last_disposition, '^[^|]*\\|', ''), '[^A-Za-z ]+$', ''))
     ) merged
     WHERE disposition IS NOT NULL AND disposition <> ''
     GROUP BY disposition
-    ORDER BY count DESC`, [id]);
+    ORDER BY count DESC`, [id, tenantId]);
   return { ...c.rows[0], uploads: uploads.rows, disposition_breakdown: disposition_breakdown.rows };
 }
 
-async function createCampaign({ name, list_type, market_name, state_code, notes, created_by, start_date, active_channel }) {
+async function createCampaign({ tenantId, name, list_type, market_name, state_code, notes, created_by, start_date, active_channel }) {
+  if (!Number.isInteger(tenantId)) throw new Error('createCampaign: tenantId required');
   const channel = active_channel === 'sms' ? 'sms' : 'cold_call';
   const cold_call_status = channel === 'cold_call' ? 'active' : 'dormant';
   const sms_status = channel === 'sms' ? 'active' : 'dormant';
   const res = await query(
-    `INSERT INTO campaigns (name, list_type, market_name, state_code, notes, created_by, start_date, active_channel, cold_call_status, sms_status)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) RETURNING *`,
-    [name, list_type, market_name, state_code?.toUpperCase(), notes||'', created_by||'team', start_date||null, channel, cold_call_status, sms_status]
+    `INSERT INTO campaigns (tenant_id, name, list_type, market_name, state_code, notes, created_by, start_date, active_channel, cold_call_status, sms_status)
+     VALUES ($11,$1,$2,$3,$4,$5,$6,$7,$8,$9,$10) RETURNING *`,
+    [name, list_type, market_name, state_code?.toUpperCase(), notes||'', created_by||'team', start_date||null, channel, cold_call_status, sms_status, tenantId]
   );
   return res.rows[0];
 }
 
-async function closeCampaign(id) {
+async function closeCampaign(tenantId, id) {
+  if (!Number.isInteger(tenantId)) throw new Error('closeCampaign: tenantId required');
   await query(
-    `UPDATE campaigns SET status='completed', end_date=CURRENT_DATE, updated_at=NOW() WHERE id=$1`,
-    [id]
+    `UPDATE campaigns SET status='completed', end_date=CURRENT_DATE, updated_at=NOW() WHERE id=$1 AND tenant_id=$2`,
+    [id, tenantId]
   );
 }
 
-async function cloneCampaign(id) {
-  const res = await query(`SELECT * FROM campaigns WHERE id=$1`, [id]);
+async function cloneCampaign(tenantId, id) {
+  if (!Number.isInteger(tenantId)) throw new Error('cloneCampaign: tenantId required');
+  const res = await query(`SELECT * FROM campaigns WHERE id=$1 AND tenant_id=$2`, [id, tenantId]);
   if (!res.rows.length) return null;
   const c = res.rows[0];
   const newCamp = await query(
-    `INSERT INTO campaigns (name, list_type, market_name, state_code, notes, created_by, active_channel, cold_call_status, sms_status, start_date)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,CURRENT_DATE) RETURNING *`,
-    [c.name, c.list_type, c.market_name, c.state_code, c.notes, c.created_by, c.active_channel, c.cold_call_status, c.sms_status]
+    `INSERT INTO campaigns (tenant_id, name, list_type, market_name, state_code, notes, created_by, active_channel, cold_call_status, sms_status, start_date)
+     VALUES ($10,$1,$2,$3,$4,$5,$6,$7,$8,$9,CURRENT_DATE) RETURNING *`,
+    [c.name, c.list_type, c.market_name, c.state_code, c.notes, c.created_by, c.active_channel, c.cold_call_status, c.sms_status, tenantId]
   );
   return newCamp.rows[0];
 }
 
-async function updateCampaignStatus(id, status) {
-  await query(`UPDATE campaigns SET status=$1, updated_at=NOW() WHERE id=$2`, [status, id]);
+async function updateCampaignStatus(tenantId, id, status) {
+  if (!Number.isInteger(tenantId)) throw new Error('updateCampaignStatus: tenantId required');
+  await query(`UPDATE campaigns SET status=$1, updated_at=NOW() WHERE id=$2 AND tenant_id=$3`, [status, id, tenantId]);
 }
 
-async function updateCampaignChannel(id, channel) {
+async function updateCampaignChannel(tenantId, id, channel) {
+  if (!Number.isInteger(tenantId)) throw new Error('updateCampaignChannel: tenantId required');
   const cold = channel==='cold_call'?'active':'dormant';
   const sms  = channel==='sms'?'active':'dormant';
-  await query(`UPDATE campaigns SET active_channel=$1, cold_call_status=$2, sms_status=$3, updated_at=NOW() WHERE id=$4`, [channel, cold, sms, id]);
+  await query(`UPDATE campaigns SET active_channel=$1, cold_call_status=$2, sms_status=$3, updated_at=NOW() WHERE id=$4 AND tenant_id=$5`, [channel, cold, sms, id, tenantId]);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -423,15 +437,16 @@ async function updateCampaignChannel(id, channel) {
 // above so duplicate names are allowed — two campaigns with the same name
 // across different markets or rounds is a legitimate use case.
 // ─────────────────────────────────────────────────────────────────────────────
-async function updateCampaignName(id, rawName) {
+async function updateCampaignName(tenantId, id, rawName) {
+  if (!Number.isInteger(tenantId)) throw new Error('updateCampaignName: tenantId required');
   const name = String(rawName || '').trim();
   if (!name) return { ok: false, error: 'Name is required.' };
   if (name.length > 255) return { ok: false, error: 'Name too long (max 255 characters).' };
   const idInt = parseInt(id, 10);
   if (!Number.isFinite(idInt) || idInt <= 0) return { ok: false, error: 'Invalid campaign id.' };
   const res = await query(
-    `UPDATE campaigns SET name = $1, updated_at = NOW() WHERE id = $2 RETURNING *`,
-    [name, idInt]
+    `UPDATE campaigns SET name = $1, updated_at = NOW() WHERE id = $2 AND tenant_id = $3 RETURNING *`,
+    [name, idInt, tenantId]
   );
   if (!res.rows.length) return { ok: false, error: 'Campaign not found.' };
   return { ok: true, campaign: res.rows[0] };
@@ -477,7 +492,8 @@ function detectPhoneColumns(headers) {
 // stored known status. This eliminates the data loss that used to happen
 // every time a user re-uploaded the same list.
 // ─────────────────────────────────────────────────────────────────────────────
-async function importContactList(campaignId, rows, headers, customMapping) {
+async function importContactList(tenantId, campaignId, rows, headers, customMapping) {
+  if (!Number.isInteger(tenantId)) throw new Error('importContactList: tenantId required');
   if (!rows.length) return { total: 0 };
 
   const h = headers.map(x => x.toLowerCase().trim());
@@ -539,7 +555,8 @@ async function importContactList(campaignId, rows, headers, customMapping) {
     for (let j = 0; j < batch.length; j++) {
       const r = batch[j];
       const idx = i + j;
-      vals.push(`($${p},$${p+1},$${p+2},$${p+3},$${p+4},$${p+5},$${p+6},$${p+7},$${p+8},$${p+9},$${p+10},$${p+11},$${p+12})`);
+      // 14 cols including tenant_id
+      vals.push(`($${p},$${p+1},$${p+2},$${p+3},$${p+4},$${p+5},$${p+6},$${p+7},$${p+8},$${p+9},$${p+10},$${p+11},$${p+12},$${p+13})`);
       // 2026-04-20 audit fix #1: route property_state + mailing_state through
       // normalizeState() so the records filter's UPPER(TRIM(property_state))
       // = UPPER(TRIM(p.state_code)) comparison actually matches. Before this,
@@ -558,16 +575,17 @@ async function importContactList(campaignId, rows, headers, customMapping) {
         r[COL.fname]||'', r[COL.lname]||'',
         r[COL.maddr]||'', r[COL.mcity]||'', mstate, r[COL.mzip]||'', r[COL.mcounty]||'',
         r[COL.paddr]||'', r[COL.pcity]||'', pstate, r[COL.pzip]||'',
-        idx
+        idx,
+        tenantId
       );
-      p += 13;
+      p += 14;
     }
 
     const contactRes = await query(
       `INSERT INTO campaign_contacts
          (campaign_id, first_name, last_name, mailing_address, mailing_city,
           mailing_state, mailing_zip, mailing_county, property_address,
-          property_city, property_state, property_zip, row_index)
+          property_city, property_state, property_zip, row_index, tenant_id)
        VALUES ${vals.join(',')}
        ON CONFLICT (campaign_id, row_index) DO UPDATE SET
          first_name       = COALESCE(NULLIF(EXCLUDED.first_name,''),       campaign_contacts.first_name),
@@ -622,24 +640,15 @@ async function importContactList(campaignId, rows, headers, customMapping) {
     const phoneParams = [];
     let pp = 1;
     for (const p of phoneBucket.values()) {
-      phoneVals.push(`($${pp},$${pp+1},$${pp+2},$${pp+3})`);
-      phoneParams.push(campaignId, p.contactId, p.phone, p.slot);
-      pp += 4;
+      phoneVals.push(`($${pp},$${pp+1},$${pp+2},$${pp+3},$${pp+4})`);
+      phoneParams.push(campaignId, p.contactId, p.phone, p.slot, tenantId);
+      pp += 5;
     }
 
     if (phoneVals.length > 0) {
-      // 2026-04-18 audit fix #14: Previously conflicted on (contact_id, slot_index)
-      // which is a positional identity — if a re-upload had a different phone at
-      // slot 1, we'd UPDATE the phone_number but keep the old phone's status,
-      // wrong_number, filtered, etc. A fresh number would arrive pre-marked as
-      // Wrong. The fix: conflict on (contact_id, phone_number) — phone number IS
-      // the identity. slot_index becomes informational and reflects the latest
-      // uploaded position. Outcome columns (phone_status, wrong_number, filtered,
-      // last_disposition, cumulative_count, *_flagged_at) still never overwritten
-      // by an import — only filtration updates those.
       await query(
         `INSERT INTO campaign_contact_phones
-           (campaign_id, contact_id, phone_number, slot_index)
+           (campaign_id, contact_id, phone_number, slot_index, tenant_id)
          VALUES ${phoneVals.join(',')}
          ON CONFLICT (contact_id, phone_number) DO UPDATE SET
            slot_index = EXCLUDED.slot_index,
@@ -665,15 +674,16 @@ async function importContactList(campaignId, rows, headers, customMapping) {
     `UPDATE campaign_contact_phones
         SET phone_status = 'dead_number', nis_flagged_at = NOW()
       WHERE campaign_id = $1
+        AND tenant_id = $2
         AND phone_status != 'dead_number'
         AND (
-          phone_number IN (SELECT phone_number FROM nis_numbers WHERE times_reported >= 3)
+          phone_number IN (SELECT phone_number FROM nis_numbers WHERE tenant_id = $2 AND times_reported >= 3)
           OR (
-            phone_number IN (SELECT phone_number FROM nis_numbers WHERE times_reported < 3)
+            phone_number IN (SELECT phone_number FROM nis_numbers WHERE tenant_id = $2 AND times_reported < 3)
             AND (phone_status IS NULL OR phone_status != 'Correct')
           )
         )`,
-    [campaignId]
+    [campaignId, tenantId]
   );
 
   // Update campaign total_unique_numbers — count the distinct phones actually
@@ -683,11 +693,11 @@ async function importContactList(campaignId, rows, headers, customMapping) {
       total_unique_numbers = (
         SELECT COUNT(DISTINCT phone_number)
           FROM campaign_contact_phones
-         WHERE campaign_id = $1
+         WHERE campaign_id = $1 AND tenant_id = $2
       ),
       updated_at = NOW()
-    WHERE id = $1`,
-    [campaignId]
+    WHERE id = $1 AND tenant_id = $2`,
+    [campaignId, tenantId]
   );
 
   return { total: imported };
@@ -696,9 +706,10 @@ async function importContactList(campaignId, rows, headers, customMapping) {
 // Get all custom list types merged with defaults
 const DEFAULT_LIST_TYPES = ['Vacant Property','Pre-Foreclosure','Active Liens','2+ Mortgages','Absentee Owner','Tax Delinquent','Probate','Code Violation','Pre-Probate','Other'];
 
-async function getListTypes() {
+async function getListTypes(tenantId) {
+  if (!Number.isInteger(tenantId)) throw new Error('getListTypes: tenantId required');
   try {
-    const res = await query(`SELECT name FROM custom_list_types ORDER BY name ASC`);
+    const res = await query(`SELECT name FROM custom_list_types WHERE tenant_id = $1 ORDER BY name ASC`, [tenantId]);
     const custom = res.rows.map(r => r.name);
     const seen = new Set(DEFAULT_LIST_TYPES.map(t => t.toLowerCase()));
     const merged = [...DEFAULT_LIST_TYPES];
@@ -717,12 +728,13 @@ async function getListTypes() {
   }
 }
 
-async function addListType(name) {
+async function addListType(tenantId, name) {
+  if (!Number.isInteger(tenantId)) throw new Error('addListType: tenantId required');
   const clean = String(name || '').trim();
   if (!clean || clean.length > 100) return false;
   if (DEFAULT_LIST_TYPES.some(t => t.toLowerCase() === clean.toLowerCase())) return true;
   try {
-    await query(`INSERT INTO custom_list_types (name) VALUES ($1) ON CONFLICT (name) DO NOTHING`, [clean]);
+    await query(`INSERT INTO custom_list_types (tenant_id, name) VALUES ($1, $2) ON CONFLICT (name) DO NOTHING`, [tenantId, clean]);
     return true;
   } catch(e) {
     console.error('addListType error:', e.message);

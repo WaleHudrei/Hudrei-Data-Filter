@@ -49,13 +49,15 @@ async function dedupByPhone(mode = 'report') {
   if (mode === 'skip') return stats;
 
   // ── Find groups: phones that appear on more than one contact ──────────────
-  // Groups are keyed by phone_number. Each group has 2+ contact_ids.
+  // Groups are keyed by (tenant_id, phone_number) so dedup never merges
+  // contacts across tenants — same phone in two different tenants is two
+  // different people from our perspective.
   const groupsRes = await query(`
-    SELECT phone_number,
+    SELECT tenant_id, phone_number,
            ARRAY_AGG(contact_id ORDER BY contact_id ASC) AS contact_ids
       FROM phones
      WHERE phone_number IS NOT NULL AND phone_number <> ''
-     GROUP BY phone_number
+     GROUP BY tenant_id, phone_number
     HAVING COUNT(DISTINCT contact_id) > 1
   `);
 
@@ -131,8 +133,9 @@ async function dedupByPhone(mode = 'report') {
   //   to this property, insert one carrying the loser's flags; otherwise
   //   leave alone (ON CONFLICT DO NOTHING).
   const insertRes = await query(`
-    INSERT INTO property_contacts (property_id, contact_id, role, primary_contact, created_at)
-    SELECT pc.property_id,
+    INSERT INTO property_contacts (tenant_id, property_id, contact_id, role, primary_contact, created_at)
+    SELECT pc.tenant_id,
+           pc.property_id,
            (CASE pc.contact_id ${caseSql} END)::int AS keeper_id,
            pc.role,
            pc.primary_contact,
@@ -145,9 +148,10 @@ async function dedupByPhone(mode = 'report') {
 
   // Step 2: move phones from losers to keepers. Same pattern.
   const phoneInsertRes = await query(`
-    INSERT INTO phones (contact_id, phone_number, phone_index, phone_status, phone_type,
+    INSERT INTO phones (tenant_id, contact_id, phone_number, phone_index, phone_status, phone_type,
                         phone_tag, do_not_call, wrong_number, created_at, updated_at)
-    SELECT (CASE ph.contact_id ${caseSql} END)::int AS keeper_id,
+    SELECT ph.tenant_id,
+           (CASE ph.contact_id ${caseSql} END)::int AS keeper_id,
            ph.phone_number, ph.phone_index, ph.phone_status, ph.phone_type,
            ph.phone_tag, ph.do_not_call, ph.wrong_number, ph.created_at, ph.updated_at
       FROM phones ph

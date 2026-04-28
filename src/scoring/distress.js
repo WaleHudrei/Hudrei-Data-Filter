@@ -193,6 +193,7 @@ async function ensureDistressSchema() {
   await query(`
     CREATE TABLE IF NOT EXISTS distress_score_log (
       id SERIAL PRIMARY KEY,
+      tenant_id INT NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
       property_id INTEGER NOT NULL REFERENCES properties(id) ON DELETE CASCADE,
       score INTEGER NOT NULL,
       band VARCHAR(16),
@@ -205,6 +206,7 @@ async function ensureDistressSchema() {
   await query(`
     CREATE TABLE IF NOT EXISTS distress_outcome_log (
       id SERIAL PRIMARY KEY,
+      tenant_id INT NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
       property_id INTEGER NOT NULL REFERENCES properties(id) ON DELETE CASCADE,
       outcome_type VARCHAR(32) NOT NULL,
       old_value VARCHAR(64),
@@ -301,11 +303,13 @@ async function scoreProperty(propertyId) {
     [result.score, result.band, JSON.stringify(result.breakdown), propertyId]
   );
 
-  // Log only if score changed
+  // Log only if score changed. tenant_id is read from the property row to
+  // avoid plumbing tenantId through every caller (single property lookup is
+  // already tenant-correct via the FK).
   if (priorScore !== result.score) {
     await query(
-      `INSERT INTO distress_score_log (property_id, score, band, breakdown)
-       VALUES ($1, $2, $3, $4::jsonb)`,
+      `INSERT INTO distress_score_log (tenant_id, property_id, score, band, breakdown)
+       SELECT tenant_id, $1, $2, $3, $4::jsonb FROM properties WHERE id = $1`,
       [propertyId, result.score, result.band, JSON.stringify(result.breakdown)]
     );
   }
@@ -536,18 +540,20 @@ async function scoreAllPropertiesWithBreakdown(progressCb, limit) {
 // ── Outcome logger (call when marketing_result or pipeline_stage changes) ──
 async function logOutcomeChange(propertyId, outcomeType, oldValue, newValue) {
   await ensureDistressSchema();
-  // Read current cached score (don't recompute — capture state at event)
+  // Read current cached score (don't recompute — capture state at event).
+  // tenant_id comes from the property row.
   const r = await query(
-    `SELECT distress_score, distress_band, distress_breakdown
+    `SELECT tenant_id, distress_score, distress_band, distress_breakdown
        FROM properties WHERE id = $1`,
     [propertyId]
   );
   const row = r.rows[0] || {};
+  if (!row.tenant_id) return;  // property gone — nothing to log
   await query(
     `INSERT INTO distress_outcome_log
-       (property_id, outcome_type, old_value, new_value,
+       (tenant_id, property_id, outcome_type, old_value, new_value,
         score_at_event, band_at_event, breakdown_at_event)
-     VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb)`,
+     VALUES ($8, $1, $2, $3, $4, $5, $6, $7::jsonb)`,
     [
       propertyId, outcomeType,
       oldValue == null ? null : String(oldValue),
@@ -555,6 +561,7 @@ async function logOutcomeChange(propertyId, outcomeType, oldValue, newValue) {
       row.distress_score ?? null,
       row.distress_band  ?? null,
       row.distress_breakdown == null ? null : JSON.stringify(row.distress_breakdown),
+      row.tenant_id,
     ]
   );
 }

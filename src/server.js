@@ -1561,7 +1561,7 @@ app.post('/campaigns/:id/count', requireAuth, async (req, res) => {
 app.get('/campaigns', requireAuth, async (req, res) => {
   try {
     await campaigns.initCampaignSchema();
-    const list = await campaigns.getCampaigns();
+    const list = await campaigns.getCampaigns(req.tenantId);
     // Enrich each campaign with contact_counts so we can show Total Contacts, Callable Contacts, LGR
     for (const c of list) {
       try { c.contact_counts = await campaigns.getContactStats(c.id); }
@@ -1574,7 +1574,7 @@ app.get('/campaigns', requireAuth, async (req, res) => {
 // New campaign form
 app.get('/campaigns/new', requireAuth, async (req, res) => {
   await campaigns.initCampaignSchema();
-  const listTypes = await campaigns.getListTypes();
+  const listTypes = await campaigns.getListTypes(req.tenantId);
   res.send(newCampaignPage(null, listTypes));
 });
 
@@ -1590,10 +1590,10 @@ app.post('/campaigns/new', requireAuth, async (req, res) => {
         return res.redirect('/campaigns/new?error=' + encodeURIComponent('Enter a new list type or pick one from the dropdown'));
       }
       body.list_type = customType;
-      await campaigns.addListType(customType);
+      await campaigns.addListType(req.tenantId, customType);
     }
     delete body.custom_list_type;
-    await campaigns.createCampaign(body);
+    await campaigns.createCampaign({ ...body, tenantId: req.tenantId });
     res.redirect('/campaigns');
   } catch (e) { res.redirect('/campaigns/new?error=' + encodeURIComponent(e.message)); }
 });
@@ -1601,7 +1601,7 @@ app.post('/campaigns/new', requireAuth, async (req, res) => {
 // Close campaign
 app.post('/campaigns/:id/close', requireAuth, async (req, res) => {
   try {
-    await campaigns.closeCampaign(req.params.id);
+    await campaigns.closeCampaign(req.tenantId, req.params.id);
     res.redirect('/campaigns/' + req.params.id);
   } catch(e) { res.redirect('/campaigns/' + req.params.id); }
 });
@@ -1609,8 +1609,8 @@ app.post('/campaigns/:id/close', requireAuth, async (req, res) => {
 // Start new round (clone campaign with fresh memory)
 app.post('/campaigns/:id/new-round', requireAuth, async (req, res) => {
   try {
-    await campaigns.closeCampaign(req.params.id);
-    const newCamp = await campaigns.cloneCampaign(req.params.id);
+    await campaigns.closeCampaign(req.tenantId, req.params.id);
+    const newCamp = await campaigns.cloneCampaign(req.tenantId, req.params.id);
     res.redirect('/campaigns/' + newCamp.id);
   } catch(e) { res.redirect('/campaigns/' + req.params.id); }
 });
@@ -1618,7 +1618,7 @@ app.post('/campaigns/:id/new-round', requireAuth, async (req, res) => {
 // Campaign detail
 app.get('/campaigns/:id', requireAuth, async (req, res) => {
   try {
-    const c = await campaigns.getCampaign(req.params.id);
+    const c = await campaigns.getCampaign(req.tenantId, req.params.id);
     if (!c) return res.redirect('/campaigns');
     c.contact_counts = await campaigns.getContactStats(req.params.id);
     res.send(campaignDetailPage(c, { msg: req.query.msg || '', err: req.query.err || '' }));
@@ -1627,13 +1627,13 @@ app.get('/campaigns/:id', requireAuth, async (req, res) => {
 
 // Update campaign status
 app.post('/campaigns/:id/status', requireAuth, async (req, res) => {
-  await campaigns.updateCampaignStatus(req.params.id, req.body.status);
+  await campaigns.updateCampaignStatus(req.tenantId, req.params.id, req.body.status);
   res.redirect('/campaigns/' + req.params.id);
 });
 
 // Update campaign channel
 app.post('/campaigns/:id/channel', requireAuth, async (req, res) => {
-  await campaigns.updateCampaignChannel(req.params.id, req.body.channel);
+  await campaigns.updateCampaignChannel(req.tenantId, req.params.id, req.body.channel);
   res.redirect('/campaigns/' + req.params.id);
 });
 
@@ -1641,7 +1641,7 @@ app.post('/campaigns/:id/channel', requireAuth, async (req, res) => {
 // campaigns.updateCampaignName(); route just surfaces the result via flash.
 app.post('/campaigns/:id/rename', requireAuth, async (req, res) => {
   try {
-    const result = await campaigns.updateCampaignName(req.params.id, req.body.name);
+    const result = await campaigns.updateCampaignName(req.tenantId, req.params.id, req.body.name);
     if (!result.ok) {
       return res.redirect('/campaigns/' + req.params.id + '?err=' + encodeURIComponent(result.error));
     }
@@ -1656,7 +1656,7 @@ app.post('/campaigns/:id/rename', requireAuth, async (req, res) => {
 app.get('/api/campaigns', requireAuth, async (req, res) => {
   try {
     await campaigns.initCampaignSchema();
-    const list = await campaigns.getCampaigns();
+    const list = await campaigns.getCampaigns(req.tenantId);
     res.json(list.filter(c => c.status === 'active'));
   } catch (e) { res.json([]); }
 });
@@ -1694,7 +1694,7 @@ app.post('/campaigns/:id/contacts/upload', requireAuth, upload.single('contactfi
     await campaigns.initCampaignSchema();
     const parsed = Papa.parse(bufferToCsvText(req.file.buffer), { header: true, skipEmptyLines: true });
     console.log('[contacts/upload] file received:', req.file.originalname, 'rows:', parsed.data.length, 'headers:', (parsed.meta.fields||[]).length);
-    await campaigns.importContactList(req.params.id, parsed.data, parsed.meta.fields || []);
+    await campaigns.importContactList(req.tenantId, req.params.id, parsed.data, parsed.meta.fields || []);
     console.log('[contacts/upload] import complete for campaign', req.params.id);
     res.redirect('/campaigns/' + req.params.id);
   } catch (e) {
