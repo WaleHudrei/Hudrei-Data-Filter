@@ -165,7 +165,7 @@ router.post('/markets/add', requireAuth, async (req, res) => {
     await query(`
       INSERT INTO markets (tenant_id, name, state_code, state_name)
       VALUES ($1, $2, $3, $4)
-      ON CONFLICT (state_code) DO UPDATE SET name = EXCLUDED.name, state_name = EXCLUDED.state_name
+      ON CONFLICT (tenant_id, state_code) DO UPDATE SET name = EXCLUDED.name, state_name = EXCLUDED.state_name
     `, [req.tenantId, name, normalized, state_name]);
     res.redirect('/setup?msg=saved');
   } catch(e) {

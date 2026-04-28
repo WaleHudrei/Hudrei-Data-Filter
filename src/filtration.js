@@ -478,7 +478,22 @@ async function applyFiltrationToContactsBulk(campaignId, allRows) {
 // first one (lowest slot_index) that resolves to a global contact. DISTINCT ON
 // ensures only one enrichment row per campaign_contact.
 // ─────────────────────────────────────────────────────────────────────────────
-async function generateCleanExport(campaignId) {
+async function generateCleanExport(campaignId, tenantId) {
+  // 2026-04-28 audit fix C-1: TCPA — exclude phones marked do_not_call=true
+  // on the global phones table from the callable export. tenantId is required
+  // so the DNC lookup is scoped to the calling tenant (a phone number can
+  // appear in many tenants' phones tables; each tenant has its own DNC list).
+  //
+  // Scope note: this fix INTENTIONALLY does not also filter the call_logs
+  // INSERT in saveRunToDB Pass 9 (server.js). That INSERT is digesting a
+  // dialer CSV of calls that already happened in the real world — suppressing
+  // those rows would only hide evidence of a TCPA violation, not prevent one.
+  // The prevention layer is here (the cleaned-export the dialer pulls FROM).
+  // A separate compliance-monitoring pass can later flag historical call_logs
+  // whose phone is DNC and surface the count on the dashboard.
+  if (!Number.isInteger(tenantId)) {
+    throw new Error('generateCleanExport: tenantId required (int) — DNC scoping needs it');
+  }
   const contacts = await query(
     `WITH cc_phones AS (
        -- For each campaign_contact, find the first phone that resolves to
@@ -510,7 +525,14 @@ async function generateCleanExport(campaignId) {
                 'status',   ccp.phone_status,
                 'wrong',    ccp.wrong_number,
                 'filtered', ccp.filtered,
-                'tag',      ccp.phone_tag
+                'tag',      ccp.phone_tag,
+                'dnc',      COALESCE(
+                              (SELECT BOOL_OR(do_not_call)
+                                 FROM phones
+                                WHERE phone_number = ccp.phone_number
+                                  AND tenant_id    = $2),
+                              false
+                            )
               ) ORDER BY ccp.slot_index
             ) AS phones,
             -- Enrichment from global tables
@@ -537,7 +559,7 @@ async function generateCleanExport(campaignId) {
                gc.mailing_state, gc.mailing_zip, gp.street, gp.city, gp.state_code,
                gp.zip_code, gp.county
       ORDER BY cc.row_index`,
-    [campaignId]
+    [campaignId, tenantId]
   );
 
   const rows = [];
@@ -563,7 +585,7 @@ async function generateCleanExport(campaignId) {
 
   for (const c of contacts.rows) {
     const phones = (c.phones || []).filter(p => p && p.phone);
-    const callablePhones = phones.filter(p => !p.wrong && !p.filtered && p.status !== 'dead_number');
+    const callablePhones = phones.filter(p => !p.wrong && !p.filtered && !p.dnc && p.status !== 'dead_number');
 
     if (callablePhones.length === 0) { dead++; continue; }
     callable++;
@@ -586,7 +608,7 @@ async function generateCleanExport(campaignId) {
 
     for (let s = 1; s <= globalMaxSlot; s++) {
       const ph = phones.find(p => p.slot === s);
-      row[`Ph#${s}`] = (ph && !ph.wrong && !ph.filtered && ph.status !== 'dead_number') ? ph.phone : '';
+      row[`Ph#${s}`] = (ph && !ph.wrong && !ph.filtered && !ph.dnc && ph.status !== 'dead_number') ? ph.phone : '';
     }
 
     rows.push(row);

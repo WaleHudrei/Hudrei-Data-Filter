@@ -252,12 +252,23 @@ router.post('/signup', async (req, res) => {
   if (pwErr) return back(pwErr);
 
   try {
-    // Refuse if email already exists in ANY tenant — keeps the email→user
-    // lookup unambiguous at login time. (Multi-tenant per-email could come
-    // later; not needed for free-tier launch.)
-    const existing = await query('SELECT 1 FROM users WHERE email = $1 LIMIT 1', [emailAddr]);
+    // 2026-04-28 audit fix S-9: previously this branch returned an explicit
+    // "An account with that email already exists" message — a probe oracle
+    // that lets an attacker enumerate registered emails. Now: same response
+    // as the new-account path. The existing user gets a courtesy "you already
+    // have an account, sign in here" email; the attacker sees the same
+    // /signup/sent page either way and learns nothing about which addresses
+    // are registered.
+    const existing = await query(
+      `SELECT id, name FROM users WHERE email = $1 LIMIT 1`,
+      [emailAddr]
+    );
     if (existing.rows.length) {
-      return back('An account with that email already exists. Try signing in?');
+      const u = existing.rows[0];
+      // Best-effort — don't block the redirect on email failure.
+      email.sendSignupExistingAccountEmail(emailAddr, u.name).catch((err) =>
+        console.warn('[signup] existing-account courtesy email failed:', err && err.message));
+      return res.redirect('/signup/sent?email=' + encodeURIComponent(emailAddr));
     }
 
     const slug = await uniqueSlug(slugify(workspace));

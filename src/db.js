@@ -310,29 +310,18 @@ async function initSchema() {
     CREATE INDEX IF NOT EXISTS idx_import_history_property      ON import_history(property_id);
   `);
 
-  await query(`CREATE TABLE IF NOT EXISTS bulk_import_jobs (
-    id SERIAL PRIMARY KEY,
-    tenant_id INT NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
-    status VARCHAR(20) DEFAULT 'pending',
-    filename TEXT,
-    list_id INTEGER REFERENCES lists(id) ON DELETE SET NULL,
-    total_rows INTEGER DEFAULT 0,
-    processed_rows INTEGER DEFAULT 0,
-    inserted INTEGER DEFAULT 0,
-    updated INTEGER DEFAULT 0,
-    skipped INTEGER DEFAULT 0,
-    errors INTEGER DEFAULT 0,
-    error_log TEXT,
-    created_at TIMESTAMPTZ DEFAULT NOW(),
-    updated_at TIMESTAMPTZ DEFAULT NOW()
-  )`);
-  await query(`ALTER TABLE bulk_import_jobs ADD COLUMN IF NOT EXISTS list_id INTEGER REFERENCES lists(id) ON DELETE SET NULL`);
+  // 2026-04-28 audit fix L-3: bulk_import_jobs schema lives in
+  // src/import/bulk-import-routes.js::ensureJobsTable. Two competing
+  // CREATE TABLE definitions used to live here AND there with different
+  // column names (status defaults, rows_processed vs processed_rows,
+  // started_at vs created_at, etc.). Whichever ran first won and the
+  // loser's columns were silently absent. Single source of truth now.
 
   // ── Seed all 50 state markets (+ DC) for tenant_id=1 (HudREI) ──────────────
-  // Phase 2 tenant signup will need to seed its own markets rows. The
-  // ON CONFLICT key is (state_code) — single-column unique left over from the
-  // pre-SaaS schema. For Phase 1 (one tenant) this works; Phase 2 needs the
-  // unique swapped to (tenant_id, state_code) so each tenant gets its own copy.
+  // 2026-04-28 audit fix S-2 / L-1: the ON CONFLICT key is now
+  // (tenant_id, state_code), matching the composite UNIQUE rebuilt by
+  // saas-phase1-migration/04-rebuild-tenant-unique-constraints.sql. Each
+  // tenant gets its own row per state_code; no cross-tenant collisions.
   await query(`INSERT INTO markets (tenant_id,name,state_code,state_name) VALUES
     (1,'AL','AL','Alabama'),(1,'AK','AK','Alaska'),(1,'AZ','AZ','Arizona'),(1,'AR','AR','Arkansas'),(1,'CA','CA','California'),
     (1,'CO','CO','Colorado'),(1,'CT','CT','Connecticut'),(1,'DE','DE','Delaware'),(1,'FL','FL','Florida'),(1,'GA','GA','Georgia'),
@@ -345,7 +334,7 @@ async function initSchema() {
     (1,'SD','SD','South Dakota'),(1,'TN','TN','Tennessee'),(1,'TX','TX','Texas'),(1,'UT','UT','Utah'),(1,'VT','VT','Vermont'),
     (1,'VA','VA','Virginia'),(1,'WA','WA','Washington'),(1,'WV','WV','West Virginia'),(1,'WI','WI','Wisconsin'),(1,'WY','WY','Wyoming'),
     (1,'DC','DC','District of Columbia')
-    ON CONFLICT (state_code) DO UPDATE SET name=EXCLUDED.name, state_name=EXCLUDED.state_name`);
+    ON CONFLICT (tenant_id, state_code) DO UPDATE SET name=EXCLUDED.name, state_name=EXCLUDED.state_name`);
 
   // ── Column migrations ───────────────────────────────────────────────────────
   const migrations = [
@@ -374,6 +363,18 @@ async function initSchema() {
 
     `ALTER TABLE lists ADD COLUMN IF NOT EXISTS source VARCHAR(100)`,
     `ALTER TABLE phones ADD COLUMN IF NOT EXISTS phone_type VARCHAR(50) DEFAULT 'unknown'`,
+
+    // ── 2026-04-28 audit fix C-2: TCPA consent tracking on phones ──────────
+    // Mirrors saas-phase1-migration/03-add-consent-columns-to-phones.sql.
+    // The migration SQL is the canonical source for production; these ADD
+    // COLUMN IF NOT EXISTS statements ensure fresh dev installs that run
+    // initSchema() directly (no migration step) also have the columns.
+    `ALTER TABLE phones ADD COLUMN IF NOT EXISTS consent_status     VARCHAR(20) NOT NULL DEFAULT 'unverified'`,
+    `ALTER TABLE phones ADD COLUMN IF NOT EXISTS consent_at         TIMESTAMPTZ`,
+    `ALTER TABLE phones ADD COLUMN IF NOT EXISTS consent_source     VARCHAR(200)`,
+    `ALTER TABLE phones ADD COLUMN IF NOT EXISTS consent_revoked_at TIMESTAMPTZ`,
+    `CREATE INDEX IF NOT EXISTS phones_consent_revoked_idx ON phones (tenant_id, phone_number) WHERE consent_status = 'revoked'`,
+    `CREATE INDEX IF NOT EXISTS phones_consent_unverified_idx ON phones (tenant_id) WHERE consent_status = 'unverified'`,
 
     // ── 2026-04-21 Feature 1: owner_type on contacts ────────────────────────
     // Values: 'Person' | 'Company' | 'Trust'. NULLable — inferred on import
@@ -420,6 +421,49 @@ async function initSchema() {
     try { await query(sql); }
     catch (e) { if (!e.message.includes('already exists')) console.error('Migration warning:', e.message); }
   }
+
+  // ── 2026-04-28 audit fix S-2 / L-1: rebuild legacy single-column UNIQUE
+  // constraints on markets / lists / properties to include tenant_id.
+  // Mirrors saas-phase1-migration/04-rebuild-tenant-unique-constraints.sql.
+  // Each block is idempotent: drop-if-exists the old auto-named key, then
+  // add the composite if it isn't already there. Wrapped in try/catch so a
+  // partial state from an earlier failed run doesn't block boot — the
+  // canonical migration SQL handles edge cases (PART B / CONCURRENTLY for
+  // the big properties index).
+  const tenantUniqueRebuild = [
+    `ALTER TABLE markets DROP CONSTRAINT IF EXISTS markets_state_code_key`,
+    `DO $$ BEGIN
+       IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'markets_tenant_state_unique') THEN
+         ALTER TABLE markets ADD CONSTRAINT markets_tenant_state_unique UNIQUE (tenant_id, state_code);
+       END IF;
+     END $$`,
+    `ALTER TABLE lists DROP CONSTRAINT IF EXISTS lists_list_name_key`,
+    `DO $$ BEGIN
+       IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'lists_tenant_listname_unique') THEN
+         ALTER TABLE lists ADD CONSTRAINT lists_tenant_listname_unique UNIQUE (tenant_id, list_name);
+       END IF;
+     END $$`,
+    // properties is the big one — operator runs CONCURRENTLY via the SQL
+    // file. For dev / fresh-install, accept the brief table lock here.
+    `ALTER TABLE properties DROP CONSTRAINT IF EXISTS properties_street_city_state_code_zip_code_key`,
+    `DO $$ BEGIN
+       IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'properties_tenant_addr_unique') THEN
+         ALTER TABLE properties ADD CONSTRAINT properties_tenant_addr_unique UNIQUE (tenant_id, street, city, state_code, zip_code);
+       END IF;
+     END $$`,
+  ];
+  for (const sql of tenantUniqueRebuild) {
+    try { await query(sql); }
+    catch (e) {
+      // 'duplicate key' means existing rows violate the new uniqueness —
+      // operator must clean up. 'already exists' is the no-op we expect on
+      // re-runs and on fresh installs that already have the new shape.
+      if (!e.message.includes('already exists')) {
+        console.error('Tenant-unique rebuild warning:', e.message);
+      }
+    }
+  }
+
 
   // ── 2026-04-21 Feature 1: owner_type backfill ───────────────────────────────
   // Classifies existing contacts into Person/Company/Trust by scanning their

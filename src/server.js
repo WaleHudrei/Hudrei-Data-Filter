@@ -32,9 +32,26 @@ const upload = multer({
   fileFilter: csvFileFilter,
 });
 
+// 2026-04-28 audit fix S-4: generate a short correlation id for error
+// responses. Lets the user share the id with support without us having to
+// leak Postgres error codes / details / stack traces / column values back
+// in the HTTP response body. Server-side log keeps the full picture.
+function errRefId() {
+  return 'err_' + Math.random().toString(36).slice(2, 10);
+}
+
 const APP_USERNAME   = process.env.APP_USERNAME   || 'hudrei';
 const APP_PASSWORD   = process.env.APP_PASSWORD   || 'changeme123';
-const SESSION_SECRET = process.env.SESSION_SECRET || 'hudrei-secret-key-2026';
+// 2026-04-28 audit fix S-7: drop the hardcoded fallback for SESSION_SECRET.
+// The previous prod-only guard let preview/non-production deploys silently
+// ship a known secret, allowing session cookie forgery anywhere NODE_ENV
+// wasn't explicitly 'production'. Now: missing env var fails hard at boot,
+// regardless of environment. Set SESSION_SECRET in your shell for local dev
+// (any 32+ char random string is fine).
+if (!process.env.SESSION_SECRET) {
+  throw new Error(`SESSION_SECRET env var is required. Generate one with: node -e "console.log(require('crypto').randomBytes(48).toString('hex'))"`);
+}
+const SESSION_SECRET = process.env.SESSION_SECRET;
 const PORT           = process.env.PORT           || 3000;
 const REDIS_URL      = process.env.REDIS_URL      || null;
 const MEMORY_KEY     = 'hudrei:filtration:memory';
@@ -46,9 +63,6 @@ const IS_PROD        = process.env.NODE_ENV === 'production';
 if (IS_PROD) {
   if (APP_PASSWORD === 'changeme123') {
     throw new Error('Refusing to start in production with default APP_PASSWORD. Set APP_PASSWORD env var on Railway before deploying.');
-  }
-  if (SESSION_SECRET === 'hudrei-secret-key-2026') {
-    throw new Error('Refusing to start in production with default SESSION_SECRET. Set SESSION_SECRET env var on Railway before deploying.');
   }
 }
 
@@ -707,7 +721,7 @@ async function saveRunToDB(tenantId, filename, stats, listsSeen, allRows) {
       await dbQuery(
         `INSERT INTO markets (tenant_id, name, state_code, state_name)
          SELECT $2, code || ' Market', code, code FROM UNNEST($1::text[]) AS t(code)
-         ON CONFLICT (state_code) DO NOTHING`,
+         ON CONFLICT (tenant_id, state_code) DO NOTHING`,
         [uniqueStates, tenantId]
       );
       const mr = await dbQuery(`SELECT id, state_code FROM markets WHERE tenant_id = $2 AND state_code = ANY($1::text[])`, [uniqueStates, tenantId]);
@@ -719,7 +733,7 @@ async function saveRunToDB(tenantId, filename, stats, listsSeen, allRows) {
     if (uniqueLists.length > 0) {
       const lr = await dbQuery(
         `INSERT INTO lists (tenant_id, list_name) SELECT $2, unnest($1::text[])
-         ON CONFLICT (list_name) DO UPDATE SET list_name = EXCLUDED.list_name
+         ON CONFLICT (tenant_id, list_name) DO UPDATE SET list_name = EXCLUDED.list_name
          RETURNING id, list_name`,
         [uniqueLists, tenantId]
       );
@@ -739,7 +753,7 @@ async function saveRunToDB(tenantId, filename, stats, listsSeen, allRows) {
         INSERT INTO properties (tenant_id, street, city, state_code, zip_code, market_id)
         SELECT $6, street, city, state_code, zip_code, market_id FROM UNNEST($1::text[], $2::text[], $3::text[], $4::text[], $5::int[])
           AS t(street, city, state_code, zip_code, market_id)
-        ON CONFLICT (street, city, state_code, zip_code) DO UPDATE SET updated_at = NOW()
+        ON CONFLICT (tenant_id, street, city, state_code, zip_code) DO UPDATE SET updated_at = NOW()
         RETURNING id, street, city, state_code, zip_code
       `, [
         propArr.map(r => r.street),
@@ -1161,10 +1175,14 @@ app.post('/campaigns/:id/contacts/upload', requireAuth, upload.single('contactfi
     console.log('[contacts/upload] import complete for campaign', req.params.id);
     res.redirect('/campaigns/' + req.params.id);
   } catch (e) {
-    console.error('[contacts/upload] ERROR:', e.message);
-    console.error('[contacts/upload] code:', e.code, 'detail:', e.detail);
-    console.error('[contacts/upload] stack:', e.stack);
-    res.status(500).send(`<h2>Upload failed</h2><p>${e.message}</p><pre>${e.code||''} ${e.detail||''}</pre><p><a href="/campaigns/${req.params.id}">Back to campaign</a></p>`);
+    const ref = errRefId();
+    // 2026-04-28 audit fix S-4: full Postgres error code/detail and stack are
+    // logged server-side keyed to the ref id. Browser sees only the ref id —
+    // no schema/column/value leaks.
+    console.error(`[contacts/upload] ${ref} ERROR:`, e.message);
+    console.error(`[contacts/upload] ${ref} code:`, e.code, 'detail:', e.detail);
+    console.error(`[contacts/upload] ${ref} stack:`, e.stack);
+    res.status(500).send(`<h2>Upload failed</h2><p>Something went wrong while processing this upload. Try again, or share this reference with support: <code>${ref}</code></p><p><a href="/campaigns/${req.params.id}">Back to campaign</a></p>`);
   }
 });
 
@@ -1200,9 +1218,12 @@ app.post('/campaigns/:id/sms/upload', requireAuth, upload.single('smsfile'), asy
     console.log(`[sms/upload] campaign ${req.params.id} — total:${t.total} wrong:${t.wrong} ni:${t.not_interested} leads:${t.leads} dq:${t.disqualified} no_action:${t.no_action} unmatched:${t.unmatched}`);
     res.redirect('/campaigns/' + req.params.id);
   } catch(e) {
-    console.error('[sms/upload] ERROR:', e.message);
-    console.error('[sms/upload] stack:', e.stack);
-    res.status(500).send(`<h2>SMS Upload Error</h2><p>${e.message}</p><p><a href="/campaigns/${req.params.id}">Back to campaign</a></p>`);
+    const ref = errRefId();
+    // 2026-04-28 audit fix S-4: error details server-side only.
+    console.error(`[sms/upload] ${ref} ERROR:`, e.message);
+    console.error(`[sms/upload] ${ref} code:`, e.code, 'detail:', e.detail);
+    console.error(`[sms/upload] ${ref} stack:`, e.stack);
+    res.status(500).send(`<h2>SMS Upload Error</h2><p>Something went wrong while processing this upload. Try again, or share this reference with support: <code>${ref}</code></p><p><a href="/campaigns/${req.params.id}">Back to campaign</a></p>`);
   }
 });
 
@@ -1258,8 +1279,12 @@ app.post('/nis/upload', requireAuth, upload.single('nisfile'), async (req, res) 
     const msg = `Processed ${result.totalRows} rows — ${result.uniqueNumbers} unique NIS numbers (${result.inserted} new, ${result.updated} updated). Flagged ${result.flagged} phones across all campaigns.`;
     res.redirect('/nis?msg=' + encodeURIComponent(msg));
   } catch(e) {
-    console.error('[nis/upload] error:', e.message, e.stack);
-    res.status(500).send(`<h2>NIS upload failed</h2><p>${e.message}</p><p><a href="/nis">Back</a></p>`);
+    const ref = errRefId();
+    // 2026-04-28 audit fix S-4: error details server-side only.
+    console.error(`[nis/upload] ${ref} ERROR:`, e.message);
+    console.error(`[nis/upload] ${ref} code:`, e.code, 'detail:', e.detail);
+    console.error(`[nis/upload] ${ref} stack:`, e.stack);
+    res.status(500).send(`<h2>NIS upload failed</h2><p>Something went wrong while processing this upload. Try again, or share this reference with support: <code>${ref}</code></p><p><a href="/nis">Back</a></p>`);
   }
 });
 
@@ -1300,7 +1325,9 @@ app.post('/campaigns/:id/readymode-count', requireAuth, async (req, res) => {
 app.get('/campaigns/:id/export/clean', requireAuth, async (req, res) => {
   try {
     await campaigns.initCampaignSchema();
-    const result = await campaigns.generateCleanExport(req.params.id);
+    // 2026-04-28 audit fix C-1: pass tenantId so DNC scoping uses the correct
+    // tenant's do_not_call list (phones.phone_number is not globally unique).
+    const result = await campaigns.generateCleanExport(req.params.id, req.tenantId);
     if (!result.rows.length) return res.status(400).send('No callable contacts to export.');
 
     const cols = Object.keys(result.rows[0]);

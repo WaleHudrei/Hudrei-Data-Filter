@@ -421,8 +421,16 @@ async function scoreProperties(propertyIds) {
 // ── Score many properties (batch, used by Recompute All button) ────────────
 // Uses bulk SQL for performance. 41k properties done in ~2-3 seconds instead
 // of 10+ minutes if we looped per-property.
-async function scoreAllProperties(progressCb) {
+async function scoreAllProperties(progressCb, tenantId) {
+  // 2026-04-28 audit fix S-3: optional tenantId scopes the recompute to a
+  // single tenant. Required when the per-tenant Redis lock is in play —
+  // otherwise two tenants holding their own locks would each rescore the
+  // whole platform, undoing the lock's safety property. Backwards-compatible:
+  // callers that omit tenantId rescore all rows (used by boot-time backfill
+  // and ops scripts).
   await ensureDistressSchema();
+  const tenantClause = tenantId ? ' AND p.tenant_id = $1' : '';
+  const params = tenantId ? [tenantId] : [];
 
   // Build one big CTE that aggregates signals per property, then a single
   // UPDATE that computes score from those signals using the same weights.
@@ -489,6 +497,7 @@ async function scoreAllProperties(progressCb) {
         FROM properties p
         LEFT JOIN list_flags lf ON lf.property_id = p.id
         LEFT JOIN primary_contact pc ON pc.property_id = p.id
+       WHERE 1=1${tenantClause}
     )
     UPDATE properties p
        SET distress_score = s.score,
@@ -501,11 +510,11 @@ async function scoreAllProperties(progressCb) {
            distress_scored_at = NOW(),
            distress_scoring_version = ${SCORING_VERSION}
       FROM scored s
-     WHERE p.id = s.id;
+     WHERE p.id = s.id${tenantClause};
   `;
 
   if (progressCb) progressCb({ done: 0, total: 0, phase: 'bulk_update' });
-  const res = await query(sql);
+  const res = await query(sql, params);
   const scored = res.rowCount || 0;
 
   // For breakdowns (per-property JSONB), we'd need a second pass.
