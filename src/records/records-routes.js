@@ -996,13 +996,12 @@ router.get('/tags/suggest', requireAuth, async (req, res) => {
     await ensureTagSchema();
     const q = String(req.query.q || '').trim();
     if (!q) {
-      // Return all tags (for dropdown initialization)
-      const r = await query(`SELECT id, name, color FROM tags ORDER BY name ASC LIMIT 50`);
+      const r = await query(`SELECT id, name, color FROM tags WHERE tenant_id = $1 ORDER BY name ASC LIMIT 50`, [req.tenantId]);
       return res.json(r.rows);
     }
     const r = await query(
-      `SELECT id, name, color FROM tags WHERE name ILIKE $1 ORDER BY name ASC LIMIT 20`,
-      [`%${q}%`]
+      `SELECT id, name, color FROM tags WHERE tenant_id = $1 AND name ILIKE $2 ORDER BY name ASC LIMIT 20`,
+      [req.tenantId, `%${q}%`]
     );
     res.json(r.rows);
   } catch (e) {
@@ -1023,12 +1022,12 @@ router.get('/phone-tags/suggest', requireAuth, async (req, res) => {
     await ensureTagSchema();
     const q = String(req.query.q || '').trim();
     if (!q) {
-      const r = await query(`SELECT id, name, color FROM phone_tags ORDER BY name ASC LIMIT 50`);
+      const r = await query(`SELECT id, name, color FROM phone_tags WHERE tenant_id = $1 ORDER BY name ASC LIMIT 50`, [req.tenantId]);
       return res.json(r.rows);
     }
     const r = await query(
-      `SELECT id, name, color FROM phone_tags WHERE name ILIKE $1 ORDER BY name ASC LIMIT 20`,
-      [`%${q}%`]
+      `SELECT id, name, color FROM phone_tags WHERE tenant_id = $1 AND name ILIKE $2 ORDER BY name ASC LIMIT 20`,
+      [req.tenantId, `%${q}%`]
     );
     res.json(r.rows);
   } catch (e) {
@@ -1044,32 +1043,29 @@ router.post('/phones/:phoneId(\\d+)/tags', requireAuth, async (req, res) => {
     const name = String(req.body.name || '').trim().slice(0, 100);
     if (!phoneId || !name) return res.status(400).json({ error: 'phoneId + name required' });
 
-    // Verify phone exists (clearer error than FK violation)
-    const ph = await query(`SELECT id FROM phones WHERE id = $1`, [phoneId]);
+    // Verify phone exists AND belongs to this tenant.
+    const ph = await query(`SELECT id FROM phones WHERE id = $1 AND tenant_id = $2`, [phoneId, req.tenantId]);
     if (!ph.rowCount) return res.status(404).json({ error: 'Phone not found' });
 
-    // Find-or-create the tag (case-insensitive). Race-safe via the unique
-    // index on LOWER(name) — if two simultaneous creates happen, the second
-    // hits ON CONFLICT and we SELECT again to grab the existing id.
-    let tagRes = await query(`SELECT id, name, color FROM phone_tags WHERE LOWER(name) = LOWER($1) LIMIT 1`, [name]);
+    // Find-or-create the tag in this tenant's namespace.
+    let tagRes = await query(`SELECT id, name, color FROM phone_tags WHERE tenant_id = $1 AND LOWER(name) = LOWER($2) LIMIT 1`, [req.tenantId, name]);
     let tag;
     if (tagRes.rowCount) {
       tag = tagRes.rows[0];
     } else {
       try {
-        const ins = await query(`INSERT INTO phone_tags (name) VALUES ($1) RETURNING id, name, color`, [name]);
+        const ins = await query(`INSERT INTO phone_tags (tenant_id, name) VALUES ($1, $2) RETURNING id, name, color`, [req.tenantId, name]);
         tag = ins.rows[0];
       } catch (e) {
-        // Race: concurrent insert won. Re-read.
-        const r2 = await query(`SELECT id, name, color FROM phone_tags WHERE LOWER(name) = LOWER($1) LIMIT 1`, [name]);
+        const r2 = await query(`SELECT id, name, color FROM phone_tags WHERE tenant_id = $1 AND LOWER(name) = LOWER($2) LIMIT 1`, [req.tenantId, name]);
         if (!r2.rowCount) throw e;
         tag = r2.rows[0];
       }
     }
 
     await query(
-      `INSERT INTO phone_tag_links (phone_id, phone_tag_id) VALUES ($1, $2) ON CONFLICT DO NOTHING`,
-      [phoneId, tag.id]
+      `INSERT INTO phone_tag_links (tenant_id, phone_id, phone_tag_id) VALUES ($1, $2, $3) ON CONFLICT DO NOTHING`,
+      [req.tenantId, phoneId, tag.id]
     );
     res.json({ ok: true, tag });
   } catch (e) {
@@ -1082,7 +1078,7 @@ router.post('/phones/:phoneId(\\d+)/tags/:tagId(\\d+)/remove', requireAuth, asyn
   try {
     const phoneId = parseInt(req.params.phoneId, 10);
     const tagId = parseInt(req.params.tagId, 10);
-    await query(`DELETE FROM phone_tag_links WHERE phone_id = $1 AND phone_tag_id = $2`, [phoneId, tagId]);
+    await query(`DELETE FROM phone_tag_links WHERE phone_id = $1 AND phone_tag_id = $2 AND tenant_id = $3`, [phoneId, tagId, req.tenantId]);
     res.json({ ok: true });
   } catch (e) {
     console.error('[phones/:id/tags/:tid/remove]', e);
@@ -1090,16 +1086,13 @@ router.post('/phones/:phoneId(\\d+)/tags/:tagId(\\d+)/remove', requireAuth, asyn
   }
 });
 
-// Manual phone type override — user-driven correction when the CSV import
-// got it wrong (or when the source data had no type column). Whitelist the
-// allowed values to keep the DB clean.
 router.post('/phones/:phoneId(\\d+)/type', requireAuth, async (req, res) => {
   try {
     const phoneId = parseInt(req.params.phoneId, 10);
     const allowed = ['mobile', 'landline', 'voip', 'unknown'];
     const newType = String(req.body.phone_type || '').toLowerCase();
     if (!phoneId || !allowed.includes(newType)) return res.status(400).json({ error: 'Invalid phone_type. Use mobile / landline / voip / unknown.' });
-    const r = await query(`UPDATE phones SET phone_type = $1, updated_at = NOW() WHERE id = $2 RETURNING id, phone_type`, [newType, phoneId]);
+    const r = await query(`UPDATE phones SET phone_type = $1, updated_at = NOW() WHERE id = $2 AND tenant_id = $3 RETURNING id, phone_type`, [newType, phoneId, req.tenantId]);
     if (!r.rowCount) return res.status(404).json({ error: 'Phone not found' });
     res.json({ ok: true, phone: r.rows[0] });
   } catch (e) {
@@ -1117,33 +1110,32 @@ router.post('/:id(\\d+)/tags', requireAuth, async (req, res) => {
     if (!tagName || tagName.length > 100) {
       return res.status(400).json({ error: 'Tag name required (max 100 chars).' });
     }
-    // Find existing tag by case-insensitive name, or create a new one.
-    // The try/catch handles the rare race condition where two concurrent
-    // requests both pass the SELECT, and the second INSERT hits the unique index.
+    // Verify the property belongs to this tenant before any tag write.
+    const own = await query(`SELECT 1 FROM properties WHERE id = $1 AND tenant_id = $2`, [propertyId, req.tenantId]);
+    if (!own.rowCount) return res.status(404).json({ error: 'Property not found.' });
+    // Find-or-create the tag in this tenant's namespace. Race-safe.
     let tagRes = await query(
-      `SELECT id, name, color FROM tags WHERE LOWER(name) = LOWER($1) LIMIT 1`,
-      [tagName]
+      `SELECT id, name, color FROM tags WHERE tenant_id = $1 AND LOWER(name) = LOWER($2) LIMIT 1`,
+      [req.tenantId, tagName]
     );
     if (!tagRes.rows.length) {
       try {
         tagRes = await query(
-          `INSERT INTO tags (name) VALUES ($1) RETURNING id, name, color`,
-          [tagName]
+          `INSERT INTO tags (tenant_id, name) VALUES ($1, $2) RETURNING id, name, color`,
+          [req.tenantId, tagName]
         );
       } catch (dupErr) {
-        // Unique violation — another request created it between our SELECT and INSERT
         tagRes = await query(
-          `SELECT id, name, color FROM tags WHERE LOWER(name) = LOWER($1) LIMIT 1`,
-          [tagName]
+          `SELECT id, name, color FROM tags WHERE tenant_id = $1 AND LOWER(name) = LOWER($2) LIMIT 1`,
+          [req.tenantId, tagName]
         );
       }
     }
     const tag = tagRes.rows[0];
-    // Link tag to property (ignore if already linked)
     await query(
-      `INSERT INTO property_tags (property_id, tag_id)
-       VALUES ($1, $2) ON CONFLICT DO NOTHING`,
-      [propertyId, tag.id]
+      `INSERT INTO property_tags (tenant_id, property_id, tag_id)
+       VALUES ($1, $2, $3) ON CONFLICT DO NOTHING`,
+      [req.tenantId, propertyId, tag.id]
     );
     console.log(`[tags] Added "${tag.name}" to property #${propertyId}`);
     res.json({ ok: true, tag });
@@ -1160,8 +1152,8 @@ router.delete('/:id(\\d+)/tags/:tagId(\\d+)', requireAuth, async (req, res) => {
     const propertyId = parseInt(req.params.id);
     const tagId = parseInt(req.params.tagId);
     const r = await query(
-      `DELETE FROM property_tags WHERE property_id = $1 AND tag_id = $2 RETURNING tag_id`,
-      [propertyId, tagId]
+      `DELETE FROM property_tags WHERE property_id = $1 AND tag_id = $2 AND tenant_id = $3 RETURNING tag_id`,
+      [propertyId, tagId, req.tenantId]
     );
     if (!r.rowCount) {
       return res.status(404).json({ error: 'Tag not found on this property.' });
@@ -1350,21 +1342,21 @@ router.post('/_new', requireAuth, async (req, res) => {
     let propId, wasExisting, contactId = null;
     try {
       await client.query('BEGIN');
-      // ── Lookup or create market ────────────────────────────────────────────
-      const mktRes = await client.query(`SELECT id FROM markets WHERE state_code = $1 LIMIT 1`, [stateNorm]);
+      // ── Lookup or create market — tenant-scoped ─────────────────────────
+      const mktRes = await client.query(`SELECT id FROM markets WHERE tenant_id = $1 AND state_code = $2 LIMIT 1`, [req.tenantId, stateNorm]);
       let mktId = mktRes.rows[0]?.id || null;
       if (!mktId) {
-        const ins = await client.query(`INSERT INTO markets (state_code, name, state_name) VALUES ($1,$1,$1) ON CONFLICT (state_code) DO UPDATE SET state_code=EXCLUDED.state_code RETURNING id`, [stateNorm]);
+        const ins = await client.query(`INSERT INTO markets (tenant_id, state_code, name, state_name) VALUES ($1,$2,$2,$2) ON CONFLICT (state_code) DO UPDATE SET state_code=EXCLUDED.state_code RETURNING id`, [req.tenantId, stateNorm]);
         mktId = ins.rows[0].id;
       }
 
       // ── Insert or reuse property (ON CONFLICT on the 4-column address key) ─
       const propRes = await client.query(`
-        INSERT INTO properties (street, city, state_code, zip_code, county, market_id,
+        INSERT INTO properties (tenant_id, street, city, state_code, zip_code, county, market_id,
                                 source, property_type, year_built, sqft, bedrooms, bathrooms, lot_size,
                                 assessed_value, estimated_value, equity_percent,
                                 last_sale_date, last_sale_price, vacant, first_seen_at)
-        VALUES ($1,$2,$3,$4,$5,$6,'manual',$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,NOW())
+        VALUES ($19,$1,$2,$3,$4,$5,$6,'manual',$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,NOW())
         ON CONFLICT (street, city, state_code, zip_code) DO UPDATE SET
           county = COALESCE(EXCLUDED.county, properties.county),
           property_type = COALESCE(EXCLUDED.property_type, properties.property_type),
@@ -1382,7 +1374,7 @@ router.post('/_new', requireAuth, async (req, res) => {
           updated_at = NOW()
         RETURNING id, xmax`,
         [street, city, stateNorm, zipNorm, county, mktId, propType, yearBuilt, sqft, beds, baths, lotSize,
-         assValue, estValue, equityP, lastSaleDate, lastSaleP, vacantV]
+         assValue, estValue, equityP, lastSaleDate, lastSaleP, vacantV, req.tenantId]
       );
       propId = propRes.rows[0].id;
       wasExisting = propRes.rows[0].xmax !== '0';
@@ -1402,8 +1394,8 @@ router.post('/_new', requireAuth, async (req, res) => {
         // any concurrent transaction doing the same lookup to wait for our
         // COMMIT, so the SELECT-then-INSERT pattern becomes race-safe.
         const existPC = await client.query(
-          `SELECT contact_id FROM property_contacts WHERE property_id=$1 AND primary_contact=true LIMIT 1 FOR UPDATE`,
-          [propId]
+          `SELECT contact_id FROM property_contacts WHERE property_id=$1 AND tenant_id=$2 AND primary_contact=true LIMIT 1 FOR UPDATE`,
+          [propId, req.tenantId]
         );
         if (existPC.rows.length) {
           contactId = existPC.rows[0].contact_id;
@@ -1418,16 +1410,16 @@ router.post('/_new', requireAuth, async (req, res) => {
             email_2 = COALESCE(NULLIF($8,''), email_2),
             owner_type = COALESCE(owner_type, $9),
             updated_at = NOW()
-            WHERE id = $10`,
+            WHERE id = $10 AND tenant_id = $11`,
             [firstName, lastName, (b.mailing_address||'').trim(), (b.mailing_city||'').trim(),
-             mStateNorm, mZipNorm, (b.email_1||'').trim(), (b.email_2||'').trim(), ownerType, contactId]);
+             mStateNorm, mZipNorm, (b.email_1||'').trim(), (b.email_2||'').trim(), ownerType, contactId, req.tenantId]);
         } else {
-          const cr = await client.query(`INSERT INTO contacts (first_name, last_name, mailing_address, mailing_city, mailing_state, mailing_zip, email_1, email_2, owner_type)
-            VALUES ($1,$2,$3,$4,NULLIF($5,''),NULLIF($6,''),NULLIF($7,''),NULLIF($8,''),$9) RETURNING id`,
+          const cr = await client.query(`INSERT INTO contacts (tenant_id, first_name, last_name, mailing_address, mailing_city, mailing_state, mailing_zip, email_1, email_2, owner_type)
+            VALUES ($10,$1,$2,$3,$4,NULLIF($5,''),NULLIF($6,''),NULLIF($7,''),NULLIF($8,''),$9) RETURNING id`,
             [firstName, lastName, (b.mailing_address||'').trim(), (b.mailing_city||'').trim(),
-             mStateNorm, mZipNorm, (b.email_1||'').trim(), (b.email_2||'').trim(), ownerType]);
+             mStateNorm, mZipNorm, (b.email_1||'').trim(), (b.email_2||'').trim(), ownerType, req.tenantId]);
           contactId = cr.rows[0].id;
-          await client.query(`INSERT INTO property_contacts (property_id, contact_id, primary_contact) VALUES ($1,$2,true) ON CONFLICT (property_id, contact_id) DO UPDATE SET primary_contact=true`, [propId, contactId]);
+          await client.query(`INSERT INTO property_contacts (tenant_id, property_id, contact_id, primary_contact) VALUES ($1,$2,$3,true) ON CONFLICT (property_id, contact_id) DO UPDATE SET primary_contact=true`, [req.tenantId, propId, contactId]);
         }
 
         // ── Optional phones ────────────────────────────────────────────────
@@ -1435,15 +1427,15 @@ router.post('/_new', requireAuth, async (req, res) => {
           const raw = (b['phone_'+i] || '').trim();
           if (!raw) continue;
           const phoneNorm = normalizePhone(raw);
-          if (!phoneNorm || phoneNorm.length < 7) continue;  // skip malformed
+          if (!phoneNorm || phoneNorm.length < 7) continue;
           const pType = ['mobile','landline','voip'].includes((b['phone_type_'+i]||'').toLowerCase()) ? b['phone_type_'+i].toLowerCase() : 'unknown';
           const pStatus = ['correct','wrong'].includes((b['phone_status_'+i]||'').toLowerCase()) ? b['phone_status_'+i].toLowerCase() : 'unknown';
-          await client.query(`INSERT INTO phones (contact_id, phone_number, phone_index, phone_type, phone_status)
-            VALUES ($1,$2,$3,$4,$5)
+          await client.query(`INSERT INTO phones (tenant_id, contact_id, phone_number, phone_index, phone_type, phone_status)
+            VALUES ($6,$1,$2,$3,$4,$5)
             ON CONFLICT (contact_id, phone_number) DO UPDATE SET
               phone_type = CASE WHEN EXCLUDED.phone_type <> 'unknown' THEN EXCLUDED.phone_type ELSE phones.phone_type END,
               phone_status = CASE WHEN EXCLUDED.phone_status <> 'unknown' THEN EXCLUDED.phone_status ELSE phones.phone_status END`,
-            [contactId, phoneNorm, i, pType, pStatus]);
+            [contactId, phoneNorm, i, pType, pStatus, req.tenantId]);
         }
       }
 
@@ -1972,8 +1964,8 @@ router.get('/:id(\\d+)', requireAuth, async (req, res) => {
     const { id } = req.params;
     const msg = req.query.msg || '';
 
-    // Property
-    const propRes = await query(`SELECT * FROM properties WHERE id = $1`, [id]);
+    // Property — tenant-scoped so cross-tenant ID lookups 404 cleanly.
+    const propRes = await query(`SELECT * FROM properties WHERE id = $1 AND tenant_id = $2`, [id, req.tenantId]);
     if (!propRes.rows.length) return res.status(404).send('Property not found');
     const p = propRes.rows[0];
 
@@ -2705,7 +2697,7 @@ router.post('/:id(\\d+)/edit', requireAuth, async (req, res) => {
         lien_type            = COALESCE(NULLIF($26,''), lien_type),
         lien_date            = CASE WHEN $27 = '' THEN lien_date            ELSE $27::date     END,
         updated_at = NOW()
-      WHERE id = $17
+      WHERE id = $17 AND tenant_id = $28
     `, [property_type, condition, bedrooms||'', bathrooms||'', sqft||'', year_built||'',
         estimated_value||'', vacant||'', last_sale_date||'', last_sale_price||'', source,
         property_status||'', assessed_value||'', equity_percent||'',
@@ -2713,7 +2705,8 @@ router.post('/:id(\\d+)/edit', requireAuth, async (req, res) => {
         // New Feature 2 params — keep aligned with $18..$27 above
         stories||'', structure_type||'', apn||'', legal_description||'',
         total_tax_owed||'', tax_delinquent_year||'', tax_auction_date||'',
-        deed_type||'', lien_type||'', lien_date||'']);
+        deed_type||'', lien_type||'', lien_date||'',
+        req.tenantId]);
 
     updated.push('property fields');
 
@@ -2734,10 +2727,10 @@ router.post('/:id(\\d+)/edit', requireAuth, async (req, res) => {
           -- UI. Now editable; preserve-blank pattern so empty string = no-op.
           mailing_zip = COALESCE(NULLIF($10,''), mailing_zip),
           updated_at = NOW()
-        WHERE id = $8
+        WHERE id = $8 AND tenant_id = $11
       `, [first_name, last_name, mailing_address, mailing_city, mailing_state,
           email_1||'', email_2||'', contact_id,
-          ownerTypeSql, mailing_zip||'']);
+          ownerTypeSql, mailing_zip||'', req.tenantId]);
       updated.push('owner info');
     }
 
@@ -4354,15 +4347,18 @@ router.post('/:id(\\d+)/delete', requireAuth, async (req, res) => {
       return res.status(403).json({ error: 'Invalid delete code.' });
     }
     // 2026-04-20 pass 12: same FK-dependent cleanup as bulk delete above.
-    // See comment there for rationale.
-    await query(`UPDATE call_logs          SET property_id = NULL WHERE property_id = $1`, [id]);
-    await query(`UPDATE sms_logs           SET property_id = NULL WHERE property_id = $1`, [id]);
-    await query(`UPDATE filtration_results SET property_id = NULL WHERE property_id = $1`, [id]);
-    await query(`UPDATE marketing_touches  SET property_id = NULL WHERE property_id = $1`, [id]);
-    await query(`DELETE FROM deals                           WHERE property_id = $1`, [id]);
-    await query(`DELETE FROM property_lists    WHERE property_id = $1`, [id]);
-    await query(`DELETE FROM property_contacts WHERE property_id = $1`, [id]);
-    const r = await query(`DELETE FROM properties WHERE id = $1 RETURNING id`, [id]);
+    // See comment there for rationale. Tenant filter on every step is
+    // defense in depth — id is unique globally so a cross-tenant target
+    // would already 404 on the final DELETE, but a multi-tenant world
+    // means we don't want to NULL another tenant's call_logs etc.
+    await query(`UPDATE call_logs          SET property_id = NULL WHERE property_id = $1 AND tenant_id = $2`, [id, req.tenantId]);
+    await query(`UPDATE sms_logs           SET property_id = NULL WHERE property_id = $1 AND tenant_id = $2`, [id, req.tenantId]);
+    await query(`UPDATE filtration_results SET property_id = NULL WHERE property_id = $1 AND tenant_id = $2`, [id, req.tenantId]);
+    await query(`UPDATE marketing_touches  SET property_id = NULL WHERE property_id = $1 AND tenant_id = $2`, [id, req.tenantId]);
+    await query(`DELETE FROM deals                           WHERE property_id = $1 AND tenant_id = $2`, [id, req.tenantId]);
+    await query(`DELETE FROM property_lists    WHERE property_id = $1 AND tenant_id = $2`, [id, req.tenantId]);
+    await query(`DELETE FROM property_contacts WHERE property_id = $1 AND tenant_id = $2`, [id, req.tenantId]);
+    const r = await query(`DELETE FROM properties WHERE id = $1 AND tenant_id = $2 RETURNING id`, [id, req.tenantId]);
     if (!r.rowCount) {
       return res.status(404).json({ error: 'Record not found.' });
     }
