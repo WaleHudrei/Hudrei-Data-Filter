@@ -1092,43 +1092,40 @@ router.post('/commit', requireAuth, async (req, res) => {
     // stale errors could contaminate the next success response.
     let firstError = null;
 
+    const tenantId = req.tenantId;
+
     // ── Resolve list: create new or use existing ──────────────────────────────
     let resolvedListId = null;
     if (listName && listName.trim()) {
-      // 2026-04-20 pass 12: atomic UPSERT. Pre-pass-12 this was SELECT then
-      // conditional INSERT — two concurrent imports for the same list name
-      // both saw "doesn't exist" and both INSERTed, one hitting UNIQUE
-      // constraint violation and returning a 500. UPSERT keyed on the
-      // existing UNIQUE(list_name) constraint handles both "create new"
-      // and "fetch existing" atomically. The DO UPDATE branch re-writes
-      // list_name to itself — no-op but lets RETURNING fire so we always
-      // get the id regardless of branch.
+      // 2026-04-20 pass 12: atomic UPSERT. ON CONFLICT (list_name) is
+      // single-column — same Phase 2 caveat as markets/mapping_templates.
       const upserted = await query(
-        `INSERT INTO lists (list_name, list_type, source, upload_date, active)
-         VALUES ($1, $2, $3, NOW(), true)
+        `INSERT INTO lists (tenant_id, list_name, list_type, source, upload_date, active)
+         VALUES ($1, $2, $3, $4, NOW(), true)
          ON CONFLICT (list_name) DO UPDATE SET list_name = EXCLUDED.list_name
          RETURNING id`,
-        [listName.trim(), listType || null, listSource || null]
+        [tenantId, listName.trim(), listType || null, listSource || null]
       );
       resolvedListId = upserted.rows[0].id;
     } else if (listId) {
       resolvedListId = parseInt(listId);
     }
 
-    // Ensure markets
-    await query(`INSERT INTO markets (name,state_code,state_name) VALUES
-      ('AL','AL','Alabama'),('AK','AK','Alaska'),('AZ','AZ','Arizona'),('AR','AR','Arkansas'),('CA','CA','California'),
-      ('CO','CO','Colorado'),('CT','CT','Connecticut'),('DE','DE','Delaware'),('FL','FL','Florida'),('GA','GA','Georgia'),
-      ('HI','HI','Hawaii'),('ID','ID','Idaho'),('IL','IL','Illinois'),('IN','IN','Indiana'),('IA','IA','Iowa'),
-      ('KS','KS','Kansas'),('KY','KY','Kentucky'),('LA','LA','Louisiana'),('ME','ME','Maine'),('MD','MD','Maryland'),
-      ('MA','MA','Massachusetts'),('MI','MI','Michigan'),('MN','MN','Minnesota'),('MS','MS','Mississippi'),('MO','MO','Missouri'),
-      ('MT','MT','Montana'),('NE','NE','Nebraska'),('NV','NV','Nevada'),('NH','NH','New Hampshire'),('NJ','NJ','New Jersey'),
-      ('NM','NM','New Mexico'),('NY','NY','New York'),('NC','NC','North Carolina'),('ND','ND','North Dakota'),('OH','OH','Ohio'),
-      ('OK','OK','Oklahoma'),('OR','OR','Oregon'),('PA','PA','Pennsylvania'),('RI','RI','Rhode Island'),('SC','SC','South Carolina'),
-      ('SD','SD','South Dakota'),('TN','TN','Tennessee'),('TX','TX','Texas'),('UT','UT','Utah'),('VT','VT','Vermont'),
-      ('VA','VA','Virginia'),('WA','WA','Washington'),('WV','WV','West Virginia'),('WI','WI','Wisconsin'),('WY','WY','Wyoming')
-      ON CONFLICT (state_code) DO UPDATE SET name=EXCLUDED.name, state_name=EXCLUDED.state_name`);
-    const mktRes = await query(`SELECT id, state_code FROM markets`);
+    // Ensure markets exist for this tenant. ON CONFLICT key is (state_code) —
+    // works for one tenant; Phase 2 needs (tenant_id, state_code).
+    await query(`INSERT INTO markets (tenant_id,name,state_code,state_name) VALUES
+      ($1,'AL','AL','Alabama'),($1,'AK','AK','Alaska'),($1,'AZ','AZ','Arizona'),($1,'AR','AR','Arkansas'),($1,'CA','CA','California'),
+      ($1,'CO','CO','Colorado'),($1,'CT','CT','Connecticut'),($1,'DE','DE','Delaware'),($1,'FL','FL','Florida'),($1,'GA','GA','Georgia'),
+      ($1,'HI','HI','Hawaii'),($1,'ID','ID','Idaho'),($1,'IL','IL','Illinois'),($1,'IN','IN','Indiana'),($1,'IA','IA','Iowa'),
+      ($1,'KS','KS','Kansas'),($1,'KY','KY','Kentucky'),($1,'LA','LA','Louisiana'),($1,'ME','ME','Maine'),($1,'MD','MD','Maryland'),
+      ($1,'MA','MA','Massachusetts'),($1,'MI','MI','Michigan'),($1,'MN','MN','Minnesota'),($1,'MS','MS','Mississippi'),($1,'MO','MO','Missouri'),
+      ($1,'MT','MT','Montana'),($1,'NE','NE','Nebraska'),($1,'NV','NV','Nevada'),($1,'NH','NH','New Hampshire'),($1,'NJ','NJ','New Jersey'),
+      ($1,'NM','NM','New Mexico'),($1,'NY','NY','New York'),($1,'NC','NC','North Carolina'),($1,'ND','ND','North Dakota'),($1,'OH','OH','Ohio'),
+      ($1,'OK','OK','Oklahoma'),($1,'OR','OR','Oregon'),($1,'PA','PA','Pennsylvania'),($1,'RI','RI','Rhode Island'),($1,'SC','SC','South Carolina'),
+      ($1,'SD','SD','South Dakota'),($1,'TN','TN','Tennessee'),($1,'TX','TX','Texas'),($1,'UT','UT','Utah'),($1,'VT','VT','Vermont'),
+      ($1,'VA','VA','Virginia'),($1,'WA','WA','Washington'),($1,'WV','WV','West Virginia'),($1,'WI','WI','Wisconsin'),($1,'WY','WY','Wyoming')
+      ON CONFLICT (state_code) DO UPDATE SET name=EXCLUDED.name, state_name=EXCLUDED.state_name`, [tenantId]);
+    const mktRes = await query(`SELECT id, state_code FROM markets WHERE tenant_id = $1`, [tenantId]);
     const mktMap = {};
     mktRes.rows.forEach(m => { mktMap[m.state_code] = m.id; });
 
@@ -1351,10 +1348,10 @@ router.post('/commit', requireAuth, async (req, res) => {
         `SELECT DISTINCT
            LOWER(TRIM(street)) || '|' || LOWER(TRIM(city)) || '|' || UPPER(TRIM(state_code)) || '|' || SUBSTRING(TRIM(zip_code) FROM 1 FOR 5) AS k
            FROM properties
-          WHERE (street, city, state_code, zip_code) IN (
+          WHERE tenant_id = $5 AND (street, city, state_code, zip_code) IN (
             SELECT * FROM UNNEST($1::text[], $2::text[], $3::text[], $4::text[])
           )`,
-        [tupStreets, tupCities, tupStates, tupZips]
+        [tupStreets, tupCities, tupStates, tupZips, req.tenantId]
       );
       const existing = new Set(existsRes.rows.map(r => r.k));
       const kept = [];
@@ -1436,6 +1433,7 @@ router.post('/commit', requireAuth, async (req, res) => {
 
     const propRes = await query(`
       INSERT INTO properties (
+        tenant_id,
         street,city,state_code,zip_code,county,market_id,source,
         property_type,year_built,sqft,bedrooms,bathrooms,lot_size,
         assessed_value,estimated_value,equity_percent,property_status,
@@ -1444,7 +1442,7 @@ router.post('/commit', requireAuth, async (req, res) => {
         tax_delinquent_year,tax_auction_date,deed_type,lien_type,lien_date,
         first_seen_at
       )
-      SELECT * FROM UNNEST(
+      SELECT $32, * FROM UNNEST(
         $1::text[],$2::text[],$3::text[],$4::text[],$5::text[],$6::int[],$7::text[],
         $8::text[],$9::int[],$10::int[],$11::int[],$12::numeric[],$13::int[],
         $14::numeric[],$15::numeric[],$16::numeric[],$17::text[],
@@ -1496,7 +1494,8 @@ router.post('/commit', requireAuth, async (req, res) => {
         assessedVals,estVals,equityPcts,propStatuses,conditions,
         lastSaleDates,lastSalePrices,vacants,
         apns,stories,structureTypes,legalDescs,totalTaxOwed,
-        taxDelinquentYears,taxAuctionDates,deedTypes,lienTypes,lienDates]);
+        taxDelinquentYears,taxAuctionDates,deedTypes,lienTypes,lienDates,
+        tenantId]);
 
     // Map address -> property id
     const propMap = {};
@@ -1535,7 +1534,7 @@ router.post('/commit', requireAuth, async (req, res) => {
           // existing DB value). Same fix applied at all 4 mailing_state
           // write sites in this file + the bulk-import path.
           const mStateNorm = normalizeState(get(row,'mailing_state'));
-          const existPC = await query(`SELECT contact_id FROM property_contacts WHERE property_id=$1 AND primary_contact=true LIMIT 1`,[propertyId]);
+          const existPC = await query(`SELECT contact_id FROM property_contacts WHERE property_id=$1 AND tenant_id=$2 AND primary_contact=true LIMIT 1`,[propertyId, tenantId]);
           let contactId;
           if (existPC.rows.length) {
             contactId = existPC.rows[0].contact_id;
@@ -1546,34 +1545,29 @@ router.post('/commit', requireAuth, async (req, res) => {
               email_1=COALESCE(NULLIF($7,''),email_1),email_2=COALESCE(NULLIF($8,''),email_2),
               owner_type=COALESCE(owner_type, $10),
               updated_at=NOW()
-              WHERE id=$9`,
+              WHERE id=$9 AND tenant_id=$11`,
               [firstName,lastName,getClip(row,'mailing_address'),getClip(row,'mailing_city'),
-               mStateNorm,normalizeZip(get(row,'mailing_zip')),getClip(row,'email_1')||'',getClip(row,'email_2')||'',contactId,inferredOT]);
+               mStateNorm,normalizeZip(get(row,'mailing_zip')),getClip(row,'email_1')||'',getClip(row,'email_2')||'',contactId,inferredOT,tenantId]);
           } else {
-            const cr = await query(`INSERT INTO contacts (first_name,last_name,mailing_address,mailing_city,mailing_state,mailing_zip,email_1,email_2,owner_type)
-              VALUES ($1,$2,$3,$4,NULLIF($5,''),NULLIF($6,''),$7,$8,$9) RETURNING id`,
-              [firstName,lastName,getClip(row,'mailing_address'),getClip(row,'mailing_city'),
+            const cr = await query(`INSERT INTO contacts (tenant_id,first_name,last_name,mailing_address,mailing_city,mailing_state,mailing_zip,email_1,email_2,owner_type)
+              VALUES ($1,$2,$3,$4,$5,NULLIF($6,''),NULLIF($7,''),$8,$9,$10) RETURNING id`,
+              [tenantId,firstName,lastName,getClip(row,'mailing_address'),getClip(row,'mailing_city'),
                mStateNorm,normalizeZip(get(row,'mailing_zip')),getClip(row,'email_1')||null,getClip(row,'email_2')||null,inferredOT]);
             contactId = cr.rows[0].id;
-            await query(`INSERT INTO property_contacts (property_id,contact_id,primary_contact) VALUES ($1,$2,true) ON CONFLICT DO NOTHING`,[propertyId,contactId]);
+            await query(`INSERT INTO property_contacts (tenant_id,property_id,contact_id,primary_contact) VALUES ($1,$2,$3,true) ON CONFLICT DO NOTHING`,[tenantId,propertyId,contactId]);
           }
 
           // Phones
           for (let i=1;i<=10;i++) {
             const phoneRaw = cleanPhone(get(row,`phone_${i}`));
             if (!phoneRaw||phoneRaw.length<7) continue;
-            // 2026-04-21 Feature 4 hotfix: use normalizePhoneType so PropStream
-            // "Wireless"/"Landline" map to "mobile"/"landline" — the values
-            // the detail-page chip renderer expects. Without this, chips do
-            // not render on PropStream-sourced phones even though phone_type
-            // is populated.
             const pType   = normalizePhoneType(get(row,`phone_type_${i}`));
             const pStatus = (get(row,`phone_status_${i}`)||'unknown').toLowerCase().trim();
-            await query(`INSERT INTO phones (contact_id,phone_number,phone_index,phone_type,phone_status)
-              VALUES ($1,$2,$3,$4,$5) ON CONFLICT (contact_id,phone_number) DO UPDATE SET
+            await query(`INSERT INTO phones (tenant_id,contact_id,phone_number,phone_index,phone_type,phone_status)
+              VALUES ($1,$2,$3,$4,$5,$6) ON CONFLICT (contact_id,phone_number) DO UPDATE SET
               phone_type=CASE WHEN EXCLUDED.phone_type!='unknown' THEN EXCLUDED.phone_type ELSE phones.phone_type END,
               phone_status=CASE WHEN EXCLUDED.phone_status!='unknown' THEN EXCLUDED.phone_status ELSE phones.phone_status END`,
-              [contactId,phoneRaw,i,pType,pStatus]);
+              [tenantId,contactId,phoneRaw,i,pType,pStatus]);
           }
         }
 
@@ -1590,35 +1584,36 @@ router.post('/commit', requireAuth, async (req, res) => {
           // this property — avoid creating duplicates on re-import.
           const existO2 = await query(
             `SELECT c.id FROM contacts c
-             JOIN property_contacts pc ON pc.contact_id = c.id
+             JOIN property_contacts pc ON pc.contact_id = c.id AND pc.tenant_id = $4
              WHERE pc.property_id = $1
+               AND c.tenant_id = $4
                AND pc.primary_contact = false
                AND LOWER(TRIM(c.first_name)) = LOWER(TRIM($2))
                AND LOWER(TRIM(c.last_name))  = LOWER(TRIM($3))
              LIMIT 1`,
-            [propertyId, o2First, o2Last]
+            [propertyId, o2First, o2Last, tenantId]
           );
           if (existO2.rows.length) {
             // Secondary contact already exists — no-op (don't overwrite)
           } else {
             const o2r = await query(
-              `INSERT INTO contacts (first_name, last_name, owner_type)
-               VALUES ($1, $2, $3) RETURNING id`,
-              [o2First, o2Last, o2InferredOT]
+              `INSERT INTO contacts (tenant_id, first_name, last_name, owner_type)
+               VALUES ($1, $2, $3, $4) RETURNING id`,
+              [tenantId, o2First, o2Last, o2InferredOT]
             );
             const o2Id = o2r.rows[0].id;
             await query(
-              `INSERT INTO property_contacts (property_id, contact_id, primary_contact)
-               VALUES ($1, $2, false) ON CONFLICT DO NOTHING`,
-              [propertyId, o2Id]
+              `INSERT INTO property_contacts (tenant_id, property_id, contact_id, primary_contact)
+               VALUES ($1, $2, $3, false) ON CONFLICT DO NOTHING`,
+              [tenantId, propertyId, o2Id]
             );
           }
         }
 
         // Tag to list
         if (resolvedListId) {
-          await query(`INSERT INTO property_lists (property_id,list_id,added_at) VALUES ($1,$2,NOW()) ON CONFLICT DO NOTHING`,
-            [propertyId,resolvedListId]);
+          await query(`INSERT INTO property_lists (tenant_id,property_id,list_id,added_at) VALUES ($1,$2,$3,NOW()) ON CONFLICT DO NOTHING`,
+            [tenantId,propertyId,resolvedListId]);
         }
       } catch(rowErr) {
         errors++;
@@ -1667,27 +1662,28 @@ router.post('/start-job', requireAuth, async (req, res) => {
     const allRows = req.session.importRows;
     if (!allRows || !allRows.length) return res.status(400).json({ error: 'Session expired. Please re-upload your file.' });
 
+    const tenantId = req.tenantId;
+
     // Resolve or create list first
     let resolvedListId = null;
     if (listName && listName.trim()) {
-      // 2026-04-20 pass 12: atomic UPSERT (same race fix as the /commit
-      // flow — see comment there).
       const upserted = await query(
-        `INSERT INTO lists (list_name, list_type, source, upload_date, active)
-         VALUES ($1, $2, $3, NOW(), true)
+        `INSERT INTO lists (tenant_id, list_name, list_type, source, upload_date, active)
+         VALUES ($1, $2, $3, $4, NOW(), true)
          ON CONFLICT (list_name) DO UPDATE SET list_name = EXCLUDED.list_name
          RETURNING id`,
-        [listName.trim(), listType || null, listSource || null]
+        [tenantId, listName.trim(), listType || null, listSource || null]
       );
       resolvedListId = upserted.rows[0].id;
     } else if (listId) {
       resolvedListId = parseInt(listId);
     }
 
-    // Create job record
+    // Create job record. tenant_id is persisted on the row so the
+    // background worker can pick it up without needing a session.
     const jobRes = await query(
-      `INSERT INTO bulk_import_jobs (status, filename, list_id, total_rows) VALUES ('pending',$1,$2,$3) RETURNING id`,
-      [filename || 'import.csv', resolvedListId, allRows.length]
+      `INSERT INTO bulk_import_jobs (tenant_id, status, filename, list_id, total_rows) VALUES ($1,'pending',$2,$3,$4) RETURNING id`,
+      [tenantId, filename || 'import.csv', resolvedListId, allRows.length]
     );
     const jobId = jobRes.rows[0].id;
 
@@ -1697,7 +1693,7 @@ router.post('/start-job', requireAuth, async (req, res) => {
     req.session.save();
 
     // Fire background processing
-    setImmediate(() => runBackgroundImport(jobId, rows, mapping, filename, resolvedListId, listType, listSource, importMode));
+    setImmediate(() => runBackgroundImport(jobId, rows, mapping, filename, resolvedListId, listType, listSource, importMode, tenantId));
 
     res.json({ jobId, resolvedListId, total: allRows.length });
   } catch(e) {
@@ -1707,12 +1703,23 @@ router.post('/start-job', requireAuth, async (req, res) => {
 });
 
 // ── BACKGROUND IMPORT WORKER ──────────────────────────────────────────────────
-async function runBackgroundImport(jobId, allRows, mapping, filename, resolvedListId, listTypeIgnored, listSourceIgnored, importMode) {
+async function runBackgroundImport(jobId, allRows, mapping, filename, resolvedListId, listTypeIgnored, listSourceIgnored, importMode, tenantId) {
   // 2026-04-21 Feature 8(a): importMode is one of 'add_and_update' (default),
   // 'add_only', 'update_only' — branches the property UPSERT behavior below.
   // Validated against a whitelist in the caller before we get here; guard
   // here too in case of future call sites.
   const MODE = (['add_and_update','add_only','update_only'].includes(importMode)) ? importMode : 'add_and_update';
+  // Phase 1 SaaS: tenantId comes from the caller (which read it from the
+  // session). If it's missing we re-fetch from the job row as a fallback —
+  // bulk_import_jobs.tenant_id is the canonical source of truth.
+  if (!Number.isInteger(tenantId)) {
+    const tr = await query(`SELECT tenant_id FROM bulk_import_jobs WHERE id = $1`, [jobId]);
+    if (!tr.rows.length) {
+      console.error(`[bg-import] job ${jobId} not found — aborting`);
+      return;
+    }
+    tenantId = tr.rows[0].tenant_id;
+  }
   const BATCH = 500;
   let inserted = 0, updated = 0, errors = 0, processed = 0;
   const allSkipped = [];  // hoisted so the catch block can reference it
@@ -1721,20 +1728,20 @@ async function runBackgroundImport(jobId, allRows, mapping, filename, resolvedLi
   try {
     await query(`UPDATE bulk_import_jobs SET status='running', updated_at=NOW() WHERE id=$1`, [jobId]);
 
-    // Ensure markets
-    await query(`INSERT INTO markets (name,state_code,state_name) VALUES
-      ('AL','AL','Alabama'),('AK','AK','Alaska'),('AZ','AZ','Arizona'),('AR','AR','Arkansas'),('CA','CA','California'),
-      ('CO','CO','Colorado'),('CT','CT','Connecticut'),('DE','DE','Delaware'),('FL','FL','Florida'),('GA','GA','Georgia'),
-      ('HI','HI','Hawaii'),('ID','ID','Idaho'),('IL','IL','Illinois'),('IN','IN','Indiana'),('IA','IA','Iowa'),
-      ('KS','KS','Kansas'),('KY','KY','Kentucky'),('LA','LA','Louisiana'),('ME','ME','Maine'),('MD','MD','Maryland'),
-      ('MA','MA','Massachusetts'),('MI','MI','Michigan'),('MN','MN','Minnesota'),('MS','MS','Mississippi'),('MO','MO','Missouri'),
-      ('MT','MT','Montana'),('NE','NE','Nebraska'),('NV','NV','Nevada'),('NH','NH','New Hampshire'),('NJ','NJ','New Jersey'),
-      ('NM','NM','New Mexico'),('NY','NY','New York'),('NC','NC','North Carolina'),('ND','ND','North Dakota'),('OH','OH','Ohio'),
-      ('OK','OK','Oklahoma'),('OR','OR','Oregon'),('PA','PA','Pennsylvania'),('RI','RI','Rhode Island'),('SC','SC','South Carolina'),
-      ('SD','SD','South Dakota'),('TN','TN','Tennessee'),('TX','TX','Texas'),('UT','UT','Utah'),('VT','VT','Vermont'),
-      ('VA','VA','Virginia'),('WA','WA','Washington'),('WV','WV','West Virginia'),('WI','WI','Wisconsin'),('WY','WY','Wyoming')
-      ON CONFLICT (state_code) DO UPDATE SET name=EXCLUDED.name, state_name=EXCLUDED.state_name`);
-    const mktRes = await query(`SELECT id, state_code FROM markets`);
+    // Ensure markets exist for this tenant (same Phase 2 caveat as /commit)
+    await query(`INSERT INTO markets (tenant_id,name,state_code,state_name) VALUES
+      ($1,'AL','AL','Alabama'),($1,'AK','AK','Alaska'),($1,'AZ','AZ','Arizona'),($1,'AR','AR','Arkansas'),($1,'CA','CA','California'),
+      ($1,'CO','CO','Colorado'),($1,'CT','CT','Connecticut'),($1,'DE','DE','Delaware'),($1,'FL','FL','Florida'),($1,'GA','GA','Georgia'),
+      ($1,'HI','HI','Hawaii'),($1,'ID','ID','Idaho'),($1,'IL','IL','Illinois'),($1,'IN','IN','Indiana'),($1,'IA','IA','Iowa'),
+      ($1,'KS','KS','Kansas'),($1,'KY','KY','Kentucky'),($1,'LA','LA','Louisiana'),($1,'ME','ME','Maine'),($1,'MD','MD','Maryland'),
+      ($1,'MA','MA','Massachusetts'),($1,'MI','MI','Michigan'),($1,'MN','MN','Minnesota'),($1,'MS','MS','Mississippi'),($1,'MO','MO','Missouri'),
+      ($1,'MT','MT','Montana'),($1,'NE','NE','Nebraska'),($1,'NV','NV','Nevada'),($1,'NH','NH','New Hampshire'),($1,'NJ','NJ','New Jersey'),
+      ($1,'NM','NM','New Mexico'),($1,'NY','NY','New York'),($1,'NC','NC','North Carolina'),($1,'ND','ND','North Dakota'),($1,'OH','OH','Ohio'),
+      ($1,'OK','OK','Oklahoma'),($1,'OR','OR','Oregon'),($1,'PA','PA','Pennsylvania'),($1,'RI','RI','Rhode Island'),($1,'SC','SC','South Carolina'),
+      ($1,'SD','SD','South Dakota'),($1,'TN','TN','Tennessee'),($1,'TX','TX','Texas'),($1,'UT','UT','Utah'),($1,'VT','VT','Vermont'),
+      ($1,'VA','VA','Virginia'),($1,'WA','WA','Washington'),($1,'WV','WV','West Virginia'),($1,'WI','WI','Wisconsin'),($1,'WY','WY','Wyoming')
+      ON CONFLICT (state_code) DO UPDATE SET name=EXCLUDED.name, state_name=EXCLUDED.state_name`, [tenantId]);
+    const mktRes = await query(`SELECT id, state_code FROM markets WHERE tenant_id = $1`, [tenantId]);
     const mktMap = {};
     mktRes.rows.forEach(m => { mktMap[m.state_code] = m.id; });
 
@@ -2038,10 +2045,10 @@ async function runBackgroundImport(jobId, allRows, mapping, filename, resolvedLi
           `SELECT DISTINCT
              LOWER(TRIM(street)) || '|' || LOWER(TRIM(city)) || '|' || UPPER(TRIM(state_code)) || '|' || SUBSTRING(TRIM(zip_code) FROM 1 FOR 5) AS k
              FROM properties
-            WHERE (street, city, state_code, zip_code) IN (
+            WHERE tenant_id = $5 AND (street, city, state_code, zip_code) IN (
               SELECT * FROM UNNEST($1::text[], $2::text[], $3::text[], $4::text[])
             )`,
-          [tupStreets, tupCities, tupStates, tupZips]
+          [tupStreets, tupCities, tupStates, tupZips, tenantId]
         );
         const existing = new Set(existsRes.rows.map(r => r.k));
         const kept = [];
@@ -2105,8 +2112,8 @@ async function runBackgroundImport(jobId, allRows, mapping, filename, resolvedLi
         }
 
         const propRes = await query(`
-          INSERT INTO properties (street,city,state_code,zip_code,county,market_id,source,property_type,year_built,sqft,bedrooms,bathrooms,lot_size,assessed_value,estimated_value,equity_percent,property_status,condition,last_sale_date,last_sale_price,vacant,apn,stories,structure_type,legal_description,total_tax_owed,tax_delinquent_year,tax_auction_date,deed_type,lien_type,lien_date,first_seen_at)
-          SELECT *,NOW() FROM UNNEST($1::text[],$2::text[],$3::text[],$4::text[],$5::text[],$6::int[],$7::text[],$8::text[],$9::int[],$10::int[],$11::int[],$12::numeric[],$13::int[],$14::numeric[],$15::numeric[],$16::numeric[],$17::text[],$18::text[],$19::date[],$20::numeric[],$21::boolean[],$22::text[],$23::int[],$24::text[],$25::text[],$26::numeric[],$27::int[],$28::date[],$29::text[],$30::text[],$31::date[])
+          INSERT INTO properties (tenant_id,street,city,state_code,zip_code,county,market_id,source,property_type,year_built,sqft,bedrooms,bathrooms,lot_size,assessed_value,estimated_value,equity_percent,property_status,condition,last_sale_date,last_sale_price,vacant,apn,stories,structure_type,legal_description,total_tax_owed,tax_delinquent_year,tax_auction_date,deed_type,lien_type,lien_date,first_seen_at)
+          SELECT $32,*,NOW() FROM UNNEST($1::text[],$2::text[],$3::text[],$4::text[],$5::text[],$6::int[],$7::text[],$8::text[],$9::int[],$10::int[],$11::int[],$12::numeric[],$13::int[],$14::numeric[],$15::numeric[],$16::numeric[],$17::text[],$18::text[],$19::date[],$20::numeric[],$21::boolean[],$22::text[],$23::int[],$24::text[],$25::text[],$26::numeric[],$27::int[],$28::date[],$29::text[],$30::text[],$31::date[])
           AS t(street,city,state_code,zip_code,county,market_id,source,property_type,year_built,sqft,bedrooms,bathrooms,lot_size,assessed_value,estimated_value,equity_percent,property_status,condition,last_sale_date,last_sale_price,vacant,apn,stories,structure_type,legal_description,total_tax_owed,tax_delinquent_year,tax_auction_date,deed_type,lien_type,lien_date)
           ON CONFLICT (street,city,state_code,zip_code) DO UPDATE SET
             county=COALESCE(EXCLUDED.county,properties.county),source=COALESCE(EXCLUDED.source,properties.source),
@@ -2124,7 +2131,7 @@ async function runBackgroundImport(jobId, allRows, mapping, filename, resolvedLi
             lien_type=COALESCE(EXCLUDED.lien_type,properties.lien_type),lien_date=COALESCE(EXCLUDED.lien_date,properties.lien_date),
             updated_at=NOW()
           RETURNING id, xmax, street, city, state_code, zip_code
-        `, [streets,cities,states,zips,counties,mktIds,sources,propTypes,yearBuilts,sqfts,beds,baths,lots,assessed,estVals,equity,propStatus,conds,lastSaleDates,lastSalePrices,vacants,apns,storiesArr,structureTypes,legalDescs,totalTaxOwed,taxDelinquentYears,taxAuctionDates,deedTypes,lienTypes,lienDates]);
+        `, [streets,cities,states,zips,counties,mktIds,sources,propTypes,yearBuilts,sqfts,beds,baths,lots,assessed,estVals,equity,propStatus,conds,lastSaleDates,lastSalePrices,vacants,apns,storiesArr,structureTypes,legalDescs,totalTaxOwed,taxDelinquentYears,taxAuctionDates,deedTypes,lienTypes,lienDates,tenantId]);
 
         const propMap = {};
         const propIds = [];
@@ -2193,8 +2200,8 @@ async function runBackgroundImport(jobId, allRows, mapping, filename, resolvedLi
         if (batchPropIds.length > 0) {
           const ex = await query(
             `SELECT property_id, contact_id FROM property_contacts
-              WHERE property_id = ANY($1::int[]) AND primary_contact = true`,
-            [batchPropIds]
+              WHERE tenant_id = $2 AND property_id = ANY($1::int[]) AND primary_contact = true`,
+            [batchPropIds, tenantId]
           );
           for (const r of ex.rows) existingPC.set(r.property_id, r.contact_id);
         }
@@ -2249,9 +2256,9 @@ async function runBackgroundImport(jobId, allRows, mapping, filename, resolvedLi
             const phRes = await query(
               `SELECT DISTINCT ON (phone_number) phone_number, contact_id
                  FROM phones
-                WHERE phone_number = ANY($1::text[])
+                WHERE tenant_id = $2 AND phone_number = ANY($1::text[])
                 ORDER BY phone_number, contact_id ASC`,
-              [phoneArr]
+              [phoneArr, tenantId]
             );
             for (const r of phRes.rows) phoneToExistingContact.set(r.phone_number, r.contact_id);
           }
@@ -2331,10 +2338,10 @@ async function runBackgroundImport(jobId, allRows, mapping, filename, resolvedLi
             // Create the primary property_contacts link — safe via ON CONFLICT
             // on (property_id, contact_id).
             await query(
-              `INSERT INTO property_contacts (property_id, contact_id, primary_contact)
-               VALUES ($1, $2, true)
+              `INSERT INTO property_contacts (tenant_id, property_id, contact_id, primary_contact)
+               VALUES ($1, $2, $3, true)
                ON CONFLICT (property_id, contact_id) DO UPDATE SET primary_contact = true`,
-              [propId, reusedCid]
+              [tenantId, propId, reusedCid]
             );
             reusedContactCount++;
           } else {
@@ -2378,8 +2385,8 @@ async function runBackgroundImport(jobId, allRows, mapping, filename, resolvedLi
               $6::text[], $7::text[], $8::text[], $9::text[], $10::varchar[]
             ) AS t(id, first_name, last_name, mailing_address, mailing_city,
                    mailing_state, mailing_zip, email_1, email_2, owner_type)
-            WHERE contacts.id = t.id
-          `, [updIds, updFns, updLns, updMaddr, updMcity, updMstate, updMzip, updE1, updE2, updOt]);
+            WHERE contacts.id = t.id AND contacts.tenant_id = $11
+          `, [updIds, updFns, updLns, updMaddr, updMcity, updMstate, updMzip, updE1, updE2, updOt, tenantId]);
         }
 
         // Bulk INSERT new contacts + property_contacts links
@@ -2403,17 +2410,17 @@ async function runBackgroundImport(jobId, allRows, mapping, filename, resolvedLi
           );
           const newIds = idRes.rows.map(r => Number(r.id));
           await query(`
-            INSERT INTO contacts (id, first_name, last_name, mailing_address, mailing_city, mailing_state, mailing_zip, email_1, email_2, owner_type)
-            SELECT * FROM UNNEST(
+            INSERT INTO contacts (id, tenant_id, first_name, last_name, mailing_address, mailing_city, mailing_state, mailing_zip, email_1, email_2, owner_type)
+            SELECT id, $11, first_name, last_name, mailing_address, mailing_city, mailing_state, mailing_zip, email_1, email_2, owner_type FROM UNNEST(
               $1::int[], $2::text[], $3::text[], $4::text[], $5::text[], $6::text[], $7::text[], $8::text[], $9::text[], $10::varchar[]
             ) AS t(id, first_name, last_name, mailing_address, mailing_city, mailing_state, mailing_zip, email_1, email_2, owner_type)
-          `, [newIds, newFns, newLns, newMaddr, newMcity, newMstate, newMzip, newE1, newE2, newOt]);
+          `, [newIds, newFns, newLns, newMaddr, newMcity, newMstate, newMzip, newE1, newE2, newOt, tenantId]);
           await query(`
-            INSERT INTO property_contacts (property_id, contact_id, primary_contact)
-            SELECT property_id, contact_id, true
+            INSERT INTO property_contacts (tenant_id, property_id, contact_id, primary_contact)
+            SELECT $3, property_id, contact_id, true
               FROM UNNEST($1::int[], $2::int[]) AS t(property_id, contact_id)
             ON CONFLICT DO NOTHING
-          `, [newPropIds, newIds]);
+          `, [newPropIds, newIds, tenantId]);
           for (let i = 0; i < newPropIds.length; i++) contactIdByProp.set(newPropIds[i], newIds[i]);
         }
 
@@ -2469,14 +2476,14 @@ async function runBackgroundImport(jobId, allRows, mapping, filename, resolvedLi
         }
         if (phCids.length > 0) {
           await query(`
-            INSERT INTO phones (contact_id, phone_number, phone_index, phone_type, phone_status)
-            SELECT * FROM UNNEST($1::int[], $2::text[], $3::int[], $4::text[], $5::text[])
+            INSERT INTO phones (tenant_id, contact_id, phone_number, phone_index, phone_type, phone_status)
+            SELECT $6, contact_id, phone_number, phone_index, phone_type, phone_status FROM UNNEST($1::int[], $2::text[], $3::int[], $4::text[], $5::text[])
               AS t(contact_id, phone_number, phone_index, phone_type, phone_status)
             ON CONFLICT (contact_id, phone_number) DO UPDATE SET
               phone_type   = CASE WHEN EXCLUDED.phone_type   != 'unknown' THEN EXCLUDED.phone_type   ELSE phones.phone_type   END,
               phone_status = CASE WHEN EXCLUDED.phone_status != 'unknown' THEN EXCLUDED.phone_status ELSE phones.phone_status END,
               updated_at   = NOW()
-          `, [phCids, phNums, phIdxs, phTypes, phStats]);
+          `, [phCids, phNums, phIdxs, phTypes, phStats, tenantId]);
         }
 
         if (phoneDupesCollapsed > 0) {
@@ -2524,10 +2531,11 @@ async function runBackgroundImport(jobId, allRows, mapping, filename, resolvedLi
             const coExRes = await query(
               `SELECT pc.property_id, pc.contact_id, c.first_name, c.last_name
                  FROM property_contacts pc
-                 JOIN contacts c ON c.id = pc.contact_id
-                WHERE pc.property_id = ANY($1::int[])
+                 JOIN contacts c ON c.id = pc.contact_id AND c.tenant_id = $2
+                WHERE pc.tenant_id = $2
+                  AND pc.property_id = ANY($1::int[])
                   AND pc.primary_contact = false`,
-              [coPropIds]
+              [coPropIds, tenantId]
             );
             for (const r of coExRes.rows) {
               const nkey = normNameStr(r.first_name, r.last_name);
@@ -2596,32 +2604,32 @@ async function runBackgroundImport(jobId, allRows, mapping, filename, resolvedLi
                 $6::text[], $7::text[], $8::text[], $9::text[]
               ) AS t(id, first_name, last_name, mailing_address, mailing_city,
                      mailing_state, mailing_zip, email_1, email_2)
-              WHERE contacts.id = t.id
+              WHERE contacts.id = t.id AND contacts.tenant_id = $10
             `, [
               coUpdateTasks.map(t => t.contactId),
               coUpdateTasks.map(t => get(t.row,'first_name') || ''),
               coUpdateTasks.map(t => get(t.row,'last_name')  || ''),
               coUpdateTasks.map(t => get(t.row,'mailing_address') || ''),
               coUpdateTasks.map(t => get(t.row,'mailing_city')    || ''),
-              // 2026-04-21 PM hotfix: normalize per above — CHAR(2) column.
               coUpdateTasks.map(t => normalizeState(get(t.row,'mailing_state'))),
-              // 2026-04-21 PM hotfix: normalize mailing_zip — VARCHAR(10) column.
               coUpdateTasks.map(t => normalizeZip(get(t.row,'mailing_zip'))),
               coUpdateTasks.map(t => get(t.row,'email_1') || ''),
               coUpdateTasks.map(t => get(t.row,'email_2') || ''),
+              tenantId,
             ]);
           }
 
           // Link reused contacts with primary_contact=false
           if (coReuseTasks.length > 0) {
             await query(`
-              INSERT INTO property_contacts (property_id, contact_id, primary_contact)
-              SELECT t.property_id, t.contact_id, false
+              INSERT INTO property_contacts (tenant_id, property_id, contact_id, primary_contact)
+              SELECT $3, t.property_id, t.contact_id, false
                 FROM UNNEST($1::int[], $2::int[]) AS t(property_id, contact_id)
               ON CONFLICT (property_id, contact_id) DO NOTHING
             `, [
               coReuseTasks.map(t => t.propId),
               coReuseTasks.map(t => t.contactId),
+              tenantId,
             ]);
           }
 
@@ -2641,8 +2649,8 @@ async function runBackgroundImport(jobId, allRows, mapping, filename, resolvedLi
             );
             for (const r of coIdRes.rows) coContactIds.push(Number(r.id));
             await query(`
-              INSERT INTO contacts (id, first_name, last_name, mailing_address, mailing_city, mailing_state, mailing_zip, email_1, email_2)
-              SELECT * FROM UNNEST(
+              INSERT INTO contacts (id, tenant_id, first_name, last_name, mailing_address, mailing_city, mailing_state, mailing_zip, email_1, email_2)
+              SELECT id, $10, first_name, last_name, mailing_address, mailing_city, mailing_state, mailing_zip, email_1, email_2 FROM UNNEST(
                 $1::int[], $2::text[], $3::text[], $4::text[], $5::text[], $6::text[], $7::text[], $8::text[], $9::text[]
               ) AS t(id, first_name, last_name, mailing_address, mailing_city, mailing_state, mailing_zip, email_1, email_2)
             `, [
@@ -2651,22 +2659,22 @@ async function runBackgroundImport(jobId, allRows, mapping, filename, resolvedLi
               coNewTasks.map(t => get(t.row,'last_name')  || ''),
               coNewTasks.map(t => get(t.row,'mailing_address') || ''),
               coNewTasks.map(t => get(t.row,'mailing_city')    || ''),
-              // 2026-04-21 PM hotfix: normalize per above — CHAR(2) column.
               coNewTasks.map(t => normalizeState(get(t.row,'mailing_state'))),
-              // 2026-04-21 PM hotfix: normalize mailing_zip — VARCHAR(10) column.
               coNewTasks.map(t => normalizeZip(get(t.row,'mailing_zip'))),
               coNewTasks.map(t => get(t.row,'email_1') || null),
               coNewTasks.map(t => get(t.row,'email_2') || null),
+              tenantId,
             ]);
 
             await query(`
-              INSERT INTO property_contacts (property_id, contact_id, primary_contact)
-              SELECT t.property_id, t.contact_id, false
+              INSERT INTO property_contacts (tenant_id, property_id, contact_id, primary_contact)
+              SELECT $3, t.property_id, t.contact_id, false
                 FROM UNNEST($1::int[], $2::int[]) AS t(property_id, contact_id)
               ON CONFLICT (property_id, contact_id) DO NOTHING
             `, [
               coNewTasks.map(t => t.propId),
               coContactIds,
+              tenantId,
             ]);
           }
 
@@ -2702,14 +2710,14 @@ async function runBackgroundImport(jobId, allRows, mapping, filename, resolvedLi
               cTypes.push(p.type); cStats.push(p.status);
             }
             await query(`
-              INSERT INTO phones (contact_id, phone_number, phone_index, phone_type, phone_status)
-              SELECT * FROM UNNEST($1::int[], $2::text[], $3::int[], $4::text[], $5::text[])
+              INSERT INTO phones (tenant_id, contact_id, phone_number, phone_index, phone_type, phone_status)
+              SELECT $6, contact_id, phone_number, phone_index, phone_type, phone_status FROM UNNEST($1::int[], $2::text[], $3::int[], $4::text[], $5::text[])
                 AS t(contact_id, phone_number, phone_index, phone_type, phone_status)
               ON CONFLICT (contact_id, phone_number) DO UPDATE SET
                 phone_type   = CASE WHEN EXCLUDED.phone_type   != 'unknown' THEN EXCLUDED.phone_type   ELSE phones.phone_type   END,
                 phone_status = CASE WHEN EXCLUDED.phone_status != 'unknown' THEN EXCLUDED.phone_status ELSE phones.phone_status END,
                 updated_at   = NOW()
-            `, [cCids, cNums, cIdxs, cTypes, cStats]);
+            `, [cCids, cNums, cIdxs, cTypes, cStats, tenantId]);
           }
 
           console.log(`[property-import] attached ${coOwnerTasks.length} co-owner(s): ${coUpdateTasks.length} existing (updated), ${coReuseTasks.length} reused, ${coNewTasks.length} new`);
@@ -2772,10 +2780,11 @@ async function runBackgroundImport(jobId, allRows, mapping, filename, resolvedLi
                     LOWER(TRIM(c.first_name)) AS fn,
                     LOWER(TRIM(c.last_name))  AS ln
                FROM property_contacts pc
-               JOIN contacts c ON c.id = pc.contact_id
-              WHERE pc.property_id = ANY($1::int[])
+               JOIN contacts c ON c.id = pc.contact_id AND c.tenant_id = $2
+              WHERE pc.tenant_id = $2
+                AND pc.property_id = ANY($1::int[])
                 AND pc.primary_contact = false`,
-            [uniqCandidates.map(c => c.propId)]
+            [uniqCandidates.map(c => c.propId), tenantId]
           );
           const existingSet = new Set();
           for (const r of existRes.rows) {
@@ -2796,26 +2805,28 @@ async function runBackgroundImport(jobId, allRows, mapping, filename, resolvedLi
 
             // Step 4: Bulk INSERT contacts via UNNEST
             await query(
-              `INSERT INTO contacts (id, first_name, last_name, owner_type)
-               SELECT * FROM UNNEST($1::int[], $2::text[], $3::text[], $4::text[])
+              `INSERT INTO contacts (id, tenant_id, first_name, last_name, owner_type)
+               SELECT id, $5, first_name, last_name, owner_type FROM UNNEST($1::int[], $2::text[], $3::text[], $4::text[])
                  AS t(id, first_name, last_name, owner_type)`,
               [
                 newIds,
                 newOnes.map(c => c.firstName),
                 newOnes.map(c => c.lastName),
                 newOnes.map(c => inferOwnerType(c.firstName, c.lastName)),
+                tenantId,
               ]
             );
 
             // Step 5: Bulk INSERT property_contacts links via UNNEST
             await query(
-              `INSERT INTO property_contacts (property_id, contact_id, primary_contact)
-               SELECT property_id, contact_id, false
+              `INSERT INTO property_contacts (tenant_id, property_id, contact_id, primary_contact)
+               SELECT $3, property_id, contact_id, false
                  FROM UNNEST($1::int[], $2::int[]) AS t(property_id, contact_id)
                ON CONFLICT (property_id, contact_id) DO NOTHING`,
               [
                 newOnes.map(c => c.propId),
                 newIds,
+                tenantId,
               ]
             );
 
@@ -2826,11 +2837,11 @@ async function runBackgroundImport(jobId, allRows, mapping, filename, resolvedLi
         // Bulk INSERT property_lists links for every property in the batch
         if (resolvedListId && propIds.length > 0) {
           await query(`
-            INSERT INTO property_lists (property_id, list_id, added_at)
-            SELECT property_id, $2, NOW()
+            INSERT INTO property_lists (tenant_id, property_id, list_id, added_at)
+            SELECT $3, property_id, $2, NOW()
               FROM UNNEST($1::int[]) AS t(property_id)
             ON CONFLICT DO NOTHING
-          `, [propIds, resolvedListId]);
+          `, [propIds, resolvedListId, tenantId]);
         }
       }
 

@@ -49,12 +49,16 @@ function requireAuth(req, res, next) {
   next();
 }
 
-// Module-level market cache: state_code → market_id. Survives across imports.
-const marketCache = Object.create(null);
-async function primeMarketCache() {
-  if (Object.keys(marketCache).length > 0) return;
-  const mktRes = await query(`SELECT id, state_code FROM markets`);
-  for (const m of mktRes.rows) marketCache[m.state_code] = m.id;
+// Module-level market cache: tenantId → { state_code → market_id }. Each
+// tenant has their own markets rows, so the cache must be keyed by tenant.
+const marketCacheByTenant = new Map();
+async function primeMarketCache(tenantId) {
+  if (marketCacheByTenant.has(tenantId)) return marketCacheByTenant.get(tenantId);
+  const mktRes = await query(`SELECT id, state_code FROM markets WHERE tenant_id = $1`, [tenantId]);
+  const cache = Object.create(null);
+  for (const m of mktRes.rows) cache[m.state_code] = m.id;
+  marketCacheByTenant.set(tenantId, cache);
+  return cache;
 }
 
 // ── REISift column mapping ─────────────────────────────────────────────────────
@@ -171,6 +175,7 @@ async function ensureJobsTable() {
   await query(`
     CREATE TABLE IF NOT EXISTS bulk_import_jobs (
       id SERIAL PRIMARY KEY,
+      tenant_id INT NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
       filename VARCHAR(255),
       source VARCHAR(50) DEFAULT 'reisift',
       status VARCHAR(20) DEFAULT 'running',
@@ -351,14 +356,14 @@ router.post('/start', requireAuth, upload.single('csvfile'), async (req, res) =>
     fs.writeFileSync(tmpPath, req.file.buffer);
 
     const jobRes = await query(
-      `INSERT INTO bulk_import_jobs (filename, source, status, total_rows) VALUES ($1, 'reisift', 'running', $2) RETURNING id`,
-      [req.file.originalname, totalRows]
+      `INSERT INTO bulk_import_jobs (tenant_id, filename, source, status, total_rows) VALUES ($1, $2, 'reisift', 'running', $3) RETURNING id`,
+      [req.tenantId, req.file.originalname, totalRows]
     );
     const jobId = jobRes.rows[0].id;
 
     res.json({ jobId, totalRows, message: 'Import started' });
 
-    setImmediate(() => processImport(jobId, tmpPath, req.file.originalname));
+    setImmediate(() => processImport(jobId, tmpPath, req.file.originalname, req.tenantId));
   } catch(e) {
     console.error('[bulk/start] error:', e.message);
     res.status(500).json({ error: e.message });
@@ -366,12 +371,23 @@ router.post('/start', requireAuth, upload.single('csvfile'), async (req, res) =>
 });
 
 // ── BACKGROUND PROCESSOR (UNNEST batches) ────────────────────────────────────
-async function processImport(jobId, csvPath, filename) {
+async function processImport(jobId, csvPath, filename, tenantId) {
   let rowsProcessed = 0, rowsCreated = 0, rowsUpdated = 0, rowsErrored = 0;
   const BATCH = 500;
   let batch = [];
 
-  await primeMarketCache();
+  // Phase 1 SaaS: tenantId is passed by the route handler. Fall back to the
+  // job row if missing — bulk_import_jobs.tenant_id is the canonical source.
+  if (!Number.isInteger(tenantId)) {
+    const tr = await query(`SELECT tenant_id FROM bulk_import_jobs WHERE id = $1`, [jobId]);
+    if (!tr.rows.length) {
+      console.error(`[bulk-import] job ${jobId} not found — aborting`);
+      return;
+    }
+    tenantId = tr.rows[0].tenant_id;
+  }
+
+  const marketCache = await primeMarketCache(tenantId);
 
   async function processBatch(raw) {
     // 1. Map rows; drop any with invalid state.
@@ -396,12 +412,12 @@ async function processImport(jobId, csvPath, filename) {
       .filter(s => !marketCache[s]);
     if (uniqueStates.length > 0) {
       const mr = await query(
-        `INSERT INTO markets (name, state_code, state_name)
-         SELECT code || ' Market', code, code
+        `INSERT INTO markets (tenant_id, name, state_code, state_name)
+         SELECT $2, code || ' Market', code, code
            FROM UNNEST($1::text[]) AS t(code)
          ON CONFLICT (state_code) DO UPDATE SET name = EXCLUDED.name
          RETURNING id, state_code`,
-        [uniqueStates]
+        [uniqueStates, tenantId]
       );
       for (const r of mr.rows) marketCache[r.state_code] = r.id;
     }
@@ -416,12 +432,13 @@ async function processImport(jobId, csvPath, filename) {
     // 4. Bulk UPSERT properties via UNNEST.
     const pr = await query(`
       INSERT INTO properties (
+        tenant_id,
         street, city, state_code, zip_code, county, market_id, source,
         vacant, bedrooms, bathrooms, sqft, year_built, lot_size,
         estimated_value, last_sale_price, last_sale_date,
         property_status, first_seen_at
       )
-      SELECT street, city, state_code, zip_code, county, market_id, source,
+      SELECT $18, street, city, state_code, zip_code, county, market_id, source,
              vacant, bedrooms, bathrooms, sqft, year_built, lot_size,
              estimated_value, last_sale_price, last_sale_date,
              property_status, NOW()
@@ -467,6 +484,7 @@ async function processImport(jobId, csvPath, filename) {
       deduped.map(m => m.property.last_sale_price),
       deduped.map(m => m.property.last_sale_date),
       deduped.map(m => m.property.property_status || null),
+      tenantId,
     ]);
 
     // Build property_id lookup
@@ -483,8 +501,8 @@ async function processImport(jobId, csvPath, filename) {
     if (propIds.length > 0) {
       const pcRes = await query(
         `SELECT property_id, contact_id FROM property_contacts
-          WHERE property_id = ANY($1::int[]) AND primary_contact = true`,
-        [propIds]
+          WHERE tenant_id = $2 AND property_id = ANY($1::int[]) AND primary_contact = true`,
+        [propIds, tenantId]
       );
       for (const r of pcRes.rows) existingPC.set(r.property_id, r.contact_id);
     }
@@ -550,32 +568,33 @@ async function processImport(jobId, csvPath, filename) {
           $6::text[], $7::text[], $8::text[], $9::text[]
         ) AS t(id, first_name, last_name, mailing_address, mailing_city,
                mailing_state, mailing_zip, email_1, email_2)
-        WHERE contacts.id = t.id
+        WHERE contacts.id = t.id AND contacts.tenant_id = $10
       `, [updateContactIds, updateFirsts, updateLasts, updateMaddr, updateMcity,
-          updateMstate, updateMzip, updateEmail1, updateEmail2]);
+          updateMstate, updateMzip, updateEmail1, updateEmail2, tenantId]);
     }
 
     // 7b. Bulk INSERT new contacts + link via property_contacts.
     if (newContactProps.length > 0) {
       const nr = await query(`
-        INSERT INTO contacts (first_name, last_name, mailing_address, mailing_city,
+        INSERT INTO contacts (tenant_id, first_name, last_name, mailing_address, mailing_city,
                               mailing_state, mailing_zip, email_1, email_2)
-        SELECT * FROM UNNEST(
+        SELECT $9, first_name, last_name, mailing_address, mailing_city,
+               mailing_state, mailing_zip, email_1, email_2 FROM UNNEST(
           $1::text[], $2::text[], $3::text[], $4::text[],
           $5::text[], $6::text[], $7::text[], $8::text[]
         ) AS t(first_name, last_name, mailing_address, mailing_city,
                mailing_state, mailing_zip, email_1, email_2)
         RETURNING id
       `, [newContactFirsts, newContactLasts, newContactMaddr, newContactMcity,
-          newContactMstate, newContactMzip, newContactEmail1, newContactEmail2]);
+          newContactMstate, newContactMzip, newContactEmail1, newContactEmail2, tenantId]);
       const newIds = nr.rows.map(r => r.id);
 
       await query(`
-        INSERT INTO property_contacts (property_id, contact_id, primary_contact)
-        SELECT property_id, contact_id, true
+        INSERT INTO property_contacts (tenant_id, property_id, contact_id, primary_contact)
+        SELECT $3, property_id, contact_id, true
           FROM UNNEST($1::int[], $2::int[]) AS t(property_id, contact_id)
         ON CONFLICT DO NOTHING
-      `, [newContactProps, newIds]);
+      `, [newContactProps, newIds, tenantId]);
 
       for (let i = 0; i < newContactProps.length; i++) {
         contactIdByProp.set(newContactProps[i], newIds[i]);
@@ -640,8 +659,8 @@ async function processImport(jobId, csvPath, filename) {
 
     if (phContactIds.length > 0) {
       await query(`
-        INSERT INTO phones (contact_id, phone_number, phone_index, phone_status, phone_tag)
-        SELECT * FROM UNNEST(
+        INSERT INTO phones (tenant_id, contact_id, phone_number, phone_index, phone_status, phone_tag)
+        SELECT $6, contact_id, phone_number, phone_index, phone_status, phone_tag FROM UNNEST(
           $1::int[], $2::text[], $3::int[], $4::text[], $5::text[]
         ) AS t(contact_id, phone_number, phone_index, phone_status, phone_tag)
         ON CONFLICT (contact_id, phone_number) DO UPDATE SET
@@ -650,7 +669,7 @@ async function processImport(jobId, csvPath, filename) {
                               ELSE phones.phone_status END,
           phone_tag    = COALESCE(NULLIF(EXCLUDED.phone_tag,''), phones.phone_tag),
           updated_at   = NOW()
-      `, [phContactIds, phNumbers, phIdx, phStatuses, phTags]);
+      `, [phContactIds, phNumbers, phIdx, phStatuses, phTags, tenantId]);
     }
 
     if (phoneDupesCollapsed > 0) {
@@ -727,7 +746,7 @@ async function processImport(jobId, csvPath, filename) {
 // ── STATUS: Poll job progress ─────────────────────────────────────────────────
 router.get('/status/:jobId', requireAuth, async (req, res) => {
   try {
-    const r = await query(`SELECT * FROM bulk_import_jobs WHERE id=$1`, [req.params.jobId]);
+    const r = await query(`SELECT * FROM bulk_import_jobs WHERE id=$1 AND tenant_id=$2`, [req.params.jobId, req.tenantId]);
     if (!r.rows.length) return res.status(404).json({ error: 'Job not found' });
     res.json(r.rows[0]);
   } catch(e) { res.status(500).json({ error: e.message }); }
@@ -737,7 +756,7 @@ router.get('/status/:jobId', requireAuth, async (req, res) => {
 router.get('/jobs', requireAuth, async (req, res) => {
   try {
     await ensureJobsTable();
-    const r = await query(`SELECT * FROM bulk_import_jobs ORDER BY started_at DESC LIMIT 10`);
+    const r = await query(`SELECT * FROM bulk_import_jobs WHERE tenant_id = $1 ORDER BY started_at DESC LIMIT 10`, [req.tenantId]);
     res.json(r.rows);
   } catch(e) { res.json([]); }
 });
