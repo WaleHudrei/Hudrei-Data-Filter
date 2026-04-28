@@ -1,19 +1,20 @@
 const { shell } = require('../shared-shell');
 
-// Step bar helper
+// Step bar helper — matches Ocular palette via --ocu-* tokens.
 function stepBar(steps, current) {
-  return `<div style="display:flex;align-items:center;gap:0;margin-bottom:1.5rem">
+  return `<div style="display:flex;align-items:center;gap:0;margin-bottom:20px;flex-wrap:wrap">
     ${steps.map((s, i) => {
       const n = i + 1;
       const active = n === current;
       const done = n < current;
-      const color = done ? '#1a7a4a' : active ? '#1a1a1a' : '#ccc';
-      const bg = done ? '#e8f5ee' : active ? '#1a1a1a' : '#f5f4f0';
-      const textColor = done ? '#1a7a4a' : active ? '#fff' : '#aaa';
+      const labelColor = done ? '#1a7a4a' : active ? 'var(--ocu-text-1)' : 'var(--ocu-text-3)';
+      const circleBg = done ? '#e8f5ee' : active ? 'var(--ocu-text-1)' : 'var(--ocu-surface)';
+      const circleText = done ? '#1a7a4a' : active ? '#fff' : 'var(--ocu-text-3)';
+      const circleBorder = done ? '#9bd0a8' : active ? 'var(--ocu-text-1)' : 'var(--ocu-border)';
       return `<div style="display:flex;align-items:center;gap:8px">
-        <div style="width:24px;height:24px;border-radius:50%;background:${bg};color:${textColor};font-size:12px;font-weight:600;display:flex;align-items:center;justify-content:center;flex-shrink:0">${done ? '✓' : n}</div>
-        <div style="font-size:13px;color:${color};font-weight:${active?'600':'400'}">${s}</div>
-        ${i < steps.length - 1 ? `<div style="width:32px;height:1px;background:#e0dfd8;margin:0 8px"></div>` : ''}
+        <div style="width:26px;height:26px;border-radius:50%;background:${circleBg};color:${circleText};border:1px solid ${circleBorder};font-size:12px;font-weight:600;display:flex;align-items:center;justify-content:center;flex-shrink:0">${done ? '✓' : n}</div>
+        <div style="font-size:13px;color:${labelColor};font-weight:${active?'600':'500'}">${s}</div>
+        ${i < steps.length - 1 ? `<div style="width:32px;height:1px;background:var(--ocu-border);margin:0 8px"></div>` : ''}
       </div>`;
     }).join('')}
   </div>`;
@@ -106,19 +107,23 @@ function uploadChoosePage() {
 // Step 1 Filter: Upload CSV
 function uploadFilterStep1Page(error) {
   return shell('Upload Call Log', `
-    <div style="margin-bottom:1rem"><a href="/upload" style="font-size:13px;color:#888;text-decoration:none">← Upload</a></div>
-    <h2 style="font-size:20px;font-weight:500;margin-bottom:4px">Upload Call Log</h2>
-    <p style="font-size:13px;color:#888;margin-bottom:1.5rem">Upload your Readymode call log export to filter and prepare for REISift</p>
+    <div class="ocu-page-header">
+      <div>
+        <div style="margin-bottom:6px"><a href="/ocular/upload" class="ocu-text-3" style="font-size:13px;text-decoration:none">← Upload</a></div>
+        <h1 class="ocu-page-title">Upload call log</h1>
+        <div class="ocu-page-subtitle">Upload your Readymode call log export to filter and prepare for REISift</div>
+      </div>
+    </div>
     ${stepBar(['Upload file','Map columns','Review & download'], 1)}
-    ${error ? `<div class="error-box">${error}</div>` : ''}
-    <div class="card">
-      <div class="drop-zone" id="drop-zone">
-        <svg width="32" height="32" fill="none" stroke="#aaa" stroke-width="1.5" viewBox="0 0 24 24" style="margin-bottom:10px"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
-        <div style="font-size:15px;font-weight:500;margin-bottom:4px">Drop Readymode CSV here or click to browse</div>
-        <div style="font-size:12px;color:#888">Call log export from Readymode dialer</div>
+    ${error ? `<div class="ocu-card" style="margin-bottom:14px;background:#fdeaea;border-color:#f5c5c5;color:#8b1f1f;padding:12px 16px;font-size:13px">${error}</div>` : ''}
+    <div class="ocu-card" style="padding:18px 20px">
+      <div id="drop-zone" style="border:1.5px dashed var(--ocu-border);border-radius:10px;padding:32px;text-align:center;cursor:pointer;background:var(--ocu-surface);transition:all .15s">
+        <svg width="32" height="32" fill="none" stroke="var(--ocu-text-3)" stroke-width="1.5" viewBox="0 0 24 24" style="margin-bottom:10px"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
+        <div style="font-size:15px;font-weight:600;margin-bottom:4px;color:var(--ocu-text-1)">Drop Readymode CSV here or click to browse</div>
+        <div class="ocu-text-3" style="font-size:12px">Call log export from Readymode dialer</div>
       </div>
       <input type="file" id="file-input" accept=".csv" style="display:none">
-      <div id="upload-spinner" style="display:none;align-items:center;gap:8px;font-size:13px;color:#888;padding:12px 0"><div class="spinner"></div> Reading file…</div>
+      <div id="upload-spinner" style="display:none;align-items:center;gap:8px;font-size:13px;color:var(--ocu-text-3);padding:12px 0"><div class="spinner"></div> Reading file…</div>
     </div>
     <script>
     function handleFile(file){
@@ -149,21 +154,25 @@ function uploadFilterStep1Page(error) {
 function uploadFilterStep2Page() {
   const targetFieldsJson = JSON.stringify(REISIFT_FILTER_FIELDS);
   return shell('Upload Call Log — Map Columns', `
-    <div style="margin-bottom:1rem"><a href="/upload/filter" style="font-size:13px;color:#888;text-decoration:none">← Back</a></div>
-    <h2 style="font-size:20px;font-weight:500;margin-bottom:4px">Map columns</h2>
-    <p style="font-size:13px;color:#888;margin-bottom:1.5rem">Match your file's columns to REISift's fields. We've auto-mapped where possible.</p>
+    <div class="ocu-page-header">
+      <div>
+        <div style="margin-bottom:6px"><a href="/upload/filter" class="ocu-text-3" style="font-size:13px;text-decoration:none">← Back</a></div>
+        <h1 class="ocu-page-title">Map columns</h1>
+        <div class="ocu-page-subtitle">Match your file's columns to REISift's fields. We've auto-mapped where possible.</div>
+      </div>
+    </div>
     ${stepBar(['Upload file','Map columns','Review & download'], 2)}
-    <div class="card">
-      <div style="display:grid;grid-template-columns:1fr 40px 1fr;gap:8px;padding-bottom:8px;margin-bottom:8px;border-bottom:1px solid #f0efe9">
-        <div style="font-size:11px;font-weight:600;color:#888;text-transform:uppercase;letter-spacing:.05em">Your column</div>
+    <div class="ocu-card" style="padding:18px 20px">
+      <div style="display:grid;grid-template-columns:1fr 40px 1fr;gap:8px;padding-bottom:8px;margin-bottom:8px;border-bottom:1px solid var(--ocu-border-soft, #f0efe9)">
+        <div class="ocu-text-3" style="font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.06em">Your column</div>
         <div></div>
-        <div style="font-size:11px;font-weight:600;color:#888;text-transform:uppercase;letter-spacing:.05em">REISift field</div>
+        <div class="ocu-text-3" style="font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.06em">REISift field</div>
       </div>
       <div id="map-rows"></div>
     </div>
-    <div style="display:flex;gap:8px;margin-top:1rem">
-      <button onclick="proceed()" style="padding:9px 20px;background:#1a1a1a;color:#fff;border:none;border-radius:8px;font-size:13px;font-weight:500;cursor:pointer;font-family:inherit">Continue to review →</button>
-      <button onclick="location.href='/upload/filter'" style="padding:9px 16px;background:#fff;color:#1a1a1a;border:1px solid #ddd;border-radius:8px;font-size:13px;cursor:pointer;font-family:inherit">Start over</button>
+    <div style="display:flex;gap:8px;margin-top:14px">
+      <button onclick="proceed()" class="ocu-btn ocu-btn-primary">Continue to review →</button>
+      <button onclick="location.href='/upload/filter'" class="ocu-btn ocu-btn-ghost">Start over</button>
     </div>
     <script>
     const TARGET_FIELDS = ${targetFieldsJson};
@@ -179,9 +188,9 @@ function uploadFilterStep2Page() {
         row.style.cssText = 'display:grid;grid-template-columns:1fr 40px 1fr;gap:8px;align-items:center;padding:8px 0;border-bottom:1px solid #f8f7f4';
         const opts = ['<option value="">— skip —</option>', ...srcCols.map(c=>\`<option value="\${c}" \${autoMaps[tf.key]===c?'selected':''}>\${c}</option>\`)].join('');
         row.innerHTML = \`
-          <div><select data-target="\${tf.key}" style="width:100%;padding:7px 10px;border:1px solid #ddd;border-radius:7px;font-size:13px;font-family:inherit">\${opts}</select></div>
-          <div style="text-align:center;color:#aaa;font-size:12px">→</div>
-          <div style="font-size:13px;color:#555">\${tf.label}\${tf.required?' <span style="color:#c0392b">*</span>':''}</div>\`;
+          <div><select data-target="\${tf.key}" class="ocu-input" style="padding:7px 10px;font-size:13px">\${opts}</select></div>
+          <div style="text-align:center;color:var(--ocu-text-3);font-size:12px">→</div>
+          <div style="font-size:13px;color:var(--ocu-text-1)">\${tf.label}\${tf.required?' <span style="color:#c0392b">*</span>':''}</div>\`;
         wrap.appendChild(row);
       });
     }
@@ -202,31 +211,35 @@ function uploadFilterStep2Page() {
 // Step 3 Filter: Review & download
 function uploadFilterStep3Page() {
   return shell('Upload Call Log — Review', `
-    <div style="margin-bottom:1rem"><a href="/upload/filter/map" style="font-size:13px;color:#888;text-decoration:none">← Back to mapping</a></div>
-    <h2 style="font-size:20px;font-weight:500;margin-bottom:4px">Review & download</h2>
-    <p style="font-size:13px;color:#888;margin-bottom:1.5rem">Check the results below then download your REISift-ready files.</p>
+    <div class="ocu-page-header">
+      <div>
+        <div style="margin-bottom:6px"><a href="/upload/filter/map" class="ocu-text-3" style="font-size:13px;text-decoration:none">← Back to mapping</a></div>
+        <h1 class="ocu-page-title">Review &amp; download</h1>
+        <div class="ocu-page-subtitle">Check the results below then download your REISift-ready files</div>
+      </div>
+    </div>
     ${stepBar(['Upload file','Map columns','Review & download'], 3)}
-    <div id="spinner-wrap" style="text-align:center;padding:3rem;color:#888"><div class="spinner" style="width:24px;height:24px;margin:0 auto 12px"></div><p>Processing filtration…</p></div>
+    <div id="spinner-wrap" style="text-align:center;padding:48px 24px;color:var(--ocu-text-3)"><div class="spinner" style="width:24px;height:24px;margin:0 auto 12px"></div><p>Processing filtration…</p></div>
     <div id="results-wrap" style="display:none">
-      <div id="stats-grid" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:10px;margin-bottom:1.25rem"></div>
-      <div id="list-chips" style="display:flex;flex-wrap:wrap;gap:8px;margin-bottom:1.25rem"></div>
-      <div class="card" style="padding:1rem 1.25rem">
+      <div id="stats-grid" class="ocu-kpi-row" style="grid-template-columns:repeat(auto-fit,minmax(140px,1fr));margin-bottom:14px"></div>
+      <div id="list-chips" style="display:flex;flex-wrap:wrap;gap:8px;margin-bottom:18px"></div>
+      <div class="ocu-card" style="padding:18px 20px">
         <div class="tabs">
           <button class="tab active" data-tab="filtered">Filtered → REISift</button>
           <button class="tab" data-tab="clean">Clean → Readymode</button>
         </div>
         <div id="tab-filtered" class="tab-panel active">
-          <p style="font-size:12px;color:#888;background:#f5f4f0;border-radius:8px;padding:8px 12px;margin-bottom:10px">Mapped to your REISift field names — upload this file directly to REISift.</p>
-          <div class="tbl-wrap"><table><thead><tr id="rem-head"></tr></thead><tbody id="rem-body"></tbody></table></div>
+          <div class="ocu-text-3" style="font-size:12px;background:var(--ocu-surface);border-radius:8px;padding:10px 14px;margin-bottom:10px">Mapped to your REISift field names — upload this file directly to REISift.</div>
+          <div class="tbl-wrap"><table class="data-table"><thead><tr id="rem-head"></tr></thead><tbody id="rem-body"></tbody></table></div>
         </div>
         <div id="tab-clean" class="tab-panel">
-          <p style="font-size:12px;color:#888;background:#f5f4f0;border-radius:8px;padding:8px 12px;margin-bottom:10px">Records that passed all filters — re-upload to Readymode.</p>
-          <div class="tbl-wrap"><table><thead><tr id="cln-head"></tr></thead><tbody id="cln-body"></tbody></table></div>
+          <div class="ocu-text-3" style="font-size:12px;background:var(--ocu-surface);border-radius:8px;padding:10px 14px;margin-bottom:10px">Records that passed all filters — re-upload to Readymode.</div>
+          <div class="tbl-wrap"><table class="data-table"><thead><tr id="cln-head"></tr></thead><tbody id="cln-body"></tbody></table></div>
         </div>
-        <div style="display:flex;gap:8px;margin-top:1rem;flex-wrap:wrap">
-          <button id="dl-filtered" style="padding:8px 16px;background:#1a1a1a;color:#fff;border:none;border-radius:8px;font-size:13px;font-weight:500;cursor:pointer;font-family:inherit">Download filtered (REISift)</button>
-          <button id="dl-clean" style="padding:8px 16px;background:#fff;color:#1a1a1a;border:1px solid #ddd;border-radius:8px;font-size:13px;cursor:pointer;font-family:inherit">Download clean (Readymode)</button>
-          <a href="/upload/filter" style="padding:8px 16px;background:#fff;color:#1a1a1a;border:1px solid #ddd;border-radius:8px;font-size:13px;text-decoration:none;display:inline-flex;align-items:center">Filter another list</a>
+        <div style="display:flex;gap:8px;margin-top:14px;flex-wrap:wrap">
+          <button id="dl-filtered" class="ocu-btn ocu-btn-primary">Download filtered (REISift)</button>
+          <button id="dl-clean" class="ocu-btn ocu-btn-secondary">Download clean (Readymode)</button>
+          <a href="/upload/filter" class="ocu-btn ocu-btn-ghost">Filter another list</a>
         </div>
       </div>
     </div>
@@ -242,15 +255,16 @@ function uploadFilterStep3Page() {
       document.getElementById('spinner-wrap').style.display='none';
       document.getElementById('results-wrap').style.display='block';
       const s=result.stats;
-      document.getElementById('stats-grid').innerHTML=\`
-        <div class="stat-card"><div class="stat-lbl">Total records</div><div class="stat-num">\${s.total}</div></div>
-        <div class="stat-card"><div class="stat-lbl">Kept</div><div class="stat-num green">\${s.kept}</div></div>
-        <div class="stat-card"><div class="stat-lbl">Filtered out</div><div class="stat-num red">\${s.filtered}</div></div>
-        <div class="stat-card"><div class="stat-lbl">Lists detected</div><div class="stat-num">\${s.lists}</div></div>
-        <div class="stat-card"><div class="stat-lbl">Caught by memory</div><div class="stat-num blue">\${s.memCaught}</div></div>\`;
+      const card = (lbl,val,color) => '<div class="ocu-kpi"><div class="ocu-kpi-label">'+lbl+'</div><div class="ocu-kpi-value"'+(color?' style="color:'+color+'"':'')+'>'+val+'</div></div>';
+      document.getElementById('stats-grid').innerHTML =
+        card('Total records', s.total) +
+        card('Kept', s.kept, '#1a7a4a') +
+        card('Filtered out', s.filtered, '#c0392b') +
+        card('Lists detected', s.lists) +
+        card('Caught by memory', s.memCaught, '#2471a3');
       const chips=document.getElementById('list-chips');
       Object.entries(result.listsSeen||{}).forEach(([name,v])=>{
-        chips.innerHTML+=\`<div style="background:#fff;border:1px solid #e0dfd8;border-radius:8px;padding:8px 12px;font-size:12px"><div style="font-weight:500;margin-bottom:3px">\${name}</div><div style="display:flex;gap:12px"><span style="color:#1a7a4a">Kept: \${v.keep}</span><span style="color:#c0392b">Filtered: \${v.rem}</span></div></div>\`;
+        chips.innerHTML+=\`<div class="ocu-card" style="padding:8px 12px;font-size:12px;margin:0"><div style="font-weight:600;margin-bottom:3px;color:var(--ocu-text-1)">\${name}</div><div style="display:flex;gap:12px"><span style="color:#1a7a4a">Kept: \${v.keep}</span><span style="color:#c0392b">Filtered: \${v.rem}</span></div></div>\`;
       });
       renderTable('rem-head','rem-body',filteredMapped.slice(0,50),Object.keys(filteredMapped[0]||{}));
       renderTable('cln-head','cln-body',cleanRows.slice(0,50),Object.keys(cleanRows[0]||{}));
