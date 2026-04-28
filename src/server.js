@@ -1558,24 +1558,21 @@ app.post('/campaigns/:id/count', requireAuth, async (req, res) => {
 });
 
 // List all campaigns
-app.get('/campaigns', requireAuth, async (req, res) => {
-  try {
-    await campaigns.initCampaignSchema();
-    const list = await campaigns.getCampaigns(req.tenantId);
-    // Enrich each campaign with contact_counts so we can show Total Contacts, Callable Contacts, LGR
-    for (const c of list) {
-      try { c.contact_counts = await campaigns.getContactStats(c.id); }
-      catch(e) { c.contact_counts = { total_contacts: 0, total_phones: 0, wrong_phones: 0, nis_phones: 0, lead_contacts: 0 }; }
-    }
-    res.send(campaignsPage(list, req.query.tab||'active'));
-  } catch (e) { res.status(500).send('Error: ' + e.message); }
+// /campaigns redirects to the Ocular list — Ocular's version is the
+// canonical campaigns surface now. The old campaignsPage() renderer
+// still exists below for any legacy linkers.
+app.get('/campaigns', requireAuth, (req, res) => {
+  const tab = req.query.tab ? '?tab=' + encodeURIComponent(req.query.tab) : '';
+  res.redirect('/ocular/campaigns' + tab);
 });
 
 // New campaign form
 app.get('/campaigns/new', requireAuth, async (req, res) => {
+  const { getUser } = require('./get-user');
   await campaigns.initCampaignSchema();
   const listTypes = await campaigns.getListTypes(req.tenantId);
-  res.send(newCampaignPage(null, listTypes));
+  const user = await getUser(req);
+  res.send(newCampaignPage(req.query.error || null, listTypes, user));
 });
 
 // Create campaign
@@ -2119,67 +2116,82 @@ function campaignsPage(list, tab) {
   `, 'campaigns');
 }
 
-function newCampaignPage(error, listTypes) {
+function newCampaignPage(error, listTypes, user) {
   const LIST_TYPES = listTypes && listTypes.length ? listTypes : ['Vacant Property','Pre-Foreclosure','Active Liens','2+ Mortgages','Absentee Owner','Tax Delinquent','Probate','Code Violation','Pre-Probate','Other'];
   const STATES = ['IN','GA','TX','FL','OH','MI','IL','NC','TN','MO','AZ','CO','NV','PA','NY','Other'];
   return shell('New Campaign', `
-    <div style="max-width:520px">
-      <div style="margin-bottom:1.5rem"><a href="/campaigns" style="font-size:13px;color:#888;text-decoration:none">← Campaigns</a></div>
-      <h2 style="font-size:20px;font-weight:500;margin-bottom:4px">New campaign</h2>
-      <p style="font-size:13px;color:#888;margin-bottom:1.5rem">Create a campaign to start tracking filtration activity</p>
-      ${error ? `<div class="error-box">${error}</div>` : ''}
-      <div class="card">
-        <form method="POST" action="/campaigns/new">
-          <div class="form-field">
-            <label>Campaign name</label>
-            <input type="text" name="name" placeholder="e.g. Vacant Property Indiana 2026" required>
-            <span class="field-hint">Use a clear name — this is what you'll select when uploading filtration files</span>
-          </div>
-          <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
-            <div class="form-field">
-              <label>List type</label>
-              <select name="list_type" id="list_type_select" onchange="document.getElementById('custom_lt_wrap').style.display=this.value==='__new__'?'block':'none';document.getElementById('custom_lt_input').required=this.value==='__new__'">
-                <option value="">Select...</option>
-                ${LIST_TYPES.map(t=>`<option value="${t}">${t}</option>`).join('')}
-                <option value="__new__">+ Add new list type…</option>
-              </select>
-              <div id="custom_lt_wrap" style="display:none;margin-top:8px">
-                <input type="text" id="custom_lt_input" name="custom_list_type" placeholder="Enter new list type" maxlength="100">
-                <span class="field-hint">Saved for future campaigns</span>
-              </div>
+    <div class="ocu-page-header">
+      <div>
+        <div style="margin-bottom:6px"><a href="/ocular/campaigns" class="ocu-text-3" style="font-size:13px;text-decoration:none">← Campaigns</a></div>
+        <h1 class="ocu-page-title">New campaign</h1>
+        <div class="ocu-page-subtitle">Create a campaign to start tracking filtration activity</div>
+      </div>
+    </div>
+
+    ${error ? `<div class="ocu-card" style="margin-bottom:16px;background:#fdeaea;border-color:#f5c5c5;color:#8b1f1f;padding:12px 16px;font-size:13px;max-width:580px">${error}</div>` : ''}
+
+    <div class="ocu-card" style="max-width:580px;padding:22px 24px">
+      <form method="POST" action="/campaigns/new">
+        <div style="margin-bottom:14px">
+          <label class="ocu-form-label">Campaign name</label>
+          <input type="text" name="name" placeholder="e.g. Vacant Property Indiana 2026" required class="ocu-input" />
+          <div class="ocu-text-3" style="font-size:11px;margin-top:4px">This is what you'll select when uploading filtration files.</div>
+        </div>
+
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:14px">
+          <div>
+            <label class="ocu-form-label">List type</label>
+            <select name="list_type" id="list_type_select" class="ocu-input"
+                    onchange="document.getElementById('custom_lt_wrap').style.display=this.value==='__new__'?'block':'none';document.getElementById('custom_lt_input').required=this.value==='__new__'">
+              <option value="">Select…</option>
+              ${LIST_TYPES.map(t=>`<option value="${t}">${t}</option>`).join('')}
+              <option value="__new__">+ Add new list type…</option>
+            </select>
+            <div id="custom_lt_wrap" style="display:none;margin-top:8px">
+              <input type="text" id="custom_lt_input" name="custom_list_type" placeholder="Enter new list type" maxlength="100" class="ocu-input" />
+              <div class="ocu-text-3" style="font-size:11px;margin-top:4px">Saved for future campaigns.</div>
             </div>
-            <div class="form-field">
-              <label>State</label>
-              <select name="state_code" required>
-                <option value="">Select...</option>
-                ${STATES.map(s=>`<option value="${s}">${s}</option>`).join('')}
-              </select>
-            </div>
           </div>
-          <div class="form-field">
-            <label>Market name</label>
-            <input type="text" name="market_name" placeholder="e.g. Indianapolis Metro" required>
+          <div>
+            <label class="ocu-form-label">State</label>
+            <select name="state_code" required class="ocu-input">
+              <option value="">Select…</option>
+              ${STATES.map(s=>`<option value="${s}">${s}</option>`).join('')}
+            </select>
           </div>
-          <div class="form-field">
-            <label>Start date</label>
-            <input type="date" name="start_date" value="${new Date().toISOString().split('T')[0]}">
+        </div>
+
+        <div style="margin-bottom:14px">
+          <label class="ocu-form-label">Market name</label>
+          <input type="text" name="market_name" placeholder="e.g. Indianapolis Metro" required class="ocu-input" />
+        </div>
+
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:14px">
+          <div>
+            <label class="ocu-form-label">Start date</label>
+            <input type="date" name="start_date" value="${new Date().toISOString().split('T')[0]}" class="ocu-input" />
           </div>
-          <div class="form-field">
-            <label>Active channel</label>
-            <select name="active_channel">
-              <option value="cold_call">Cold Call</option>
+          <div>
+            <label class="ocu-form-label">Active channel</label>
+            <select name="active_channel" class="ocu-input">
+              <option value="cold_call">Cold call</option>
               <option value="sms">SMS</option>
             </select>
           </div>
-          <div class="form-field">
-            <label>Notes (optional)</label>
-            <textarea name="notes" rows="2" placeholder="Any notes about this campaign..."></textarea>
-          </div>
-          <button type="submit" class="btn-submit">Create campaign</button>
-        </form>
-      </div>
+        </div>
+
+        <div style="margin-bottom:18px">
+          <label class="ocu-form-label">Notes <span class="ocu-text-3" style="font-weight:400">(optional)</span></label>
+          <textarea name="notes" rows="2" placeholder="Any notes about this campaign…" class="ocu-textarea"></textarea>
+        </div>
+
+        <div style="display:flex;gap:8px;justify-content:flex-end">
+          <a href="/ocular/campaigns" class="ocu-btn ocu-btn-ghost">Cancel</a>
+          <button type="submit" class="ocu-btn ocu-btn-primary">Create campaign</button>
+        </div>
+      </form>
     </div>
-  `);
+  `, 'campaigns', user);
 }
 
 function nisPage(stats, msg, user) {
