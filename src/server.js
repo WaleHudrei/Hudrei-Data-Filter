@@ -1745,14 +1745,18 @@ app.post('/campaigns/:id/sms/upload', requireAuth, upload.single('smsfile'), asy
 
 // NIS upload page
 app.get('/nis', requireAuth, async (req, res) => {
+  const { getUser } = require('./get-user');
   await campaigns.initCampaignSchema();
   const stats = await campaigns.getNisStats(req.tenantId);
-  res.send(nisPage(stats, req.query.msg));
+  const user = await getUser(req);
+  res.send(nisPage(stats, req.query.msg, user));
 });
 
 // Changelog page
-app.get('/changelog', requireAuth, (req, res) => {
-  res.send(changelogPage());
+app.get('/changelog', requireAuth, async (req, res) => {
+  const { getUser } = require('./get-user');
+  const user = await getUser(req);
+  res.send(changelogPage(user));
 });
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -2178,46 +2182,62 @@ function newCampaignPage(error, listTypes) {
   `);
 }
 
-function nisPage(stats, msg) {
-  const lastUpload = stats.last_upload ? new Date(stats.last_upload).toLocaleString() : 'Never';
+function nisPage(stats, msg, user) {
+  const fmtNum = (n) => Number(n || 0).toLocaleString('en-US');
+  const lastUpload = stats.last_upload
+    ? new Date(stats.last_upload).toLocaleString('en-US', {
+        year:'numeric', month:'short', day:'numeric', hour:'numeric', minute:'2-digit',
+      })
+    : 'Never';
+
   return shell('NIS Numbers', `
-    <div style="max-width:720px">
-      <h2 style="font-size:20px;font-weight:500;margin-bottom:4px">NIS Numbers</h2>
-      <p style="font-size:13px;color:#888;margin-bottom:1.5rem">Upload Readymode Detailed NIS exports to flag dead numbers across all campaigns. Flagged numbers are excluded from future clean exports.</p>
-
-      ${msg ? `<div style="background:#eaf6ea;border:1px solid #b8e0b8;color:#1a5f1a;padding:12px 16px;border-radius:8px;margin-bottom:1rem;font-size:13px">${msg}</div>` : ''}
-
-      <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin-bottom:1.5rem">
-        <div class="stat-card">
-          <div class="stat-lbl">Total NIS numbers</div>
-          <div class="stat-num">${Number(stats.total_nis||0).toLocaleString()}</div>
-          <div style="font-size:11px;color:#888;margin-top:2px">In database</div>
-        </div>
-        <div class="stat-card">
-          <div class="stat-lbl">Flagged phones</div>
-          <div class="stat-num" style="color:#c0392b">${Number(stats.total_flagged||0).toLocaleString()}</div>
-          <div style="font-size:11px;color:#888;margin-top:2px">Across all campaigns</div>
-        </div>
-        <div class="stat-card">
-          <div class="stat-lbl">Last upload</div>
-          <div class="stat-num" style="font-size:14px">${lastUpload}</div>
-        </div>
-      </div>
-
-      <div class="card">
-        <div style="font-size:14px;font-weight:500;margin-bottom:8px">Upload NIS file</div>
-        <p style="font-size:12px;color:#888;margin-bottom:12px">Drop a Readymode Detailed NIS CSV export. The file must have a "dialed" column with phone numbers and a "day" column with the NIS date.</p>
-        <form method="POST" action="/nis/upload" enctype="multipart/form-data">
-          <input type="file" name="nisfile" accept=".csv" required style="margin-bottom:12px;display:block;font-size:13px">
-          <button type="submit" class="btn-submit">Upload and flag</button>
-        </form>
+    <div class="ocu-page-header">
+      <div>
+        <h1 class="ocu-page-title">NIS Numbers</h1>
+        <div class="ocu-page-subtitle">Upload Readymode Detailed NIS exports to flag dead numbers across every active campaign</div>
       </div>
     </div>
-  `, 'nis');
+
+    ${msg ? `<div class="ocu-card" style="margin-bottom:16px;background:#e8f5ee;border-color:#9bd0a8;color:#1a5f1a;padding:12px 16px;font-size:13px">${msg}</div>` : ''}
+
+    <div class="ocu-kpi-row" style="grid-template-columns:repeat(auto-fit,minmax(180px,1fr));margin-bottom:18px">
+      <div class="ocu-kpi featured">
+        <div class="ocu-kpi-label">Total NIS numbers</div>
+        <div class="ocu-kpi-value">${fmtNum(stats.total_nis)}</div>
+        <div class="ocu-kpi-delta">In database</div>
+      </div>
+      <div class="ocu-kpi">
+        <div class="ocu-kpi-label">Flagged phones</div>
+        <div class="ocu-kpi-value burning">${fmtNum(stats.total_flagged)}</div>
+        <div class="ocu-kpi-delta">Across all campaigns</div>
+      </div>
+      <div class="ocu-kpi">
+        <div class="ocu-kpi-label">Last upload</div>
+        <div class="ocu-kpi-value" style="font-size:15px;font-weight:500">${lastUpload}</div>
+      </div>
+    </div>
+
+    <div class="ocu-card" style="max-width:680px;padding:20px 22px">
+      <div style="font-size:15px;font-weight:600;margin-bottom:8px;color:var(--ocu-text-1)">Upload NIS file</div>
+      <div style="font-size:13px;color:var(--ocu-text-2);margin-bottom:16px;line-height:1.5">
+        Drop a Readymode Detailed NIS CSV. The file must have a
+        <code style="background:var(--ocu-surface);padding:1px 6px;border-radius:4px;font-size:12px;font-family:'JetBrains Mono',ui-monospace,monospace">dialed</code>
+        column with phone numbers and a
+        <code style="background:var(--ocu-surface);padding:1px 6px;border-radius:4px;font-size:12px;font-family:'JetBrains Mono',ui-monospace,monospace">day</code>
+        column with the NIS date.
+      </div>
+      <form method="POST" action="/nis/upload" enctype="multipart/form-data" style="display:flex;flex-direction:column;gap:12px">
+        <input type="file" name="nisfile" accept=".csv" required class="ocu-input" style="padding:8px 10px" />
+        <div style="display:flex;justify-content:flex-end">
+          <button type="submit" class="ocu-btn ocu-btn-primary">Upload and flag</button>
+        </div>
+      </form>
+    </div>
+  `, 'nis', user);
 }
 
-function changelogPage() {
-  return shell('Changelog', changelogModule.renderChangelog(), 'changelog');
+function changelogPage(user) {
+  return shell('Changelog', changelogModule.renderChangelog(), 'changelog', user);
 }
 
 

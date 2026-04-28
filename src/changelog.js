@@ -453,28 +453,30 @@ const TAG_COLORS = {
 };
 
 function renderChangelog() {
-  const html = ENTRIES.map(e => `
-    <div class="card" style="margin-bottom:1.5rem">
-      <div style="border-bottom:1px solid #f0efe9;padding-bottom:10px;margin-bottom:14px">
-        <div style="font-size:12px;color:#888;text-transform:uppercase;letter-spacing:0.5px">${e.date}</div>
-        <div style="font-size:16px;font-weight:500;margin-top:2px">${e.title}</div>
+  const entriesHTML = ENTRIES.map(e => `
+    <div class="ocu-card" style="margin-bottom:14px;padding:18px 20px">
+      <div style="border-bottom:1px solid var(--ocu-border-soft, #f0efe9);padding-bottom:10px;margin-bottom:12px">
+        <div style="font-size:11px;color:var(--ocu-text-3);text-transform:uppercase;letter-spacing:.06em;font-weight:600">${e.date}</div>
+        <div style="font-size:15px;font-weight:600;margin-top:4px;color:var(--ocu-text-1)">${e.title}</div>
       </div>
       ${e.items.map(i => {
         const c = TAG_COLORS[i.tag] || { bg: '#f0efe9', color: '#888' };
-        return `<div style="display:flex;gap:10px;align-items:flex-start;padding:8px 0">
-          <span style="background:${c.bg};color:${c.color};font-size:10px;text-transform:uppercase;font-weight:500;padding:3px 8px;border-radius:4px;flex-shrink:0;margin-top:2px;min-width:70px;text-align:center">${i.tag}</span>
-          <span style="font-size:13px;line-height:1.5;color:#333">${i.text}</span>
+        return `<div style="display:flex;gap:10px;align-items:flex-start;padding:6px 0">
+          <span style="background:${c.bg};color:${c.color};font-size:10px;text-transform:uppercase;font-weight:600;padding:3px 8px;border-radius:4px;flex-shrink:0;margin-top:2px;min-width:64px;text-align:center;letter-spacing:.04em">${i.tag}</span>
+          <span style="font-size:13px;line-height:1.55;color:var(--ocu-text-1)">${i.text}</span>
         </div>`;
       }).join('')}
     </div>
   `).join('');
 
   return `
-    <div style="max-width:760px">
-      <h2 style="font-size:20px;font-weight:500;margin-bottom:4px">Changelog</h2>
-      <p style="font-size:13px;color:#888;margin-bottom:1.5rem">Track what's new and what's been fixed in Loki.</p>
-      ${html}
+    <div class="ocu-page-header">
+      <div>
+        <h1 class="ocu-page-title">Changelog</h1>
+        <div class="ocu-page-subtitle">Track what's new and what's been fixed</div>
+      </div>
     </div>
+    <div style="max-width:780px">${entriesHTML}</div>
   `;
 }
 
