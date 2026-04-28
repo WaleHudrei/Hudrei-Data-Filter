@@ -120,6 +120,24 @@ async function sendPasswordResetEmail(to, name, token) {
   return send({ to, subject: 'Reset your Ocular password', htmlBody: html, textBody: text });
 }
 
+// 2026-04-28 audit fix S-9: sent on /signup attempts when an account with
+// the given email already exists. This lets POST /signup return the same
+// "check your email" page in both branches (existing vs. new), removing the
+// previous enumeration oracle ("An account with that email already exists").
+async function sendSignupExistingAccountEmail(to, name) {
+  const html = wrap('You already have an Ocular account',
+    `<p>Hi ${name || 'there'},</p>
+     <p>Someone (probably you) just tried to sign up at Ocular with this email address — but you already have an account.</p>
+     <p style="margin:24px 0">
+       <a href="${baseUrl()}/login" style="display:inline-block;background:#1a1a1a;color:#fff;text-decoration:none;padding:12px 24px;border-radius:8px;font-weight:600">Sign in</a>
+     </p>
+     <p style="font-size:13px;color:#666">Forgot your password? <a href="${baseUrl()}/forgot-password">Reset it here.</a></p>
+     <p style="font-size:13px;color:#666">If you didn't try to sign up, you can safely ignore this email.</p>`
+  );
+  const text = `Hi ${name || 'there'},\n\nSomeone tried to sign up at Ocular with your email, but you already have an account. Sign in at ${baseUrl()}/login or reset your password at ${baseUrl()}/forgot-password.`;
+  return send({ to, subject: 'You already have an Ocular account', htmlBody: html, textBody: text });
+}
+
 async function sendPasswordChangedEmail(to, name) {
   const html = wrap('Your password was changed',
     `<p>Hi ${name || 'there'},</p>
@@ -136,5 +154,6 @@ module.exports = {
   sendVerifyEmail,
   sendPasswordResetEmail,
   sendPasswordChangedEmail,
+  sendSignupExistingAccountEmail,
   baseUrl,
 };
