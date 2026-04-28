@@ -145,6 +145,7 @@ app.use('/upload', uploadRoutes);
 
 // Phase 2 — public auth routes (signup + verify-email; login replacement
 // arrives in 2c). Mounted at root so /signup, /verify-email work directly.
+const authRoutes = require('./auth-routes');
 app.use('/', authRoutes);
 
 function requireAuth(req, res, next) {
@@ -170,10 +171,6 @@ const ownersRoutes = require('./owners/owners-routes');
 const listTypesRoutes = require('./lists/list-types-routes');
 const ocularRoutes = require('./ui/ocular-routes');
 
-// Phase 2: public auth routes (signup, verify-email, password reset).
-// Mounted BEFORE any requireAuth-gated middleware so unauthenticated visitors
-// can reach them.
-const authRoutes = require('./auth-routes');
 
 const COL = { phone:'Phone', dispo:'Log Type', listname:'Original lead file', date:'Log Time', fname:'First Name', lname:'Last Name', addr:'Address', city:'City', state:'State', zip:'Zip Code', notes:'Call Notes' };
 
