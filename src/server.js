@@ -1615,10 +1615,12 @@ app.post('/campaigns/:id/new-round', requireAuth, async (req, res) => {
 // Campaign detail
 app.get('/campaigns/:id', requireAuth, async (req, res) => {
   try {
+    const { getUser } = require('./get-user');
     const c = await campaigns.getCampaign(req.tenantId, req.params.id);
-    if (!c) return res.redirect('/campaigns');
+    if (!c) return res.redirect('/ocular/campaigns');
     c.contact_counts = await campaigns.getContactStats(req.params.id);
-    res.send(campaignDetailPage(c, { msg: req.query.msg || '', err: req.query.err || '' }));
+    const user = await getUser(req);
+    res.send(campaignDetailPage(c, { msg: req.query.msg || '', err: req.query.err || '' }, user));
   } catch (e) { res.status(500).send('Error: ' + e.message); }
 });
 
@@ -2253,26 +2255,22 @@ function changelogPage(user) {
 }
 
 
-function campaignDetailPage(c, flash) {
+function campaignDetailPage(c, flash, user) {
   flash = flash || {};
-  // Escape so the campaign name can safely flow into an HTML attribute on
-  // the rename modal's <input value="..."> and into visible text.
   const escAttr = (s) => String(s == null ? '' : s)
     .replace(/&/g, '&amp;').replace(/"/g, '&quot;')
     .replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/'/g, '&#39;');
+  const fmtNum = (v) => Number(v || 0).toLocaleString('en-US');
   const n = c.total_unique_numbers || 0;
   const manualCount = parseInt(c.manual_count) || 0;
-  const rmCount = manualCount > 0 ? manualCount : n;
   const connected = c.total_connected || 0;
   const totalPhones = parseInt(c.contact_counts?.total_phones||0);
   const callablePhones = totalPhones - parseInt(c.contact_counts?.wrong_phones||0) - parseInt(c.contact_counts?.filtered_phones||0) - parseInt(c.contact_counts?.nis_phones||0);
   const health = totalPhones > 0 ? ((callablePhones / totalPhones) * 100).toFixed(1) : '0.0';
-  const callable_pct_old = n > 0 ? Math.round((c.total_callable / n) * 100) : 0;
   const totalContacts = parseInt(c.contact_counts?.total_contacts||0);
   const leadContacts = parseInt(c.contact_counts?.lead_contacts||0);
   const wrongNums = parseInt(c.total_wrong_numbers||0);
   const nisPhones = parseInt(c.contact_counts?.nis_phones||0);
-  // Callable pool: master list phones minus filtered-out phones AND minus NIS phones
   const filteredOutCount = parseInt(c.total_filtered||0) + wrongNums;
   const masterCallable = Math.max(0, totalPhones - filteredOutCount - nisPhones);
   const callable_pct = totalPhones > 0 ? Math.round((masterCallable / totalPhones) * 100) : 0;
@@ -2284,306 +2282,275 @@ function campaignDetailPage(c, flash) {
   const lgr   = connected > 0 ? (((c.total_transfers||0) / connected) * 100).toFixed(2) : '0.00';
   const lcv   = totalContacts > 0 ? ((leadContacts / totalContacts) * 100).toFixed(2) : '0.00';
 
+  const statusPillCls = c.status === 'completed' ? 'ocu-pill ocu-pill-primary'
+                      : c.status === 'paused'    ? 'ocu-pill ocu-pill-warn'
+                      : 'ocu-pill ocu-pill-good';
+
+  const kpi = (label, value, sub, valueColor) => `
+    <div class="ocu-kpi">
+      <div class="ocu-kpi-label">${label}</div>
+      <div class="ocu-kpi-value"${valueColor ? ` style="color:${valueColor}"` : ''}>${value}</div>
+      ${sub ? `<div class="ocu-kpi-delta">${sub}</div>` : ''}
+    </div>`;
+
+  const ratioCard = (label, value, hint, color) => `
+    <div class="ocu-card" style="text-align:center;padding:14px 10px">
+      <div style="font-size:22px;font-weight:600;color:${color}">${value}%</div>
+      <div style="font-size:11px;color:var(--ocu-text-2);margin-top:4px;font-weight:600">${label}</div>
+      <div style="font-size:10px;color:var(--ocu-text-3);margin-top:2px">${hint}</div>
+    </div>`;
+
   const uploadRows = (c.uploads||[]).map(u => `
     <tr>
-      <td style="font-size:11px;color:#888">${new Date(u.uploaded_at).toLocaleDateString()} ${new Date(u.uploaded_at).toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'})}</td>
-      <td>${u.filename||'—'}<br><span style="font-size:11px;color:#888">${u.source_list_name||''}</span></td>
-      <td><span class="badge" style="background:#e6f1fb;color:#185fa5">${CHANNEL_LABELS[u.channel]||u.channel}</span></td>
-      <td>${u.total_records}</td>
-      <td style="color:#1a7a4a">${u.records_kept}</td>
-      <td style="color:#c0392b">${u.records_filtered}</td>
-      <td style="color:#888;font-size:11px">WN:${u.wrong_numbers} VM:${u.voicemails} NI:${u.not_interested} DNC:${u.do_not_call} Lead:${u.transfers}</td>
-      <td style="color:#2471a3;font-size:11px">${u.caught_by_memory} by memory</td>
-      <td>
+      <td class="ocu-text-3 ocu-mono" style="font-size:11px;white-space:nowrap">${new Date(u.uploaded_at).toLocaleDateString('en-US',{month:'short',day:'numeric'})} ${new Date(u.uploaded_at).toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'})}</td>
+      <td>${u.filename||'—'}${u.source_list_name ? `<div class="ocu-text-3" style="font-size:11px;margin-top:2px">${u.source_list_name}</div>` : ''}</td>
+      <td><span class="ocu-pill" data-channel="${u.channel||''}">${CHANNEL_LABELS[u.channel]||u.channel}</span></td>
+      <td class="ocu-text-right ocu-mono">${fmtNum(u.total_records)}</td>
+      <td class="ocu-text-right ocu-mono" style="color:#1a7a4a">+${fmtNum(u.records_kept)}</td>
+      <td class="ocu-text-right ocu-mono" style="color:#c0392b">${fmtNum(u.records_filtered)}</td>
+      <td class="ocu-text-3" style="font-size:11px">WN:${u.wrong_numbers} VM:${u.voicemails} NI:${u.not_interested} DNC:${u.do_not_call} Lead:${u.transfers}</td>
+      <td class="ocu-mono" style="color:#2471a3;font-size:11px">${u.caught_by_memory} by memory</td>
+      <td class="ocu-text-right">
         <form method="POST" action="/campaigns/${c.id}/uploads/${u.id}/delete" onsubmit="return confirm('Remove this upload from the campaign? This will reverse its counts from memory.')">
-          <button type="submit" style="background:none;border:none;color:#c0392b;font-size:11px;cursor:pointer;text-decoration:underline;font-family:inherit;padding:0">Remove</button>
+          <button type="submit" class="ocu-btn ocu-btn-ghost" style="color:#c0392b;font-size:11px;padding:4px 8px">Remove</button>
         </form>
       </td>
     </tr>`).join('');
 
   const dispositionRows = (c.disposition_breakdown||[]).map(d => `
-    <tr><td>${d.disposition||'unknown'}</td><td style="font-weight:500">${Number(d.count).toLocaleString()}</td></tr>`).join('');
+    <tr><td>${d.disposition||'unknown'}</td><td class="ocu-text-right ocu-mono" style="font-weight:600">${fmtNum(d.count)}</td></tr>`).join('');
 
   return shell(c.name, `
-    <div style="margin-bottom:1rem"><a href="/campaigns" style="font-size:13px;color:#888;text-decoration:none">← Campaigns</a></div>
-    ${flash.err ? `<div class="alert alert-error" style="margin-bottom:1rem">${escAttr(flash.err)}</div>` : ''}
-    ${flash.msg ? `<div class="alert alert-success" style="margin-bottom:1rem">${escAttr(flash.msg)}</div>` : ''}
-    <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:1.5rem;flex-wrap:wrap;gap:12px">
-      <div>
-        <div style="display:flex;align-items:center;gap:10px;margin-bottom:4px">
-          <h2 style="font-size:20px;font-weight:500">${escAttr(c.name)}</h2>
-          <!-- 2026-04-20 audit fix #B: edit-name pencil icon -->
-          <button type="button" onclick="document.getElementById('rename-campaign-modal').classList.add('open');setTimeout(function(){document.getElementById('rename-campaign-input').focus();document.getElementById('rename-campaign-input').select();},50)"
-                  title="Edit campaign name"
-                  style="background:none;border:none;padding:4px;cursor:pointer;color:#888;display:inline-flex;align-items:center;border-radius:6px;transition:background .12s"
-                  onmouseover="this.style.background='#f0efe9';this.style.color='#1a1a1a'"
-                  onmouseout="this.style.background='none';this.style.color='#888'">
+    <div class="ocu-page-header" style="align-items:flex-start">
+      <div style="flex:1;min-width:0">
+        <div style="margin-bottom:6px"><a href="/ocular/campaigns" class="ocu-text-3" style="font-size:13px;text-decoration:none">← Campaigns</a></div>
+        <div style="display:flex;align-items:center;gap:10px;margin-bottom:4px;flex-wrap:wrap">
+          <h1 class="ocu-page-title" style="margin:0">${escAttr(c.name)}</h1>
+          <button type="button" title="Edit campaign name" class="ocu-btn ocu-btn-ghost" style="padding:4px 8px"
+                  onclick="document.getElementById('rename-campaign-modal').classList.add('open');setTimeout(function(){document.getElementById('rename-campaign-input').focus();document.getElementById('rename-campaign-input').select();},50)">
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
           </button>
-          <span class="badge" style="background:${STATUS_COLORS[c.status]}20;color:${STATUS_COLORS[c.status]}">${c.status}</span>
+          <span class="${statusPillCls}">${c.status}</span>
         </div>
-        <p style="font-size:13px;color:#888">${c.list_type} · ${c.market_name} · ${c.state_code} · Started ${c.start_date ? new Date(c.start_date).toLocaleDateString() : '—'} ${c.end_date ? '· Ended ' + new Date(c.end_date).toLocaleDateString() : ''} · ${c.upload_count} uploads</p>
+        <div class="ocu-page-subtitle">${escAttr(c.list_type || '')} · ${escAttr(c.market_name || '')} · ${escAttr(c.state_code || '')} · Started ${c.start_date ? new Date(c.start_date).toLocaleDateString() : '—'}${c.end_date ? ' · Ended ' + new Date(c.end_date).toLocaleDateString() : ''} · ${c.upload_count || 0} uploads</div>
       </div>
-      <div style="display:flex;gap:8px;flex-wrap:wrap">
-        <form method="POST" action="/campaigns/${c.id}/channel" style="display:inline">
-          <select name="channel" onchange="this.form.submit()" class="inline-select">
-            <option ${c.active_channel==='cold_call'?'selected':''} value="cold_call">Cold Call active</option>
-            <option ${c.active_channel==='sms'?'selected':''} value="sms">SMS active</option>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
+        <form method="POST" action="/campaigns/${c.id}/channel" style="display:inline-flex;align-items:center;gap:6px">
+          <span class="ocu-text-3" style="font-size:11px">Channel:</span>
+          <select name="channel" onchange="this.form.submit()" class="ocu-input" style="padding:5px 8px;font-size:12px;width:auto">
+            <option ${c.active_channel==='cold_call'?'selected':''} value="cold_call">Cold call</option>
+            <option ${c.active_channel==='sms'?'selected':''} value="sms">SMS</option>
           </select>
         </form>
         ${c.status !== 'completed' ? `
         <form method="POST" action="/campaigns/${c.id}/close" onsubmit="return confirm('Close this campaign? It will be marked completed and no more uploads will be accepted.')" style="display:inline">
-          <button type="submit" style="padding:7px 14px;font-size:13px;border:1px solid #e0dfd8;border-radius:8px;background:#fff;color:#888;cursor:pointer;font-family:inherit">Close campaign</button>
+          <button type="submit" class="ocu-btn ocu-btn-secondary">Close</button>
         </form>
         <form method="POST" action="/campaigns/${c.id}/reset" onsubmit="return confirm('Reset all campaign stats and memory? This clears all upload history and counts for this campaign. Cannot be undone.')" style="display:inline">
-          <button type="submit" style="padding:7px 14px;font-size:13px;border:1px solid #f5c5c5;border-radius:8px;background:#fff;color:#c0392b;cursor:pointer;font-family:inherit">Reset stats</button>
+          <button type="submit" class="ocu-btn ocu-btn-secondary" style="color:#c0392b">Reset stats</button>
         </form>
         <form method="POST" action="/campaigns/${c.id}/new-round" onsubmit="return confirm('Close this campaign and start a new round with the same settings and fresh memory?')" style="display:inline">
-          <button type="submit" style="padding:7px 14px;font-size:13px;border:none;border-radius:8px;background:#1a1a1a;color:#fff;cursor:pointer;font-family:inherit">Start new round</button>
-        </form>` : `<span style="font-size:13px;color:#888;padding:7px 0;display:inline-block">Completed ${c.end_date ? '· ' + new Date(c.end_date).toLocaleDateString() : ''}</span>
+          <button type="submit" class="ocu-btn ocu-btn-primary">Start new round</button>
+        </form>` : `
         <form method="POST" action="/campaigns/${c.id}/delete" onsubmit="return confirm('Permanently delete this campaign and all its data? This cannot be undone.')" style="display:inline">
-          <button type="submit" style="padding:7px 14px;font-size:13px;border:1px solid #f5c5c5;border-radius:8px;background:#fff;color:#c0392b;cursor:pointer;font-family:inherit">Delete campaign</button>
+          <button type="submit" class="ocu-btn ocu-btn-secondary" style="color:#c0392b">Delete campaign</button>
         </form>`}
       </div>
     </div>
 
-    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:10px;margin-bottom:1.25rem">
+    ${flash.err ? `<div class="ocu-card" style="margin-bottom:14px;background:#fdeaea;border-color:#f5c5c5;color:#8b1f1f;padding:12px 16px;font-size:13px">${escAttr(flash.err)}</div>` : ''}
+    ${flash.msg ? `<div class="ocu-card" style="margin-bottom:14px;background:#e8f5ee;border-color:#9bd0a8;color:#1a5f1a;padding:12px 16px;font-size:13px">${escAttr(flash.msg)}</div>` : ''}
+
+    <div class="ocu-kpi-row" style="grid-template-columns:repeat(auto-fit,minmax(140px,1fr));margin-bottom:18px">
       ${c.active_channel === 'sms' ? `
-      <div class="stat-card"><div class="stat-lbl">SMS uploads</div><div class="stat-num">${c.upload_count||0}</div><div style="font-size:11px;color:#888;margin-top:2px">Uploads</div></div>
-      <div class="stat-card"><div class="stat-lbl">Wrong numbers</div><div class="stat-num red">${Number(c.total_wrong_numbers||0).toLocaleString()}</div><div style="font-size:11px;color:#888;margin-top:2px">Removed</div></div>
-      <div class="stat-card"><div class="stat-lbl">Not interested</div><div class="stat-num" style="color:#9a6800">${Number(c.total_not_interested||0).toLocaleString()}</div><div style="font-size:11px;color:#888;margin-top:2px">Total NI</div></div>
-      <div class="stat-card"><div class="stat-lbl">Leads generated</div><div class="stat-num green">${Number(c.total_transfers||0).toLocaleString()}</div><div style="font-size:11px;color:#888;margin-top:2px">Transfers</div></div>
-      <div class="stat-card"><div class="stat-lbl">Callable</div><div class="stat-num green">${Number(masterCallable).toLocaleString()} <span style="font-size:12px;font-weight:400;color:#888">(${callable_pct}%)</span></div><div style="font-size:11px;color:#888;margin-top:2px">Active pool</div></div>
+      ${kpi('SMS uploads', fmtNum(c.upload_count||0), 'Uploads')}
+      ${kpi('Wrong numbers', fmtNum(c.total_wrong_numbers||0), 'Removed', '#c0392b')}
+      ${kpi('Not interested', fmtNum(c.total_not_interested||0), 'Total NI', '#9a6800')}
+      ${kpi('Leads generated', fmtNum(c.total_transfers||0), 'Transfers', '#1a7a4a')}
+      ${kpi('Callable', fmtNum(masterCallable), `${callable_pct}% active pool`, '#1a7a4a')}
       ` : `
-      <div class="stat-card"><div class="stat-lbl">Call logs</div><div class="stat-num">${Number(n).toLocaleString()}</div><div style="font-size:11px;color:#888;margin-top:2px">Logged numbers</div></div>
-      <div class="stat-card"><div class="stat-lbl">Connected</div><div class="stat-num blue">${Number(connected).toLocaleString()}</div><div style="font-size:11px;color:#888;margin-top:2px">Live pickups</div></div>
-      <div class="stat-card"><div class="stat-lbl">Wrong numbers</div><div class="stat-num red">${Number(c.total_wrong_numbers||0).toLocaleString()}</div><div style="font-size:11px;color:#888;margin-top:2px">Removed</div></div>
-      <div class="stat-card"><div class="stat-lbl">Not interested</div><div class="stat-num" style="color:#9a6800">${Number(c.total_not_interested||0).toLocaleString()}</div><div style="font-size:11px;color:#888;margin-top:2px">Total NI</div></div>
-      <div class="stat-card"><div class="stat-lbl">Leads generated</div><div class="stat-num green">${Number(c.total_transfers||0).toLocaleString()}</div><div style="font-size:11px;color:#888;margin-top:2px">Transfers</div></div>
-      <div class="stat-card"><div class="stat-lbl">Callable</div><div class="stat-num green">${Number(masterCallable).toLocaleString()} <span style="font-size:12px;font-weight:400;color:#888">(${callable_pct}%)</span></div><div style="font-size:11px;color:#888;margin-top:2px">Active pool</div></div>
-      <div class="stat-card"><div class="stat-lbl">Filtration runs</div><div class="stat-num">${c.upload_count||0}</div><div style="font-size:11px;color:#888;margin-top:2px">Uploads</div></div>
+      ${kpi('Call logs', fmtNum(n), 'Logged numbers')}
+      ${kpi('Connected', fmtNum(connected), 'Live pickups', '#2471a3')}
+      ${kpi('Wrong numbers', fmtNum(c.total_wrong_numbers||0), 'Removed', '#c0392b')}
+      ${kpi('Not interested', fmtNum(c.total_not_interested||0), 'Total NI', '#9a6800')}
+      ${kpi('Leads generated', fmtNum(c.total_transfers||0), 'Transfers', '#1a7a4a')}
+      ${kpi('Callable', fmtNum(masterCallable), `${callable_pct}% active pool`, '#1a7a4a')}
+      ${kpi('Filtration runs', fmtNum(c.upload_count||0), 'Uploads')}
       `}
     </div>
 
-    ${c.active_channel === 'sms' ? `
-    <div style="background:#fff;border:1px solid #e0dfd8;border-radius:12px;padding:14px 16px;margin-bottom:1.25rem">
-      <div style="font-size:11px;font-weight:600;color:#888;text-transform:uppercase;letter-spacing:.05em;margin-bottom:12px">SMS Campaign KPIs</div>
-      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(110px,1fr));gap:10px">
-        <div style="text-align:center;padding:10px;background:#f5f4f0;border-radius:8px">
-          <div style="font-size:22px;font-weight:500;color:#c0392b">${wPct}%</div>
-          <div style="font-size:11px;color:#888;margin-top:2px">W#%</div>
-          <div style="font-size:10px;color:#aaa">Wrong ÷ Total contacts</div>
-        </div>
-        <div style="text-align:center;padding:10px;background:#f5f4f0;border-radius:8px">
-          <div style="font-size:22px;font-weight:500;color:#9a6800">${niPct}%</div>
-          <div style="font-size:11px;color:#888;margin-top:2px">NI%</div>
-          <div style="font-size:10px;color:#aaa">NI ÷ Total contacts</div>
-        </div>
-        <div style="text-align:center;padding:10px;background:#f5f4f0;border-radius:8px">
-          <div style="font-size:22px;font-weight:500;color:#1a7a4a">${lgr}%</div>
-          <div style="font-size:11px;color:#888;margin-top:2px">LGR</div>
-          <div style="font-size:10px;color:#aaa">Leads ÷ Total contacts</div>
-        </div>
-        <div style="text-align:center;padding:10px;background:#f5f4f0;border-radius:8px">
-          <div style="font-size:22px;font-weight:500;color:#534AB7">${lcv}%</div>
-          <div style="font-size:11px;color:#888;margin-top:2px">LCV</div>
-          <div style="font-size:10px;color:#aaa">Lead contacts ÷ Total contacts</div>
-        </div>
-        <div style="text-align:center;padding:10px;background:#f5f4f0;border-radius:8px">
-          <div style="font-size:22px;font-weight:500;color:${parseFloat(health)>50?'#1a7a4a':parseFloat(health)>25?'#9a6800':'#c0392b'}">${health}%</div>
-          <div style="font-size:11px;color:#888;margin-top:2px">Health</div>
-          <div style="font-size:10px;color:#aaa">Callable ÷ Total phones</div>
-        </div>
+    <div class="ocu-card" style="padding:16px 18px;margin-bottom:18px">
+      <div class="ocu-text-3" style="font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.06em;margin-bottom:12px">${c.active_channel === 'sms' ? 'SMS campaign ratios' : 'Campaign ratios'}</div>
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:10px">
+        ${c.active_channel === 'sms' ? `
+        ${ratioCard('W#%', wPct, 'Wrong ÷ Total contacts', '#c0392b')}
+        ${ratioCard('NI%', niPct, 'NI ÷ Total contacts', '#9a6800')}
+        ${ratioCard('LGR', lgr, 'Leads ÷ Total contacts', '#1a7a4a')}
+        ${ratioCard('LCV', lcv, 'Lead contacts ÷ Total contacts', '#534AB7')}
+        ${ratioCard('Health', health, 'Callable ÷ Total phones', parseFloat(health)>50?'#1a7a4a':parseFloat(health)>25?'#9a6800':'#c0392b')}
+        ` : `
+        ${ratioCard('CLR', clr, 'Call logs ÷ Total phones', '#534AB7')}
+        ${ratioCard('CR', cr, 'Connected ÷ Call logs', '#2471a3')}
+        ${ratioCard('W#%', wPct, 'Wrong ÷ Humans reached', '#c0392b')}
+        ${ratioCard('NI%', niPct, 'NI ÷ Connected', '#9a6800')}
+        ${ratioCard('LGR', lgr, 'Leads ÷ Connected', '#1a7a4a')}
+        ${ratioCard('LCV', lcv, 'Lead contacts ÷ Total contacts', '#534AB7')}
+        ${ratioCard('Health', health, 'Callable ÷ Total phones', parseFloat(health)>50?'#1a7a4a':parseFloat(health)>25?'#9a6800':'#c0392b')}
+        `}
       </div>
     </div>
-    ` : `
-    <div style="background:#fff;border:1px solid #e0dfd8;border-radius:12px;padding:14px 16px;margin-bottom:1.25rem">
-      <div style="font-size:11px;font-weight:600;color:#888;text-transform:uppercase;letter-spacing:.05em;margin-bottom:12px">Campaign KPIs</div>
-      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(110px,1fr));gap:10px">
-        <div style="text-align:center;padding:10px;background:#f5f4f0;border-radius:8px">
-          <div style="font-size:22px;font-weight:500;color:#534AB7">${clr}%</div>
-          <div style="font-size:11px;color:#888;margin-top:2px">CLR</div>
-          <div style="font-size:10px;color:#aaa">Call logs ÷ Total phones</div>
-        </div>
-        <div style="text-align:center;padding:10px;background:#f5f4f0;border-radius:8px">
-          <div style="font-size:22px;font-weight:500;color:#2471a3">${cr}%</div>
-          <div style="font-size:11px;color:#888;margin-top:2px">CR</div>
-          <div style="font-size:10px;color:#aaa">Connected ÷ Call logs</div>
-        </div>
-        <div style="text-align:center;padding:10px;background:#f5f4f0;border-radius:8px">
-          <div style="font-size:22px;font-weight:500;color:#c0392b">${wPct}%</div>
-          <div style="font-size:11px;color:#888;margin-top:2px">W#%</div>
-          <div style="font-size:10px;color:#aaa">Wrong ÷ Humans reached</div>
-        </div>
-        <div style="text-align:center;padding:10px;background:#f5f4f0;border-radius:8px">
-          <div style="font-size:22px;font-weight:500;color:#9a6800">${niPct}%</div>
-          <div style="font-size:11px;color:#888;margin-top:2px">NI%</div>
-          <div style="font-size:10px;color:#aaa">NI ÷ Connected</div>
-        </div>
-        <div style="text-align:center;padding:10px;background:#f5f4f0;border-radius:8px">
-          <div style="font-size:22px;font-weight:500;color:#1a7a4a">${lgr}%</div>
-          <div style="font-size:11px;color:#888;margin-top:2px">LGR</div>
-          <div style="font-size:10px;color:#aaa">Leads ÷ Connected</div>
-        </div>
-        <div style="text-align:center;padding:10px;background:#f5f4f0;border-radius:8px">
-          <div style="font-size:22px;font-weight:500;color:#534AB7">${lcv}%</div>
-          <div style="font-size:11px;color:#888;margin-top:2px">LCV</div>
-          <div style="font-size:10px;color:#aaa">Lead contacts ÷ Total contacts</div>
-        </div>
-        <div style="text-align:center;padding:10px;background:#f5f4f0;border-radius:8px">
-          <div style="font-size:22px;font-weight:500;color:${parseFloat(health)>50?'#1a7a4a':parseFloat(health)>25?'#9a6800':'#c0392b'}">${health}%</div>
-          <div style="font-size:11px;color:#888;margin-top:2px">Health</div>
-          <div style="font-size:10px;color:#aaa">Callable ÷ Total phones</div>
-        </div>
-      </div>
-    </div>
-    `}
 
 
 
-    <div class="card" style="padding:1rem 1.25rem;margin-bottom:1.25rem">
+    <div class="ocu-card" style="padding:18px 20px;margin-bottom:18px">
       <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px;flex-wrap:wrap;gap:10px">
-        <div class="sec-lbl" style="margin-bottom:0">Contact list</div>
+        <div style="font-size:14px;font-weight:600;color:var(--ocu-text-1)">Contact list</div>
         <div style="display:flex;gap:8px;flex-wrap:wrap">
           <form method="POST" action="/campaigns/${c.id}/sync-wrong-numbers" style="display:inline" onsubmit="return confirm('Sync all historical wrong numbers to the master contact list? Safe to run anytime.')">
-            <button type="submit" style="font-size:12px;padding:6px 14px;background:#fff;border:1px solid #ddd;border-radius:8px;cursor:pointer;color:#1a1a1a;font-family:inherit">Sync wrong numbers</button>
+            <button type="submit" class="ocu-btn ocu-btn-secondary">Sync wrong numbers</button>
           </form>
-          <a href="/campaigns/${c.id}/export/clean" class="btn-primary" style="font-size:12px;padding:6px 14px">Download clean export (Readymode)</a>
+          <a href="/campaigns/${c.id}/export/clean" class="ocu-btn ocu-btn-primary">Download clean export</a>
         </div>
       </div>
-      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:10px;margin-bottom:14px">
-        <div class="stat-card"><div class="stat-lbl">Total properties</div><div class="stat-num">${Number(c.contact_counts?.total_contacts||0).toLocaleString()}</div><div style="font-size:11px;color:#888;margin-top:2px">Contacts uploaded</div></div>
-        <div class="stat-card"><div class="stat-lbl">Accepted by Readymode</div><div class="stat-num">${Number(c.manual_count||0).toLocaleString()} <button onclick="document.getElementById('rm-count-form').style.display=document.getElementById('rm-count-form').style.display==='none'?'block':'none'" style="font-size:11px;color:#888;background:none;border:none;cursor:pointer;text-decoration:underline">edit</button></div><div style="font-size:11px;color:#888;margin-top:2px">Manually entered</div></div>
-        <div class="stat-card"><div class="stat-lbl">Total phones</div><div class="stat-num">${Number(c.contact_counts?.total_phones||0).toLocaleString()}</div><div style="font-size:11px;color:#888;margin-top:2px">Across all contacts</div></div>
-        <div class="stat-card"><div class="stat-lbl">Wrong numbers</div><div class="stat-num red">${Number(c.contact_counts?.wrong_phones||0).toLocaleString()}</div><div style="font-size:11px;color:#888;margin-top:2px">Permanently excluded</div></div>
-        <div class="stat-card"><div class="stat-lbl">NIS flagged</div><div class="stat-num" style="color:#c0392b">${Number(c.contact_counts?.nis_phones||0).toLocaleString()}</div><div style="font-size:11px;color:#888;margin-top:2px">Dead numbers</div></div>
-        <div class="stat-card"><div class="stat-lbl">Confirmed correct</div><div class="stat-num green">${Number(c.contact_counts?.correct_phones||0).toLocaleString()}</div><div style="font-size:11px;color:#888;margin-top:2px">Live person confirmed</div></div>
-        <div class="stat-card"><div class="stat-lbl">Contacts reached</div><div class="stat-num" style="color:#185fa5">${Number(c.contact_counts?.reached_contacts||0).toLocaleString()} ${c.contact_counts?.total_contacts>0?`<span style="font-size:13px;color:#888">(${((c.contact_counts.reached_contacts/c.contact_counts.total_contacts)*100).toFixed(1)}%)</span>`:''}</div><div style="font-size:11px;color:#888;margin-top:2px">At least 1 live pickup</div></div>
+      <div class="ocu-kpi-row" style="grid-template-columns:repeat(auto-fit,minmax(140px,1fr));margin-bottom:14px">
+        ${kpi('Total properties', fmtNum(c.contact_counts?.total_contacts||0), 'Contacts uploaded')}
+        ${kpi('Accepted by Readymode', `${fmtNum(c.manual_count||0)} <button onclick="document.getElementById('rm-count-form').style.display=document.getElementById('rm-count-form').style.display==='none'?'block':'none'" style="font-size:11px;color:var(--ocu-text-3);background:none;border:none;cursor:pointer;text-decoration:underline">edit</button>`, 'Manually entered')}
+        ${kpi('Total phones', fmtNum(c.contact_counts?.total_phones||0), 'Across all contacts')}
+        ${kpi('Wrong numbers', fmtNum(c.contact_counts?.wrong_phones||0), 'Permanently excluded', '#c0392b')}
+        ${kpi('NIS flagged', fmtNum(c.contact_counts?.nis_phones||0), 'Dead numbers', '#c0392b')}
+        ${kpi('Confirmed correct', fmtNum(c.contact_counts?.correct_phones||0), 'Live person confirmed', '#1a7a4a')}
+        ${kpi('Contacts reached', `${fmtNum(c.contact_counts?.reached_contacts||0)}${c.contact_counts?.total_contacts>0?` <span style="font-size:13px;color:var(--ocu-text-3);font-weight:400">(${((c.contact_counts.reached_contacts/c.contact_counts.total_contacts)*100).toFixed(1)}%)</span>`:''}`, 'At least 1 live pickup', '#185fa5')}
       </div>
-      <div id="rm-count-form" style="display:none;background:#f5f4f0;border-radius:8px;padding:12px;margin-bottom:10px">
-        <form method="POST" action="/campaigns/${c.id}/readymode-count" style="display:flex;align-items:center;gap:8px">
-          <input type="number" name="count" value="${c.manual_count||''}" placeholder="e.g. 4163" style="padding:7px 10px;border:1px solid #ddd;border-radius:7px;font-size:14px;width:150px;font-family:inherit">
-          <button type="submit" style="padding:7px 16px;background:#1a1a1a;color:#fff;border:none;border-radius:7px;font-size:13px;cursor:pointer;font-family:inherit">Save</button>
-          <span style="font-size:12px;color:#888">Total contacts Readymode accepted</span>
+      <div id="rm-count-form" style="display:none;background:var(--ocu-surface);border-radius:8px;padding:12px;margin-bottom:14px">
+        <form method="POST" action="/campaigns/${c.id}/readymode-count" style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+          <input type="number" name="count" value="${c.manual_count||''}" placeholder="e.g. 4163" class="ocu-input" style="width:160px" />
+          <button type="submit" class="ocu-btn ocu-btn-primary">Save</button>
+          <span class="ocu-text-3" style="font-size:12px">Total contacts Readymode accepted</span>
         </form>
       </div>
-      <div style="border-top:1px solid #f0efe9;padding-top:12px">
+      <div style="border-top:1px solid var(--ocu-border-soft, #f0efe9);padding-top:14px">
         <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
-          <div class="sec-lbl">Upload original contact list</div>
+          <div class="ocu-text-3" style="font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.06em">Upload original contact list</div>
           ${parseInt(c.total_unique_numbers||0) > 0 ? `
           <form method="POST" action="/campaigns/${c.id}/contacts/delete" onsubmit="return confirm('Delete the master contact list for this campaign? This cannot be undone.')">
-            <button type="submit" style="background:none;border:none;color:#c0392b;font-size:12px;cursor:pointer;text-decoration:underline;font-family:inherit">Delete master list</button>
+            <button type="submit" class="ocu-btn ocu-btn-ghost" style="color:#c0392b;font-size:12px">Delete master list</button>
           </form>` : ''}
         </div>
         <form method="POST" action="/campaigns/${c.id}/contacts/upload" enctype="multipart/form-data">
           <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
-            <input type="file" name="contactfile" accept=".csv" required style="font-size:13px;padding:6px;border:1px solid #ddd;border-radius:7px;background:#fff">
-            <button type="submit" style="padding:7px 16px;background:#1a1a1a;color:#fff;border:none;border-radius:7px;font-size:13px;cursor:pointer;font-family:inherit">Upload contact list</button>
+            <input type="file" name="contactfile" accept=".csv" required class="ocu-input" style="padding:6px 10px;flex:1;min-width:240px" />
+            <button type="submit" class="ocu-btn ocu-btn-primary">Upload contact list</button>
           </div>
-          <p style="font-size:11px;color:#aaa;margin-top:6px">Loki will auto-detect all columns and phone numbers. Re-upload to replace.</p>
+          <div class="ocu-text-3" style="font-size:11px;margin-top:6px">Loki will auto-detect all columns and phone numbers. Re-upload to replace.</div>
         </form>
-${c.sms_status === 'active' ? `
-        <div style="margin-top:1rem;padding-top:1rem;border-top:1px solid #f0f0f0">
-          <div class="sec-lbl" style="margin-bottom:8px">Upload SmarterContact SMS results</div>
+        ${c.sms_status === 'active' ? `
+        <div style="margin-top:16px;padding-top:14px;border-top:1px solid var(--ocu-border-soft, #f0efe9)">
+          <div class="ocu-text-3" style="font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.06em;margin-bottom:8px">Upload SmarterContact SMS results</div>
           <form method="POST" action="/campaigns/${c.id}/sms/upload" enctype="multipart/form-data">
             <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
-              <input type="file" name="smsfile" accept=".csv" required style="font-size:13px;padding:6px;border:1px solid #ddd;border-radius:7px;background:#fff">
-              <button type="submit" style="padding:7px 16px;background:#2563eb;color:#fff;border:none;border-radius:7px;font-size:13px;cursor:pointer;font-family:inherit">Upload SMS results</button>
+              <input type="file" name="smsfile" accept=".csv" required class="ocu-input" style="padding:6px 10px;flex:1;min-width:240px" />
+              <button type="submit" class="ocu-btn ocu-btn-primary" style="background:#2563eb">Upload SMS results</button>
             </div>
-            <p style="font-size:11px;color:#aaa;margin-top:6px">Required columns: Phone, Labels, First name, Last name, Property address, Property city, Property state, Property zip. One label per row only.</p>
+            <div class="ocu-text-3" style="font-size:11px;margin-top:6px">Required columns: Phone, Labels, First name, Last name, Property address, Property city, Property state, Property zip. One label per row only.</div>
           </form>
         </div>` : ''}
       </div>
     </div>
 
-    <div style="display:grid;grid-template-columns:1fr 280px;gap:1.25rem;margin-bottom:1.25rem">
-      <div class="card" style="padding:1rem 1.25rem">
-        <div class="sec-lbl" style="margin-bottom:10px">Disposition breakdown</div>
-        <table class="data-table" style="font-size:12px">
-          <thead><tr><th>Disposition</th><th>Count</th></tr></thead>
-          <tbody>${dispositionRows||'<tr><td colspan="2" style="color:#aaa;padding:12px">No data yet</td></tr>'}</tbody>
-        </table>
+    <div style="display:grid;grid-template-columns:1fr 280px;gap:14px;margin-bottom:18px">
+      <div class="ocu-card" style="padding:16px 18px">
+        <div class="ocu-text-3" style="font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.06em;margin-bottom:12px">Disposition breakdown</div>
+        <div class="ocu-table-wrap">
+          <table class="ocu-table">
+            <thead><tr><th>Disposition</th><th class="ocu-text-right">Count</th></tr></thead>
+            <tbody>${dispositionRows||'<tr><td colspan="2" class="ocu-text-3" style="padding:14px">No data yet</td></tr>'}</tbody>
+          </table>
+        </div>
       </div>
-      <div class="card" style="padding:1rem 1.25rem">
-        <div class="sec-lbl" style="margin-bottom:10px">Channel status</div>
+      <div class="ocu-card" style="padding:16px 18px">
+        <div class="ocu-text-3" style="font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.06em;margin-bottom:12px">Channel status</div>
         <div style="margin-bottom:10px">
-          <div style="font-size:12px;color:#888;margin-bottom:3px">Cold Call</div>
-          <span class="badge" style="background:${c.cold_call_status==='active'?'#e8f5ee':'#f5f4f0'};color:${c.cold_call_status==='active'?'#1a7a4a':'#888'}">${c.cold_call_status}</span>
+          <div class="ocu-text-3" style="font-size:11px;margin-bottom:4px">Cold call</div>
+          <span class="ocu-pill ${c.cold_call_status==='active'?'ocu-pill-good':''}">${c.cold_call_status}</span>
         </div>
         <div>
-          <div style="font-size:12px;color:#888;margin-bottom:3px">SMS</div>
-          <span class="badge" style="background:${c.sms_status==='active'?'#e8f5ee':'#f5f4f0'};color:${c.sms_status==='active'?'#1a7a4a':'#888'}">${c.sms_status}</span>
+          <div class="ocu-text-3" style="font-size:11px;margin-bottom:4px">SMS</div>
+          <span class="ocu-pill ${c.sms_status==='active'?'ocu-pill-good':''}">${c.sms_status}</span>
         </div>
-        <div style="margin-top:16px;padding-top:12px;border-top:1px solid #f0efe9">
-          <div style="font-size:12px;color:#888;margin-bottom:3px">Wrong numbers removed</div>
-          <div style="font-size:18px;font-weight:500;color:#c0392b">${Number(c.total_wrong_numbers||0).toLocaleString()}</div>
+        <div style="margin-top:14px;padding-top:12px;border-top:1px solid var(--ocu-border-soft, #f0efe9)">
+          <div class="ocu-text-3" style="font-size:11px;margin-bottom:2px">Wrong numbers removed</div>
+          <div class="ocu-mono" style="font-size:18px;font-weight:600;color:#c0392b">${fmtNum(c.total_wrong_numbers||0)}</div>
         </div>
-        <div style="margin-top:12px">
-          <div style="font-size:12px;color:#888;margin-bottom:3px">Voicemails accumulated</div>
-          <div style="font-size:18px;font-weight:500;color:#9a6800">${Number(c.total_voicemails||0).toLocaleString()}</div>
+        <div style="margin-top:10px">
+          <div class="ocu-text-3" style="font-size:11px;margin-bottom:2px">Voicemails accumulated</div>
+          <div class="ocu-mono" style="font-size:18px;font-weight:600;color:#9a6800">${fmtNum(c.total_voicemails||0)}</div>
         </div>
       </div>
     </div>
 
     ${c.status === 'completed' ? `
-    <div class="card" style="padding:1rem 1.25rem;margin-bottom:1.25rem;background:#fafaf8">
-      <p style="font-size:13px;color:#888;text-align:center;padding:8px 0">This campaign is completed — no more uploads accepted. <a href="/campaigns" style="color:#1a1a1a">Start a new round</a> to continue.</p>
+    <div class="ocu-card" style="padding:18px 20px;margin-bottom:18px;background:var(--ocu-surface);text-align:center">
+      <div style="font-size:13px;color:var(--ocu-text-2)">This campaign is completed — no more uploads accepted. <a href="/ocular/campaigns" class="ocu-link">Start a new round</a> to continue.</div>
     </div>` : c.active_channel === 'cold_call' ? `
-    <div class="card" style="padding:1rem 1.25rem;margin-bottom:1.25rem">
-      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
-        <div class="sec-lbl" style="margin-bottom:0">Upload filtration file to this campaign</div>
-        <select id="channel-select" class="inline-select">
-          <option value="cold_call" selected>Cold Call</option>
+    <div class="ocu-card" style="padding:18px 20px;margin-bottom:18px">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;flex-wrap:wrap;gap:10px">
+        <div style="font-size:14px;font-weight:600;color:var(--ocu-text-1)">Upload filtration file to this campaign</div>
+        <select id="channel-select" class="ocu-input" style="padding:5px 8px;font-size:12px;width:auto">
+          <option value="cold_call" selected>Cold call</option>
         </select>
       </div>
-      <div class="drop-zone" id="drop-zone" style="padding:1.5rem">
-        <strong style="font-size:14px">Drop Readymode CSV here or click to browse</strong>
-        <p style="font-size:12px;color:#888;margin-top:4px">File will be filtered and recorded against this campaign</p>
+      <div class="drop-zone" id="drop-zone" style="padding:24px;border:1.5px dashed var(--ocu-border);border-radius:10px;text-align:center;cursor:pointer;background:var(--ocu-surface);transition:all .15s">
+        <div style="font-size:14px;font-weight:600;color:var(--ocu-text-1)">Drop Readymode CSV here or click to browse</div>
+        <div class="ocu-text-3" style="font-size:12px;margin-top:4px">File will be filtered and recorded against this campaign</div>
       </div>
-      <input type="file" id="file-input" accept=".csv" style="display:none">
-      <div id="upload-spinner" style="display:none;align-items:center;gap:8px;font-size:13px;color:#888;padding:8px 0"><div class="spinner"></div> Processing…</div>
+      <input type="file" id="file-input" accept=".csv" style="display:none" />
+      <div id="upload-spinner" style="display:none;align-items:center;gap:8px;font-size:13px;color:var(--ocu-text-3);padding:10px 0"><div class="spinner"></div> Processing…</div>
     </div>` : `
-    <div class="card" style="padding:1rem 1.25rem;margin-bottom:1.25rem;background:#fafaf8">
-      <p style="font-size:13px;color:#888;text-align:center;padding:8px 0">This is an SMS campaign — upload SMS results in the Contact List section above.</p>
+    <div class="ocu-card" style="padding:18px 20px;margin-bottom:18px;background:var(--ocu-surface);text-align:center">
+      <div style="font-size:13px;color:var(--ocu-text-2)">This is an SMS campaign — upload SMS results in the Contact List section above.</div>
     </div>`}
 
     <div id="results" style="display:none">
-      <div class="stats-grid-5" id="result-stats" style="margin-bottom:1.25rem"></div>
-      <div class="card" style="padding:1rem 1.25rem;margin-bottom:1.25rem">
+      <div class="ocu-kpi-row" id="result-stats" style="grid-template-columns:repeat(auto-fit,minmax(140px,1fr));margin-bottom:18px"></div>
+      <div class="ocu-card" style="padding:16px 18px;margin-bottom:18px">
         <div class="tabs"><button class="tab active" data-tab="filtered">Filtered → REISift</button><button class="tab" data-tab="clean">Clean → Readymode</button></div>
-        <div id="tab-filtered" class="tab-panel active"><div class="tbl-wrap"><table><thead><tr id="rem-head"></tr></thead><tbody id="rem-body"></tbody></table></div></div>
-        <div id="tab-clean" class="tab-panel"><div class="tbl-wrap"><table><thead><tr id="cln-head"></tr></thead><tbody id="cln-body"></tbody></table></div></div>
-        <div style="display:flex;gap:8px;margin-top:1rem">
-          <a class="btn-primary-link" href="/download/filtered">Download filtered (REISift)</a>
-          <a href="/download/clean" class="btn-link">Download clean (Readymode)</a>
+        <div id="tab-filtered" class="tab-panel active"><div class="tbl-wrap"><table class="data-table"><thead><tr id="rem-head"></tr></thead><tbody id="rem-body"></tbody></table></div></div>
+        <div id="tab-clean" class="tab-panel"><div class="tbl-wrap"><table class="data-table"><thead><tr id="cln-head"></tr></thead><tbody id="cln-body"></tbody></table></div></div>
+        <div style="display:flex;gap:8px;margin-top:14px">
+          <a class="ocu-btn ocu-btn-primary" href="/download/filtered">Download filtered (REISift)</a>
+          <a href="/download/clean" class="ocu-btn ocu-btn-secondary">Download clean (Readymode)</a>
         </div>
       </div>
     </div>
 
-    <div class="card" style="padding:0;overflow:hidden">
-      <div style="padding:12px 16px;border-bottom:1px solid #f0efe9"><div class="sec-lbl" style="margin-bottom:0">Filtration history</div></div>
-      <table class="data-table">
-        <thead><tr><th>Date</th><th>File / Source list</th><th>Channel</th><th>Total</th><th>Kept</th><th>Filtered</th><th>Breakdown</th><th>Memory catches</th><th></th></tr></thead>
-        <tbody>${uploadRows||'<tr><td colspan="8" style="color:#aaa;padding:16px;text-align:center">No uploads yet for this campaign</td></tr>'}</tbody>
-      </table>
+    <div class="ocu-card" style="padding:0;overflow:hidden;margin-bottom:18px">
+      <div style="padding:14px 18px;border-bottom:1px solid var(--ocu-border-soft, #f0efe9)">
+        <div class="ocu-text-3" style="font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.06em">Filtration history</div>
+      </div>
+      <div class="ocu-table-wrap">
+        <table class="ocu-table">
+          <thead><tr><th>Date</th><th>File / Source list</th><th>Channel</th><th class="ocu-text-right">Total</th><th class="ocu-text-right">Kept</th><th class="ocu-text-right">Filtered</th><th>Breakdown</th><th>Memory</th><th></th></tr></thead>
+          <tbody>${uploadRows||'<tr><td colspan="9" class="ocu-text-3" style="padding:18px;text-align:center">No uploads yet for this campaign</td></tr>'}</tbody>
+        </table>
+      </div>
     </div>
 
-    <!-- 2026-04-20 audit fix #B: rename campaign modal -->
-    <div id="rename-campaign-modal" class="modal-overlay">
-      <div class="modal" style="max-width:480px">
-        <div class="modal-header">
-          <div class="modal-title">Rename campaign</div>
-          <button type="button" class="modal-close" onclick="document.getElementById('rename-campaign-modal').classList.remove('open')">×</button>
+    <!-- Rename campaign modal -->
+    <div id="rename-campaign-modal" class="ocu-modal-overlay" onclick="if (event.target.id === 'rename-campaign-modal') document.getElementById('rename-campaign-modal').classList.remove('open')">
+      <div class="ocu-modal">
+        <div class="ocu-modal-header">
+          <div class="ocu-modal-title">Rename campaign</div>
+          <button type="button" class="ocu-modal-close" onclick="document.getElementById('rename-campaign-modal').classList.remove('open')">×</button>
         </div>
         <form method="POST" action="/campaigns/${c.id}/rename">
-          <div class="form-field">
-            <label>Campaign name</label>
-            <input type="text" id="rename-campaign-input" name="name" value="${escAttr(c.name)}" required maxlength="255" autocomplete="off">
-            <span class="field-hint">Duplicate names are allowed — use whatever makes sense for you.</span>
+          <div style="margin-bottom:14px">
+            <label class="ocu-form-label">Campaign name</label>
+            <input type="text" id="rename-campaign-input" name="name" value="${escAttr(c.name)}" required maxlength="255" autocomplete="off" class="ocu-input" />
+            <div class="ocu-text-3" style="font-size:11px;margin-top:4px">Duplicate names are allowed — use whatever makes sense for you.</div>
           </div>
-          <div style="display:flex;gap:8px;margin-top:1rem">
-            <button type="submit" class="btn btn-primary" style="flex:1">Save</button>
-            <button type="button" class="btn btn-ghost" onclick="document.getElementById('rename-campaign-modal').classList.remove('open')">Cancel</button>
+          <div style="display:flex;gap:6px;justify-content:flex-end">
+            <button type="button" class="ocu-btn ocu-btn-ghost" onclick="document.getElementById('rename-campaign-modal').classList.remove('open')">Cancel</button>
+            <button type="submit" class="ocu-btn ocu-btn-primary">Save</button>
           </div>
         </form>
       </div>
@@ -2612,11 +2579,8 @@ ${c.sms_status === 'active' ? `
     function renderResults(data){
       var s=data.stats;
       var sg=document.getElementById('result-stats');
-      sg.innerHTML='<div class="stat-card"><div class="stat-lbl">Uploaded</div><div class="stat-num">'+s.totalRows+'</div></div>'+
-        '<div class="stat-card"><div class="stat-lbl">Kept</div><div class="stat-num green">'+s.kept+'</div></div>'+
-        '<div class="stat-card"><div class="stat-lbl">Filtered</div><div class="stat-num red">'+s.filtered+'</div></div>'+
-        '<div class="stat-card"><div class="stat-lbl">Lists in file</div><div class="stat-num">'+s.listsCount+'</div></div>'+
-        '<div class="stat-card"><div class="stat-lbl">Caught by memory</div><div class="stat-num blue">'+s.memCaught+'</div></div>';
+      var card=function(lbl,val,color){return '<div class="ocu-kpi"><div class="ocu-kpi-label">'+lbl+'</div><div class="ocu-kpi-value"'+(color?' style="color:'+color+'"':'')+'>'+val+'</div></div>';};
+      sg.innerHTML=card('Uploaded',s.totalRows)+card('Kept',s.kept,'#1a7a4a')+card('Filtered',s.filtered,'#c0392b')+card('Lists in file',s.listsCount)+card('Caught by memory',s.memCaught,'#2471a3');
       renderTable('rem-head','rem-body',data.preview.filtered);
       renderTable('cln-head','cln-body',data.preview.clean);
       document.getElementById('results').style.display='block';
@@ -2637,7 +2601,7 @@ ${c.sms_status === 'active' ? `
     dz.addEventListener('drop',e=>{e.preventDefault();dz.style.borderColor='';if(e.dataTransfer.files[0])handleFile(e.dataTransfer.files[0]);});
     document.querySelectorAll('.tab').forEach(t=>t.addEventListener('click',()=>{document.querySelectorAll('.tab').forEach(x=>x.classList.remove('active'));document.querySelectorAll('.tab-panel').forEach(x=>x.classList.remove('active'));t.classList.add('active');document.getElementById('tab-'+t.dataset.tab).classList.add('active');}));
     </script>
-  `);
+  `, 'campaigns', user);
 }
 
 // ── Shared shell ─────────────────────────────────────────────────────────────
