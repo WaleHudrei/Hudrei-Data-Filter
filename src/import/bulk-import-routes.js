@@ -171,6 +171,15 @@ function mapReisiftRow(row) {
   return { property, contact, phones };
 }
 
+// 2026-04-28 audit fix L-3: this is now the SINGLE SOURCE OF TRUTH for the
+// bulk_import_jobs table shape. db.js previously had its own CREATE TABLE
+// with completely different column names (status default 'pending' vs.
+// 'running'; processed_rows/inserted/updated vs. rows_processed/rows_created/
+// rows_updated; created_at/updated_at vs. started_at/completed_at). Whichever
+// CREATE TABLE IF NOT EXISTS ran first won — silently leaving the loser's
+// columns missing. db.js's block has been removed; this is the authoritative
+// definition. list_id column added here too (was previously a stray ALTER in
+// db.js).
 async function ensureJobsTable() {
   await query(`
     CREATE TABLE IF NOT EXISTS bulk_import_jobs (
@@ -179,6 +188,7 @@ async function ensureJobsTable() {
       filename VARCHAR(255),
       source VARCHAR(50) DEFAULT 'reisift',
       status VARCHAR(20) DEFAULT 'running',
+      list_id INTEGER REFERENCES lists(id) ON DELETE SET NULL,
       total_rows INTEGER DEFAULT 0,
       rows_processed INTEGER DEFAULT 0,
       rows_created INTEGER DEFAULT 0,
@@ -189,6 +199,8 @@ async function ensureJobsTable() {
       completed_at TIMESTAMPTZ
     )
   `);
+  // Idempotent backfill for existing tables that pre-date the list_id column.
+  await query(`ALTER TABLE bulk_import_jobs ADD COLUMN IF NOT EXISTS list_id INTEGER REFERENCES lists(id) ON DELETE SET NULL`);
 }
 
 // ── STEP 1: Upload page UI (unchanged) ────────────────────────────────────────
@@ -414,7 +426,7 @@ async function processImport(jobId, csvPath, filename, tenantId) {
         `INSERT INTO markets (tenant_id, name, state_code, state_name)
          SELECT $2, code || ' Market', code, code
            FROM UNNEST($1::text[]) AS t(code)
-         ON CONFLICT (state_code) DO UPDATE SET name = EXCLUDED.name
+         ON CONFLICT (tenant_id, state_code) DO UPDATE SET name = EXCLUDED.name
          RETURNING id, state_code`,
         [uniqueStates, tenantId]
       );
@@ -450,7 +462,7 @@ async function processImport(jobId, csvPath, filename, tenantId) {
                vacant, bedrooms, bathrooms, sqft, year_built, lot_size,
                estimated_value, last_sale_price, last_sale_date,
                property_status)
-      ON CONFLICT (street, city, state_code, zip_code) DO UPDATE SET
+      ON CONFLICT (tenant_id, street, city, state_code, zip_code) DO UPDATE SET
         county          = COALESCE(NULLIF(EXCLUDED.county,''),        properties.county),
         source          = COALESCE(NULLIF(EXCLUDED.source,''),        properties.source),
         vacant          = COALESCE(EXCLUDED.vacant,                   properties.vacant),
