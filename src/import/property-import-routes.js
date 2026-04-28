@@ -107,11 +107,18 @@ function fingerprintHeaders(columns) {
 
 /**
  * Idempotent schema for mapping_templates. Called before every read/write.
+ *
+ * Note: the `fingerprint` UNIQUE constraint is single-column for now —
+ * matches the existing prod schema (the Phase 1 migration added tenant_id
+ * but did not swap the unique constraint to (tenant_id, fingerprint)).
+ * Phase 2 should swap to a composite unique so two tenants can share a
+ * fingerprint. For Phase 1 with one tenant, single-column UNIQUE is fine.
  */
 async function ensureMappingSchema() {
   await query(`
     CREATE TABLE IF NOT EXISTS mapping_templates (
       id SERIAL PRIMARY KEY,
+      tenant_id INT NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
       fingerprint VARCHAR(32) NOT NULL UNIQUE,
       name TEXT,
       headers JSONB NOT NULL,
@@ -125,16 +132,16 @@ async function ensureMappingSchema() {
 }
 
 /**
- * Looks up a saved mapping by fingerprint. Bumps use_count + last_used_at if
- * found (so we can see which templates are hot). Returns null if no match.
+ * Looks up a saved mapping by fingerprint for a tenant. Bumps use_count +
+ * last_used_at if found. Returns null if no match.
  */
-async function lookupMappingByFingerprint(fingerprint) {
+async function lookupMappingByFingerprint(tenantId, fingerprint) {
   if (!fingerprint) return null;
   await ensureMappingSchema();
   const r = await query(
     `SELECT id, fingerprint, name, headers, mapping, use_count, created_at, last_used_at
-       FROM mapping_templates WHERE fingerprint = $1 LIMIT 1`,
-    [fingerprint]
+       FROM mapping_templates WHERE tenant_id = $1 AND fingerprint = $2 LIMIT 1`,
+    [tenantId, fingerprint]
   );
   return r.rows[0] || null;
 }
@@ -182,30 +189,36 @@ function autoNameFromHeaders(columns) {
  * Saves or updates a mapping template. If fingerprint exists, updates the
  * mapping (so iterative edits get captured) and bumps use_count + timestamp.
  */
-async function upsertMapping(fingerprint, columns, mapping) {
+async function upsertMapping(tenantId, fingerprint, columns, mapping) {
   if (!fingerprint) return null;
   await ensureMappingSchema();
   const name = autoNameFromHeaders(columns);
+  // ON CONFLICT (fingerprint) is single-column — see ensureMappingSchema note.
+  // Safe for Phase 1 (one tenant). When the unique becomes composite, switch
+  // this to ON CONFLICT (tenant_id, fingerprint).
   const r = await query(`
-    INSERT INTO mapping_templates (fingerprint, name, headers, mapping, use_count, last_used_at)
-    VALUES ($1, $2, $3::jsonb, $4::jsonb, 1, NOW())
+    INSERT INTO mapping_templates (tenant_id, fingerprint, name, headers, mapping, use_count, last_used_at)
+    VALUES ($1, $2, $3, $4::jsonb, $5::jsonb, 1, NOW())
     ON CONFLICT (fingerprint) DO UPDATE SET
       mapping      = EXCLUDED.mapping,
       headers      = EXCLUDED.headers,
       use_count    = mapping_templates.use_count + 1,
       last_used_at = NOW()
     RETURNING id, fingerprint, name, use_count
-  `, [fingerprint, name, JSON.stringify(columns), JSON.stringify(mapping)]);
+  `, [tenantId, fingerprint, name, JSON.stringify(columns), JSON.stringify(mapping)]);
   return r.rows[0];
 }
 
 /**
- * Deletes a saved mapping by fingerprint. Returns count of rows removed.
+ * Deletes a saved mapping by fingerprint for one tenant. Returns count.
  */
-async function deleteMapping(fingerprint) {
+async function deleteMapping(tenantId, fingerprint) {
   if (!fingerprint) return 0;
   await ensureMappingSchema();
-  const r = await query(`DELETE FROM mapping_templates WHERE fingerprint = $1`, [fingerprint]);
+  const r = await query(
+    `DELETE FROM mapping_templates WHERE tenant_id = $1 AND fingerprint = $2`,
+    [tenantId, fingerprint]
+  );
   return r.rowCount;
 }
 
@@ -388,7 +401,7 @@ function autoMap(csvColumns) {
 
 // ── STEP 1: Upload CSV ────────────────────────────────────────────────────────
 router.get('/', requireAuth, async (req, res) => {
-  const existingLists = await query(`SELECT id, list_name, list_type FROM lists ORDER BY list_name ASC`);
+  const existingLists = await query(`SELECT id, list_name, list_type FROM lists WHERE tenant_id = $1 ORDER BY list_name ASC`, [req.tenantId]);
   const listOptions = existingLists.rows.map(l =>
     `<option value="${l.id}" data-name="${l.list_name}">${l.list_name}${l.list_type ? ' ('+l.list_type+')' : ''}</option>`
   ).join('');
@@ -583,7 +596,7 @@ router.post('/parse', requireAuth, upload.single('csvfile'), async (req, res) =>
     const autoMapCount = Object.keys(mapping).length;
     let savedTemplate = null;
     try {
-      const template = await lookupMappingByFingerprint(fingerprint);
+      const template = await lookupMappingByFingerprint(req.tenantId, fingerprint);
       if (template) {
         // A saved mapping might reference a column that doesn't exist in this
         // file (headers drifted slightly). Filter out dead references.
@@ -680,7 +693,7 @@ router.post('/save-mapping', requireAuth, async (req, res) => {
     if (Object.keys(cleanMapping).length === 0) {
       return res.status(400).json({ error: 'No valid mappings to save.' });
     }
-    const saved = await upsertMapping(fingerprint, columns, cleanMapping);
+    const saved = await upsertMapping(req.tenantId, fingerprint, columns, cleanMapping);
     console.log(`[mapping saved] fingerprint=${fingerprint} name="${saved?.name}" use_count=${saved?.use_count} cols=${columns.length} mapped=${Object.keys(cleanMapping).length}`);
     res.json({ ok: true, saved });
   } catch(e) {
@@ -696,7 +709,7 @@ router.post('/delete-mapping', requireAuth, async (req, res) => {
     if (!fingerprint || !/^[a-f0-9]{16}$/.test(String(fingerprint))) {
       return res.status(400).json({ error: 'Invalid fingerprint format.' });
     }
-    const deleted = await deleteMapping(fingerprint);
+    const deleted = await deleteMapping(req.tenantId, fingerprint);
     res.json({ ok: true, deleted });
   } catch(e) {
     console.error('[import/delete-mapping]', e);

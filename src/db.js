@@ -300,19 +300,23 @@ async function initSchema() {
   )`);
   await query(`ALTER TABLE bulk_import_jobs ADD COLUMN IF NOT EXISTS list_id INTEGER REFERENCES lists(id) ON DELETE SET NULL`);
 
-  // ── Seed all 50 state markets (+ DC) ────────────────────────────────────────
-  await query(`INSERT INTO markets (name,state_code,state_name) VALUES
-    ('AL','AL','Alabama'),('AK','AK','Alaska'),('AZ','AZ','Arizona'),('AR','AR','Arkansas'),('CA','CA','California'),
-    ('CO','CO','Colorado'),('CT','CT','Connecticut'),('DE','DE','Delaware'),('FL','FL','Florida'),('GA','GA','Georgia'),
-    ('HI','HI','Hawaii'),('ID','ID','Idaho'),('IL','IL','Illinois'),('IN','IN','Indiana'),('IA','IA','Iowa'),
-    ('KS','KS','Kansas'),('KY','KY','Kentucky'),('LA','LA','Louisiana'),('ME','ME','Maine'),('MD','MD','Maryland'),
-    ('MA','MA','Massachusetts'),('MI','MI','Michigan'),('MN','MN','Minnesota'),('MS','MS','Mississippi'),('MO','MO','Missouri'),
-    ('MT','MT','Montana'),('NE','NE','Nebraska'),('NV','NV','Nevada'),('NH','NH','New Hampshire'),('NJ','NJ','New Jersey'),
-    ('NM','NM','New Mexico'),('NY','NY','New York'),('NC','NC','North Carolina'),('ND','ND','North Dakota'),('OH','OH','Ohio'),
-    ('OK','OK','Oklahoma'),('OR','OR','Oregon'),('PA','PA','Pennsylvania'),('RI','RI','Rhode Island'),('SC','SC','South Carolina'),
-    ('SD','SD','South Dakota'),('TN','TN','Tennessee'),('TX','TX','Texas'),('UT','UT','Utah'),('VT','VT','Vermont'),
-    ('VA','VA','Virginia'),('WA','WA','Washington'),('WV','WV','West Virginia'),('WI','WI','Wisconsin'),('WY','WY','Wyoming'),
-    ('DC','DC','District of Columbia')
+  // ── Seed all 50 state markets (+ DC) for tenant_id=1 (HudREI) ──────────────
+  // Phase 2 tenant signup will need to seed its own markets rows. The
+  // ON CONFLICT key is (state_code) — single-column unique left over from the
+  // pre-SaaS schema. For Phase 1 (one tenant) this works; Phase 2 needs the
+  // unique swapped to (tenant_id, state_code) so each tenant gets its own copy.
+  await query(`INSERT INTO markets (tenant_id,name,state_code,state_name) VALUES
+    (1,'AL','AL','Alabama'),(1,'AK','AK','Alaska'),(1,'AZ','AZ','Arizona'),(1,'AR','AR','Arkansas'),(1,'CA','CA','California'),
+    (1,'CO','CO','Colorado'),(1,'CT','CT','Connecticut'),(1,'DE','DE','Delaware'),(1,'FL','FL','Florida'),(1,'GA','GA','Georgia'),
+    (1,'HI','HI','Hawaii'),(1,'ID','ID','Idaho'),(1,'IL','IL','Illinois'),(1,'IN','IN','Indiana'),(1,'IA','IA','Iowa'),
+    (1,'KS','KS','Kansas'),(1,'KY','KY','Kentucky'),(1,'LA','LA','Louisiana'),(1,'ME','ME','Maine'),(1,'MD','MD','Maryland'),
+    (1,'MA','MA','Massachusetts'),(1,'MI','MI','Michigan'),(1,'MN','MN','Minnesota'),(1,'MS','MS','Mississippi'),(1,'MO','MO','Missouri'),
+    (1,'MT','MT','Montana'),(1,'NE','NE','Nebraska'),(1,'NV','NV','Nevada'),(1,'NH','NH','New Hampshire'),(1,'NJ','NJ','New Jersey'),
+    (1,'NM','NM','New Mexico'),(1,'NY','NY','New York'),(1,'NC','NC','North Carolina'),(1,'ND','ND','North Dakota'),(1,'OH','OH','Ohio'),
+    (1,'OK','OK','Oklahoma'),(1,'OR','OR','Oregon'),(1,'PA','PA','Pennsylvania'),(1,'RI','RI','Rhode Island'),(1,'SC','SC','South Carolina'),
+    (1,'SD','SD','South Dakota'),(1,'TN','TN','Tennessee'),(1,'TX','TX','Texas'),(1,'UT','UT','Utah'),(1,'VT','VT','Vermont'),
+    (1,'VA','VA','Virginia'),(1,'WA','WA','Washington'),(1,'WV','WV','West Virginia'),(1,'WI','WI','Wisconsin'),(1,'WY','WY','Wyoming'),
+    (1,'DC','DC','District of Columbia')
     ON CONFLICT (state_code) DO UPDATE SET name=EXCLUDED.name, state_name=EXCLUDED.state_name`);
 
   // ── Column migrations ───────────────────────────────────────────────────────
