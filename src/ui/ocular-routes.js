@@ -1221,7 +1221,7 @@ router.post('/owners/:id(\\d+)/message', requireAuth, async (req, res) => {
   }
 });
 
-// ─── /ocular/setup — Settings page (delete-code change form) ───────────────
+// ─── /ocular/setup — Settings page (delete-code + change-password) ─────────
 router.get('/setup', requireAuth, async (req, res) => {
   try {
     const { settingsPage } = require('./pages/settings');
@@ -1235,13 +1235,24 @@ router.get('/setup', requireAuth, async (req, res) => {
     } catch (e) {
       console.error('[ocular/setup] settings load:', e.message);
     }
+
+    // Pull the current user's email so the change-password card can show it.
+    let userEmail = '';
+    try {
+      const r = await query('SELECT email FROM users WHERE id = $1', [req.userId]);
+      if (r.rows.length) userEmail = r.rows[0].email;
+    } catch (e) { /* non-fatal */ }
+
     res.send(settingsPage({
       user: await getUser(req),
       lastUpdatedAt: updatedAt,
       usingDefault,
+      userEmail,
       flash: {
-        msg: req.query.msg ? String(req.query.msg).slice(0, 500) : '',
-        err: req.query.err ? String(req.query.err).slice(0, 500) : '',
+        msg:   req.query.msg   ? String(req.query.msg).slice(0, 500)   : '',
+        err:   req.query.err   ? String(req.query.err).slice(0, 500)   : '',
+        pwMsg: req.query.pwMsg ? String(req.query.pwMsg).slice(0, 500) : '',
+        pwErr: req.query.pwErr ? String(req.query.pwErr).slice(0, 500) : '',
       },
     }));
   } catch (e) {
@@ -1264,6 +1275,46 @@ router.post('/setup/delete-code', requireAuth, async (req, res) => {
     return res.redirect('/ocular/setup?err=' + encodeURIComponent(result.error));
   }
   res.redirect('/ocular/setup?msg=' + encodeURIComponent('Delete code updated successfully.'));
+});
+
+// ─── POST /ocular/setup/password — change own password ────────────────────
+router.post('/setup/password', requireAuth, async (req, res) => {
+  const passwords = require('../passwords');
+  const emailMod  = require('../email');
+  const { current_password, new_password, confirm_password } = req.body;
+
+  const back = (msg) => res.redirect('/ocular/setup?pwErr=' + encodeURIComponent(msg));
+
+  if (!current_password || !new_password || !confirm_password) {
+    return back('All fields are required.');
+  }
+  if (new_password !== confirm_password) {
+    return back('New password and confirmation do not match.');
+  }
+  const pwErr = passwords.validate(new_password);
+  if (pwErr) return back(pwErr);
+
+  try {
+    const r = await query(
+      `SELECT id, email, name, password_hash FROM users WHERE id = $1 AND tenant_id = $2 LIMIT 1`,
+      [req.userId, req.tenantId]
+    );
+    if (!r.rows.length) return back('Account not found.');
+    const u = r.rows[0];
+    const ok = await passwords.verify(current_password, u.password_hash);
+    if (!ok) return back('Current password is incorrect.');
+
+    const hashed = await passwords.hash(new_password);
+    await query(`UPDATE users SET password_hash = $1 WHERE id = $2`, [hashed, u.id]);
+
+    // Best-effort confirmation email.
+    emailMod.sendPasswordChangedEmail(u.email, u.name).catch(() => {});
+
+    return res.redirect('/ocular/setup?pwMsg=' + encodeURIComponent('Password updated.'));
+  } catch (e) {
+    console.error('[setup/password POST]', e);
+    return back('Something went wrong. Please try again.');
+  }
 });
 
 // ─── Placeholder routes for unbuilt pages ──────────────────────────────────

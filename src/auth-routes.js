@@ -440,4 +440,146 @@ router.get('/logout', (req, res) => {
   else res.redirect('/login');
 });
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Password reset — Phase 2d
+// ─────────────────────────────────────────────────────────────────────────────
+
+// ── GET /forgot-password ─────────────────────────────────────────────────────
+router.get('/forgot-password', (req, res) => {
+  const flash = req.query.flash ? `<div class="ok">${escHTML(req.query.flash)}</div>` : '';
+  const e = escHTML(req.query.email || '');
+  res.send(authShell('Reset password', `
+    <h1>Reset your password</h1>
+    <p class="lede">Enter your email and we'll send you a reset link.</p>
+    ${flash}
+    <form method="POST" action="/forgot-password" novalidate>
+      <div class="field">
+        <label for="email">Email</label>
+        <input id="email" type="email" name="email" value="${e}" autocomplete="email" autofocus required maxlength="254">
+      </div>
+      <button type="submit">Send reset link</button>
+    </form>
+    <div class="alt"><a href="/login">Back to sign in</a></div>
+  `));
+});
+
+// ── POST /forgot-password ────────────────────────────────────────────────────
+router.post('/forgot-password', async (req, res) => {
+  const emailAddr = String(req.body.email || '').trim().toLowerCase();
+
+  // Always show the same confirmation page — never leak whether the email
+  // exists. Only act if we actually find a matching user.
+  const ok = () => res.redirect('/forgot-password?email=' + encodeURIComponent(emailAddr) +
+                                '&flash=' + encodeURIComponent('If an account exists for that email, we sent a reset link.'));
+
+  if (!isValidEmail(emailAddr)) return ok();
+  try {
+    const r = await query(
+      `SELECT id, name FROM users WHERE email = $1 AND status = 'active' LIMIT 1`,
+      [emailAddr]
+    );
+    if (r.rows.length) {
+      const u = r.rows[0];
+      const token = await tokens.issueToken('password_reset_tokens', u.id, 60); // 1 hour
+      await email.sendPasswordResetEmail(emailAddr, u.name, token);
+    }
+    return ok();
+  } catch (e) {
+    console.error('[forgot-password POST]', e);
+    return ok();
+  }
+});
+
+// ── GET /reset-password?token=... ────────────────────────────────────────────
+router.get('/reset-password', async (req, res) => {
+  const token = String(req.query.token || '');
+  if (!token) {
+    return res.send(authShell('Invalid link', `
+      <h1>Invalid link</h1>
+      <p class="lede">That password-reset link is missing a token.</p>
+      <div class="alt"><a href="/forgot-password">Request a new link</a></div>
+    `));
+  }
+  // Probe the token without consuming it — we only mark used_at after the
+  // POST below succeeds. That way a click that lands the form but never
+  // submits doesn't burn the token.
+  try {
+    const r = await query(
+      `SELECT 1 FROM password_reset_tokens
+        WHERE token = $1 AND used_at IS NULL AND expires_at > NOW()`,
+      [token]
+    );
+    if (!r.rows.length) {
+      return res.send(authShell('Link expired', `
+        <h1>Link expired</h1>
+        <div class="error">This reset link is invalid or has already been used.</div>
+        <div class="alt"><a href="/forgot-password">Request a new link</a></div>
+      `));
+    }
+  } catch (e) {
+    console.error('[reset-password GET]', e);
+    return res.send(authShell('Something went wrong', `
+      <h1>Something went wrong</h1>
+      <div class="error">Please try the link again.</div>
+    `));
+  }
+  const err = req.query.err ? `<div class="error">${escHTML(req.query.err)}</div>` : '';
+  res.send(authShell('Choose a new password', `
+    <h1>Choose a new password</h1>
+    <p class="lede">Enter and confirm your new password.</p>
+    ${err}
+    <form method="POST" action="/reset-password" novalidate>
+      <input type="hidden" name="token" value="${escHTML(token)}">
+      <div class="field">
+        <label for="password">New password</label>
+        <input id="password" type="password" name="password" autocomplete="new-password" required minlength="8" maxlength="200" autofocus>
+        <div class="hint">At least 8 characters.</div>
+      </div>
+      <div class="field">
+        <label for="confirm">Confirm new password</label>
+        <input id="confirm" type="password" name="confirm" required minlength="8" maxlength="200">
+      </div>
+      <button type="submit">Update password</button>
+    </form>
+  `));
+});
+
+// ── POST /reset-password ─────────────────────────────────────────────────────
+router.post('/reset-password', async (req, res) => {
+  const token    = String(req.body.token    || '');
+  const password = String(req.body.password || '');
+  const confirm  = String(req.body.confirm  || '');
+
+  const back = (msg) => res.redirect('/reset-password?token=' + encodeURIComponent(token) +
+                                     '&err=' + encodeURIComponent(msg));
+
+  const pwErr = passwords.validate(password);
+  if (pwErr) return back(pwErr);
+  if (password !== confirm) return back('Passwords do not match.');
+
+  try {
+    const userId = await tokens.consumeToken('password_reset_tokens', token);
+    if (!userId) {
+      return res.send(authShell('Link expired', `
+        <h1>Link expired</h1>
+        <div class="error">This reset link is invalid or has already been used.</div>
+        <div class="alt"><a href="/forgot-password">Request a new link</a></div>
+      `));
+    }
+    const hashed = await passwords.hash(password);
+    await query(`UPDATE users SET password_hash = $1 WHERE id = $2`, [hashed, userId]);
+
+    // Notify the account that the password was changed (best-effort).
+    const u = await query(`SELECT email, name FROM users WHERE id = $1 LIMIT 1`, [userId]);
+    if (u.rows.length) {
+      email.sendPasswordChangedEmail(u.rows[0].email, u.rows[0].name).catch(() => {});
+    }
+
+    res.redirect('/login?info=' + encodeURIComponent('Password updated. Sign in with your new password.'));
+  } catch (e) {
+    console.error('[reset-password POST]', e);
+    return back('Something went wrong. Please try the link again.');
+  }
+});
+
 module.exports = router;

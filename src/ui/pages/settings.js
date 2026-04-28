@@ -17,7 +17,8 @@ const { escHTML } = require('../_helpers');
  *   - badges: { 'records-count'?, 'overdue-count'? }
  *   - lastUpdatedAt: Date|null — when the delete code was last changed
  *   - usingDefault: boolean — true if delete code is still 'HudREI2026'
- *   - flash: { msg?, err? } — from query string after redirect
+ *   - userEmail: string — current signed-in email (display only)
+ *   - flash: { msg?, err?, pwMsg?, pwErr? } — from query string after redirect
  */
 function settingsPage(data = {}) {
   const lastUpdated = data.lastUpdatedAt
@@ -32,6 +33,11 @@ function settingsPage(data = {}) {
     ? `<div class="ocu-card" style="margin-bottom:16px;background:#e8f5ee;border-color:#9bd0a8;color:#1a5f1a;padding:12px 16px;font-size:13px">${escHTML(flash.msg)}</div>`
     : flash.err
     ? `<div class="ocu-card" style="margin-bottom:16px;background:#fdeaea;border-color:#f5c5c5;color:#8b1f1f;padding:12px 16px;font-size:13px">${escHTML(flash.err)}</div>`
+    : '';
+  const pwFlashHTML = flash.pwMsg
+    ? `<div class="ocu-card" style="margin-bottom:16px;background:#e8f5ee;border-color:#9bd0a8;color:#1a5f1a;padding:12px 16px;font-size:13px">${escHTML(flash.pwMsg)}</div>`
+    : flash.pwErr
+    ? `<div class="ocu-card" style="margin-bottom:16px;background:#fdeaea;border-color:#f5c5c5;color:#8b1f1f;padding:12px 16px;font-size:13px">${escHTML(flash.pwErr)}</div>`
     : '';
 
   const defaultBanner = data.usingDefault
@@ -70,6 +76,29 @@ function settingsPage(data = {}) {
       </div>
     </form>`;
 
+  const passwordForm = `
+    <div style="font-size:13px;color:var(--ocu-text-2);line-height:1.6;margin-bottom:16px">
+      Signed in as <strong style="color:var(--ocu-text-1)">${escHTML(data.userEmail || 'you')}</strong>.
+      Choose a new password — at least 8 characters. We'll send you an email confirmation when it changes.
+    </div>
+    <form method="POST" action="/ocular/setup/password" autocomplete="off" style="display:flex;flex-direction:column;gap:14px">
+      <div>
+        <label class="ocu-form-label">Current password</label>
+        <input type="password" name="current_password" required autocomplete="current-password" class="ocu-input" />
+      </div>
+      <div>
+        <label class="ocu-form-label">New password <span style="color:var(--ocu-text-3);font-weight:400">(at least 8 characters)</span></label>
+        <input type="password" name="new_password" required minlength="8" maxlength="200" autocomplete="new-password" class="ocu-input" />
+      </div>
+      <div>
+        <label class="ocu-form-label">Confirm new password</label>
+        <input type="password" name="confirm_password" required minlength="8" maxlength="200" autocomplete="new-password" class="ocu-input" />
+      </div>
+      <div style="display:flex;justify-content:flex-end;margin-top:4px">
+        <button type="submit" class="ocu-btn ocu-btn-primary">Update password</button>
+      </div>
+    </form>`;
+
   const recoveryNote = `
     <div style="font-size:13px;color:var(--ocu-text-2);line-height:1.6">
       <strong style="color:var(--ocu-text-1)">If you forget this code,</strong> an admin with database access
@@ -86,13 +115,21 @@ function settingsPage(data = {}) {
     </div>
 
     <div style="max-width:680px">
-      ${flashHTML}
-      ${defaultBanner}
+      ${pwFlashHTML}
       ${card({
-        title: 'Delete code',
-        meta:  'Required for any destructive action',
-        body:  deleteCodeForm,
+        title: 'Change password',
+        meta:  'Update your sign-in password',
+        body:  passwordForm,
       })}
+      <div style="margin-top:16px">
+        ${flashHTML}
+        ${defaultBanner}
+        ${card({
+          title: 'Delete code',
+          meta:  'Required for any destructive action',
+          body:  deleteCodeForm,
+        })}
+      </div>
       <div style="margin-top:16px">
         ${card({
           title: 'Recovery',
