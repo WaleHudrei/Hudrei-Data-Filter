@@ -540,6 +540,104 @@ router.get('/records/:id(\\d+)', requireAuth, async (req, res) => {
   }
 });
 
+// ─── /ocular/lists — Lists page ────────────────────────────────────────────
+router.get('/lists', requireAuth, async (req, res) => {
+  try {
+    const { listsPage } = require('./pages/lists');
+    const t = req.tenantId;
+    const q = String(req.query.q || '').trim();
+    const page  = Math.max(1, parseInt(req.query.page, 10) || 1);
+    const limit = 50;
+    const offset = (page - 1) * limit;
+
+    const conditions = [`l.tenant_id = $1`];
+    const params = [t];
+    let idx = 2;
+    if (q) {
+      conditions.push(`l.list_name ILIKE $${idx}`);
+      params.push(`%${q}%`); idx++;
+    }
+    const whereSQL = `WHERE ${conditions.join(' AND ')}`;
+
+    const countRes = await query(`SELECT COUNT(*)::int AS n FROM lists l ${whereSQL}`, params);
+    const total = countRes.rows[0]?.n || 0;
+
+    const rowsRes = await query(`
+      SELECT l.id, l.list_name, l.list_type, l.source, l.active, l.upload_date, l.created_at,
+             COUNT(pl.property_id)::int AS property_count
+        FROM lists l
+        LEFT JOIN property_lists pl ON pl.list_id = l.id AND pl.tenant_id = l.tenant_id
+        ${whereSQL}
+        GROUP BY l.id
+        ORDER BY l.created_at DESC NULLS LAST
+        LIMIT $${idx} OFFSET $${idx + 1}
+    `, [...params, limit, offset]);
+
+    const querystring = req.url.includes('?') ? req.url.split('?')[1] : '';
+
+    res.send(listsPage({
+      user: await getUser(req),
+      rows: rowsRes.rows,
+      total, page, limit,
+      querystring,
+      filters: { q },
+      flash: {
+        msg: req.query.msg ? String(req.query.msg).slice(0, 500) : '',
+        err: req.query.err ? String(req.query.err).slice(0, 500) : '',
+      },
+    }));
+  } catch (e) {
+    console.error('[ocular/lists]', e);
+    res.status(500).send('Error loading lists: ' + e.message);
+  }
+});
+
+router.post('/lists/edit', requireAuth, async (req, res) => {
+  try {
+    const id = parseInt(req.body.id, 10);
+    if (!id) return res.redirect('/ocular/lists?err=' + encodeURIComponent('Missing list id'));
+    const list_name = String(req.body.list_name || '').trim();
+    if (!list_name) return res.redirect('/ocular/lists?err=' + encodeURIComponent('List name is required'));
+    const list_type = String(req.body.list_type || '').trim() || null;
+    const source    = String(req.body.source    || '').trim() || null;
+    const r = await query(
+      `UPDATE lists
+          SET list_name = $1,
+              list_type = COALESCE(NULLIF($2, ''), list_type),
+              source    = COALESCE(NULLIF($3, ''), source)
+        WHERE id = $4 AND tenant_id = $5`,
+      [list_name, list_type, source, id, req.tenantId]
+    );
+    if (!r.rowCount) return res.redirect('/ocular/lists?err=' + encodeURIComponent('List not found'));
+    res.redirect('/ocular/lists?msg=' + encodeURIComponent('List updated'));
+  } catch (e) {
+    console.error('[ocular/lists/edit]', e);
+    res.redirect('/ocular/lists?err=' + encodeURIComponent('Failed to update list'));
+  }
+});
+
+router.post('/lists/delete', requireAuth, async (req, res) => {
+  try {
+    const id = parseInt(req.body.id, 10);
+    if (!id) return res.redirect('/ocular/lists?err=' + encodeURIComponent('Missing list id'));
+    const code = String(req.body.code || '');
+    const settings = require('../settings');
+    const verified = await settings.verifyDeleteCode(req.tenantId, code);
+    if (!verified) return res.redirect('/ocular/lists?err=' + encodeURIComponent('Invalid delete code'));
+
+    // Verify list belongs to this tenant before any DELETE.
+    const own = await query(`SELECT 1 FROM lists WHERE id = $1 AND tenant_id = $2`, [id, req.tenantId]);
+    if (!own.rows.length) return res.redirect('/ocular/lists?err=' + encodeURIComponent('List not found'));
+
+    await query(`DELETE FROM property_lists WHERE list_id = $1 AND tenant_id = $2`, [id, req.tenantId]);
+    await query(`DELETE FROM lists WHERE id = $1 AND tenant_id = $2`, [id, req.tenantId]);
+    res.redirect('/ocular/lists?msg=' + encodeURIComponent('List deleted'));
+  } catch (e) {
+    console.error('[ocular/lists/delete]', e);
+    res.redirect('/ocular/lists?err=' + encodeURIComponent('Failed to delete list'));
+  }
+});
+
 // ─── /ocular/activity — Activity (background import jobs) ──────────────────
 async function fetchActivityJobs(tenantId) {
   // bulk_import_jobs uses two different column-name flavors depending on
@@ -947,7 +1045,7 @@ router.post('/setup/delete-code', requireAuth, async (req, res) => {
 // Note: 'lists/types' is included separately because the List Registry
 // sidebar link targets /ocular/lists/types (not /ocular/lists). Without it,
 // clicking List Registry in the sidebar 404s.
-const placeholderPages = ['campaigns', 'lists', 'lists/types', 'upload'];
+const placeholderPages = ['campaigns', 'lists/types', 'upload'];
 const { shell } = require('./layouts/shell');
 placeholderPages.forEach(page => {
   // Title and active-page name both need to work whether `page` is 'records'
