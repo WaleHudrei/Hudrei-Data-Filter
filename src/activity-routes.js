@@ -75,20 +75,21 @@ function renderJobRow(j) {
   </tr>`;
 }
 
-async function fetchJobs() {
+async function fetchJobs(tenantId) {
   return query(`
     SELECT j.*, l.list_name
       FROM bulk_import_jobs j
-      LEFT JOIN lists l ON l.id = j.list_id
+      LEFT JOIN lists l ON l.id = j.list_id AND l.tenant_id = j.tenant_id
+     WHERE j.tenant_id = $1
      ORDER BY j.created_at DESC
      LIMIT 50
-  `);
+  `, [tenantId]);
 }
 
 // ── Activity Page ─────────────────────────────────────────────────────────────
 router.get('/', requireAuth, async (req, res) => {
   try {
-    const jobs = await fetchJobs();
+    const jobs = await fetchJobs(req.tenantId);
     const rows = jobs.rows.map(renderJobRow).join('');
     const hasRunning = jobs.rows.some(j => j.status === 'running' || j.status === 'pending');
 
@@ -158,7 +159,7 @@ router.get('/', requireAuth, async (req, res) => {
 // ── Status API (auto-refresh) ────────────────────────────────────────────────
 router.get('/status', requireAuth, async (req, res) => {
   try {
-    const jobs = await fetchJobs();
+    const jobs = await fetchJobs(req.tenantId);
     const hasRunning = jobs.rows.some(j => j.status === 'running' || j.status === 'pending');
     const html = jobs.rows.map(renderJobRow).join('');
     res.json({ html, hasRunning });
@@ -170,7 +171,7 @@ router.get('/status', requireAuth, async (req, res) => {
 // ── Single job status (for polling) ──────────────────────────────────────────
 router.get('/job/:id', requireAuth, async (req, res) => {
   try {
-    const result = await query(`SELECT * FROM bulk_import_jobs WHERE id=$1`, [req.params.id]);
+    const result = await query(`SELECT * FROM bulk_import_jobs WHERE id=$1 AND tenant_id=$2`, [req.params.id, req.tenantId]);
     if (!result.rows.length) return res.status(404).json({ error: 'Job not found' });
     const j = result.rows[0];
     res.json({ status: j.status, total: j.total_rows, processed: j.processed_rows, inserted: j.inserted, updated: j.updated, errors: j.errors });

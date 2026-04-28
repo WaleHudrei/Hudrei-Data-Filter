@@ -21,16 +21,16 @@ router.get('/', requireAuth, async (req, res) => {
   try {
     const msg = req.query.msg || '';
     const errMsg = req.query.err || '';
-    const marketsRes = await query(`SELECT * FROM markets ORDER BY state_name ASC`);
+    const marketsRes = await query(`SELECT * FROM markets WHERE tenant_id = $1 ORDER BY state_name ASC`, [req.tenantId]);
     const statsRes = await query(`
       SELECT
-        (SELECT COUNT(*) FROM properties) AS total_properties,
-        (SELECT COUNT(*) FROM contacts) AS total_contacts,
-        (SELECT COUNT(*) FROM phones) AS total_phones,
-        (SELECT COUNT(*) FROM lists) AS total_lists,
-        (SELECT COUNT(*) FROM call_logs) AS total_call_logs,
-        (SELECT COUNT(*) FROM sms_logs) AS total_sms_logs
-    `);
+        (SELECT COUNT(*) FROM properties WHERE tenant_id = $1) AS total_properties,
+        (SELECT COUNT(*) FROM contacts WHERE tenant_id = $1) AS total_contacts,
+        (SELECT COUNT(*) FROM phones WHERE tenant_id = $1) AS total_phones,
+        (SELECT COUNT(*) FROM lists WHERE tenant_id = $1) AS total_lists,
+        (SELECT COUNT(*) FROM call_logs WHERE tenant_id = $1) AS total_call_logs,
+        (SELECT COUNT(*) FROM sms_logs WHERE tenant_id = $1) AS total_sms_logs
+    `, [req.tenantId]);
     const stats = statsRes.rows[0];
 
     // Warn if delete code is still the default (Audit issue #32)
@@ -163,10 +163,10 @@ router.post('/markets/add', requireAuth, async (req, res) => {
     }
 
     await query(`
-      INSERT INTO markets (name, state_code, state_name)
-      VALUES ($1, $2, $3)
+      INSERT INTO markets (tenant_id, name, state_code, state_name)
+      VALUES ($1, $2, $3, $4)
       ON CONFLICT (state_code) DO UPDATE SET name = EXCLUDED.name, state_name = EXCLUDED.state_name
-    `, [name, normalized, state_name]);
+    `, [req.tenantId, name, normalized, state_name]);
     res.redirect('/setup?msg=saved');
   } catch(e) {
     console.error(e);
@@ -177,7 +177,7 @@ router.post('/markets/add', requireAuth, async (req, res) => {
 // ── POST /setup/markets/:id/toggle ───────────────────────────────────────────
 router.post('/markets/:id/toggle', requireAuth, async (req, res) => {
   try {
-    await query(`UPDATE markets SET active = NOT active WHERE id = $1`, [req.params.id]);
+    await query(`UPDATE markets SET active = NOT active WHERE id = $1 AND tenant_id = $2`, [req.params.id, req.tenantId]);
     res.redirect('/setup?msg=saved');
   } catch(e) {
     console.error(e);

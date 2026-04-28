@@ -92,7 +92,8 @@ router.get('/types', requireAuth, async (req, res) => {
     const errSafe = esc(err);
 
     const result = await query(
-      `SELECT * FROM list_templates ORDER BY sort_order ASC, state_code ASC, list_name ASC`
+      `SELECT * FROM list_templates WHERE tenant_id = $1 ORDER BY sort_order ASC, state_code ASC, list_name ASC`,
+      [req.tenantId]
     );
     const rows = result.rows;
 
@@ -358,8 +359,8 @@ router.post('/types', requireAuth, async (req, res) => {
   try {
     const name = String(req.body.list_name || 'New List Type').slice(0, 100).trim();
     const r = await query(
-      `INSERT INTO list_templates (list_name, action, sort_order) VALUES ($1, '', 0) RETURNING id`,
-      [name]
+      `INSERT INTO list_templates (tenant_id, list_name, action, sort_order) VALUES ($1, $2, '', 0) RETURNING id`,
+      [req.tenantId, name]
     );
     res.json({ ok: true, id: r.rows[0].id });
   } catch (e) {
@@ -391,12 +392,12 @@ router.post('/types/:id(\\d+)', requireAuth, async (req, res) => {
     const coerced = ALLOWED[field](value);
 
     await query(
-      `UPDATE list_templates SET ${field} = $1, updated_at = NOW() WHERE id = $2`,
-      [coerced, id]
+      `UPDATE list_templates SET ${field} = $1, updated_at = NOW() WHERE id = $2 AND tenant_id = $3`,
+      [coerced, id, req.tenantId]
     );
 
     // Return the derived next_pull_date so the client can update the cell
-    const updated = await query(`SELECT last_pull_date, frequency_days FROM list_templates WHERE id = $1`, [id]);
+    const updated = await query(`SELECT last_pull_date, frequency_days FROM list_templates WHERE id = $1 AND tenant_id = $2`, [id, req.tenantId]);
     const row = updated.rows[0];
     const next = row ? nextPullDate(row.last_pull_date, row.frequency_days) : null;
     const over = row ? isOverdue(row.last_pull_date, row.frequency_days) : false;
@@ -418,7 +419,7 @@ router.post('/types/:id(\\d+)', requireAuth, async (req, res) => {
 router.post('/types/:id(\\d+)/delete', requireAuth, async (req, res) => {
   try {
     const id = parseInt(req.params.id, 10);
-    await query(`DELETE FROM list_templates WHERE id = $1`, [id]);
+    await query(`DELETE FROM list_templates WHERE id = $1 AND tenant_id = $2`, [id, req.tenantId]);
     res.json({ ok: true });
   } catch (e) {
     console.error('[lists/types/:id/delete]', e);
@@ -431,8 +432,8 @@ router.post('/types/:id(\\d+)/pull', requireAuth, async (req, res) => {
   try {
     const id = parseInt(req.params.id, 10);
     const today = new Date().toISOString().slice(0, 10);
-    await query(`UPDATE list_templates SET last_pull_date = $1, updated_at = NOW() WHERE id = $2`, [today, id]);
-    const r = await query(`SELECT last_pull_date, frequency_days FROM list_templates WHERE id = $1`, [id]);
+    await query(`UPDATE list_templates SET last_pull_date = $1, updated_at = NOW() WHERE id = $2 AND tenant_id = $3`, [today, id, req.tenantId]);
+    const r = await query(`SELECT last_pull_date, frequency_days FROM list_templates WHERE id = $1 AND tenant_id = $2`, [id, req.tenantId]);
     const row = r.rows[0];
     const next = row ? nextPullDate(row.last_pull_date, row.frequency_days) : null;
     res.json({ ok: true, last_pull_date: today, next_pull_date: next ? fmtDate(next) : '—' });
@@ -444,7 +445,7 @@ router.post('/types/:id(\\d+)/pull', requireAuth, async (req, res) => {
 // ── GET /lists/types/overdue-count — dashboard widget JSON ───────────────────
 router.get('/types/overdue-count', requireAuth, async (req, res) => {
   try {
-    const result = await query(`SELECT last_pull_date, frequency_days FROM list_templates WHERE action = 'pull'`);
+    const result = await query(`SELECT last_pull_date, frequency_days FROM list_templates WHERE tenant_id = $1 AND action = 'pull'`, [req.tenantId]);
     const rows = result.rows;
     const overdue  = rows.filter(r => isOverdue(r.last_pull_date, r.frequency_days)).length;
     const dueSoon  = rows.filter(r => isDueSoon(r.last_pull_date, r.frequency_days)).length;

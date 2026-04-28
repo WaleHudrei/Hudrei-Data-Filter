@@ -39,6 +39,7 @@ async function ensureFeature5Schema() {
   await query(`
     CREATE TABLE IF NOT EXISTS owner_messages (
       id SERIAL PRIMARY KEY,
+      tenant_id INT NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
       contact_id INTEGER NOT NULL REFERENCES contacts(id) ON DELETE CASCADE,
       author VARCHAR(100) NOT NULL DEFAULT 'Unknown',
       body TEXT NOT NULL,
@@ -49,6 +50,7 @@ async function ensureFeature5Schema() {
   await query(`
     CREATE TABLE IF NOT EXISTS owner_activities (
       id SERIAL PRIMARY KEY,
+      tenant_id INT NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
       contact_id INTEGER NOT NULL REFERENCES contacts(id) ON DELETE CASCADE,
       property_id INTEGER REFERENCES properties(id) ON DELETE SET NULL,
       kind VARCHAR(50) NOT NULL,
@@ -78,64 +80,59 @@ router.get('/:id(\\d+)', requireAuth, async (req, res) => {
     const contactId = parseInt(req.params.id, 10);
     if (!contactId || isNaN(contactId)) return res.status(400).send('Invalid owner id');
 
-    // Fetch the contact core row.
+    // Fetch the contact core row — tenant-scoped so cross-tenant lookups 404.
     const contactRes = await query(
       `SELECT id, first_name, last_name, email, mailing_address, mailing_city,
               mailing_state, mailing_zip, owner_type, created_at
-         FROM contacts WHERE id = $1`,
-      [contactId]
+         FROM contacts WHERE id = $1 AND tenant_id = $2`,
+      [contactId, req.tenantId]
     );
     if (!contactRes.rowCount) return res.status(404).send('Owner not found');
     const c = contactRes.rows[0];
     const ownerName = [c.first_name, c.last_name].filter(Boolean).join(' ') || '(no name)';
 
-    // Flash message + error from redirects (e.g. after post-message submit)
     const msg = req.query.msg ? String(req.query.msg).slice(0, 500) : '';
     const err = req.query.err ? String(req.query.err).slice(0, 500) : '';
 
     // ─── Properties linked to this owner ──────────────────────────────────
-    // Uses property_contacts as the junction. A contact can be non-primary on
-    // some properties (co-owner) — include those too, so users see all props
-    // this person is associated with. Ordered newest-first by created_at.
     const propsRes = await query(
       `SELECT p.id, p.street, p.city, p.state_code, p.zip_code,
               p.property_type, p.pipeline_stage, p.estimated_value, p.assessed_value,
               p.last_sale_date, p.last_sale_price, p.created_at,
               pc.primary_contact, pc.role
          FROM property_contacts pc
-         JOIN properties p ON p.id = pc.property_id
-        WHERE pc.contact_id = $1
+         JOIN properties p ON p.id = pc.property_id AND p.tenant_id = pc.tenant_id
+        WHERE pc.contact_id = $1 AND pc.tenant_id = $2
         ORDER BY pc.primary_contact DESC, p.created_at DESC`,
-      [contactId]
+      [contactId, req.tenantId]
     );
     const props = propsRes.rows;
     const propIds = props.map(p => p.id);
 
-    // ─── Phones for this contact (with Mobile/Landline badges) ────────────
+    // ─── Phones for this contact ──────────────────────────────────────────
     const phonesRes = await query(
       `SELECT id, phone_number, phone_index, phone_type, phone_status,
               wrong_number, do_not_call, created_at
-         FROM phones WHERE contact_id = $1
+         FROM phones WHERE contact_id = $1 AND tenant_id = $2
         ORDER BY phone_index ASC, id ASC`,
-      [contactId]
+      [contactId, req.tenantId]
     );
     const phones = phonesRes.rows;
 
     // ─── KPIs ─────────────────────────────────────────────────────────────
-    // Computed in a single query for speed. Each subquery scopes to this
-    // owner's property set or phone set. All "count" metrics are null-safe.
     const kpiRes = await query(
       `SELECT
          $1::int AS property_count,
-         (SELECT COUNT(*)::int FROM properties WHERE id = ANY($2::int[]) AND pipeline_stage='closed') AS sold_count,
-         (SELECT COUNT(*)::int FROM properties WHERE id = ANY($2::int[]) AND pipeline_stage='lead')   AS lead_count,
-         (SELECT COUNT(*)::int FROM properties WHERE id = ANY($2::int[]) AND pipeline_stage='contract') AS contract_count,
-         (SELECT COUNT(*)::int FROM call_logs WHERE property_id = ANY($2::int[])) AS call_count,
-         (SELECT COUNT(*)::int FROM phones WHERE contact_id = $3) AS phone_total,
-         (SELECT COUNT(*)::int FROM phones WHERE contact_id = $3 AND LOWER(phone_status) = 'correct') AS phone_correct,
-         (SELECT COALESCE(SUM(COALESCE(assessed_value, estimated_value, 0)), 0)::numeric FROM properties WHERE id = ANY($2::int[])) AS total_investment
+         (SELECT COUNT(*)::int FROM properties WHERE tenant_id = $4 AND id = ANY($2::int[]) AND pipeline_stage='closed') AS sold_count,
+         (SELECT COUNT(*)::int FROM properties WHERE tenant_id = $4 AND id = ANY($2::int[]) AND pipeline_stage='lead')   AS lead_count,
+         (SELECT COUNT(*)::int FROM properties WHERE tenant_id = $4 AND id = ANY($2::int[]) AND pipeline_stage='contract') AS contract_count,
+         (SELECT COUNT(*)::int FROM call_logs WHERE tenant_id = $4 AND property_id = ANY($2::int[])) AS call_count,
+         (SELECT COUNT(*)::int FROM phones WHERE tenant_id = $4 AND contact_id = $3) AS phone_total,
+         (SELECT COUNT(*)::int FROM phones WHERE tenant_id = $4 AND contact_id = $3 AND LOWER(phone_status) = 'correct') AS phone_correct,
+         (SELECT COALESCE(SUM(COALESCE(assessed_value, estimated_value, 0)), 0)::numeric
+            FROM properties WHERE tenant_id = $4 AND id = ANY($2::int[])) AS total_investment
       `,
-      [props.length, propIds.length ? propIds : [0], contactId]
+      [props.length, propIds.length ? propIds : [0], contactId, req.tenantId]
     );
     const k = kpiRes.rows[0];
     const pctVerified = k.phone_total > 0 ? Math.round((k.phone_correct * 100) / k.phone_total) : 0;
@@ -143,18 +140,16 @@ router.get('/:id(\\d+)', requireAuth, async (req, res) => {
     // ─── Message board posts ──────────────────────────────────────────────
     const msgsRes = await query(
       `SELECT id, author, body, created_at FROM owner_messages
-        WHERE contact_id = $1 ORDER BY created_at DESC LIMIT 100`,
-      [contactId]
+        WHERE contact_id = $1 AND tenant_id = $2 ORDER BY created_at DESC LIMIT 100`,
+      [contactId, req.tenantId]
     );
     const messages = msgsRes.rows;
 
     // ─── Activity log ─────────────────────────────────────────────────────
-    // Two sources: explicit entries in owner_activities (future), and
-    // derived from call_logs against this owner's phones. Union + order.
     const actRes = await query(
       `(
          SELECT 'manual' AS src, id, kind, summary, author, created_at, property_id
-           FROM owner_activities WHERE contact_id = $1
+           FROM owner_activities WHERE contact_id = $1 AND tenant_id = $2
        )
        UNION ALL
        (
@@ -164,12 +159,12 @@ router.get('/:id(\\d+)', requireAuth, async (req, res) => {
                 COALESCE(cl.call_date::timestamptz, cl.created_at) AS created_at,
                 cl.property_id
            FROM call_logs cl
-           JOIN phones ph ON ph.id = cl.phone_id
-          WHERE ph.contact_id = $1
+           JOIN phones ph ON ph.id = cl.phone_id AND ph.tenant_id = cl.tenant_id
+          WHERE ph.contact_id = $1 AND cl.tenant_id = $2
        )
        ORDER BY created_at DESC
        LIMIT 200`,
-      [contactId]
+      [contactId, req.tenantId]
     );
     const activities = actRes.rows;
 
@@ -377,13 +372,13 @@ router.post('/:id(\\d+)/message', requireAuth, async (req, res) => {
     if (!author) return res.redirect(`/owners/${contactId}?err=${encodeURIComponent('Your name is required')}`);
     if (!body)   return res.redirect(`/owners/${contactId}?err=${encodeURIComponent('Message body is required')}`);
 
-    // Verify contact exists — gives a clearer error than a FK violation later.
-    const c = await query(`SELECT id FROM contacts WHERE id = $1`, [contactId]);
+    // Verify contact exists AND belongs to this tenant.
+    const c = await query(`SELECT id FROM contacts WHERE id = $1 AND tenant_id = $2`, [contactId, req.tenantId]);
     if (!c.rowCount) return res.status(404).send('Owner not found');
 
     await query(
-      `INSERT INTO owner_messages (contact_id, author, body) VALUES ($1, $2, $3)`,
-      [contactId, author, body]
+      `INSERT INTO owner_messages (tenant_id, contact_id, author, body) VALUES ($1, $2, $3, $4)`,
+      [req.tenantId, contactId, author, body]
     );
     res.redirect(`/owners/${contactId}?msg=${encodeURIComponent('Note posted')}#pane-messages`);
   } catch (e) {

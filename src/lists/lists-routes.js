@@ -29,10 +29,11 @@ router.get('/', requireAuth, async (req, res) => {
     const limit = 50;
     const offset = (parseInt(page) - 1) * limit;
 
-    let where = '';
-    let params = [];
+    // Tenant baseline so the result set is always tenant-scoped.
+    let where = `WHERE l.tenant_id = $1`;
+    let params = [req.tenantId];
     if (q) {
-      where = `WHERE l.list_name ILIKE $1`;
+      where += ` AND l.list_name ILIKE $2`;
       params.push(`%${q}%`);
     }
 
@@ -44,7 +45,7 @@ router.get('/', requireAuth, async (req, res) => {
         l.id, l.list_name, l.list_type, l.source, l.active, l.upload_date, l.created_at,
         COUNT(pl.property_id) AS property_count
       FROM lists l
-      LEFT JOIN property_lists pl ON pl.list_id = l.id
+      LEFT JOIN property_lists pl ON pl.list_id = l.id AND pl.tenant_id = l.tenant_id
       ${where}
       GROUP BY l.id
       ORDER BY l.created_at DESC
@@ -229,8 +230,8 @@ router.get('/', requireAuth, async (req, res) => {
 router.post('/edit', requireAuth, async (req, res) => {
   try {
     const { id, list_name, list_type, source } = req.body;
-    await query(`UPDATE lists SET list_name=$1, list_type=COALESCE(NULLIF($2,''),list_type), source=COALESCE(NULLIF($3,''),source) WHERE id=$4`,
-      [list_name, list_type, source, id]);
+    await query(`UPDATE lists SET list_name=$1, list_type=COALESCE(NULLIF($2,''),list_type), source=COALESCE(NULLIF($3,''),source) WHERE id=$4 AND tenant_id=$5`,
+      [list_name, list_type, source, id, req.tenantId]);
     res.redirect('/lists?msg=saved');
   } catch(e) {
     console.error(e);
@@ -253,8 +254,11 @@ router.post('/delete', requireAuth, async (req, res) => {
     if (!verified) {
       return res.redirect('/lists?msg=error&err=' + encodeURIComponent('Invalid delete code.'));
     }
-    await query(`DELETE FROM property_lists WHERE list_id=$1`, [id]);
-    await query(`DELETE FROM lists WHERE id=$1`, [id]);
+    // Verify the list belongs to this tenant before any DELETE.
+    const own = await query(`SELECT 1 FROM lists WHERE id=$1 AND tenant_id=$2`, [id, req.tenantId]);
+    if (!own.rowCount) return res.redirect('/lists?msg=error&err=' + encodeURIComponent('List not found.'));
+    await query(`DELETE FROM property_lists WHERE list_id=$1 AND tenant_id=$2`, [id, req.tenantId]);
+    await query(`DELETE FROM lists WHERE id=$1 AND tenant_id=$2`, [id, req.tenantId]);
     res.redirect('/lists?msg=deleted');
   } catch(e) {
     console.error(e);
