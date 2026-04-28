@@ -95,7 +95,7 @@ function shell(opts = {}) {
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="/ocular-static/ocular.css?v=6">
+  <link rel="stylesheet" href="/ocular-static/ocular.css?v=7">
   ${extraHead}
 </head>
 <body class="ocu">
@@ -125,8 +125,8 @@ function shell(opts = {}) {
         <div class="ocu-user-role">${escHTML(user.role || '')}</div>
       </div>
     </div>
-    <button class="ocu-collapse-btn" id="ocu-collapse" title="Collapse sidebar">
-      <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">${ICONS.chevronLeft}</svg>
+    <button class="ocu-collapse-btn" id="ocu-collapse" title="Collapse sidebar" aria-label="Collapse sidebar">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3">${ICONS.chevronLeft}</svg>
     </button>
   </aside>
 
