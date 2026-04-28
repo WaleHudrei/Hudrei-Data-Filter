@@ -1762,3 +1762,183 @@
 /* Add bottom padding to body when action bar is sticky to avoid covering content */
 body { padding-bottom: 0; }
 .ocu-records-main-fullwidth { padding-bottom: 80px; }
+
+/* ─── Forms ──────────────────────────────────────────────────────────────────
+   Reusable label + input + textarea primitives. Used by the Settings page
+   and the Owner detail message form. Match the Ocular search-input style. */
+.ocu-form-label {
+  display: block;
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--ocu-text-2);
+  margin-bottom: 6px;
+  letter-spacing: .01em;
+}
+.ocu-input,
+.ocu-textarea {
+  width: 100%;
+  background: var(--ocu-surface);
+  border: 1px solid var(--ocu-border);
+  border-radius: 7px;
+  padding: 9px 12px;
+  font-family: var(--ocu-display);
+  font-size: 13.5px;
+  color: var(--ocu-text-1);
+  box-sizing: border-box;
+  transition: border-color .15s, background .15s;
+}
+.ocu-input:focus,
+.ocu-textarea:focus {
+  outline: none;
+  border-color: var(--ocu-text-2);
+  background: var(--ocu-surface-2, #fff);
+}
+.ocu-textarea { resize: vertical; min-height: 80px; line-height: 1.5; }
+
+/* ─── Buttons ────────────────────────────────────────────────────────────── */
+.ocu-btn-ghost {
+  background: transparent;
+  border: 1px solid transparent;
+  color: var(--ocu-text-2);
+}
+.ocu-btn-ghost:hover { color: var(--ocu-text-1); background: var(--ocu-surface); }
+
+/* ─── Utility text classes ───────────────────────────────────────────────── */
+.ocu-text-1 { color: var(--ocu-text-1); }
+.ocu-text-2 { color: var(--ocu-text-2); }
+.ocu-text-3 { color: var(--ocu-text-3); }
+.ocu-text-right { text-align: right; }
+.ocu-mono { font-family: 'JetBrains Mono', ui-monospace, monospace; font-size: 12.5px; }
+.ocu-link {
+  color: #2563eb;
+  text-decoration: none;
+  transition: color .15s;
+}
+.ocu-link:hover { color: #1d4ed8; text-decoration: underline; }
+
+/* ─── Empty-state placeholder ────────────────────────────────────────────── */
+.ocu-empty {
+  padding: 48px 24px;
+  text-align: center;
+  font-size: 13px;
+  color: var(--ocu-text-3);
+  background: var(--ocu-surface);
+  border: 1px dashed var(--ocu-border);
+  border-radius: 10px;
+}
+
+/* ─── Pill variants for owner detail ─────────────────────────────────────── */
+.ocu-pill[data-type="mobile"]   { background: #e8f0fc; color: #2a4a8a; }
+.ocu-pill[data-type="landline"] { background: #f5f0e8; color: #8a5a2a; }
+.ocu-pill[data-type="voip"]     { background: #f0e8f5; color: #5a2a8a; }
+.ocu-pill[data-owner-type="Person"]  { background: #f0efe9; color: #555; }
+.ocu-pill[data-owner-type="Company"] { background: #e8f0fc; color: #2a4a8a; }
+.ocu-pill[data-owner-type="Trust"]   { background: #f5f0e8; color: #8a5a2a; }
+.ocu-pill-good    { background: #e8f5ee; color: #1a7a4a; }
+.ocu-pill-bad     { background: #fdeaea; color: #8b1f1f; }
+.ocu-pill-warn    { background: #fef3c7; color: #92400e; }
+.ocu-pill-primary { background: #e8f0fc; color: #2a4a8a; }
+.ocu-pill[data-kind="call"]     { background: #e8f0fc; color: #2a4a8a; }
+.ocu-pill[data-kind="pipeline"] { background: #f5f0e8; color: #8a5a2a; }
+.ocu-pill[data-kind="edit"]     { background: #f0e8f5; color: #5a2a8a; }
+.ocu-pill[data-kind="manual"]   { background: #f0efe9; color: #555; }
+
+/* ─── Tabs (used by Owner detail; reusable) ──────────────────────────────── */
+.ocu-tabs {
+  display: flex;
+  gap: 4px;
+  border-bottom: 1px solid var(--ocu-border);
+  margin-bottom: 16px;
+}
+.ocu-tab {
+  background: none;
+  border: none;
+  padding: 10px 16px;
+  font-family: var(--ocu-display);
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--ocu-text-3);
+  cursor: pointer;
+  border-bottom: 2px solid transparent;
+  margin-bottom: -1px;
+  transition: color .15s, border-color .15s;
+}
+.ocu-tab:hover { color: var(--ocu-text-2); }
+.ocu-tab.active {
+  color: var(--ocu-text-1);
+  border-bottom-color: var(--ocu-text-1);
+  font-weight: 600;
+}
+.ocu-tab-pane { display: none; }
+.ocu-tab-pane.active { display: block; }
+
+/* ─── Owner detail page layout ───────────────────────────────────────────── */
+.ocu-owner-detail-layout {
+  display: grid;
+  grid-template-columns: 1fr 320px;
+  gap: 20px;
+}
+@media (max-width: 900px) {
+  .ocu-owner-detail-layout { grid-template-columns: 1fr; }
+}
+.ocu-owner-sidebar { /* container only — no extra styling needed */ }
+
+/* Phone rows in the right sidebar */
+.ocu-owner-phone-row {
+  padding: 10px 0;
+  border-bottom: 1px solid var(--ocu-border-soft, #f0efe9);
+}
+.ocu-owner-phone-row:last-child { border-bottom: none; }
+.ocu-owner-phone-num {
+  font-family: 'JetBrains Mono', ui-monospace, monospace;
+  font-size: 13px;
+  color: var(--ocu-text-1);
+  margin-bottom: 6px;
+}
+.ocu-owner-phone-badges { display: flex; gap: 4px; flex-wrap: wrap; }
+
+/* Message board entries */
+.ocu-owner-message {
+  padding: 12px 14px;
+  border: 1px solid var(--ocu-border-soft, #f0efe9);
+  border-radius: 8px;
+  margin-bottom: 10px;
+  background: var(--ocu-surface);
+}
+.ocu-owner-message-head {
+  display: flex;
+  justify-content: space-between;
+  margin-bottom: 6px;
+  font-size: 12px;
+}
+.ocu-owner-message-author {
+  color: var(--ocu-text-1);
+  font-weight: 600;
+}
+.ocu-owner-message-body {
+  font-size: 13px;
+  color: var(--ocu-text-1);
+  line-height: 1.5;
+  white-space: pre-wrap;
+}
+
+/* Activity log rows */
+.ocu-owner-activity-row {
+  display: grid;
+  grid-template-columns: 90px auto 1fr;
+  gap: 12px;
+  padding: 10px 0;
+  border-bottom: 1px solid var(--ocu-border-soft, #f0efe9);
+  align-items: flex-start;
+}
+.ocu-owner-activity-row:last-child { border-bottom: none; }
+.ocu-owner-activity-time {
+  font-size: 11px;
+  color: var(--ocu-text-3);
+  padding-top: 2px;
+}
+.ocu-owner-activity-body {
+  font-size: 13px;
+  color: var(--ocu-text-1);
+  line-height: 1.4;
+}

@@ -540,6 +540,353 @@ router.get('/records/:id(\\d+)', requireAuth, async (req, res) => {
   }
 });
 
+// ─── /ocular/owners — Owners list page ─────────────────────────────────────
+router.get('/owners', requireAuth, async (req, res) => {
+  try {
+    const { ownersList } = require('./pages/owners-list');
+    const t = req.tenantId;
+
+    // ── Parse + sanitize filter params ─────────────────────────────────────
+    const q          = String(req.query.q || '').trim();
+    const ownerType  = String(req.query.owner_type || '').trim();
+    const minPropsRaw = String(req.query.min_props || '').trim();
+    const minProps   = /^\d+$/.test(minPropsRaw) ? parseInt(minPropsRaw, 10) : null;
+
+    const page  = Math.max(1, parseInt(req.query.page, 10) || 1);
+    const limit = 25;
+    const offset = (page - 1) * limit;
+
+    // ── WHERE builder ──────────────────────────────────────────────────────
+    // Tenant filter is always-on; everything else stacks on top.
+    const conditions = [`c.tenant_id = $1`];
+    const params = [t];
+    let idx = 2;
+
+    if (q) {
+      conditions.push(`(
+        c.first_name ILIKE $${idx}
+        OR c.last_name ILIKE $${idx}
+        OR (c.first_name || ' ' || c.last_name) ILIKE $${idx}
+        OR c.mailing_city ILIKE $${idx}
+      )`);
+      params.push(`%${q}%`); idx++;
+    }
+    if (['Person', 'Company', 'Trust'].includes(ownerType)) {
+      conditions.push(`c.owner_type = $${idx}`);
+      params.push(ownerType); idx++;
+    }
+
+    // Constrain to contacts that have at least one property link in this tenant.
+    // The HAVING clause below handles the min_props filter.
+    const whereSQL = conditions.length ? 'WHERE ' + conditions.join(' AND ') : '';
+
+    // ── COUNT (with HAVING for min_props) ──────────────────────────────────
+    // Two-step: subquery groups, outer counts. min_props applies to the
+    // group-level property_count, so it has to be inside a subquery.
+    const havingClause = minProps != null && minProps > 0
+      ? `HAVING COUNT(pc.property_id) >= $${idx}`
+      : '';
+    const havingParam  = minProps != null && minProps > 0 ? [minProps] : [];
+
+    const countRes = await query(`
+      SELECT COUNT(*)::int AS n FROM (
+        SELECT c.id
+          FROM contacts c
+          JOIN property_contacts pc ON pc.contact_id = c.id AND pc.tenant_id = c.tenant_id
+          ${whereSQL}
+          GROUP BY c.id
+          ${havingClause}
+      ) t
+    `, [...params, ...havingParam]);
+    const total = countRes.rows[0]?.n || 0;
+
+    // ── ROWS ───────────────────────────────────────────────────────────────
+    // Per-row aggregates: property_count, phone_total, phone_correct, lead_count.
+    // Sorted by property_count DESC by default (most-portfolio first).
+    const limitIdx = idx + havingParam.length;
+    const offsetIdx = limitIdx + 1;
+    const rowsRes = await query(`
+      SELECT
+        c.id,
+        c.first_name,
+        c.last_name,
+        c.owner_type,
+        c.mailing_city,
+        c.mailing_state,
+        COUNT(DISTINCT pc.property_id)::int AS property_count,
+        (SELECT COUNT(*)::int FROM phones ph
+           WHERE ph.contact_id = c.id AND ph.tenant_id = c.tenant_id) AS phone_total,
+        (SELECT COUNT(*)::int FROM phones ph
+           WHERE ph.contact_id = c.id AND ph.tenant_id = c.tenant_id
+             AND LOWER(ph.phone_status) = 'correct') AS phone_correct,
+        (SELECT COUNT(*)::int FROM properties p
+           WHERE p.tenant_id = c.tenant_id
+             AND p.id = ANY(ARRAY(SELECT pc2.property_id FROM property_contacts pc2
+                                    WHERE pc2.contact_id = c.id AND pc2.tenant_id = c.tenant_id))
+             AND p.pipeline_stage = 'lead') AS lead_count
+      FROM contacts c
+      JOIN property_contacts pc ON pc.contact_id = c.id AND pc.tenant_id = c.tenant_id
+      ${whereSQL}
+      GROUP BY c.id
+      ${havingClause}
+      ORDER BY property_count DESC, c.last_name ASC, c.first_name ASC
+      LIMIT $${limitIdx} OFFSET $${offsetIdx}
+    `, [...params, ...havingParam, limit, offset]);
+
+    // ── KPIs ───────────────────────────────────────────────────────────────
+    // Lightweight tenant-wide aggregates for the strip at the top.
+    const kpiRes = await query(`
+      SELECT
+        (SELECT COUNT(DISTINCT c.id)::int
+           FROM contacts c
+           JOIN property_contacts pc ON pc.contact_id = c.id AND pc.tenant_id = c.tenant_id
+          WHERE c.tenant_id = $1) AS total_contacts,
+        (SELECT COUNT(*)::int FROM (
+          SELECT pc.contact_id FROM property_contacts pc
+           WHERE pc.tenant_id = $1
+           GROUP BY pc.contact_id HAVING COUNT(*) > 1
+        ) t) AS multi_owners,
+        (SELECT COUNT(DISTINCT ph.contact_id)::int FROM phones ph
+          WHERE ph.tenant_id = $1 AND LOWER(ph.phone_status) = 'correct') AS verified
+    `, [t]);
+    const k = kpiRes.rows[0] || {};
+
+    const querystring = req.url.includes('?') ? req.url.split('?')[1] : '';
+
+    res.send(ownersList({
+      user: await getUser(req),
+      rows: rowsRes.rows,
+      total, page, limit,
+      querystring,
+      filters: { q, ownerType, minProps: minProps != null ? String(minProps) : '' },
+      kpis: {
+        totalContacts:       k.total_contacts || 0,
+        multiPropertyOwners: k.multi_owners || 0,
+        withVerifiedPhone:   k.verified || 0,
+      },
+    }));
+  } catch (e) {
+    console.error('[ocular/owners]', e);
+    res.status(500).send('Error loading owners: ' + e.message);
+  }
+});
+
+// ─── /ocular/owners/:id — Owner detail page ────────────────────────────────
+router.get('/owners/:id(\\d+)', requireAuth, async (req, res) => {
+  try {
+    const { ownerDetail } = require('./pages/owner-detail');
+    const t = req.tenantId;
+    const contactId = parseInt(req.params.id, 10);
+    if (!contactId) return res.status(400).send('Invalid owner id');
+
+    // Lazy-create the two Feature 5 tables (mirrors old Loki behavior).
+    // Idempotent IF NOT EXISTS — safe to run on every request.
+    await query(`
+      CREATE TABLE IF NOT EXISTS owner_messages (
+        id SERIAL PRIMARY KEY,
+        tenant_id INT NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+        contact_id INTEGER NOT NULL REFERENCES contacts(id) ON DELETE CASCADE,
+        author VARCHAR(100) NOT NULL DEFAULT 'Unknown',
+        body TEXT NOT NULL,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      )
+    `).catch(() => {});
+    await query(`CREATE INDEX IF NOT EXISTS idx_owner_messages_contact ON owner_messages(contact_id, created_at DESC)`).catch(() => {});
+    await query(`
+      CREATE TABLE IF NOT EXISTS owner_activities (
+        id SERIAL PRIMARY KEY,
+        tenant_id INT NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+        contact_id INTEGER NOT NULL REFERENCES contacts(id) ON DELETE CASCADE,
+        property_id INTEGER REFERENCES properties(id) ON DELETE SET NULL,
+        kind VARCHAR(50) NOT NULL,
+        summary TEXT NOT NULL,
+        author VARCHAR(100),
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      )
+    `).catch(() => {});
+    await query(`CREATE INDEX IF NOT EXISTS idx_owner_activities_contact ON owner_activities(contact_id, created_at DESC)`).catch(() => {});
+
+    // Contact row — tenant-scoped so cross-tenant id lookups 404 cleanly.
+    const cRes = await query(
+      `SELECT id, first_name, last_name, email, mailing_address, mailing_city,
+              mailing_state, mailing_zip, owner_type, created_at
+         FROM contacts WHERE id = $1 AND tenant_id = $2`,
+      [contactId, t]
+    );
+    if (!cRes.rows.length) return res.status(404).send('Owner not found');
+    const c = cRes.rows[0];
+
+    // Properties this owner is linked to (primary OR co-owner).
+    const propsRes = await query(
+      `SELECT p.id, p.street, p.city, p.state_code, p.zip_code,
+              p.property_type, p.pipeline_stage, p.estimated_value, p.assessed_value,
+              p.last_sale_date, p.last_sale_price, p.created_at,
+              pc.primary_contact, pc.role
+         FROM property_contacts pc
+         JOIN properties p ON p.id = pc.property_id AND p.tenant_id = pc.tenant_id
+        WHERE pc.contact_id = $1 AND pc.tenant_id = $2
+        ORDER BY pc.primary_contact DESC, p.created_at DESC`,
+      [contactId, t]
+    );
+    const props = propsRes.rows;
+    const propIds = props.map(p => p.id);
+
+    // Phones for this contact.
+    const phonesRes = await query(
+      `SELECT id, phone_number, phone_index, phone_type, phone_status,
+              wrong_number, do_not_call, created_at
+         FROM phones
+        WHERE contact_id = $1 AND tenant_id = $2
+        ORDER BY phone_index ASC, id ASC`,
+      [contactId, t]
+    );
+    const phones = phonesRes.rows;
+
+    // KPIs — single query, scoped to this owner's property + phone set.
+    const kpiRes = await query(
+      `SELECT
+         (SELECT COUNT(*)::int FROM properties WHERE tenant_id = $4 AND id = ANY($1::int[]) AND pipeline_stage='closed')   AS sold,
+         (SELECT COUNT(*)::int FROM properties WHERE tenant_id = $4 AND id = ANY($1::int[]) AND pipeline_stage='lead')     AS lead,
+         (SELECT COUNT(*)::int FROM properties WHERE tenant_id = $4 AND id = ANY($1::int[]) AND pipeline_stage='contract') AS contract,
+         (SELECT COUNT(*)::int FROM call_logs WHERE tenant_id = $4 AND property_id = ANY($1::int[])) AS calls,
+         (SELECT COUNT(*)::int FROM phones WHERE tenant_id = $4 AND contact_id = $2) AS phone_total,
+         (SELECT COUNT(*)::int FROM phones WHERE tenant_id = $4 AND contact_id = $2 AND LOWER(phone_status) = 'correct') AS phone_correct,
+         (SELECT COALESCE(SUM(COALESCE(assessed_value, estimated_value, 0)), 0)::numeric
+            FROM properties WHERE tenant_id = $4 AND id = ANY($1::int[])) AS total_value
+      `,
+      [propIds.length ? propIds : [0], contactId, props.length, t]
+    );
+    const kr = kpiRes.rows[0] || {};
+
+    // Messages.
+    const msgsRes = await query(
+      `SELECT id, author, body, created_at FROM owner_messages
+        WHERE contact_id = $1 AND tenant_id = $2
+        ORDER BY created_at DESC LIMIT 100`,
+      [contactId, t]
+    );
+
+    // Activity (manual entries + derived call_logs).
+    const actRes = await query(
+      `(
+         SELECT 'manual' AS src, id, kind, summary, author, created_at, property_id
+           FROM owner_activities
+          WHERE contact_id = $1 AND tenant_id = $2
+       )
+       UNION ALL
+       (
+         SELECT 'call' AS src, cl.id, 'call' AS kind,
+                COALESCE(cl.disposition, 'call') || COALESCE(' — ' || NULLIF(cl.campaign_name, ''), '') AS summary,
+                COALESCE(cl.agent_name, 'Unknown') AS author,
+                COALESCE(cl.call_date::timestamptz, cl.created_at) AS created_at,
+                cl.property_id
+           FROM call_logs cl
+           JOIN phones ph ON ph.id = cl.phone_id AND ph.tenant_id = cl.tenant_id
+          WHERE ph.contact_id = $1 AND cl.tenant_id = $2
+       )
+       ORDER BY created_at DESC
+       LIMIT 200`,
+      [contactId, t]
+    );
+
+    res.send(ownerDetail({
+      user: await getUser(req),
+      contact: c,
+      properties: props,
+      phones,
+      messages: msgsRes.rows,
+      activities: actRes.rows,
+      kpis: {
+        sold:         kr.sold || 0,
+        lead:         kr.lead || 0,
+        contract:     kr.contract || 0,
+        calls:        kr.calls || 0,
+        phoneTotal:   kr.phone_total || 0,
+        phoneCorrect: kr.phone_correct || 0,
+        totalValue:   kr.total_value || 0,
+      },
+      flash: {
+        msg: req.query.msg ? String(req.query.msg).slice(0, 500) : '',
+        err: req.query.err ? String(req.query.err).slice(0, 500) : '',
+      },
+    }));
+  } catch (e) {
+    console.error('[ocular/owners/:id]', e);
+    res.status(500).send('Error loading owner: ' + e.message);
+  }
+});
+
+// POST /ocular/owners/:id/message — post a note to the message board
+router.post('/owners/:id(\\d+)/message', requireAuth, async (req, res) => {
+  const contactId = parseInt(req.params.id, 10);
+  if (!contactId) return res.status(400).send('Invalid owner id');
+  try {
+    const author = String(req.body.author || '').trim().slice(0, 100);
+    const body   = String(req.body.body   || '').trim().slice(0, 4000);
+    if (!author) return res.redirect(`/ocular/owners/${contactId}?err=` + encodeURIComponent('Your name is required'));
+    if (!body)   return res.redirect(`/ocular/owners/${contactId}?err=` + encodeURIComponent('Message body is required'));
+
+    // Verify the contact belongs to this tenant before writing — defense
+    // against a crafted POST against a contact id that isn't ours.
+    const own = await query(`SELECT 1 FROM contacts WHERE id = $1 AND tenant_id = $2`, [contactId, req.tenantId]);
+    if (!own.rows.length) return res.status(404).send('Owner not found');
+
+    await query(
+      `INSERT INTO owner_messages (tenant_id, contact_id, author, body) VALUES ($1, $2, $3, $4)`,
+      [req.tenantId, contactId, author, body]
+    );
+    res.redirect(`/ocular/owners/${contactId}?msg=` + encodeURIComponent('Note posted'));
+  } catch (e) {
+    console.error('[ocular/owners/:id POST]', e);
+    res.redirect(`/ocular/owners/${contactId}?err=` + encodeURIComponent('Failed to post note'));
+  }
+});
+
+// ─── /ocular/setup — Settings page (delete-code change form) ───────────────
+router.get('/setup', requireAuth, async (req, res) => {
+  try {
+    const { settingsPage } = require('./pages/settings');
+    const settings = require('../settings');
+    let updatedAt = null;
+    let usingDefault = true;
+    try {
+      await settings.ensureSettingsSchema();
+      updatedAt = await settings.getDeleteCodeUpdatedAt(req.tenantId);
+      usingDefault = await settings.isUsingDefaultCode(req.tenantId);
+    } catch (e) {
+      console.error('[ocular/setup] settings load:', e.message);
+    }
+    res.send(settingsPage({
+      user: await getUser(req),
+      lastUpdatedAt: updatedAt,
+      usingDefault,
+      flash: {
+        msg: req.query.msg ? String(req.query.msg).slice(0, 500) : '',
+        err: req.query.err ? String(req.query.err).slice(0, 500) : '',
+      },
+    }));
+  } catch (e) {
+    console.error('[ocular/setup]', e);
+    res.status(500).send('Error loading settings: ' + e.message);
+  }
+});
+
+router.post('/setup/delete-code', requireAuth, async (req, res) => {
+  const settings = require('../settings');
+  const { old_code, new_code, confirm_code } = req.body;
+  if (!old_code || !new_code || !confirm_code) {
+    return res.redirect('/ocular/setup?err=' + encodeURIComponent('All fields required.'));
+  }
+  if (new_code !== confirm_code) {
+    return res.redirect('/ocular/setup?err=' + encodeURIComponent('New code and confirmation do not match.'));
+  }
+  const result = await settings.updateDeleteCode(req.tenantId, old_code, new_code);
+  if (!result.ok) {
+    return res.redirect('/ocular/setup?err=' + encodeURIComponent(result.error));
+  }
+  res.redirect('/ocular/setup?msg=' + encodeURIComponent('Delete code updated successfully.'));
+});
+
 // ─── Placeholder routes for unbuilt pages ──────────────────────────────────
 // These exist so the sidebar doesn't 404 if you click around. Each shows
 // "Coming next session" until we wire up the real implementation.
@@ -547,9 +894,7 @@ router.get('/records/:id(\\d+)', requireAuth, async (req, res) => {
 // Note: 'lists/types' is included separately because the List Registry
 // sidebar link targets /ocular/lists/types (not /ocular/lists). Without it,
 // clicking List Registry in the sidebar 404s.
-// 2026-04-25 'records' removed from placeholders — now has a real GET handler
-// above this block. Keep the others until they're built in their own sessions.
-const placeholderPages = ['owners', 'campaigns', 'lists', 'lists/types', 'upload', 'activity', 'setup'];
+const placeholderPages = ['campaigns', 'lists', 'lists/types', 'upload', 'activity'];
 const { shell } = require('./layouts/shell');
 placeholderPages.forEach(page => {
   // Title and active-page name both need to work whether `page` is 'records'
