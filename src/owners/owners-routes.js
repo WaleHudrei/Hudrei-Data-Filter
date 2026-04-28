@@ -22,8 +22,12 @@ const { query } = require('../db');
 const { shell } = require('../shared-shell');
 
 function requireAuth(req, res, next) {
-  if (req.session && req.session.authenticated) return next();
-  res.redirect('/login');
+  if (!req.session || !req.session.authenticated) return res.redirect('/login');
+  if (!req.session.tenantId) return res.redirect('/login');
+  req.tenantId = req.session.tenantId;
+  req.userId = req.session.userId;
+  req.role = req.session.role;
+  next();
 }
 
 // Ensure the two Feature 5 tables exist. Idempotent (IF NOT EXISTS), runs

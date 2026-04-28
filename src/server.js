@@ -144,8 +144,14 @@ app.use('/upload', uploadRoutes);
 // app.use('/records', recordsRoutes);
 
 function requireAuth(req, res, next) {
-  if (req.session && req.session.authenticated) return next();
-  res.redirect('/login');
+  if (!req.session || !req.session.authenticated) return res.redirect('/login');
+  // Sessions created before Phase 1 don't carry tenant context. Bounce them
+  // to /login so they re-authenticate and pick up tenantId/userId/role.
+  if (!req.session.tenantId) return res.redirect('/login');
+  req.tenantId = req.session.tenantId;
+  req.userId = req.session.userId;
+  req.role = req.session.role;
+  next();
 }
 
 // Phase 2: Records + Setup + Lists + Import routes
@@ -428,13 +434,33 @@ function _loginRateLimit(req, res, next) {
   next();
 }
 
-app.post('/login', _loginRateLimit, (req, res) => {
+app.post('/login', _loginRateLimit, async (req, res) => {
   const { username, password } = req.body;
   const ip = _loginIp(req);
   if (username === APP_USERNAME && password === APP_PASSWORD) {
     _loginAttempts.delete(ip); // success → clear counter
-    req.session.authenticated = true;
-    res.redirect('/dashboard');
+    // Phase 1: single-password gate still in place. After password match,
+    // look up the founding HudREI user and attach tenant context to the
+    // session. Phase 2 replaces this with real email/password auth.
+    try {
+      const r = await dbQuery(
+        "SELECT id, tenant_id, role FROM users WHERE email = $1 AND status = 'active' LIMIT 1",
+        ['wale@hudrei.com']
+      );
+      if (!r.rows.length) {
+        console.error('Login failed: founding user wale@hudrei.com not found in users table');
+        return res.redirect('/login?error=1');
+      }
+      const u = r.rows[0];
+      req.session.authenticated = true;
+      req.session.userId = u.id;
+      req.session.tenantId = u.tenant_id;
+      req.session.role = u.role;
+      res.redirect('/dashboard');
+    } catch (e) {
+      console.error('Login DB lookup failed:', e.message);
+      res.redirect('/login?error=1');
+    }
   } else {
     const rec = _loginAttempts.get(ip) || { count: 0, firstAt: Date.now() };
     rec.count++;

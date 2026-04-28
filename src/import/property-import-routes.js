@@ -55,8 +55,12 @@ const upload = multer({
 });
 
 function requireAuth(req, res, next) {
-  if (req.session && req.session.authenticated) return next();
-  res.redirect('/login');
+  if (!req.session || !req.session.authenticated) return res.redirect('/login');
+  if (!req.session.tenantId) return res.redirect('/login');
+  req.tenantId = req.session.tenantId;
+  req.userId = req.session.userId;
+  req.role = req.session.role;
+  next();
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
