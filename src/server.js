@@ -660,13 +660,13 @@ app.post('/process',requireAuth,upload.single('csvfile'),async(req,res)=>{
     await saveMemory(result.memory);
     req.session.lastResult={cleanRows:result.cleanRows,filteredRows:result.filteredRows};
     const allRows=[...result.cleanRows,...result.filteredRows];
-    const runId=await saveRunToDB(req.file.originalname||'upload.csv',{totalRows:result.totalRows,listsCount:Object.keys(result.listsSeen).length,kept:result.cleanRows.length,filtered:result.filteredRows.length,memCaught:result.memCaught},result.listsSeen,allRows);
+    const runId=await saveRunToDB(req.tenantId, req.file.originalname||'upload.csv',{totalRows:result.totalRows,listsCount:Object.keys(result.listsSeen).length,kept:result.cleanRows.length,filtered:result.filteredRows.length,memCaught:result.memCaught},result.listsSeen,allRows);
     if(runId) console.log('Saved to DB, run ID:',runId);
     const campaignId = req.body.campaign_id;
     if(campaignId){
       try{
         await campaigns.initCampaignSchema();
-        await campaigns.recordUpload(campaignId, req.file.originalname||'upload.csv', Object.keys(result.listsSeen)[0]||'upload', 'cold_call', allRows, result.totalRows);
+        await campaigns.recordUpload(req.tenantId, campaignId, req.file.originalname||'upload.csv', Object.keys(result.listsSeen)[0]||'upload', 'cold_call', allRows, result.totalRows);
       // Apply filtration results to contact phone statuses
       try { await campaigns.applyFiltrationToContacts(campaignId, allRows); } catch(e) { console.error('applyFiltration error:', e.message); }
       }catch(campErr){ console.error('Campaign record error:', campErr.message); }
@@ -1171,7 +1171,8 @@ app.listen(PORT, async ()=>{
 // gated by a module-level flag in db.js (Audit #16); we don't pay the DDL
 // cost per upload any more.
 // ─────────────────────────────────────────────────────────────────────────────
-async function saveRunToDB(filename, stats, listsSeen, allRows) {
+async function saveRunToDB(tenantId, filename, stats, listsSeen, allRows) {
+  if (!Number.isInteger(tenantId)) throw new Error('saveRunToDB: tenantId required');
   if (!process.env.DATABASE_URL) return null;
   if (!allRows || !allRows.length) return null;
 
@@ -1222,9 +1223,9 @@ async function saveRunToDB(filename, stats, listsSeen, allRows) {
 
     // ── Pass 1: filtration_runs header row ──────────────────────────────────
     const runRes = await dbQuery(
-      `INSERT INTO filtration_runs (filename, total_records, lists_detected, records_kept, records_filtered, caught_by_memory)
-       VALUES ($1,$2,$3,$4,$5,$6) RETURNING id`,
-      [filename, stats.totalRows, stats.listsCount, stats.kept, stats.filtered, stats.memCaught]
+      `INSERT INTO filtration_runs (tenant_id, filename, total_records, lists_detected, records_kept, records_filtered, caught_by_memory)
+       VALUES ($7,$1,$2,$3,$4,$5,$6) RETURNING id`,
+      [filename, stats.totalRows, stats.listsCount, stats.kept, stats.filtered, stats.memCaught, tenantId]
     );
     const runId = runRes.rows[0].id;
 
@@ -1240,12 +1241,12 @@ async function saveRunToDB(filename, stats, listsSeen, allRows) {
     const uniqueStates = [...new Set(validRows.map(r => r.state).filter(Boolean))];
     if (uniqueStates.length > 0) {
       await dbQuery(
-        `INSERT INTO markets (name, state_code, state_name)
-         SELECT code || ' Market', code, code FROM UNNEST($1::text[]) AS t(code)
+        `INSERT INTO markets (tenant_id, name, state_code, state_name)
+         SELECT $2, code || ' Market', code, code FROM UNNEST($1::text[]) AS t(code)
          ON CONFLICT (state_code) DO NOTHING`,
-        [uniqueStates]
+        [uniqueStates, tenantId]
       );
-      const mr = await dbQuery(`SELECT id, state_code FROM markets WHERE state_code = ANY($1::text[])`, [uniqueStates]);
+      const mr = await dbQuery(`SELECT id, state_code FROM markets WHERE tenant_id = $2 AND state_code = ANY($1::text[])`, [uniqueStates, tenantId]);
       for (const m of mr.rows) mktMap.set(m.state_code, m.id);
     }
 
@@ -1253,10 +1254,10 @@ async function saveRunToDB(filename, stats, listsSeen, allRows) {
     const uniqueLists = [...new Set(validRows.map(r => r.listName).filter(Boolean))];
     if (uniqueLists.length > 0) {
       const lr = await dbQuery(
-        `INSERT INTO lists (list_name) SELECT unnest($1::text[])
+        `INSERT INTO lists (tenant_id, list_name) SELECT $2, unnest($1::text[])
          ON CONFLICT (list_name) DO UPDATE SET list_name = EXCLUDED.list_name
          RETURNING id, list_name`,
-        [uniqueLists]
+        [uniqueLists, tenantId]
       );
       for (const l of lr.rows) listMap.set(l.list_name, l.id);
     }
@@ -1271,8 +1272,8 @@ async function saveRunToDB(filename, stats, listsSeen, allRows) {
     const propArr = Array.from(propBucket.values());
     if (propArr.length > 0) {
       const pr = await dbQuery(`
-        INSERT INTO properties (street, city, state_code, zip_code, market_id)
-        SELECT * FROM UNNEST($1::text[], $2::text[], $3::text[], $4::text[], $5::int[])
+        INSERT INTO properties (tenant_id, street, city, state_code, zip_code, market_id)
+        SELECT $6, street, city, state_code, zip_code, market_id FROM UNNEST($1::text[], $2::text[], $3::text[], $4::text[], $5::int[])
           AS t(street, city, state_code, zip_code, market_id)
         ON CONFLICT (street, city, state_code, zip_code) DO UPDATE SET updated_at = NOW()
         RETURNING id, street, city, state_code, zip_code
@@ -1282,6 +1283,7 @@ async function saveRunToDB(filename, stats, listsSeen, allRows) {
         propArr.map(r => r.state),
         propArr.map(r => r.zip),
         propArr.map(r => mktMap.get(r.state) || null),
+        tenantId,
       ]);
       for (const p of pr.rows) {
         const k = `${p.street.toLowerCase()}|${p.city.toLowerCase()}|${p.state_code}|${p.zip_code}`;
@@ -1305,10 +1307,10 @@ async function saveRunToDB(filename, stats, listsSeen, allRows) {
         listIds.push(parseInt(li));
       }
       await dbQuery(`
-        INSERT INTO property_lists (property_id, list_id)
-        SELECT * FROM UNNEST($1::int[], $2::int[]) AS t(property_id, list_id)
+        INSERT INTO property_lists (tenant_id, property_id, list_id)
+        SELECT $3, property_id, list_id FROM UNNEST($1::int[], $2::int[]) AS t(property_id, list_id)
         ON CONFLICT DO NOTHING
-      `, [propIds, listIds]);
+      `, [propIds, listIds, tenantId]);
     }
 
     // ── Pass 6: preload existing primary contacts for touched properties ─────
@@ -1317,8 +1319,8 @@ async function saveRunToDB(filename, stats, listsSeen, allRows) {
     if (touchedPropIds.length > 0) {
       const ex = await dbQuery(
         `SELECT property_id, contact_id FROM property_contacts
-          WHERE property_id = ANY($1::int[]) AND primary_contact = true`,
-        [touchedPropIds]
+          WHERE tenant_id = $2 AND property_id = ANY($1::int[]) AND primary_contact = true`,
+        [touchedPropIds, tenantId]
       );
       for (const row of ex.rows) existingPC.set(row.property_id, row.contact_id);
     }
@@ -1353,21 +1355,21 @@ async function saveRunToDB(filename, stats, listsSeen, allRows) {
           last_name  = COALESCE(NULLIF(t.last_name,''),  contacts.last_name),
           updated_at = NOW()
         FROM UNNEST($1::int[], $2::text[], $3::text[]) AS t(id, first_name, last_name)
-        WHERE contacts.id = t.id
-      `, [updIds, updFirst, updLast]);
+        WHERE contacts.id = t.id AND contacts.tenant_id = $4
+      `, [updIds, updFirst, updLast, tenantId]);
     }
     if (newProps.length > 0) {
       const nr = await dbQuery(`
-        INSERT INTO contacts (first_name, last_name)
-        SELECT * FROM UNNEST($1::text[], $2::text[]) AS t(first_name, last_name)
+        INSERT INTO contacts (tenant_id, first_name, last_name)
+        SELECT $3, first_name, last_name FROM UNNEST($1::text[], $2::text[]) AS t(first_name, last_name)
         RETURNING id
-      `, [newFirsts, newLasts]);
+      `, [newFirsts, newLasts, tenantId]);
       const newIds = nr.rows.map(r => r.id);
       await dbQuery(`
-        INSERT INTO property_contacts (property_id, contact_id, primary_contact)
-        SELECT * FROM UNNEST($1::int[], $2::int[], $3::bool[]) AS t(property_id, contact_id, primary_contact)
+        INSERT INTO property_contacts (tenant_id, property_id, contact_id, primary_contact)
+        SELECT $4, property_id, contact_id, primary_contact FROM UNNEST($1::int[], $2::int[], $3::bool[]) AS t(property_id, contact_id, primary_contact)
         ON CONFLICT DO NOTHING
-      `, [newProps, newIds, newProps.map(() => true)]);
+      `, [newProps, newIds, newProps.map(() => true), tenantId]);
       for (let i = 0; i < newProps.length; i++) contactIdByProp.set(newProps[i], newIds[i]);
     }
 
@@ -1384,8 +1386,8 @@ async function saveRunToDB(filename, stats, listsSeen, allRows) {
     if (phoneBucket.size > 0) {
       const arr = Array.from(phoneBucket.values());
       const phr = await dbQuery(`
-        INSERT INTO phones (contact_id, phone_number, phone_status, phone_tag)
-        SELECT * FROM UNNEST($1::int[], $2::text[], $3::text[], $4::text[])
+        INSERT INTO phones (tenant_id, contact_id, phone_number, phone_status, phone_tag)
+        SELECT $5, contact_id, phone_number, phone_status, phone_tag FROM UNNEST($1::int[], $2::text[], $3::text[], $4::text[])
           AS t(contact_id, phone_number, phone_status, phone_tag)
         ON CONFLICT (contact_id, phone_number) DO UPDATE SET
           phone_status = CASE WHEN EXCLUDED.phone_status NOT IN ('','unknown')
@@ -1399,6 +1401,7 @@ async function saveRunToDB(filename, stats, listsSeen, allRows) {
         arr.map(p => p.phone),
         arr.map(p => p.status),
         arr.map(p => p.tag),
+        tenantId,
       ]);
       for (const p of phr.rows) phoneIdMap.set(`${p.contact_id}|${p.phone_number}`, p.id);
     }
@@ -1423,8 +1426,8 @@ async function saveRunToDB(filename, stats, listsSeen, allRows) {
     }
     if (callLogRows.length > 0) {
       await dbQuery(`
-        INSERT INTO call_logs (phone_id, list_id, property_id, disposition, disposition_normalized, call_date, campaign_name)
-        SELECT * FROM UNNEST($1::int[], $2::int[], $3::int[], $4::text[], $5::text[], $6::date[], $7::text[])
+        INSERT INTO call_logs (tenant_id, phone_id, list_id, property_id, disposition, disposition_normalized, call_date, campaign_name)
+        SELECT $8, phone_id, list_id, property_id, disposition, disposition_normalized, call_date, campaign_name FROM UNNEST($1::int[], $2::int[], $3::int[], $4::text[], $5::text[], $6::date[], $7::text[])
           AS t(phone_id, list_id, property_id, disposition, disposition_normalized, call_date, campaign_name)
       `, [
         callLogRows.map(r => r.phoneId),
@@ -1434,6 +1437,7 @@ async function saveRunToDB(filename, stats, listsSeen, allRows) {
         callLogRows.map(r => r.dispoNorm),
         callLogRows.map(r => r.callDate),
         callLogRows.map(r => r.campaignName),
+        tenantId,
       ]);
     }
 
@@ -1443,21 +1447,21 @@ async function saveRunToDB(filename, stats, listsSeen, allRows) {
       const xferPropIds  = [...new Set(transferRows.map(r => r.propertyId))];
       const xferPhoneIds = [...new Set(transferRows.map(r => r.phoneId))];
       const priorRes = await dbQuery(
-        `SELECT id, pipeline_stage FROM properties WHERE id = ANY($1::int[])`,
-        [xferPropIds]
+        `SELECT id, pipeline_stage FROM properties WHERE tenant_id = $2 AND id = ANY($1::int[])`,
+        [xferPropIds, tenantId]
       );
       const priorMap = new Map();
       for (const p of priorRes.rows) priorMap.set(p.id, p.pipeline_stage);
 
       await dbQuery(
         `UPDATE properties SET pipeline_stage='lead', updated_at=NOW()
-          WHERE id = ANY($1::int[]) AND pipeline_stage NOT IN ('contract','closed')`,
-        [xferPropIds]
+          WHERE tenant_id = $2 AND id = ANY($1::int[]) AND pipeline_stage NOT IN ('contract','closed')`,
+        [xferPropIds, tenantId]
       );
       await dbQuery(
         `UPDATE phones SET phone_status='correct', updated_at=NOW()
-          WHERE id = ANY($1::int[])`,
-        [xferPhoneIds]
+          WHERE tenant_id = $2 AND id = ANY($1::int[])`,
+        [xferPhoneIds, tenantId]
       );
       // Outcome log — only for props that actually changed stage
       for (const pid of xferPropIds) {
@@ -1490,8 +1494,8 @@ async function saveRunToDB(filename, stats, listsSeen, allRows) {
 
     // ── Pass 12: bulk INSERT filtration_results (every row, valid or not) ────
     await dbQuery(`
-      INSERT INTO filtration_results (run_id, phone_number, list_name, property_id, phone_id, disposition, disposition_normalized, cumulative_count, action, phone_status, phone_tag, marketing_result)
-      SELECT $1, * FROM UNNEST($2::text[], $3::text[], $4::int[], $5::int[], $6::text[], $7::text[], $8::int[], $9::text[], $10::text[], $11::text[], $12::text[])
+      INSERT INTO filtration_results (tenant_id, run_id, phone_number, list_name, property_id, phone_id, disposition, disposition_normalized, cumulative_count, action, phone_status, phone_tag, marketing_result)
+      SELECT $13, $1, * FROM UNNEST($2::text[], $3::text[], $4::int[], $5::int[], $6::text[], $7::text[], $8::int[], $9::text[], $10::text[], $11::text[], $12::text[])
         AS t(phone_number, list_name, property_id, phone_id, disposition, disposition_normalized, cumulative_count, action, phone_status, phone_tag, marketing_result)
     `, [
       runId,
@@ -1511,6 +1515,7 @@ async function saveRunToDB(filename, stats, listsSeen, allRows) {
       cleaned.map(r => r.phoneStatus),
       cleaned.map(r => r.phoneTag),
       cleaned.map(r => r.mktResult),
+      tenantId,
     ]);
 
     // ── Pass 13: distress rescoring ──────────────────────────────────────────
@@ -1666,7 +1671,7 @@ app.post('/campaigns/:id/upload', requireAuth, upload.single('csvfile'), async (
     req.session.lastResult = { cleanRows: result.cleanRows, filteredRows: result.filteredRows };
     const allRows = [...result.cleanRows, ...result.filteredRows];
     const sourceList = allRows[0]?.['List Name (REISift Campaign)'] || req.file.originalname;
-    await campaigns.recordUpload(req.params.id, req.file.originalname, sourceList, req.body.channel || 'cold_call', allRows, result.totalRows);
+    await campaigns.recordUpload(req.tenantId, req.params.id, req.file.originalname, sourceList, req.body.channel || 'cold_call', allRows, result.totalRows);
     const newMemSize = Object.keys(result.memory).length;
     const newListCount = new Set(Object.keys(result.memory).map(k => k.split('||')[0])).size;
     res.json({
@@ -1716,6 +1721,7 @@ app.post('/campaigns/:id/sms/upload', requireAuth, upload.single('smsfile'), asy
     if (!req.file) return res.redirect('/campaigns/' + req.params.id);
     const parsed = Papa.parse(bufferToCsvText(req.file.buffer), { header: true, skipEmptyLines: true });
     const result = await campaigns.importSmarterContactFile(
+      req.tenantId,
       req.params.id,
       parsed.data,
       parsed.meta.fields || []
@@ -1740,7 +1746,7 @@ app.post('/campaigns/:id/sms/upload', requireAuth, upload.single('smsfile'), asy
 // NIS upload page
 app.get('/nis', requireAuth, async (req, res) => {
   await campaigns.initCampaignSchema();
-  const stats = await campaigns.getNisStats();
+  const stats = await campaigns.getNisStats(req.tenantId);
   res.send(nisPage(stats, req.query.msg));
 });
 
@@ -1841,7 +1847,7 @@ app.post('/nis/upload', requireAuth, upload.single('nisfile'), async (req, res) 
     await campaigns.initCampaignSchema();
     const csvText = bufferToCsvText(req.file.buffer);
     const parsed = Papa.parse(csvText, { header: true, skipEmptyLines: true });
-    const result = await campaigns.importNisFile(parsed.data);
+    const result = await campaigns.importNisFile(req.tenantId, parsed.data);
     const msg = `Processed ${result.totalRows} rows — ${result.uniqueNumbers} unique NIS numbers (${result.inserted} new, ${result.updated} updated). Flagged ${result.flagged} phones across all campaigns.`;
     res.redirect('/nis?msg=' + encodeURIComponent(msg));
   } catch(e) {

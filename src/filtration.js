@@ -53,7 +53,8 @@ function detectPhoneColumns(headers) {
 // existing campaign_numbers for this campaign into a Map, then does ONE bulk
 // INSERT for new numbers and ONE bulk UPDATE for existing numbers via UNNEST.
 // Same semantics; ~50× faster on typical uploads. (Audit — filtration.js gaps.)
-async function recordUpload(campaignId, filename, sourceListName, channel, rows, rawTotal) {
+async function recordUpload(tenantId, campaignId, filename, sourceListName, channel, rows, rawTotal) {
+  if (!Number.isInteger(tenantId)) throw new Error('recordUpload: tenantId required');
   const CONNECTED_DISPOS = new Set(['not_interested','transfer','potential_lead','sold','listed','callback','spanish_speaker','hung_up','completed','disqualified','do_not_call']);
   const tally = { total:0, kept:0, filtered:0, wrong:0, vm:0, ni:0, dnc:0, transfer:0, mem:0, newNums:0, connected:0 };
 
@@ -111,10 +112,10 @@ async function recordUpload(campaignId, filename, sourceListName, channel, rows,
   if (newRows.length > 0) {
     await query(
       `INSERT INTO campaign_numbers
-         (campaign_id, phone_number, last_disposition, last_disposition_normalized,
+         (tenant_id, campaign_id, phone_number, last_disposition, last_disposition_normalized,
           cumulative_count, current_status, phone_status, phone_tag,
           marketing_result, total_appearances)
-       SELECT $1, phone_number, last_disposition, last_disposition_normalized,
+       SELECT $10, $1, phone_number, last_disposition, last_disposition_normalized,
               cumulative_count, current_status, phone_status, phone_tag,
               marketing_result, 1
          FROM UNNEST(
@@ -134,6 +135,7 @@ async function recordUpload(campaignId, filename, sourceListName, channel, rows,
         newRows.map(r => r.phStatus),
         newRows.map(r => r.phTag),
         newRows.map(r => r.mktResult),
+        tenantId,
       ]
     );
   }
@@ -173,9 +175,9 @@ async function recordUpload(campaignId, filename, sourceListName, channel, rows,
 
   // Insert upload record
   await query(
-    `INSERT INTO campaign_uploads (campaign_id, filename, source_list_name, channel, total_records, new_unique_numbers, records_kept, records_filtered, wrong_numbers, voicemails, not_interested, do_not_call, transfers, caught_by_memory, connected)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)`,
-    [campaignId, filename, sourceListName, channel, rawTotal||tally.total, tally.newNums, tally.kept, tally.filtered, tally.wrong, tally.vm, tally.ni, tally.dnc, tally.transfer, tally.mem, tally.connected]
+    `INSERT INTO campaign_uploads (tenant_id, campaign_id, filename, source_list_name, channel, total_records, new_unique_numbers, records_kept, records_filtered, wrong_numbers, voicemails, not_interested, do_not_call, transfers, caught_by_memory, connected)
+     VALUES ($16,$1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)`,
+    [campaignId, filename, sourceListName, channel, rawTotal||tally.total, tally.newNums, tally.kept, tally.filtered, tally.wrong, tally.vm, tally.ni, tally.dnc, tally.transfer, tally.mem, tally.connected, tenantId]
   );
 
   // Update campaign totals
@@ -660,7 +662,8 @@ async function ensureNisEventsSchema() {
   } catch (e) { console.error('nis_events schema warning:', e.message); }
 }
 
-async function importNisFile(rows) {
+async function importNisFile(tenantId, rows) {
+  if (!Number.isInteger(tenantId)) throw new Error('importNisFile: tenantId required');
   await ensureNisEventsSchema();
   let inserted = 0, updated = 0, flagged = 0, duplicateEvents = 0;
   const BATCH = 500;
@@ -739,12 +742,15 @@ async function importNisFile(rows) {
       }
     }
     if (eventVals.length === 0) continue;
+    // Prepend tenant_id to every value tuple so the INSERT carries it.
+    const tenantParamIdx = eventParams.length + 1;
+    const valsWithTenant = eventVals.map(v => v.replace('(', `($${tenantParamIdx},`));
     const eventRes = await query(
-      `INSERT INTO nis_events (phone_number, event_day)
-       VALUES ${eventVals.join(',')}
+      `INSERT INTO nis_events (tenant_id, phone_number, event_day)
+       VALUES ${valsWithTenant.join(',')}
        ON CONFLICT (phone_number, event_day) DO NOTHING
        RETURNING phone_number`,
-      eventParams
+      [...eventParams, tenantId]
     );
     for (const row of eventRes.rows) {
       perPhoneNewCounts.set(row.phone_number, (perPhoneNewCounts.get(row.phone_number) || 0) + 1);
@@ -768,16 +774,18 @@ async function importNisFile(rows) {
       params.push(e.phone, e.first, e.last, newCount);
       p += 4;
     }
+    const tenantParamIdx2 = params.length + 1;
+    const valsWithTenant2 = vals.map(v => v.replace('(', `($${tenantParamIdx2},`));
     const res = await query(
-      `INSERT INTO nis_numbers (phone_number, first_seen_nis, last_seen_nis, times_reported)
-       VALUES ${vals.join(',')}
+      `INSERT INTO nis_numbers (tenant_id, phone_number, first_seen_nis, last_seen_nis, times_reported)
+       VALUES ${valsWithTenant2.join(',')}
        ON CONFLICT (phone_number) DO UPDATE SET
          last_seen_nis    = GREATEST(nis_numbers.last_seen_nis, EXCLUDED.last_seen_nis),
          first_seen_nis   = LEAST(nis_numbers.first_seen_nis, EXCLUDED.first_seen_nis),
          times_reported   = nis_numbers.times_reported + EXCLUDED.times_reported,
          updated_at       = NOW()
        RETURNING (xmax = 0) AS inserted`,
-      params
+      [...params, tenantId]
     );
     for (const row of res.rows) {
       if (row.inserted) inserted++; else updated++;
@@ -797,15 +805,17 @@ async function importNisFile(rows) {
   const flagRes = await query(
     `UPDATE campaign_contact_phones
         SET phone_status = 'dead_number', nis_flagged_at = NOW()
-      WHERE phone_status != 'dead_number'
-        AND campaign_id IN (SELECT id FROM campaigns WHERE status = 'active')
+      WHERE tenant_id = $1
+        AND phone_status != 'dead_number'
+        AND campaign_id IN (SELECT id FROM campaigns WHERE tenant_id = $1 AND status = 'active')
         AND (
-          phone_number IN (SELECT phone_number FROM nis_numbers WHERE times_reported >= 3)
+          phone_number IN (SELECT phone_number FROM nis_numbers WHERE tenant_id = $1 AND times_reported >= 3)
           OR (
-            phone_number IN (SELECT phone_number FROM nis_numbers WHERE times_reported < 3)
+            phone_number IN (SELECT phone_number FROM nis_numbers WHERE tenant_id = $1 AND times_reported < 3)
             AND (phone_status IS NULL OR phone_status != 'Correct')
           )
-        )`
+        )`,
+    [tenantId]
   );
   flagged = flagRes.rowCount || 0;
 
@@ -813,11 +823,12 @@ async function importNisFile(rows) {
 }
 
 // ── Get NIS stats ─────────────────────────────────────────────────────────────
-async function getNisStats() {
+async function getNisStats(tenantId) {
+  if (!Number.isInteger(tenantId)) throw new Error('getNisStats: tenantId required');
   try {
-    const total      = await query(`SELECT COUNT(*) as c FROM nis_numbers`);
-    const lastUpload = await query(`SELECT MAX(updated_at) as t FROM nis_numbers`);
-    const flagged    = await query(`SELECT COUNT(*) as c FROM campaign_contact_phones WHERE phone_status = 'dead_number'`);
+    const total      = await query(`SELECT COUNT(*) as c FROM nis_numbers WHERE tenant_id = $1`, [tenantId]);
+    const lastUpload = await query(`SELECT MAX(updated_at) as t FROM nis_numbers WHERE tenant_id = $1`, [tenantId]);
+    const flagged    = await query(`SELECT COUNT(*) as c FROM campaign_contact_phones WHERE tenant_id = $1 AND phone_status = 'dead_number'`, [tenantId]);
     return {
       total_nis:     parseInt(total.rows[0]?.c || 0),
       last_upload:   lastUpload.rows[0]?.t || null,
@@ -898,10 +909,11 @@ function normSmsLabel(label) {
 // unsetting LOKI_BATCHED_FILTRATION. Set LOKI_BATCHED_FILTRATION=true to opt
 // in. Both functions produce the same tally, the same DB state, the same
 // log events — just different internal shapes.
-async function importSmarterContactFile(campaignId, rows, headers, filename) {
+async function importSmarterContactFile(tenantId, campaignId, rows, headers, filename) {
+  if (!Number.isInteger(tenantId)) throw new Error('importSmarterContactFile: tenantId required');
   if (String(process.env.LOKI_BATCHED_FILTRATION || '').toLowerCase() === 'true') {
     try {
-      return await importSmarterContactFileBulk(campaignId, rows, headers, filename);
+      return await importSmarterContactFileBulk(tenantId, campaignId, rows, headers, filename);
     } catch (e) {
       // Hard fail — we want to notice if bulk is broken, not silently corrupt
       // data by running the per-row version on top of whatever partial state
@@ -913,10 +925,10 @@ async function importSmarterContactFile(campaignId, rows, headers, filename) {
       };
     }
   }
-  return importSmarterContactFilePerRow(campaignId, rows, headers, filename);
+  return importSmarterContactFilePerRow(tenantId, campaignId, rows, headers, filename);
 }
 
-async function importSmarterContactFilePerRow(campaignId, rows, headers, filename) {
+async function importSmarterContactFilePerRow(tenantId, campaignId, rows, headers, filename) {
   // ── Step 1: Validate required columns ──────────────────────────────────────
   const headerLower = headers.map(h => String(h || '').toLowerCase().trim());
   const missingCols = SMS_REQUIRED_COLS.filter(req => !headerLower.includes(req));
@@ -1213,6 +1225,7 @@ async function importSmarterContactFilePerRow(campaignId, rows, headers, filenam
 
   // Log this upload to Filtration History
   await recordSmsUploadEvent({
+    tenantId,
     campaignId,
     filename,
     channel: 'sms_results',
@@ -1249,7 +1262,8 @@ async function importSmarterContactFilePerRow(campaignId, rows, headers, filenam
 // replaces the N+1 query pattern with a single bulk-load + grouped bulk-updates.
 // Preserves tally counts, DB state, and upload event exactly. See audit fix #28.
 // ─────────────────────────────────────────────────────────────────────────────
-async function importSmarterContactFileBulk(campaignId, rows, headers, filename) {
+async function importSmarterContactFileBulk(tenantId, campaignId, rows, headers, filename) {
+  if (!Number.isInteger(tenantId)) throw new Error('importSmarterContactFileBulk: tenantId required');
   // ── Step 1: Validate required columns (identical to per-row) ──────────────
   const headerLower = headers.map(h => String(h || '').toLowerCase().trim());
   const missingCols = SMS_REQUIRED_COLS.filter(req => !headerLower.includes(req));
@@ -1634,15 +1648,16 @@ async function ensureSmsEligibleColumns() {
 //   transfers         = Lead/Appointment/Potential Lead/Sold/Listed combined
 //   voicemails        = 0 (SMS has no voicemails; kept for schema compat)
 //   do_not_call       = Disqualified label count (closest analog)
-async function recordSmsUploadEvent({ campaignId, filename, channel, tally, sourceListName }) {
+async function recordSmsUploadEvent({ tenantId, campaignId, filename, channel, tally, sourceListName }) {
+  if (!Number.isInteger(tenantId)) throw new Error('recordSmsUploadEvent: tenantId required');
   try {
     await query(
       `INSERT INTO campaign_uploads
-         (campaign_id, filename, source_list_name, channel, total_records,
+         (tenant_id, campaign_id, filename, source_list_name, channel, total_records,
           new_unique_numbers, records_kept, records_filtered,
           wrong_numbers, voicemails, not_interested, do_not_call, transfers,
           caught_by_memory, connected)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)`,
+       VALUES ($16,$1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)`,
       [
         campaignId,
         filename || 'SMC Export',
@@ -1659,6 +1674,7 @@ async function recordSmsUploadEvent({ campaignId, filename, channel, tally, sour
         tally.transfers_combined || 0,
         0,
         0,
+        tenantId,
       ]
     );
   } catch (e) {
@@ -1667,7 +1683,8 @@ async function recordSmsUploadEvent({ campaignId, filename, channel, tally, sour
   }
 }
 
-async function importSmarterContactAccepted(campaignId, rows, headers, filename) {
+async function importSmarterContactAccepted(tenantId, campaignId, rows, headers, filename) {
+  if (!Number.isInteger(tenantId)) throw new Error('importSmarterContactAccepted: tenantId required');
   await ensureSmsEligibleColumns();
 
   // ── Step 1: Validate required columns ──────────────────────────────────────
@@ -1741,6 +1758,7 @@ async function importSmarterContactAccepted(campaignId, rows, headers, filename)
   // (The DB-row count of 280 is internal plumbing — see audit notes.)
   const uniquePhonesMatched = Math.min(acceptedSet.size, matched);
   await recordSmsUploadEvent({
+    tenantId,
     campaignId,
     filename,
     channel: 'sms_accepted',
