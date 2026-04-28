@@ -62,6 +62,34 @@ async function initSchema() {
     CREATE INDEX IF NOT EXISTS users_tenant_id_idx ON users(tenant_id);
   `);
 
+  // Phase 2 — auth: email-verified timestamp and one-shot tokens for
+  // verify-email and forgot-password flows. Both token tables share the
+  // same shape (token + expires_at + used_at) so they can be reused via
+  // src/auth-tokens.js. Token strings are 32-byte hex (64 chars).
+  await query(`
+    ALTER TABLE users ADD COLUMN IF NOT EXISTS email_verified_at TIMESTAMPTZ;
+
+    CREATE TABLE IF NOT EXISTS email_verification_tokens (
+      id          SERIAL PRIMARY KEY,
+      user_id     INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      token       TEXT NOT NULL UNIQUE,
+      expires_at  TIMESTAMPTZ NOT NULL,
+      used_at     TIMESTAMPTZ,
+      created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+    CREATE INDEX IF NOT EXISTS email_verification_tokens_user_idx ON email_verification_tokens(user_id);
+
+    CREATE TABLE IF NOT EXISTS password_reset_tokens (
+      id          SERIAL PRIMARY KEY,
+      user_id     INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      token       TEXT NOT NULL UNIQUE,
+      expires_at  TIMESTAMPTZ NOT NULL,
+      used_at     TIMESTAMPTZ,
+      created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+    CREATE INDEX IF NOT EXISTS password_reset_tokens_user_idx ON password_reset_tokens(user_id);
+  `);
+
   // ── Core tables (idempotent — CREATE TABLE IF NOT EXISTS) ───────────────────
   // Every tenant-owned table includes tenant_id NOT NULL referencing tenants(id).
   // No DEFAULT — INSERTs that forget tenant_id must fail loudly. (Decision 1.)
