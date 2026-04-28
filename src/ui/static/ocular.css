@@ -2028,3 +2028,48 @@ body { padding-bottom: 0; }
   border-color: var(--ocu-text-2);
 }
 .ocu-list-registry-table td { vertical-align: middle; }
+
+/* ─── Upload chooser cards ───────────────────────────────────────────────── */
+.ocu-upload-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  gap: 16px;
+}
+.ocu-upload-card {
+  display: block;
+  background: #fff;
+  border: 1px solid var(--ocu-border);
+  border-radius: 12px;
+  padding: 24px;
+  text-decoration: none;
+  color: var(--ocu-text-1);
+  transition: border-color .15s, box-shadow .15s, transform .15s;
+}
+.ocu-upload-card:hover {
+  border-color: var(--ocu-text-2);
+  box-shadow: 0 6px 20px rgba(0,0,0,.06);
+  transform: translateY(-1px);
+}
+.ocu-upload-card-icon {
+  width: 40px;
+  height: 40px;
+  background: var(--ocu-surface);
+  border-radius: 10px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  margin-bottom: 14px;
+  color: var(--ocu-text-1);
+}
+.ocu-upload-card-title {
+  font-size: 15px;
+  font-weight: 600;
+  margin-bottom: 6px;
+  display: flex;
+  align-items: center;
+}
+.ocu-upload-card-desc {
+  font-size: 13px;
+  color: var(--ocu-text-2);
+  line-height: 1.5;
+}

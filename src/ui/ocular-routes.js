@@ -540,6 +540,17 @@ router.get('/records/:id(\\d+)', requireAuth, async (req, res) => {
   }
 });
 
+// ─── /ocular/upload — Upload chooser landing page ─────────────────────────
+router.get('/upload', requireAuth, async (req, res) => {
+  try {
+    const { uploadChooser } = require('./pages/upload-chooser');
+    res.send(uploadChooser({ user: await getUser(req) }));
+  } catch (e) {
+    console.error('[ocular/upload]', e);
+    res.status(500).send('Error loading upload page: ' + e.message);
+  }
+});
+
 // ─── /ocular/campaigns — Campaigns list ────────────────────────────────────
 router.get('/campaigns', requireAuth, async (req, res) => {
   try {
@@ -1261,7 +1272,10 @@ router.post('/setup/delete-code', requireAuth, async (req, res) => {
 // Note: 'lists/types' is included separately because the List Registry
 // sidebar link targets /ocular/lists/types (not /ocular/lists). Without it,
 // clicking List Registry in the sidebar 404s.
-const placeholderPages = ['upload'];
+// All Ocular pages now have real implementations. Empty array kept so
+// the loop below is a no-op rather than a code-removal that future
+// merges might re-introduce a name into.
+const placeholderPages = [];
 const { shell } = require('./layouts/shell');
 placeholderPages.forEach(page => {
   // Title and active-page name both need to work whether `page` is 'records'
