@@ -103,6 +103,96 @@ async function uniqueSlug(base) {
   return `${base}-${Date.now().toString(36)}`;
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// GET / — public landing page (Phase 2e). Logged-in users go straight to
+// the dashboard; everyone else gets the marketing splash.
+// ─────────────────────────────────────────────────────────────────────────────
+router.get('/', (req, res, next) => {
+  if (req.session && req.session.authenticated && req.session.tenantId) {
+    return res.redirect('/ocular/dashboard');
+  }
+  res.send(`<!DOCTYPE html>
+<html><head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Ocular — Real estate data ops</title>
+<style>
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;background:#f5f4f0;color:#1a1a1a;line-height:1.55}
+  a{color:inherit}
+  .top{display:flex;justify-content:space-between;align-items:center;padding:18px 32px;border-bottom:1px solid #e8e7e1;background:#fff}
+  .brand{font-weight:700;font-size:18px;letter-spacing:-.2px}
+  .top-actions a{font-size:14px;text-decoration:none;color:#444;margin-left:18px}
+  .top-actions a.btn{padding:8px 14px;border-radius:8px;background:#1a1a1a;color:#fff;font-weight:600}
+  .top-actions a.btn:hover{background:#333}
+  .hero{padding:96px 32px 64px;text-align:center;max-width:880px;margin:0 auto}
+  .hero h1{font-size:54px;font-weight:700;letter-spacing:-1.2px;line-height:1.05;margin-bottom:18px}
+  .hero h1 .accent{color:#1a7a4a}
+  .hero p{font-size:18px;color:#555;max-width:620px;margin:0 auto 28px}
+  .cta{display:inline-flex;gap:12px;flex-wrap:wrap;justify-content:center}
+  .cta a{padding:13px 24px;border-radius:10px;text-decoration:none;font-weight:600;font-size:15px}
+  .cta .primary{background:#1a1a1a;color:#fff}
+  .cta .primary:hover{background:#333}
+  .cta .secondary{background:#fff;border:1px solid #ddd;color:#1a1a1a}
+  .cta .secondary:hover{background:#fafaf8}
+  .features{display:grid;grid-template-columns:repeat(3,1fr);gap:18px;max-width:1040px;margin:32px auto 80px;padding:0 32px}
+  .feature{background:#fff;border:1px solid #e8e7e1;border-radius:14px;padding:24px}
+  .feature h3{font-size:16px;font-weight:600;margin-bottom:6px}
+  .feature p{font-size:14px;color:#666}
+  .feature .icon{width:36px;height:36px;border-radius:8px;background:#eef9f1;color:#1a7a4a;display:flex;align-items:center;justify-content:center;margin-bottom:12px}
+  .feature .icon svg{width:18px;height:18px}
+  .footer{padding:36px 32px;border-top:1px solid #e8e7e1;text-align:center;font-size:13px;color:#888;background:#fff}
+  .footer a{margin:0 10px;color:#666;text-decoration:none}
+  @media (max-width:760px){
+    .hero h1{font-size:38px}
+    .hero{padding:56px 22px 36px}
+    .features{grid-template-columns:1fr;margin:24px auto 56px}
+  }
+</style>
+</head><body>
+<header class="top">
+  <div class="brand">Ocular</div>
+  <nav class="top-actions">
+    <a href="/login">Sign in</a>
+    <a class="btn" href="/signup">Get started</a>
+  </nav>
+</header>
+
+<section class="hero">
+  <h1>Real estate cold-call data, <span class="accent">cleaned and ready</span>.</h1>
+  <p>Ocular ingests your dialer exports, applies your SOP filtration rules, and gives you back two CSVs: one for REISift, one for Readymode. Cumulative memory across uploads. No spreadsheets, no copy-paste.</p>
+  <div class="cta">
+    <a class="primary" href="/signup">Create your free workspace</a>
+    <a class="secondary" href="/login">I already have an account</a>
+  </div>
+</section>
+
+<section class="features">
+  <div class="feature">
+    <div class="icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg></div>
+    <h3>Drop a CSV. Done.</h3>
+    <p>Upload Readymode call logs or REISift exports. SOP filtration rules apply automatically — kept, removed, or flagged for tagging.</p>
+  </div>
+  <div class="feature">
+    <div class="icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 12a9 9 0 1 1-18 0 9 9 0 0 1 18 0z"/><polyline points="12 8 12 12 14 14"/></svg></div>
+    <h3>Memory across uploads</h3>
+    <p>Numbers caught last week stay caught — even if your dialer resets. No re-dialing leads who already said no.</p>
+  </div>
+  <div class="feature">
+    <div class="icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M22 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg></div>
+    <h3>Owners, lists, and campaigns</h3>
+    <p>One view of every property, every contact, every dialer round. Pipeline stages, distress scoring, and per-list reconciliation in a single place.</p>
+  </div>
+</section>
+
+<footer class="footer">
+  <a href="/login">Sign in</a> ·
+  <a href="/signup">Sign up</a> ·
+  <a href="/forgot-password">Forgot password</a>
+</footer>
+</body></html>`);
+});
+
 // ── GET /signup ──────────────────────────────────────────────────────────────
 router.get('/signup', (req, res) => {
   if (req.session && req.session.authenticated) return res.redirect('/ocular/dashboard');
