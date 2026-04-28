@@ -540,6 +540,109 @@ router.get('/records/:id(\\d+)', requireAuth, async (req, res) => {
   }
 });
 
+// ─── /ocular/campaigns — Campaigns list ────────────────────────────────────
+router.get('/campaigns', requireAuth, async (req, res) => {
+  try {
+    const { campaignsList } = require('./pages/campaigns-list');
+    const campaigns = require('../campaigns');
+    const filtration = require('../filtration');
+    await campaigns.initCampaignSchema();
+    const list = await campaigns.getCampaigns(req.tenantId);
+    // Enrich each campaign with contact_counts so the list shows live numbers.
+    // Same shape the Loki /campaigns route uses.
+    for (const c of list) {
+      try { c.contact_counts = await filtration.getContactStats(c.id); }
+      catch (_) { c.contact_counts = { total_contacts: 0, total_phones: 0, wrong_phones: 0, nis_phones: 0, lead_contacts: 0 }; }
+    }
+    res.send(campaignsList({
+      user: await getUser(req),
+      campaigns: list,
+      tab: req.query.tab || 'active',
+    }));
+  } catch (e) {
+    console.error('[ocular/campaigns]', e);
+    res.status(500).send('Error loading campaigns: ' + e.message);
+  }
+});
+
+// Campaign detail
+router.get('/campaigns/:id(\\d+)', requireAuth, async (req, res) => {
+  try {
+    const { campaignDetail } = require('./pages/campaign-detail');
+    const campaigns = require('../campaigns');
+    const filtration = require('../filtration');
+    const c = await campaigns.getCampaign(req.tenantId, req.params.id);
+    if (!c) return res.redirect('/ocular/campaigns');
+    try { c.contact_counts = await filtration.getContactStats(req.params.id); }
+    catch (_) { c.contact_counts = { total_contacts: 0, total_phones: 0, wrong_phones: 0, nis_phones: 0, lead_contacts: 0 }; }
+    res.send(campaignDetail({
+      user: await getUser(req),
+      campaign: c,
+      flash: {
+        msg: req.query.msg ? String(req.query.msg).slice(0, 300) : '',
+        err: req.query.err ? String(req.query.err).slice(0, 300) : '',
+      },
+    }));
+  } catch (e) {
+    console.error('[ocular/campaigns/:id]', e);
+    res.status(500).send('Error loading campaign: ' + e.message);
+  }
+});
+
+router.post('/campaigns/:id(\\d+)/status', requireAuth, async (req, res) => {
+  try {
+    const campaigns = require('../campaigns');
+    await campaigns.updateCampaignStatus(req.tenantId, req.params.id, req.body.status);
+    res.redirect('/ocular/campaigns/' + req.params.id + '?msg=' + encodeURIComponent('Status updated'));
+  } catch (e) {
+    res.redirect('/ocular/campaigns/' + req.params.id + '?err=' + encodeURIComponent('Failed to update status'));
+  }
+});
+
+router.post('/campaigns/:id(\\d+)/channel', requireAuth, async (req, res) => {
+  try {
+    const campaigns = require('../campaigns');
+    await campaigns.updateCampaignChannel(req.tenantId, req.params.id, req.body.channel);
+    res.redirect('/ocular/campaigns/' + req.params.id + '?msg=' + encodeURIComponent('Channel updated'));
+  } catch (e) {
+    res.redirect('/ocular/campaigns/' + req.params.id + '?err=' + encodeURIComponent('Failed to update channel'));
+  }
+});
+
+router.post('/campaigns/:id(\\d+)/rename', requireAuth, async (req, res) => {
+  try {
+    const campaigns = require('../campaigns');
+    const result = await campaigns.updateCampaignName(req.tenantId, req.params.id, req.body.name);
+    if (!result.ok) {
+      return res.redirect('/ocular/campaigns/' + req.params.id + '?err=' + encodeURIComponent(result.error || 'Rename failed'));
+    }
+    res.redirect('/ocular/campaigns/' + req.params.id + '?msg=' + encodeURIComponent('Campaign renamed'));
+  } catch (e) {
+    res.redirect('/ocular/campaigns/' + req.params.id + '?err=' + encodeURIComponent('Rename failed'));
+  }
+});
+
+router.post('/campaigns/:id(\\d+)/close', requireAuth, async (req, res) => {
+  try {
+    const campaigns = require('../campaigns');
+    await campaigns.closeCampaign(req.tenantId, req.params.id);
+    res.redirect('/ocular/campaigns/' + req.params.id + '?msg=' + encodeURIComponent('Campaign closed'));
+  } catch (e) {
+    res.redirect('/ocular/campaigns/' + req.params.id + '?err=' + encodeURIComponent('Failed to close'));
+  }
+});
+
+router.post('/campaigns/:id(\\d+)/new-round', requireAuth, async (req, res) => {
+  try {
+    const campaigns = require('../campaigns');
+    await campaigns.closeCampaign(req.tenantId, req.params.id);
+    const newCamp = await campaigns.cloneCampaign(req.tenantId, req.params.id);
+    res.redirect('/ocular/campaigns/' + (newCamp ? newCamp.id : req.params.id) + '?msg=' + encodeURIComponent('New round started'));
+  } catch (e) {
+    res.redirect('/ocular/campaigns/' + req.params.id + '?err=' + encodeURIComponent('Failed to start new round'));
+  }
+});
+
 // ─── /ocular/lists/types — List Registry ───────────────────────────────────
 const ALLOWED_REGISTRY_FIELDS = new Set([
   'action', 'state_code', 'list_name', 'list_tier',
@@ -1158,7 +1261,7 @@ router.post('/setup/delete-code', requireAuth, async (req, res) => {
 // Note: 'lists/types' is included separately because the List Registry
 // sidebar link targets /ocular/lists/types (not /ocular/lists). Without it,
 // clicking List Registry in the sidebar 404s.
-const placeholderPages = ['campaigns', 'upload'];
+const placeholderPages = ['upload'];
 const { shell } = require('./layouts/shell');
 placeholderPages.forEach(page => {
   // Title and active-page name both need to work whether `page` is 'records'
