@@ -143,6 +143,10 @@ app.use('/upload', uploadRoutes);
 // Old records routes replaced by phase 2 slice 1 — registered at bottom of file
 // app.use('/records', recordsRoutes);
 
+// Phase 2 — public auth routes (signup + verify-email; login replacement
+// arrives in 2c). Mounted at root so /signup, /verify-email work directly.
+app.use('/', authRoutes);
+
 function requireAuth(req, res, next) {
   if (!req.session || !req.session.authenticated) return res.redirect('/login');
   // Sessions created before Phase 1 don't carry tenant context. Bounce them
@@ -165,6 +169,11 @@ const activityRoutes = require('./activity-routes');
 const ownersRoutes = require('./owners/owners-routes');
 const listTypesRoutes = require('./lists/list-types-routes');
 const ocularRoutes = require('./ui/ocular-routes');
+
+// Phase 2: public auth routes (signup, verify-email, password reset).
+// Mounted BEFORE any requireAuth-gated middleware so unauthenticated visitors
+// can reach them.
+const authRoutes = require('./auth-routes');
 
 const COL = { phone:'Phone', dispo:'Log Type', listname:'Original lead file', date:'Log Time', fname:'First Name', lname:'Last Name', addr:'Address', city:'City', state:'State', zip:'Zip Code', notes:'Call Notes' };
 
