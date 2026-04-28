@@ -170,6 +170,9 @@ const activityRoutes = require('./activity-routes');
 const ownersRoutes = require('./owners/owners-routes');
 const listTypesRoutes = require('./lists/list-types-routes');
 const ocularRoutes = require('./ui/ocular-routes');
+// 2026-04-28 SaaS super-admin console at /admin/* — gated by SUPER_ADMIN_EMAIL
+// env var, separate chrome from the Ocular tenant UI.
+const adminRoutes = require('./admin/admin-routes');
 
 
 const COL = { phone:'Phone', dispo:'Log Type', listname:'Original lead file', date:'Log Time', fname:'First Name', lname:'Last Name', addr:'Address', city:'City', state:'State', zip:'Zip Code', notes:'Call Notes' };
@@ -483,6 +486,11 @@ app.use('/lists', listTypesRoutes);
 // untouched. Static CSS at /ocular-static/ocular.css.
 app.use('/ocular-static', express.static(path.join(__dirname, 'ui/static'), { maxAge: '1d' }));
 app.use('/ocular', ocularRoutes);
+
+// 2026-04-28 SaaS super-admin console. The router self-gates via
+// SUPER_ADMIN_EMAIL — only the operator whose email matches that env var
+// reaches any handler. Mounted last so /admin doesn't collide with anything.
+app.use('/admin', adminRoutes);
 
 
 

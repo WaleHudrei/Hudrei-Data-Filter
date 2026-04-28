@@ -489,13 +489,24 @@ router.post('/login', _loginRateLimit, async (req, res) => {
 
   try {
     const r = await query(
-      `SELECT id, tenant_id, role, password_hash, email_verified_at, status, name
-         FROM users WHERE email = $1 LIMIT 1`,
+      `SELECT u.id, u.tenant_id, u.role, u.password_hash, u.email_verified_at, u.status, u.name,
+              t.status AS tenant_status
+         FROM users u
+         JOIN tenants t ON t.id = u.tenant_id
+        WHERE u.email = $1
+        LIMIT 1`,
       [emailAddr]
     );
     if (!r.rows.length) return fail();
     const u = r.rows[0];
     if (u.status !== 'active') return fail();
+    // 2026-04-28: super-admin can pause an entire tenant from /admin. Block
+    // login for suspended/canceled tenants — credentials may be valid but the
+    // workspace is offline.
+    if (u.tenant_status !== 'active') {
+      _bumpLoginFailure(ip);
+      return res.redirect('/login?err=' + encodeURIComponent('This workspace has been suspended. Contact your account admin.'));
+    }
     const ok = await passwords.verify(password, u.password_hash);
     if (!ok) return fail();
 

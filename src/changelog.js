@@ -3,6 +3,18 @@
 
 const ENTRIES = [
   {
+    date: 'April 28, 2026',
+    title: 'SaaS super-admin console at /admin — see signups, suspend tenants, delete accounts',
+    items: [
+      { tag: 'feat', text: 'New super-admin console at /admin for the SaaS operator (Wale + dev team). Gated by a SUPER_ADMIN_EMAIL env var — only a logged-in user whose email exactly matches that env var (case-insensitive) can reach any /admin route. Deliberately decoupled from the per-tenant `role` column so a normal tenant admin can never escalate into this surface, and there is no global is_super_admin flag that a future bug could mistakenly flip. The email check re-loads from the DB on every request, so revoking platform access is just changing the env var on Railway — no session invalidation dance.' },
+      { tag: 'feat', text: 'Routes shipped: GET /admin (every tenant on the platform with user count, status pill, primary email, last login, and KPI strip for total tenants / active / suspended / users); GET+POST /admin/tenants/new (provision a new workspace + initial admin user — used for manual onboarding of paid customers or seeding internal demo accounts; reuses the same passwords.validate / passwords.hash and provisionTenantSettings used by /signup); GET /admin/tenants/:id (per-tenant detail with users table, KPI counts of properties/contacts/lists/campaigns scoped by tenant_id, lifecycle controls, and a Danger Zone); POST /admin/tenants/:id/status (toggle active ↔ suspended); POST /admin/tenants/:id/delete (destructive — types-the-slug confirmation prompt, then DELETE FROM tenants which cascades through every tenant_id FK in the database); POST /admin/tenants/:id/users/:uid/status (disable/re-enable a user); POST /admin/tenants/:id/users/:uid/delete (delete a user). Refuses to delete the operator\'s OWN tenant or change the operator\'s own user — those would log them out mid-flow and leave the platform without a way back in.' },
+      { tag: 'feat', text: 'Login now honors tenant status. POST /login joins users → tenants and refuses sign-in if t.status !== \'active\' with the message "This workspace has been suspended. Contact your account admin." Bumps the same rate-limit counter so a suspended tenant can\'t be used to brute-force credentials. Pausing a tenant from /admin is now a real lockout, not just a UI state.' },
+      { tag: 'feat', text: 'Layout intentionally separate from the Ocular tenant sidebar — own dark-themed minimal chrome (black topbar, "ADMIN" tag, two-link nav). The mental model "what tenants can\'t see" is different from "my workspace," and the visual separation is a constant reminder that actions on this surface affect ALL tenants. No reuse of the Ocular shell so a future redesign of the customer UI can\'t accidentally restyle the operator console.' },
+      { tag: 'note', text: 'Setup: set SUPER_ADMIN_EMAIL=<your@email> on Railway. Until that env var is set, every /admin route returns a 503 with instructions. The email must belong to an existing user in the users table — usually the seed user (wale@hudrei.com). The console is reachable from any logged-in browser session for that user; bookmark /admin or navigate manually (no link exposed in the Ocular sidebar by design).' },
+      { tag: 'note', text: 'Out of scope this round: tenant impersonation ("log in as customer X to debug"), audit log of admin actions, billing/plan management, and email-based 2FA on the admin gate. All deferred — the priority for v1 is "I can see who signed up, suspend bad actors, and delete junk accounts." More can be layered on without re-architecting the gate.' },
+    ],
+  },
+  {
     date: 'April 21, 2026',
     title: 'Phone number tags, phone type editing, phone filters, and an email display fix',
     items: [
