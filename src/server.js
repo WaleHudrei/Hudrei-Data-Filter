@@ -885,7 +885,7 @@ app.get('/dashboard', requireAuth, async (req, res) => {
     let defaultCodeBanner = '';
     try {
       const settings = require('./settings');
-      if (await settings.isUsingDefaultCode()) {
+      if (await settings.isUsingDefaultCode(req.tenantId)) {
         defaultCodeBanner = `
           <div style="background:#fff8e1;border:1px solid #e8cf87;border-radius:8px;padding:12px 16px;margin-bottom:1.25rem;display:flex;align-items:center;gap:12px">
             <svg width="18" height="18" fill="none" stroke="#9a6800" stroke-width="2" viewBox="0 0 24 24"><path d="M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
@@ -1144,6 +1144,15 @@ app.listen(PORT, async ()=>{
   else                                   console.error('Distress schema init error:', distRes.reason?.message || distRes.reason);
   if (settingsRes.status === 'fulfilled')console.log('Settings schema ready');
   else                                   console.error('Settings schema init error:', settingsRes.reason?.message || settingsRes.reason);
+
+  // Phase 1: ensure HudREI (tenant_id=1) has its default settings row.
+  // Idempotent — does nothing if the row already exists. Phase 2 signup
+  // will call provisionTenantSettings(newTenantId) for each new tenant.
+  try {
+    await require('./settings').provisionTenantSettings(1);
+  } catch (e) {
+    console.error('HudREI settings provisioning warning:', e.message);
+  }
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1752,7 +1761,7 @@ app.get('/settings/security', requireAuth, async (req, res) => {
   let updatedAt = null;
   try {
     await settings.ensureSettingsSchema();
-    updatedAt = await settings.getDeleteCodeUpdatedAt();
+    updatedAt = await settings.getDeleteCodeUpdatedAt(req.tenantId);
   } catch (e) { console.error('[settings/security] load error:', e.message); }
   const msg = req.query.msg || '';
   const err = req.query.err || '';
@@ -1818,7 +1827,7 @@ app.post('/settings/security/delete-code', requireAuth, async (req, res) => {
   if (new_code !== confirm_code) {
     return res.redirect('/settings/security?err=' + encodeURIComponent('New code and confirmation do not match.'));
   }
-  const result = await settings.updateDeleteCode(old_code, new_code);
+  const result = await settings.updateDeleteCode(req.tenantId, old_code, new_code);
   if (!result.ok) {
     return res.redirect('/settings/security?err=' + encodeURIComponent(result.error));
   }

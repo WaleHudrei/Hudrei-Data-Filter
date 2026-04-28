@@ -35,6 +35,7 @@ router.get('/dashboard', requireAuth, async (req, res) => {
     // Fetch all the data the dashboard needs in parallel.
     // Each query is simple enough to run from this handler; we'll extract
     // them into a dashboard-stats service if it grows.
+    const t = req.tenantId;
     const [
       totalRecordsRes,
       totalOwnersRes,
@@ -46,26 +47,26 @@ router.get('/dashboard', requireAuth, async (req, res) => {
       registryRes,
       topListsRes,
     ] = await Promise.all([
-      query(`SELECT COUNT(*)::int AS n FROM properties`),
-      query(`SELECT COUNT(DISTINCT contact_id)::int AS n FROM property_contacts WHERE primary_contact = true`),
+      query(`SELECT COUNT(*)::int AS n FROM properties WHERE tenant_id = $1`, [t]),
+      query(`SELECT COUNT(DISTINCT contact_id)::int AS n FROM property_contacts WHERE tenant_id = $1 AND primary_contact = true`, [t]),
       query(`SELECT COUNT(DISTINCT pc.property_id)::int AS n
                FROM property_contacts pc
                JOIN phones ph ON ph.contact_id = pc.contact_id
-              WHERE pc.primary_contact = true`),
+              WHERE pc.tenant_id = $1 AND pc.primary_contact = true`, [t]),
       query(`SELECT COUNT(*)::int AS n FROM (
                SELECT contact_id FROM property_contacts
-                WHERE primary_contact = true
+                WHERE tenant_id = $1 AND primary_contact = true
                 GROUP BY contact_id HAVING COUNT(*) > 1
-             ) t`),
-      query(`SELECT COUNT(*)::int AS n FROM properties WHERE created_at > NOW() - INTERVAL '7 days'`),
+             ) t`, [t]),
+      query(`SELECT COUNT(*)::int AS n FROM properties WHERE tenant_id = $1 AND created_at > NOW() - INTERVAL '7 days'`, [t]),
       query(`
         SELECT
           COUNT(*) FILTER (WHERE distress_band = 'burning')::int AS burning,
           COUNT(*) FILTER (WHERE distress_band = 'hot')::int     AS hot,
           COUNT(*) FILTER (WHERE distress_band = 'warm')::int    AS warm,
           COUNT(*) FILTER (WHERE distress_band = 'cold')::int    AS cold
-        FROM properties`),
-      query(`SELECT COUNT(*)::int AS n FROM lists`),
+        FROM properties WHERE tenant_id = $1`, [t]),
+      query(`SELECT COUNT(*)::int AS n FROM lists WHERE tenant_id = $1`, [t]),
       // List registry — count active templates and overdue ones.
       // Wrapped in try/catch upstream because the table may not exist yet
       // on a brand-new deploy.
@@ -85,15 +86,16 @@ router.get('/dashboard', requireAuth, async (req, res) => {
               AND last_pull_date + (frequency_days || ' days')::interval >= NOW()
               AND last_pull_date + (frequency_days || ' days')::interval < NOW() + INTERVAL '7 days'
           )::int AS due_week
-        FROM list_templates
-      `).catch(() => ({ rows: [{ total: 0, overdue: 0, due_week: 0 }] })),
+        FROM list_templates WHERE tenant_id = $1
+      `, [t]).catch(() => ({ rows: [{ total: 0, overdue: 0, due_week: 0 }] })),
       query(`
         SELECT l.list_name AS name, COUNT(pl.property_id)::int AS count
           FROM lists l
           LEFT JOIN property_lists pl ON pl.list_id = l.id
+          WHERE l.tenant_id = $1
           GROUP BY l.id, l.list_name
           ORDER BY count DESC
-          LIMIT 5`),
+          LIMIT 5`, [t]),
     ]);
 
     const totalRecords = totalRecordsRes.rows[0]?.n || 0;
@@ -113,10 +115,10 @@ router.get('/dashboard', requireAuth, async (req, res) => {
     const recentImportsRes = await query(`
       SELECT 'import' AS kind, total_rows::int AS n, filename, created_at
         FROM bulk_import_jobs
-       WHERE status = 'completed'
+       WHERE tenant_id = $1 AND status = 'completed'
        ORDER BY created_at DESC
        LIMIT 3
-    `).catch(() => ({ rows: [] }));
+    `, [t]).catch(() => ({ rows: [] }));
 
     const activity = recentImportsRes.rows.map(row => ({
       dot: 'success',
@@ -133,8 +135,7 @@ router.get('/dashboard', requireAuth, async (req, res) => {
       });
     }
 
-    // User from session (currently single-user — see getUser helper below)
-    const user = getUser(req);
+    const user = await getUser(req);
 
     res.send(dashboard({
       kpis: {
@@ -229,9 +230,12 @@ router.get('/records', requireAuth, async (req, res) => {
     const offset = (page - 1) * limit;
 
     // ── Build WHERE clause + params ─────────────────────────────────────────
-    const conditions = [];
-    const params = [];
-    let idx = 1;
+    // Tenant filter is the first WHERE clause; every subquery below also
+    // carries a tenant filter on the tables it touches so cross-tenant
+    // rows can never satisfy a subquery condition.
+    const conditions = [`p.tenant_id = $1`];
+    const params = [req.tenantId];
+    let idx = 2;
 
     if (q) {
       conditions.push(`(p.street ILIKE $${idx} OR p.city ILIKE $${idx} OR p.zip_code ILIKE $${idx} OR c.first_name ILIKE $${idx} OR c.last_name ILIKE $${idx})`);
@@ -275,15 +279,15 @@ router.get('/records', requireAuth, async (req, res) => {
     }
     // Phones filter
     if (phones === 'has') {
-      conditions.push(`EXISTS (SELECT 1 FROM phones ph2 JOIN property_contacts pc2 ON pc2.contact_id = ph2.contact_id WHERE pc2.property_id = p.id)`);
+      conditions.push(`EXISTS (SELECT 1 FROM phones ph2 JOIN property_contacts pc2 ON pc2.contact_id = ph2.contact_id WHERE pc2.property_id = p.id AND pc2.tenant_id = p.tenant_id AND ph2.tenant_id = p.tenant_id)`);
     } else if (phones === 'none') {
-      conditions.push(`NOT EXISTS (SELECT 1 FROM phones ph2 JOIN property_contacts pc2 ON pc2.contact_id = ph2.contact_id WHERE pc2.property_id = p.id)`);
+      conditions.push(`NOT EXISTS (SELECT 1 FROM phones ph2 JOIN property_contacts pc2 ON pc2.contact_id = ph2.contact_id WHERE pc2.property_id = p.id AND pc2.tenant_id = p.tenant_id AND ph2.tenant_id = p.tenant_id)`);
     } else if (phones === 'correct') {
-      conditions.push(`EXISTS (SELECT 1 FROM phones ph2 JOIN property_contacts pc2 ON pc2.contact_id = ph2.contact_id WHERE pc2.property_id = p.id AND LOWER(ph2.phone_status) = 'correct')`);
+      conditions.push(`EXISTS (SELECT 1 FROM phones ph2 JOIN property_contacts pc2 ON pc2.contact_id = ph2.contact_id WHERE pc2.property_id = p.id AND pc2.tenant_id = p.tenant_id AND ph2.tenant_id = p.tenant_id AND LOWER(ph2.phone_status) = 'correct')`);
     }
     // List filter
     if (list_id && /^\d+$/.test(list_id)) {
-      conditions.push(`EXISTS (SELECT 1 FROM property_lists pl WHERE pl.property_id = p.id AND pl.list_id = $${idx})`);
+      conditions.push(`EXISTS (SELECT 1 FROM property_lists pl WHERE pl.property_id = p.id AND pl.tenant_id = p.tenant_id AND pl.list_id = $${idx})`);
       params.push(parseInt(list_id, 10)); idx++;
     }
 
@@ -323,19 +327,19 @@ router.get('/records', requireAuth, async (req, res) => {
       conditions.push(`p.equity_percent <= $${idx}`); params.push(parseFloat(max_equity)); idx++;
     }
     if (phone_type && ['mobile', 'landline', 'voip'].includes(phone_type)) {
-      conditions.push(`EXISTS (SELECT 1 FROM phones ph3 JOIN property_contacts pc3 ON pc3.contact_id = ph3.contact_id WHERE pc3.property_id = p.id AND LOWER(ph3.phone_type) = $${idx})`);
+      conditions.push(`EXISTS (SELECT 1 FROM phones ph3 JOIN property_contacts pc3 ON pc3.contact_id = ph3.contact_id WHERE pc3.property_id = p.id AND pc3.tenant_id = p.tenant_id AND ph3.tenant_id = p.tenant_id AND LOWER(ph3.phone_type) = $${idx})`);
       params.push(phone_type); idx++;
     }
     // Tag include — multi: property must have ALL selected tags
     if (tagIncludeList.length) {
-      conditions.push(`(SELECT COUNT(DISTINCT tag_id) FROM property_tags WHERE property_id = p.id AND tag_id = ANY($${idx}::int[])) = $${idx + 1}`);
+      conditions.push(`(SELECT COUNT(DISTINCT tag_id) FROM property_tags WHERE property_id = p.id AND tenant_id = p.tenant_id AND tag_id = ANY($${idx}::int[])) = $${idx + 1}`);
       params.push(tagIncludeList);
       params.push(tagIncludeList.length);
       idx += 2;
     }
     // Tag exclude — property must NOT have ANY of the selected tags
     if (tagExcludeList.length) {
-      conditions.push(`NOT EXISTS (SELECT 1 FROM property_tags WHERE property_id = p.id AND tag_id = ANY($${idx}::int[]))`);
+      conditions.push(`NOT EXISTS (SELECT 1 FROM property_tags WHERE property_id = p.id AND tenant_id = p.tenant_id AND tag_id = ANY($${idx}::int[]))`);
       params.push(tagExcludeList); idx++;
     }
 
@@ -345,8 +349,8 @@ router.get('/records', requireAuth, async (req, res) => {
     const countRes = await query(`
       SELECT COUNT(*)::int AS n
       FROM properties p
-      LEFT JOIN property_contacts pc ON pc.property_id = p.id AND pc.primary_contact = true
-      LEFT JOIN contacts c ON c.id = pc.contact_id
+      LEFT JOIN property_contacts pc ON pc.property_id = p.id AND pc.tenant_id = p.tenant_id AND pc.primary_contact = true
+      LEFT JOIN contacts c ON c.id = pc.contact_id AND c.tenant_id = p.tenant_id
       ${whereSQL}
     `, params);
     const total = countRes.rows[0].n || 0;
@@ -358,13 +362,13 @@ router.get('/records', requireAuth, async (req, res) => {
         p.property_type, p.pipeline_stage, p.created_at,
         p.distress_score, p.distress_band,
         c.first_name, c.last_name, c.owner_type,
-        (SELECT COUNT(*) FROM property_lists pl WHERE pl.property_id = p.id) AS list_count,
+        (SELECT COUNT(*) FROM property_lists pl WHERE pl.property_id = p.id AND pl.tenant_id = p.tenant_id) AS list_count,
         (SELECT COUNT(*) FROM phones ph2
            JOIN property_contacts pc2 ON pc2.contact_id = ph2.contact_id
-          WHERE pc2.property_id = p.id) AS phone_count
+          WHERE pc2.property_id = p.id AND pc2.tenant_id = p.tenant_id AND ph2.tenant_id = p.tenant_id) AS phone_count
       FROM properties p
-      LEFT JOIN property_contacts pc ON pc.property_id = p.id AND pc.primary_contact = true
-      LEFT JOIN contacts c ON c.id = pc.contact_id
+      LEFT JOIN property_contacts pc ON pc.property_id = p.id AND pc.tenant_id = p.tenant_id AND pc.primary_contact = true
+      LEFT JOIN contacts c ON c.id = pc.contact_id AND c.tenant_id = p.tenant_id
       ${whereSQL}
       ORDER BY ${sortCol} ${sortDir} NULLS LAST, p.id DESC
       LIMIT $${idx} OFFSET $${idx + 1}
@@ -373,8 +377,8 @@ router.get('/records', requireAuth, async (req, res) => {
     // ── Lookup data for filter dropdowns ───────────────────────────────────
     // States are hardcoded in records-filters.js (all 50 + DC) so we don't
     // need to query the DB for them here anymore.
-    const allTagsRes = await query(`SELECT id, name FROM tags ORDER BY name ASC LIMIT 200`).catch(() => ({ rows: [] }));
-    const allListsRes = await query(`SELECT id, list_name FROM lists ORDER BY list_name ASC LIMIT 200`);
+    const allTagsRes = await query(`SELECT id, name FROM tags WHERE tenant_id = $1 ORDER BY name ASC LIMIT 200`, [req.tenantId]).catch(() => ({ rows: [] }));
+    const allListsRes = await query(`SELECT id, list_name FROM lists WHERE tenant_id = $1 ORDER BY list_name ASC LIMIT 200`, [req.tenantId]);
 
     // Pass through the original querystring (for chip-x removal links etc.)
     const querystring = req.url.includes('?') ? req.url.split('?')[1] : '';
@@ -391,7 +395,7 @@ router.get('/records', requireAuth, async (req, res) => {
       },
       allTags:   allTagsRes.rows,
       allLists:  allListsRes.rows,
-      user:      getUser(req),
+      user:      await getUser(req),
     }));
   } catch (e) {
     console.error('[ocular/records]', e);
@@ -406,10 +410,11 @@ router.get('/records', requireAuth, async (req, res) => {
 router.get('/records/:id(\\d+)', requireAuth, async (req, res) => {
   try {
     const { id } = req.params;
+    const t = req.tenantId;
     const { propertyDetail } = require('./pages/property-detail');
 
-    // Property
-    const propRes = await query(`SELECT * FROM properties WHERE id = $1`, [id]);
+    // Property — tenant_id check ensures cross-tenant ID lookups 404 cleanly
+    const propRes = await query(`SELECT * FROM properties WHERE id = $1 AND tenant_id = $2`, [id, t]);
     if (!propRes.rows.length) {
       return res.status(404).send('Property not found');
     }
@@ -419,10 +424,10 @@ router.get('/records/:id(\\d+)', requireAuth, async (req, res) => {
     const contactRes = await query(`
       SELECT c.*, pc.role, pc.primary_contact
         FROM contacts c
-        JOIN property_contacts pc ON pc.contact_id = c.id
-       WHERE pc.property_id = $1
+        JOIN property_contacts pc ON pc.contact_id = c.id AND pc.tenant_id = $2
+       WHERE pc.property_id = $1 AND c.tenant_id = $2
        ORDER BY pc.primary_contact DESC, c.id ASC
-    `, [id]);
+    `, [id, t]);
     const primaryContact   = contactRes.rows.find(r => r.primary_contact) || null;
     const secondaryContacts = contactRes.rows.filter(r => !r.primary_contact);
 
@@ -430,8 +435,8 @@ router.get('/records/:id(\\d+)', requireAuth, async (req, res) => {
     let phones = [];
     if (primaryContact) {
       const phoneRes = await query(
-        `SELECT * FROM phones WHERE contact_id = $1 ORDER BY phone_index ASC`,
-        [primaryContact.id]
+        `SELECT * FROM phones WHERE contact_id = $1 AND tenant_id = $2 ORDER BY phone_index ASC`,
+        [primaryContact.id, t]
       );
       phones = phoneRes.rows;
       if (phones.length) {
@@ -439,10 +444,10 @@ router.get('/records/:id(\\d+)', requireAuth, async (req, res) => {
         const ptRes = await query(`
           SELECT ptl.phone_id, pt.id, pt.name, pt.color
             FROM phone_tag_links ptl
-            JOIN phone_tags pt ON pt.id = ptl.phone_tag_id
-           WHERE ptl.phone_id = ANY($1::int[])
+            JOIN phone_tags pt ON pt.id = ptl.phone_tag_id AND pt.tenant_id = $2
+           WHERE ptl.phone_id = ANY($1::int[]) AND ptl.tenant_id = $2
            ORDER BY pt.name ASC
-        `, [phoneIds]).catch(() => ({ rows: [] }));
+        `, [phoneIds, t]).catch(() => ({ rows: [] }));
         const tagsByPhone = {};
         for (const r of ptRes.rows) {
           if (!tagsByPhone[r.phone_id]) tagsByPhone[r.phone_id] = [];
@@ -455,8 +460,8 @@ router.get('/records/:id(\\d+)', requireAuth, async (req, res) => {
     // Phones for each secondary contact (Owner 2+)
     for (const sc of secondaryContacts) {
       const scPhoneRes = await query(
-        `SELECT * FROM phones WHERE contact_id = $1 ORDER BY phone_index ASC`,
-        [sc.id]
+        `SELECT * FROM phones WHERE contact_id = $1 AND tenant_id = $2 ORDER BY phone_index ASC`,
+        [sc.id, t]
       );
       sc.phones = scPhoneRes.rows;
     }
@@ -465,19 +470,19 @@ router.get('/records/:id(\\d+)', requireAuth, async (req, res) => {
     const listsRes = await query(`
       SELECT l.list_name, l.list_type, l.source, pl.added_at
         FROM property_lists pl
-        JOIN lists l ON l.id = pl.list_id
-       WHERE pl.property_id = $1
+        JOIN lists l ON l.id = pl.list_id AND l.tenant_id = $2
+       WHERE pl.property_id = $1 AND pl.tenant_id = $2
        ORDER BY pl.added_at DESC
-    `, [id]).catch(() => ({ rows: [] }));
+    `, [id, t]).catch(() => ({ rows: [] }));
 
     // Property tags
     const tagsRes = await query(`
       SELECT t.id, t.name, t.color
         FROM property_tags pt
-        JOIN tags t ON t.id = pt.tag_id
-       WHERE pt.property_id = $1
+        JOIN tags t ON t.id = pt.tag_id AND t.tenant_id = $2
+       WHERE pt.property_id = $1 AND pt.tenant_id = $2
        ORDER BY t.name ASC
-    `, [id]).catch(() => ({ rows: [] }));
+    `, [id, t]).catch(() => ({ rows: [] }));
 
     // Distress breakdown — already stored as JSON on the property row
     let distressBreakdown = p.distress_breakdown;
@@ -497,10 +502,10 @@ router.get('/records/:id(\\d+)', requireAuth, async (req, res) => {
         cl.call_date AS activity_date,
         cl.agent_name
       FROM call_logs cl
-      JOIN phones ph ON ph.id = cl.phone_id
-      JOIN contacts ct ON ct.id = ph.contact_id
-      JOIN property_contacts pc ON pc.contact_id = ct.id
-      WHERE pc.property_id = $1 AND cl.campaign_name IS NOT NULL
+      JOIN phones ph ON ph.id = cl.phone_id AND ph.tenant_id = $2
+      JOIN contacts ct ON ct.id = ph.contact_id AND ct.tenant_id = $2
+      JOIN property_contacts pc ON pc.contact_id = ct.id AND pc.tenant_id = $2
+      WHERE pc.property_id = $1 AND cl.tenant_id = $2 AND cl.campaign_name IS NOT NULL
       UNION ALL
       SELECT
         sl.campaign_name,
@@ -510,13 +515,13 @@ router.get('/records/:id(\\d+)', requireAuth, async (req, res) => {
         sl.sent_at AS activity_date,
         NULL AS agent_name
       FROM sms_logs sl
-      JOIN phones ph ON ph.id = sl.phone_id
-      JOIN contacts ct ON ct.id = ph.contact_id
-      JOIN property_contacts pc ON pc.contact_id = ct.id
-      WHERE pc.property_id = $1 AND sl.campaign_name IS NOT NULL
+      JOIN phones ph ON ph.id = sl.phone_id AND ph.tenant_id = $2
+      JOIN contacts ct ON ct.id = ph.contact_id AND ct.tenant_id = $2
+      JOIN property_contacts pc ON pc.contact_id = ct.id AND pc.tenant_id = $2
+      WHERE pc.property_id = $1 AND sl.tenant_id = $2 AND sl.campaign_name IS NOT NULL
       ORDER BY activity_date DESC NULLS LAST
       LIMIT 50
-    `, [id]).catch(() => ({ rows: [] }));
+    `, [id, t]).catch(() => ({ rows: [] }));
 
     res.send(propertyDetail({
       property:           p,
@@ -527,7 +532,7 @@ router.get('/records/:id(\\d+)', requireAuth, async (req, res) => {
       tags:               tagsRes.rows,
       distressBreakdown,
       activity:           activityRes.rows,
-      user:               getUser(req),
+      user:               await getUser(req),
     }));
   } catch (e) {
     console.error('[ocular/records/:id]', e);
@@ -556,11 +561,11 @@ placeholderPages.forEach(page => {
     : page === 'setup' ? 'settings'
     : page;
 
-  router.get('/' + page, requireAuth, (req, res) => {
+  router.get('/' + page, requireAuth, async (req, res) => {
     res.send(shell({
       title: niceTitle,
       activePage: activeId,
-      user: getUser(req),
+      user: await getUser(req),
       body: `
         <div class="ocu-page-header">
           <div>
@@ -581,16 +586,40 @@ placeholderPages.forEach(page => {
 
 // ─── Helpers used inside the route handler ─────────────────────────────────
 
-// User info source. Loki currently has a single-user system — the session
-// only stores `authenticated`, no name/role. Hardcoding the operator here
-// until proper user management is added. When that ships, swap to read
-// from req.session.userName / userRole.
-function getUser(req) {
-  return {
-    name: 'Wale Oladapo',
-    role: 'Owner · OOJ Acquisitions',
-    initials: 'WO',
-  };
+// Reads the current user + their tenant from the database. Cached on `req`
+// so multiple calls within one request only hit the DB once.
+async function getUser(req) {
+  if (req._cachedUser) return req._cachedUser;
+  try {
+    const r = await query(
+      `SELECT u.id, u.name, u.email, u.role, t.name AS tenant_name, t.slug AS tenant_slug
+         FROM users u
+         JOIN tenants t ON t.id = u.tenant_id
+        WHERE u.id = $1`,
+      [req.userId]
+    );
+    if (!r.rows.length) {
+      req._cachedUser = { name: '—', role: '—', initials: '—' };
+      return req._cachedUser;
+    }
+    const u = r.rows[0];
+    const displayName = u.name || u.email || '—';
+    const initials = displayName
+      .split(/\s+/)
+      .filter(Boolean)
+      .slice(0, 2)
+      .map(s => s[0].toUpperCase())
+      .join('') || '—';
+    req._cachedUser = {
+      name: displayName,
+      role: u.role === 'admin' ? `Admin · ${u.tenant_name}` : `${u.role} · ${u.tenant_name}`,
+      initials,
+    };
+    return req._cachedUser;
+  } catch (e) {
+    console.error('[ocular getUser]', e.message);
+    return { name: '—', role: '—', initials: '—' };
+  }
 }
 
 function escapeHTML(s) {

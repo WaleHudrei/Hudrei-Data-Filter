@@ -34,7 +34,7 @@ router.get('/', requireAuth, async (req, res) => {
     const stats = statsRes.rows[0];
 
     // Warn if delete code is still the default (Audit issue #32)
-    const defaultCode = await isUsingDefaultCode();
+    const defaultCode = await isUsingDefaultCode(req.tenantId);
 
     const marketsHTML = marketsRes.rows.map(m => `
       <div style="display:flex;align-items:center;justify-content:space-between;padding:12px 0;border-bottom:1px solid #f0efe9">

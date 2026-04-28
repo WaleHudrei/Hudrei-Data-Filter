@@ -31,10 +31,44 @@ let _schemaReady = false;
 async function initSchema() {
   if (_schemaReady) return;
 
+  // ── Tenants and users (Phase 1 SaaS foundation) ─────────────────────────────
+  // Created BEFORE everything else because every tenant-owned table FKs to
+  // tenants(id). The migration script (saas-phase1-migration/01-...) is the
+  // canonical seed for HudREI on existing prod DBs; these CREATE TABLEs just
+  // make initSchema work end-to-end on a fresh install.
+  await query(`
+    CREATE TABLE IF NOT EXISTS tenants (
+      id              SERIAL PRIMARY KEY,
+      name            TEXT NOT NULL,
+      slug            TEXT UNIQUE NOT NULL,
+      status          TEXT NOT NULL DEFAULT 'active',
+      created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+
+    CREATE TABLE IF NOT EXISTS users (
+      id              SERIAL PRIMARY KEY,
+      tenant_id       INT NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+      email           TEXT NOT NULL,
+      password_hash   TEXT,
+      name            TEXT,
+      role            TEXT NOT NULL DEFAULT 'admin',
+      status          TEXT NOT NULL DEFAULT 'active',
+      created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      last_login_at   TIMESTAMPTZ,
+      CONSTRAINT users_email_per_tenant UNIQUE (tenant_id, email)
+    );
+
+    CREATE INDEX IF NOT EXISTS users_tenant_id_idx ON users(tenant_id);
+  `);
+
   // ── Core tables (idempotent — CREATE TABLE IF NOT EXISTS) ───────────────────
+  // Every tenant-owned table includes tenant_id NOT NULL referencing tenants(id).
+  // No DEFAULT — INSERTs that forget tenant_id must fail loudly. (Decision 1.)
   await query(`
     CREATE TABLE IF NOT EXISTS markets (
       id SERIAL PRIMARY KEY,
+      tenant_id INT NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
       name VARCHAR(100) NOT NULL,
       state_code CHAR(2) NOT NULL,
       state_name VARCHAR(100) NOT NULL,
@@ -45,6 +79,7 @@ async function initSchema() {
 
     CREATE TABLE IF NOT EXISTS properties (
       id SERIAL PRIMARY KEY,
+      tenant_id INT NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
       street VARCHAR(255) NOT NULL,
       city VARCHAR(100) NOT NULL,
       state_code CHAR(2) NOT NULL,
@@ -61,6 +96,7 @@ async function initSchema() {
 
     CREATE TABLE IF NOT EXISTS contacts (
       id SERIAL PRIMARY KEY,
+      tenant_id INT NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
       first_name VARCHAR(100),
       last_name VARCHAR(100),
       email VARCHAR(255),
@@ -74,6 +110,7 @@ async function initSchema() {
 
     CREATE TABLE IF NOT EXISTS property_contacts (
       id SERIAL PRIMARY KEY,
+      tenant_id INT NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
       property_id INTEGER NOT NULL REFERENCES properties(id) ON DELETE CASCADE,
       contact_id INTEGER NOT NULL REFERENCES contacts(id) ON DELETE CASCADE,
       role VARCHAR(50) DEFAULT 'owner',
@@ -84,6 +121,7 @@ async function initSchema() {
 
     CREATE TABLE IF NOT EXISTS phones (
       id SERIAL PRIMARY KEY,
+      tenant_id INT NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
       contact_id INTEGER NOT NULL REFERENCES contacts(id) ON DELETE CASCADE,
       phone_number VARCHAR(20) NOT NULL,
       phone_index SMALLINT DEFAULT 1,
@@ -99,6 +137,7 @@ async function initSchema() {
 
     CREATE TABLE IF NOT EXISTS lists (
       id SERIAL PRIMARY KEY,
+      tenant_id INT NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
       list_name VARCHAR(255) NOT NULL,
       dialer_campaign_name VARCHAR(255),
       list_type VARCHAR(100),
@@ -113,6 +152,7 @@ async function initSchema() {
 
     CREATE TABLE IF NOT EXISTS property_lists (
       id SERIAL PRIMARY KEY,
+      tenant_id INT NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
       property_id INTEGER NOT NULL REFERENCES properties(id) ON DELETE CASCADE,
       list_id INTEGER NOT NULL REFERENCES lists(id) ON DELETE CASCADE,
       added_at TIMESTAMPTZ DEFAULT NOW(),
@@ -121,6 +161,7 @@ async function initSchema() {
 
     CREATE TABLE IF NOT EXISTS call_logs (
       id SERIAL PRIMARY KEY,
+      tenant_id INT NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
       phone_id INTEGER NOT NULL REFERENCES phones(id) ON DELETE CASCADE,
       list_id INTEGER REFERENCES lists(id),
       property_id INTEGER REFERENCES properties(id),
@@ -135,6 +176,7 @@ async function initSchema() {
 
     CREATE TABLE IF NOT EXISTS sms_logs (
       id SERIAL PRIMARY KEY,
+      tenant_id INT NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
       phone_id INTEGER REFERENCES phones(id),
       contact_id INTEGER REFERENCES contacts(id),
       property_id INTEGER REFERENCES properties(id),
@@ -148,6 +190,7 @@ async function initSchema() {
 
     CREATE TABLE IF NOT EXISTS filtration_runs (
       id SERIAL PRIMARY KEY,
+      tenant_id INT NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
       filename VARCHAR(255),
       run_at TIMESTAMPTZ DEFAULT NOW(),
       total_records INTEGER,
@@ -160,6 +203,7 @@ async function initSchema() {
 
     CREATE TABLE IF NOT EXISTS filtration_results (
       id SERIAL PRIMARY KEY,
+      tenant_id INT NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
       run_id INTEGER NOT NULL REFERENCES filtration_runs(id) ON DELETE CASCADE,
       phone_number VARCHAR(20),
       list_name VARCHAR(255),
@@ -178,6 +222,7 @@ async function initSchema() {
 
     CREATE TABLE IF NOT EXISTS deals (
       id SERIAL PRIMARY KEY,
+      tenant_id INT NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
       property_id INTEGER NOT NULL REFERENCES properties(id),
       stage VARCHAR(50) DEFAULT 'lead',
       lead_source VARCHAR(100),
@@ -197,6 +242,7 @@ async function initSchema() {
 
     CREATE TABLE IF NOT EXISTS marketing_touches (
       id SERIAL PRIMARY KEY,
+      tenant_id INT NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
       property_id INTEGER REFERENCES properties(id),
       contact_id INTEGER REFERENCES contacts(id),
       channel VARCHAR(50) NOT NULL,
@@ -210,6 +256,7 @@ async function initSchema() {
 
     CREATE TABLE IF NOT EXISTS import_history (
       id SERIAL PRIMARY KEY,
+      tenant_id INT NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
       property_id INTEGER NOT NULL REFERENCES properties(id) ON DELETE CASCADE,
       source VARCHAR(100),
       imported_at TIMESTAMPTZ DEFAULT NOW(),
@@ -237,6 +284,7 @@ async function initSchema() {
 
   await query(`CREATE TABLE IF NOT EXISTS bulk_import_jobs (
     id SERIAL PRIMARY KEY,
+    tenant_id INT NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
     status VARCHAR(20) DEFAULT 'pending',
     filename TEXT,
     list_id INTEGER REFERENCES lists(id) ON DELETE SET NULL,
@@ -607,6 +655,7 @@ async function initSchema() {
   await query(`
     CREATE TABLE IF NOT EXISTS list_templates (
       id              SERIAL PRIMARY KEY,
+      tenant_id       INT NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
       action          VARCHAR(20),
       state_code      CHAR(2),
       list_name       VARCHAR(100) NOT NULL,

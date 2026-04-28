@@ -2977,7 +2977,7 @@ router.post('/_state_cleanup/fix', requireAuth, async (req, res) => {
   const client = await pool.connect();
   try {
     const code = req.body.code || '';
-    const verified = await settings.verifyDeleteCode(code);
+    const verified = await settings.verifyDeleteCode(req.tenantId, code);
     if (!verified) { return res.status(403).json({ error: 'Invalid delete code.' }); }
 
     // 1) Re-scan bad rows
@@ -3889,7 +3889,7 @@ router.post('/_duplicates/merge_all', requireAuth, async (req, res) => {
 
     // Gate: if merging 10+ groups, require the delete code
     if (groupsRes.rows.length >= 10) {
-      const verified = await settings.verifyDeleteCode(req.body.code);
+      const verified = await settings.verifyDeleteCode(req.tenantId, req.body.code);
       if (!verified) {
         return res.redirect('/records/_duplicates?err=' + encodeURIComponent(`Delete code required for bulk merge of ${groupsRes.rows.length} groups. Enter code and try again.`));
       }
@@ -4004,7 +4004,7 @@ router.post('/delete', requireAuth, async (req, res) => {
     const ids = coerceIdArray(req.body.ids);
 
     // Verify delete code BEFORE touching any data
-    const verified = await settings.verifyDeleteCode(code);
+    const verified = await settings.verifyDeleteCode(req.tenantId, code);
     if (!verified) {
       return res.status(403).json({ error: 'Invalid delete code.' });
     }
@@ -4326,7 +4326,7 @@ router.post('/:id(\\d+)/delete', requireAuth, async (req, res) => {
   try {
     const id = parseInt(req.params.id);
     const { code } = req.body;
-    const verified = await settings.verifyDeleteCode(code);
+    const verified = await settings.verifyDeleteCode(req.tenantId, code);
     if (!verified) {
       return res.status(403).json({ error: 'Invalid delete code.' });
     }
@@ -4664,7 +4664,7 @@ router.post('/remove-from-list', requireAuth, async (req, res) => {
     const ids = coerceIdArray(req.body.ids);
 
     // Verify delete code BEFORE touching any data
-    const verified = await settings.verifyDeleteCode(code);
+    const verified = await settings.verifyDeleteCode(req.tenantId, code);
     if (!verified) {
       return res.status(403).json({ error: 'Invalid delete code.' });
     }

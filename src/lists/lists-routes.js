@@ -249,7 +249,7 @@ router.post('/delete', requireAuth, async (req, res) => {
     // delete code (see settings.verifyDeleteCode). Deleting a list wipes
     // every property→list membership row for that list, a similarly
     // destructive operation. Now gated the same way for consistency.
-    const verified = await settings.verifyDeleteCode(code);
+    const verified = await settings.verifyDeleteCode(req.tenantId, code);
     if (!verified) {
       return res.redirect('/lists?msg=error&err=' + encodeURIComponent('Invalid delete code.'));
     }

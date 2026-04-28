@@ -1,5 +1,8 @@
 // settings.js — app_settings table + delete code verification
 // Used to gate destructive operations (records delete, bulk merges 10+ rows)
+//
+// Phase 1 SaaS: every public function takes tenantId so each tenant has its
+// own delete_code. The app_settings PK is now (tenant_id, key).
 
 const { query } = require('./db');
 
@@ -10,43 +13,57 @@ const DEFAULT_DELETE_CODE = 'HudREI2026';
 let _settingsSchemaReady = false;
 
 /**
- * Idempotent schema init. Creates app_settings table and seeds the delete_code
- * row if it doesn't exist. Called at app startup and defensively before any
- * destructive operation.
+ * Idempotent table creation. Does NOT seed any rows — that's per-tenant work
+ * handled by provisionTenantSettings(tenantId).
  */
 async function ensureSettingsSchema() {
   if (_settingsSchemaReady) return;
   await query(`
     CREATE TABLE IF NOT EXISTS app_settings (
-      key TEXT PRIMARY KEY,
+      tenant_id INT NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+      key TEXT NOT NULL,
       value TEXT NOT NULL,
-      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      PRIMARY KEY (tenant_id, key)
     )
   `);
-  await query(
-    `INSERT INTO app_settings (key, value) VALUES ('delete_code', $1)
-     ON CONFLICT (key) DO NOTHING`,
-    [DEFAULT_DELETE_CODE]
-  );
   _settingsSchemaReady = true;
 }
 
 /**
- * Returns the current delete code. Falls back to default if not set.
+ * Seeds default settings rows for one tenant. Idempotent — safe to call on
+ * boot and at tenant signup. Currently only seeds delete_code.
  */
-async function getDeleteCode() {
-  const r = await query(`SELECT value FROM app_settings WHERE key = 'delete_code' LIMIT 1`);
+async function provisionTenantSettings(tenantId) {
+  if (!Number.isInteger(tenantId)) throw new Error('provisionTenantSettings: tenantId required');
+  await ensureSettingsSchema();
+  await query(
+    `INSERT INTO app_settings (tenant_id, key, value) VALUES ($1, 'delete_code', $2)
+     ON CONFLICT (tenant_id, key) DO NOTHING`,
+    [tenantId, DEFAULT_DELETE_CODE]
+  );
+}
+
+/**
+ * Returns the current delete code for a tenant. Falls back to default if not set.
+ */
+async function getDeleteCode(tenantId) {
+  if (!Number.isInteger(tenantId)) throw new Error('getDeleteCode: tenantId required');
+  const r = await query(
+    `SELECT value FROM app_settings WHERE tenant_id = $1 AND key = 'delete_code' LIMIT 1`,
+    [tenantId]
+  );
   return r.rows.length ? r.rows[0].value : DEFAULT_DELETE_CODE;
 }
 
 /**
- * Returns true if the delete code is still the default shipped in the repo.
- * Used by the dashboard to render a warning banner. (Audit issue #32.)
+ * Returns true if this tenant's delete code is still the default. Used by
+ * the dashboard to render a warning banner. (Audit issue #32.)
  */
-async function isUsingDefaultCode() {
+async function isUsingDefaultCode(tenantId) {
   try {
     await ensureSettingsSchema();
-    const stored = await getDeleteCode();
+    const stored = await getDeleteCode(tenantId);
     return constantTimeEquals(stored.trim(), DEFAULT_DELETE_CODE);
   } catch (e) {
     // If we can't even check, render the banner — it's safer.
@@ -69,13 +86,14 @@ function constantTimeEquals(a, b) {
 }
 
 /**
- * Verifies a user-provided code against the stored value.
+ * Verifies a user-provided code against the tenant's stored value.
  */
-async function verifyDeleteCode(providedCode) {
+async function verifyDeleteCode(tenantId, providedCode) {
+  if (!Number.isInteger(tenantId)) throw new Error('verifyDeleteCode: tenantId required');
   if (!providedCode || typeof providedCode !== 'string') return false;
   try {
     await ensureSettingsSchema();
-    const stored = await getDeleteCode();
+    const stored = await getDeleteCode(tenantId);
     return constantTimeEquals(providedCode.trim(), stored.trim());
   } catch (e) {
     console.error('[settings] verifyDeleteCode error:', e.message);
@@ -84,9 +102,10 @@ async function verifyDeleteCode(providedCode) {
 }
 
 /**
- * Updates the delete code. Requires the OLD code to authenticate the change.
+ * Updates the tenant's delete code. Requires the OLD code to authenticate.
  */
-async function updateDeleteCode(oldCode, newCode) {
+async function updateDeleteCode(tenantId, oldCode, newCode) {
+  if (!Number.isInteger(tenantId)) throw new Error('updateDeleteCode: tenantId required');
   if (!newCode || typeof newCode !== 'string') {
     return { ok: false, error: 'New code required.' };
   }
@@ -94,28 +113,38 @@ async function updateDeleteCode(oldCode, newCode) {
   if (trimmed.length < 6) {
     return { ok: false, error: 'New code must be at least 6 characters.' };
   }
-  const verified = await verifyDeleteCode(oldCode);
+  const verified = await verifyDeleteCode(tenantId, oldCode);
   if (!verified) {
     return { ok: false, error: 'Current code is incorrect.' };
   }
+  // UPSERT — handles the case where this tenant has no row yet (first change
+  // happens before provisionTenantSettings ever ran for them).
   await query(
-    `UPDATE app_settings SET value = $1, updated_at = NOW() WHERE key = 'delete_code'`,
-    [trimmed]
+    `INSERT INTO app_settings (tenant_id, key, value, updated_at)
+     VALUES ($1, 'delete_code', $2, NOW())
+     ON CONFLICT (tenant_id, key) DO UPDATE
+       SET value = EXCLUDED.value, updated_at = NOW()`,
+    [tenantId, trimmed]
   );
   return { ok: true };
 }
 
 /**
- * Returns when the code was last changed. Used in the Security UI.
+ * Returns when this tenant's code was last changed. Used in the Security UI.
  */
-async function getDeleteCodeUpdatedAt() {
-  const r = await query(`SELECT updated_at FROM app_settings WHERE key = 'delete_code' LIMIT 1`);
+async function getDeleteCodeUpdatedAt(tenantId) {
+  if (!Number.isInteger(tenantId)) throw new Error('getDeleteCodeUpdatedAt: tenantId required');
+  const r = await query(
+    `SELECT updated_at FROM app_settings WHERE tenant_id = $1 AND key = 'delete_code' LIMIT 1`,
+    [tenantId]
+  );
   return r.rows.length ? r.rows[0].updated_at : null;
 }
 
 module.exports = {
   DEFAULT_DELETE_CODE,
   ensureSettingsSchema,
+  provisionTenantSettings,
   verifyDeleteCode,
   updateDeleteCode,
   getDeleteCodeUpdatedAt,
