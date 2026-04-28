@@ -264,6 +264,26 @@
 }
 .sidebar-collapsed .ocu-user { display: none; }
 
+/* Logout button — sits at the right edge of the sidebar footer next to
+   the user info. Subtle until hover, when it picks up the danger color. */
+.ocu-logout-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  border-radius: 6px;
+  color: var(--ocu-dark-text-2, #94a3b8);
+  text-decoration: none;
+  transition: background .12s ease, color .12s ease;
+  flex-shrink: 0;
+}
+.ocu-logout-btn:hover {
+  background: rgba(239, 68, 68, .12);
+  color: #f87171;
+}
+.sidebar-collapsed .ocu-logout-btn { display: none; }
+
 /* Sidebar collapse button */
 /* Collapse button — sits half-on/half-off the sidebar's right edge.
    2026-04-25 brightened — was nearly invisible at the prior subtle styling.

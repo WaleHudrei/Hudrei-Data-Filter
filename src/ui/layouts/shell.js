@@ -99,7 +99,7 @@ function shell(opts = {}) {
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="/ocular-static/ocular.css?v=7">
+  <link rel="stylesheet" href="/ocular-static/ocular.css?v=8">
   ${extraHead}
 </head>
 <body class="ocu">
@@ -128,6 +128,9 @@ function shell(opts = {}) {
         <div class="ocu-user-name">${escHTML(user.name || 'User')}</div>
         <div class="ocu-user-role">${escHTML(user.role || '')}</div>
       </div>
+      <a href="/logout" class="ocu-logout-btn" title="Sign out" aria-label="Sign out">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/></svg>
+      </a>
     </div>
     <button class="ocu-collapse-btn" id="ocu-collapse" title="Collapse sidebar" aria-label="Collapse sidebar">
       <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3">${ICONS.chevronLeft}</svg>
