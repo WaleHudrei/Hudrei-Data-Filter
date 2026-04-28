@@ -35,8 +35,8 @@ const ACTIVE_PAGE_MAP = {
   settings:     'settings',
   'list-types': 'list-registry',
   filter:       'upload',  // old "List Filtration" lives under Upload now
-  nis:          '',
-  changelog:    '',
+  nis:          'nis',
+  changelog:    'changelog',
 };
 
 // Legacy body CSS, lifted from this file's old <style> block, scoped to
