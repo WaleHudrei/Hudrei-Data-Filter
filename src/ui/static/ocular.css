@@ -2007,3 +2007,24 @@ body { padding-bottom: 0; }
 .ocu-pill[data-list-type="High Equity"]      { background: #e8f5ee; color: #1a7a4a; }
 .ocu-pill[data-list-type="Tax Delinquent"]   { background: #fef3c7; color: #92400e; }
 .ocu-pill[data-list-type="Probate"]          { background: #f0e8f5; color: #5a2a8a; }
+
+/* ─── Inline editable cell inputs (List Registry grid) ───────────────────── */
+.ocu-cell-input {
+  width: 100%;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 5px;
+  padding: 4px 6px;
+  font-family: var(--ocu-display);
+  font-size: 12.5px;
+  color: var(--ocu-text-1);
+  box-sizing: border-box;
+  transition: background .15s, border-color .15s;
+}
+.ocu-cell-input:hover { background: var(--ocu-surface); }
+.ocu-cell-input:focus {
+  outline: none;
+  background: #fff;
+  border-color: var(--ocu-text-2);
+}
+.ocu-list-registry-table td { vertical-align: middle; }

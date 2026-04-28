@@ -540,6 +540,119 @@ router.get('/records/:id(\\d+)', requireAuth, async (req, res) => {
   }
 });
 
+// ─── /ocular/lists/types — List Registry ───────────────────────────────────
+const ALLOWED_REGISTRY_FIELDS = new Set([
+  'action', 'state_code', 'list_name', 'list_tier',
+  'source', 'frequency_days', 'require_bot', 'last_pull_date',
+]);
+
+router.get('/lists/types', requireAuth, async (req, res) => {
+  try {
+    const { listRegistry } = require('./pages/list-registry');
+    const r = await query(
+      `SELECT * FROM list_templates WHERE tenant_id = $1
+        ORDER BY sort_order ASC, state_code ASC, list_name ASC`,
+      [req.tenantId]
+    );
+    res.send(listRegistry({
+      user: await getUser(req),
+      rows: r.rows,
+      flash: {
+        msg: req.query.msg ? String(req.query.msg).slice(0, 300) : '',
+        err: req.query.err ? String(req.query.err).slice(0, 300) : '',
+      },
+    }));
+  } catch (e) {
+    console.error('[ocular/lists/types]', e);
+    res.status(500).send('Error loading list registry: ' + e.message);
+  }
+});
+
+// Create a blank row.
+router.post('/lists/types', requireAuth, async (req, res) => {
+  try {
+    await query(
+      `INSERT INTO list_templates (tenant_id, action, list_name, sort_order)
+       VALUES ($1, '', 'Untitled list type',
+               COALESCE((SELECT MAX(sort_order) + 1 FROM list_templates WHERE tenant_id = $1), 0))`,
+      [req.tenantId]
+    );
+    res.redirect('/ocular/lists/types?msg=' + encodeURIComponent('Row added'));
+  } catch (e) {
+    console.error('[ocular/lists/types POST]', e);
+    res.status(500).send('Failed to add row');
+  }
+});
+
+// Inline single-field update. Returns the freshly-rendered row HTML so the
+// client can swap it in place (keeps the next-pull date math in sync).
+router.post('/lists/types/:id(\\d+)', requireAuth, async (req, res) => {
+  try {
+    const id = parseInt(req.params.id, 10);
+    const field = String(req.body.field || '');
+    const rawValue = req.body.value;
+    if (!ALLOWED_REGISTRY_FIELDS.has(field)) {
+      return res.status(400).send('Field not allowed');
+    }
+    // Coerce per field — db column types are strict.
+    let value;
+    if (field === 'frequency_days') {
+      value = (rawValue == null || rawValue === '') ? null : parseInt(rawValue, 10);
+      if (value != null && !Number.isFinite(value)) return res.status(400).send('Invalid frequency');
+    } else if (field === 'require_bot') {
+      value = rawValue === 'true' ? true : rawValue === 'false' ? false : null;
+    } else if (field === 'last_pull_date') {
+      value = (rawValue == null || rawValue === '') ? null : String(rawValue).slice(0, 10);
+    } else {
+      value = String(rawValue == null ? '' : rawValue).trim();
+      if (field === 'list_name' && !value) return res.status(400).send('Name required');
+    }
+    const r = await query(
+      `UPDATE list_templates SET ${field} = $1, updated_at = NOW()
+        WHERE id = $2 AND tenant_id = $3 RETURNING *`,
+      [value, id, req.tenantId]
+    );
+    if (!r.rowCount) return res.status(404).send('Not found');
+    // Re-render this row so the client can replace it.
+    const { rowHTML } = require('./pages/list-registry');
+    res.type('html').send(rowHTML(r.rows[0]));
+  } catch (e) {
+    console.error('[ocular/lists/types/:id POST]', e);
+    res.status(500).send('Save failed');
+  }
+});
+
+router.post('/lists/types/:id(\\d+)/pull', requireAuth, async (req, res) => {
+  try {
+    const id = parseInt(req.params.id, 10);
+    const r = await query(
+      `UPDATE list_templates SET last_pull_date = CURRENT_DATE, updated_at = NOW()
+        WHERE id = $1 AND tenant_id = $2`,
+      [id, req.tenantId]
+    );
+    if (!r.rowCount) return res.status(404).send('Not found');
+    res.json({ ok: true });
+  } catch (e) {
+    console.error('[ocular/lists/types/:id/pull]', e);
+    res.status(500).send('Failed');
+  }
+});
+
+router.post('/lists/types/:id(\\d+)/delete', requireAuth, async (req, res) => {
+  try {
+    const id = parseInt(req.params.id, 10);
+    const r = await query(
+      `DELETE FROM list_templates WHERE id = $1 AND tenant_id = $2`,
+      [id, req.tenantId]
+    );
+    if (!r.rowCount) return res.status(404).send('Not found');
+    res.json({ ok: true });
+  } catch (e) {
+    console.error('[ocular/lists/types/:id/delete]', e);
+    res.status(500).send('Failed');
+  }
+});
+
 // ─── /ocular/lists — Lists page ────────────────────────────────────────────
 router.get('/lists', requireAuth, async (req, res) => {
   try {
@@ -1045,7 +1158,7 @@ router.post('/setup/delete-code', requireAuth, async (req, res) => {
 // Note: 'lists/types' is included separately because the List Registry
 // sidebar link targets /ocular/lists/types (not /ocular/lists). Without it,
 // clicking List Registry in the sidebar 404s.
-const placeholderPages = ['campaigns', 'lists/types', 'upload'];
+const placeholderPages = ['campaigns', 'upload'];
 const { shell } = require('./layouts/shell');
 placeholderPages.forEach(page => {
   // Title and active-page name both need to work whether `page` is 'records'
