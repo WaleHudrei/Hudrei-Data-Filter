@@ -867,17 +867,18 @@ router.post('/lists/delete', requireAuth, async (req, res) => {
 
 // ─── /ocular/activity — Activity (background import jobs) ──────────────────
 async function fetchActivityJobs(tenantId) {
-  // bulk_import_jobs uses two different column-name flavors depending on
-  // which path created it (db.js vs bulk-import-routes.js — pre-existing
-  // schema collision). Read both shapes via COALESCE so the page works
-  // regardless of which path produced the row.
+  // bulk_import_jobs has the db.js schema on staging/prod (created at boot
+  // via initSchema). bulk-import-routes.js's ensureJobsTable defines a
+  // different shape but its CREATE TABLE IF NOT EXISTS is a no-op once
+  // db.js's version exists, so only the db.js columns are real.
+  // Pre-existing schema collision documented in the Phase 1 status doc.
   const r = await query(`
     SELECT j.id, j.tenant_id, j.status, j.filename, j.list_id,
-           COALESCE(j.total_rows, 0)::int      AS total_rows,
-           COALESCE(j.processed_rows, NULLIF(j.rows_processed, 0), 0)::int AS processed_rows,
-           COALESCE(j.inserted, NULLIF(j.rows_created, 0), 0)::int         AS inserted,
-           COALESCE(j.updated, NULLIF(j.rows_updated, 0), 0)::int          AS updated,
-           COALESCE(j.errors, NULLIF(j.rows_errored, 0), 0)::int           AS errors,
+           COALESCE(j.total_rows, 0)::int     AS total_rows,
+           COALESCE(j.processed_rows, 0)::int AS processed_rows,
+           COALESCE(j.inserted, 0)::int       AS inserted,
+           COALESCE(j.updated, 0)::int        AS updated,
+           COALESCE(j.errors, 0)::int         AS errors,
            j.error_log,
            j.created_at,
            l.list_name
