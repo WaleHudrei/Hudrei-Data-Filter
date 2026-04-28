@@ -402,83 +402,11 @@ function toCSV(rows) {
   return [cols.join(','),...rows.map(r=>cols.map(c=>`"${safe(r[c]).replace(/"/g,'""')}"`).join(','))].join('\n');
 }
 
-app.get('/login',(req,res)=>{
-  const error=req.query.error?'Invalid username or password.':'';
-  res.send(`<!DOCTYPE html><html><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Loki</title><style>*{box-sizing:border-box;margin:0;padding:0}body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;background:#f5f4f0;display:flex;align-items:center;justify-content:center;min-height:100vh}.box{background:#fff;border:1px solid #e0dfd8;border-radius:12px;padding:2.5rem 2rem;width:100%;max-width:380px;text-align:center}h1{font-size:36px;font-weight:600;margin-bottom:.5rem;letter-spacing:-.5px}.sub{font-size:13px;color:#888;margin-bottom:1.75rem}label{font-size:13px;color:#555;display:block;margin-bottom:4px;text-align:left}input{width:100%;padding:9px 12px;border:1px solid #ddd;border-radius:8px;font-size:14px;background:#fafaf8;color:#1a1a1a;margin-bottom:1rem;font-family:inherit}input:focus{outline:none;border-color:#888}button{width:100%;padding:10px;background:#1a1a1a;color:#fff;border:none;border-radius:8px;font-size:14px;font-weight:500;cursor:pointer;font-family:inherit}button:hover{background:#333}.error{background:#fff0f0;border:1px solid #f5c5c5;border-radius:8px;padding:9px 12px;font-size:13px;color:#c0392b;margin-bottom:1rem;text-align:left}</style></head><body><div class="box"><h1>Loki</h1><p class="sub">Sign in to begin</p>${error?`<div class="error">${error}</div>`:''}<form method="POST" action="/login"><label>Username</label><input type="text" name="username" autofocus><label>Password</label><input type="password" name="password"><button type="submit">Sign in</button></form></div></body></html>`);
-});
-
-// 2026-04-18 audit fix #25: simple in-memory login rate limiter. Previously
-// /login accepted unlimited POSTs per IP, making brute-force trivial. Keyed
-// by trusted IP; limit of 5 failed attempts per 15 minutes. On exceed, returns
-// 429 with a Retry-After header. Successful login clears the counter.
-// Multi-replica note: each Node process has its own counter; an attacker
-// distributing across replicas gets N × 5 attempts. For tighter security,
-// move to Redis-backed tracking. Acceptable for current single-replica deploy.
-const _loginAttempts = new Map(); // ip -> { count, firstAt }
-const LOGIN_WINDOW_MS = 15 * 60 * 1000;
-const LOGIN_MAX_FAILURES = 5;
-
-function _loginIp(req) {
-  // trust proxy is set earlier; req.ip reflects the real client when behind Railway
-  return String(req.ip || req.connection?.remoteAddress || 'unknown');
-}
-
-function _loginRateLimit(req, res, next) {
-  const ip = _loginIp(req);
-  const now = Date.now();
-  const rec = _loginAttempts.get(ip);
-  if (rec && (now - rec.firstAt) < LOGIN_WINDOW_MS && rec.count >= LOGIN_MAX_FAILURES) {
-    const retryAfter = Math.ceil((LOGIN_WINDOW_MS - (now - rec.firstAt)) / 1000);
-    res.set('Retry-After', String(retryAfter));
-    return res.status(429).send(
-      `<!DOCTYPE html><html><body style="font-family:system-ui;padding:2rem;text-align:center">
-       <h2>Too many login attempts</h2>
-       <p>Try again in ${Math.ceil(retryAfter / 60)} minute(s).</p></body></html>`
-    );
-  }
-  // Window expired — reset
-  if (rec && (now - rec.firstAt) >= LOGIN_WINDOW_MS) {
-    _loginAttempts.delete(ip);
-  }
-  next();
-}
-
-app.post('/login', _loginRateLimit, async (req, res) => {
-  const { username, password } = req.body;
-  const ip = _loginIp(req);
-  if (username === APP_USERNAME && password === APP_PASSWORD) {
-    _loginAttempts.delete(ip); // success → clear counter
-    // Phase 1: single-password gate still in place. After password match,
-    // look up the founding HudREI user and attach tenant context to the
-    // session. Phase 2 replaces this with real email/password auth.
-    try {
-      const r = await dbQuery(
-        "SELECT id, tenant_id, role FROM users WHERE email = $1 AND status = 'active' LIMIT 1",
-        ['wale@hudrei.com']
-      );
-      if (!r.rows.length) {
-        console.error('Login failed: founding user wale@hudrei.com not found in users table');
-        return res.redirect('/login?error=1');
-      }
-      const u = r.rows[0];
-      req.session.authenticated = true;
-      req.session.userId = u.id;
-      req.session.tenantId = u.tenant_id;
-      req.session.role = u.role;
-      res.redirect('/dashboard');
-    } catch (e) {
-      console.error('Login DB lookup failed:', e.message);
-      res.redirect('/login?error=1');
-    }
-  } else {
-    const rec = _loginAttempts.get(ip) || { count: 0, firstAt: Date.now() };
-    rec.count++;
-    _loginAttempts.set(ip, rec);
-    res.redirect('/login?error=1');
-  }
-});
-
-app.get('/logout',(req,res)=>{req.session.destroy();res.redirect('/login');});
+// /login, /logout — moved to src/auth-routes.js (Phase 2c). Email + password
+// (bcrypt) replaces the old single APP_USERNAME/APP_PASSWORD gate. The
+// founding wale@hudrei.com user keeps working because seedFoundingUserPassword()
+// at boot bcrypt-hashes APP_PASSWORD into their users.password_hash on first
+// run and marks them email_verified.
 
 app.get('/',requireAuth,async(req,res)=>{
   const memory=await loadMemory();
@@ -828,6 +756,32 @@ app.listen(PORT, async ()=>{
     await require('./settings').provisionTenantSettings(1);
   } catch (e) {
     console.error('HudREI settings provisioning warning:', e.message);
+  }
+
+  // Phase 2c: founding-user backfill. The seed user (wale@hudrei.com, id=1)
+  // was created in Phase 1 with NULL password_hash because login still used
+  // APP_USERNAME/APP_PASSWORD. Now that login expects bcrypt, hash the env
+  // password into the row exactly once. Idempotent — runs only when the
+  // password_hash column is still NULL.
+  try {
+    const seed = await dbQuery(
+      `SELECT id, password_hash FROM users WHERE email = $1 LIMIT 1`,
+      ['wale@hudrei.com']
+    );
+    if (seed.rows.length && !seed.rows[0].password_hash) {
+      const passwords = require('./passwords');
+      const hashed = await passwords.hash(APP_PASSWORD);
+      await dbQuery(
+        `UPDATE users
+            SET password_hash = $1,
+                email_verified_at = COALESCE(email_verified_at, NOW())
+          WHERE id = $2`,
+        [hashed, seed.rows[0].id]
+      );
+      console.log('Founding user password backfilled from APP_PASSWORD env');
+    }
+  } catch (e) {
+    console.error('Founding-user backfill warning:', e.message);
   }
 });
 

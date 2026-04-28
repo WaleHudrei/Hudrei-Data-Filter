@@ -316,4 +316,128 @@ router.get('/verify-email', async (req, res) => {
   }
 });
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Login / logout — Phase 2c
+// ─────────────────────────────────────────────────────────────────────────────
+
+// In-memory failed-attempt counter (carried over from the old /login). Same
+// semantics: 5 failures per 15 min → 429 with Retry-After. Acceptable on a
+// single Node replica; move to Redis when we scale out.
+const _loginAttempts = new Map();
+const LOGIN_WINDOW_MS = 15 * 60 * 1000;
+const LOGIN_MAX_FAILURES = 5;
+
+function _loginIp(req) {
+  return String(req.ip || req.connection?.remoteAddress || 'unknown');
+}
+
+function _loginRateLimit(req, res, next) {
+  const ip = _loginIp(req);
+  const now = Date.now();
+  const rec = _loginAttempts.get(ip);
+  if (rec && (now - rec.firstAt) < LOGIN_WINDOW_MS && rec.count >= LOGIN_MAX_FAILURES) {
+    const retryAfter = Math.ceil((LOGIN_WINDOW_MS - (now - rec.firstAt)) / 1000);
+    res.set('Retry-After', String(retryAfter));
+    return res.status(429).send(authShell('Too many attempts', `
+      <h1>Too many login attempts</h1>
+      <p class="lede">Try again in ${Math.ceil(retryAfter / 60)} minute(s).</p>
+    `));
+  }
+  if (rec && (now - rec.firstAt) >= LOGIN_WINDOW_MS) {
+    _loginAttempts.delete(ip);
+  }
+  next();
+}
+
+function _bumpLoginFailure(ip) {
+  const rec = _loginAttempts.get(ip) || { count: 0, firstAt: Date.now() };
+  rec.count++;
+  _loginAttempts.set(ip, rec);
+}
+
+// ── GET /login ───────────────────────────────────────────────────────────────
+router.get('/login', (req, res) => {
+  if (req.session && req.session.authenticated && req.session.tenantId) {
+    return res.redirect('/ocular/dashboard');
+  }
+  const err   = req.query.err  ? `<div class="error">${escHTML(req.query.err)}</div>` : '';
+  const info  = req.query.info ? `<div class="info">${escHTML(req.query.info)}</div>` : '';
+  const error = req.query.error ? `<div class="error">Invalid email or password.</div>` : '';
+  const e     = escHTML(req.query.email || '');
+  res.send(authShell('Sign in', `
+    <h1>Sign in</h1>
+    <p class="lede">Welcome back.</p>
+    ${info}${error}${err}
+    <form method="POST" action="/login" novalidate>
+      <div class="field">
+        <label for="email">Email</label>
+        <input id="email" type="email" name="email" value="${e}" autocomplete="email" autofocus required maxlength="254">
+      </div>
+      <div class="field">
+        <label for="password">Password</label>
+        <input id="password" type="password" name="password" autocomplete="current-password" required>
+        <div class="hint" style="text-align:right;margin-top:6px"><a href="/forgot-password" style="color:#666;text-decoration:none">Forgot password?</a></div>
+      </div>
+      <button type="submit">Sign in</button>
+    </form>
+    <div class="alt">No account? <a href="/signup">Create one</a></div>
+  `));
+});
+
+// ── POST /login ──────────────────────────────────────────────────────────────
+router.post('/login', _loginRateLimit, async (req, res) => {
+  const ip = _loginIp(req);
+  const emailAddr = String(req.body.email || '').trim().toLowerCase();
+  const password  = String(req.body.password || '');
+
+  const fail = () => {
+    _bumpLoginFailure(ip);
+    return res.redirect('/login?error=1&email=' + encodeURIComponent(emailAddr));
+  };
+
+  if (!isValidEmail(emailAddr) || !password) return fail();
+
+  try {
+    const r = await query(
+      `SELECT id, tenant_id, role, password_hash, email_verified_at, status, name
+         FROM users WHERE email = $1 LIMIT 1`,
+      [emailAddr]
+    );
+    if (!r.rows.length) return fail();
+    const u = r.rows[0];
+    if (u.status !== 'active') return fail();
+    const ok = await passwords.verify(password, u.password_hash);
+    if (!ok) return fail();
+
+    // Soft block on unverified email — they can re-trigger the link.
+    if (!u.email_verified_at) {
+      // Issue a fresh verify token and tell them.
+      const token = await tokens.issueToken('email_verification_tokens', u.id, 24 * 60);
+      await email.sendVerifyEmail(emailAddr, u.name, token);
+      return res.redirect('/signup/sent?email=' + encodeURIComponent(emailAddr) +
+                          '&flash=' + encodeURIComponent('Please verify your email before signing in. Fresh link sent.'));
+    }
+
+    _loginAttempts.delete(ip);
+    req.session.authenticated = true;
+    req.session.userId        = u.id;
+    req.session.tenantId      = u.tenant_id;
+    req.session.role          = u.role;
+
+    // Best-effort last_login_at; non-fatal if it errors.
+    query('UPDATE users SET last_login_at = NOW() WHERE id = $1', [u.id]).catch(() => {});
+
+    res.redirect('/ocular/dashboard');
+  } catch (e) {
+    console.error('[login POST]', e);
+    return res.redirect('/login?err=' + encodeURIComponent('Something went wrong. Please try again.'));
+  }
+});
+
+// ── GET /logout ──────────────────────────────────────────────────────────────
+router.get('/logout', (req, res) => {
+  if (req.session) req.session.destroy(() => res.redirect('/login'));
+  else res.redirect('/login');
+});
+
 module.exports = router;
