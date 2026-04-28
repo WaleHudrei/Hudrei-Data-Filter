@@ -87,74 +87,11 @@ async function fetchJobs(tenantId) {
 }
 
 // ── Activity Page ─────────────────────────────────────────────────────────────
-router.get('/', requireAuth, async (req, res) => {
-  try {
-    const jobs = await fetchJobs(req.tenantId);
-    const rows = jobs.rows.map(renderJobRow).join('');
-    const hasRunning = jobs.rows.some(j => j.status === 'running' || j.status === 'pending');
+// Milestone A: legacy /activity redirects to Ocular's activity page.
+// /activity/status JSON polling stays for any external consumer; Ocular
+// uses /ocular/activity/poll which is a separate endpoint.
+router.get('/', requireAuth, (req, res) => res.redirect('/ocular/activity'));
 
-    res.send(shell('Activity', `
-      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:1.5rem;flex-wrap:wrap;gap:12px">
-        <div>
-          <div class="page-title">Activity <span class="count-pill">${jobs.rows.length}</span></div>
-          <div class="page-sub">Import jobs and background tasks</div>
-        </div>
-        <div style="display:flex;gap:8px;align-items:center">
-          ${hasRunning ? `<span style="font-size:12px;color:#9a6800;background:#fff8e1;padding:4px 10px;border-radius:6px;font-weight:500">🔄 Import running…</span>` : ''}
-          <a href="/import/property" class="btn btn-primary">+ New Import</a>
-        </div>
-      </div>
-
-      ${jobs.rows.length === 0 ? `
-        <div class="card" style="text-align:center;padding:3rem;color:#aaa">
-          <div style="font-size:32px;margin-bottom:12px">📋</div>
-          <div style="font-size:15px;font-weight:500;color:#555;margin-bottom:6px">No import activity yet</div>
-          <div style="font-size:13px">Start by importing a property list</div>
-          <a href="/import/property" class="btn btn-primary" style="margin-top:1rem;display:inline-block">Import Property List</a>
-        </div>
-      ` : `
-        <div style="background:#fff;border-radius:12px;border:1px solid #e0dfd8;overflow:hidden">
-          <table style="width:100%;border-collapse:collapse;font-size:13px">
-            <thead>
-              <tr style="border-bottom:1px solid #e0dfd8">
-                <th style="padding:10px 16px;text-align:left;font-size:11px;font-weight:600;color:#888;text-transform:uppercase;letter-spacing:.05em">File</th>
-                <th style="padding:10px 16px;text-align:left;font-size:11px;font-weight:600;color:#888;text-transform:uppercase;letter-spacing:.05em">List</th>
-                <th style="padding:10px 16px;text-align:left;font-size:11px;font-weight:600;color:#888;text-transform:uppercase;letter-spacing:.05em">Status</th>
-                <th style="padding:10px 16px;text-align:left;font-size:11px;font-weight:600;color:#888;text-transform:uppercase;letter-spacing:.05em">Progress</th>
-                <th style="padding:10px 16px;text-align:left;font-size:11px;font-weight:600;color:#888;text-transform:uppercase;letter-spacing:.05em">Results</th>
-                <th style="padding:10px 16px;text-align:left;font-size:11px;font-weight:600;color:#888;text-transform:uppercase;letter-spacing:.05em">Started</th>
-                <th style="padding:10px 16px"></th>
-              </tr>
-            </thead>
-            <tbody id="activity-tbody">${rows}</tbody>
-          </table>
-        </div>
-      `}
-
-      <script>
-      ${hasRunning ? `
-      let refreshInterval = setInterval(async () => {
-        try {
-          const res = await fetch('/activity/status');
-          const data = await res.json();
-          if (data.html) document.getElementById('activity-tbody').innerHTML = data.html;
-          if (!data.hasRunning) clearInterval(refreshInterval);
-        } catch(e) {
-          // pass 12: was an empty catch — polling errors were silent, so a
-          // server-side 500 or malformed JSON just made the UI hang with no
-          // indication. Log to browser console so the operator can at least
-          // see it's failing by opening DevTools.
-          console.warn('[activity] poll failed:', e && e.message ? e.message : e);
-        }
-      }, 2000);
-      ` : ''}
-      </script>
-    `, 'activity'));
-  } catch(e) {
-    console.error(e);
-    res.status(500).send('Server error: ' + e.message);
-  }
-});
 
 // ── Status API (auto-refresh) ────────────────────────────────────────────────
 router.get('/status', requireAuth, async (req, res) => {
