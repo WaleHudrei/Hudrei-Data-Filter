@@ -1087,12 +1087,13 @@ router.post('/commit', requireAuth, async (req, res) => {
     // ── Resolve list: create new or use existing ──────────────────────────────
     let resolvedListId = null;
     if (listName && listName.trim()) {
-      // 2026-04-20 pass 12: atomic UPSERT. ON CONFLICT (list_name) is
-      // single-column — same Phase 2 caveat as markets/mapping_templates.
+      // 2026-04-20 pass 12: atomic UPSERT. 2026-04-28 audit fix S-2 / L-1:
+      // ON CONFLICT key updated to (tenant_id, list_name); legacy single-col
+      // UNIQUE rebuilt by saas-phase1-migration/04.
       const upserted = await query(
         `INSERT INTO lists (tenant_id, list_name, list_type, source, upload_date, active)
          VALUES ($1, $2, $3, $4, NOW(), true)
-         ON CONFLICT (list_name) DO UPDATE SET list_name = EXCLUDED.list_name
+         ON CONFLICT (tenant_id, list_name) DO UPDATE SET list_name = EXCLUDED.list_name
          RETURNING id`,
         [tenantId, listName.trim(), listType || null, listSource || null]
       );
@@ -1114,7 +1115,7 @@ router.post('/commit', requireAuth, async (req, res) => {
       ($1,'OK','OK','Oklahoma'),($1,'OR','OR','Oregon'),($1,'PA','PA','Pennsylvania'),($1,'RI','RI','Rhode Island'),($1,'SC','SC','South Carolina'),
       ($1,'SD','SD','South Dakota'),($1,'TN','TN','Tennessee'),($1,'TX','TX','Texas'),($1,'UT','UT','Utah'),($1,'VT','VT','Vermont'),
       ($1,'VA','VA','Virginia'),($1,'WA','WA','Washington'),($1,'WV','WV','West Virginia'),($1,'WI','WI','Wisconsin'),($1,'WY','WY','Wyoming')
-      ON CONFLICT (state_code) DO UPDATE SET name=EXCLUDED.name, state_name=EXCLUDED.state_name`, [tenantId]);
+      ON CONFLICT (tenant_id, state_code) DO UPDATE SET name=EXCLUDED.name, state_name=EXCLUDED.state_name`, [tenantId]);
     const mktRes = await query(`SELECT id, state_code FROM markets WHERE tenant_id = $1`, [tenantId]);
     const mktMap = {};
     mktRes.rows.forEach(m => { mktMap[m.state_code] = m.id; });
@@ -1446,7 +1447,7 @@ router.post('/commit', requireAuth, async (req, res) => {
         apn,stories,structure_type,legal_description,total_tax_owed,
         tax_delinquent_year,tax_auction_date,deed_type,lien_type,lien_date),
       (SELECT NOW()) AS s(first_seen_at)
-      ON CONFLICT (street,city,state_code,zip_code) DO UPDATE SET
+      ON CONFLICT (tenant_id, street, city, state_code, zip_code) DO UPDATE SET
         county          = COALESCE(EXCLUDED.county, properties.county),
         source          = COALESCE(EXCLUDED.source, properties.source),
         property_type   = COALESCE(EXCLUDED.property_type, properties.property_type),
@@ -1660,7 +1661,7 @@ router.post('/start-job', requireAuth, async (req, res) => {
       const upserted = await query(
         `INSERT INTO lists (tenant_id, list_name, list_type, source, upload_date, active)
          VALUES ($1, $2, $3, $4, NOW(), true)
-         ON CONFLICT (list_name) DO UPDATE SET list_name = EXCLUDED.list_name
+         ON CONFLICT (tenant_id, list_name) DO UPDATE SET list_name = EXCLUDED.list_name
          RETURNING id`,
         [tenantId, listName.trim(), listType || null, listSource || null]
       );
@@ -1730,7 +1731,7 @@ async function runBackgroundImport(jobId, allRows, mapping, filename, resolvedLi
       ($1,'OK','OK','Oklahoma'),($1,'OR','OR','Oregon'),($1,'PA','PA','Pennsylvania'),($1,'RI','RI','Rhode Island'),($1,'SC','SC','South Carolina'),
       ($1,'SD','SD','South Dakota'),($1,'TN','TN','Tennessee'),($1,'TX','TX','Texas'),($1,'UT','UT','Utah'),($1,'VT','VT','Vermont'),
       ($1,'VA','VA','Virginia'),($1,'WA','WA','Washington'),($1,'WV','WV','West Virginia'),($1,'WI','WI','Wisconsin'),($1,'WY','WY','Wyoming')
-      ON CONFLICT (state_code) DO UPDATE SET name=EXCLUDED.name, state_name=EXCLUDED.state_name`, [tenantId]);
+      ON CONFLICT (tenant_id, state_code) DO UPDATE SET name=EXCLUDED.name, state_name=EXCLUDED.state_name`, [tenantId]);
     const mktRes = await query(`SELECT id, state_code FROM markets WHERE tenant_id = $1`, [tenantId]);
     const mktMap = {};
     mktRes.rows.forEach(m => { mktMap[m.state_code] = m.id; });
@@ -2105,7 +2106,7 @@ async function runBackgroundImport(jobId, allRows, mapping, filename, resolvedLi
           INSERT INTO properties (tenant_id,street,city,state_code,zip_code,county,market_id,source,property_type,year_built,sqft,bedrooms,bathrooms,lot_size,assessed_value,estimated_value,equity_percent,property_status,condition,last_sale_date,last_sale_price,vacant,apn,stories,structure_type,legal_description,total_tax_owed,tax_delinquent_year,tax_auction_date,deed_type,lien_type,lien_date,first_seen_at)
           SELECT $32,*,NOW() FROM UNNEST($1::text[],$2::text[],$3::text[],$4::text[],$5::text[],$6::int[],$7::text[],$8::text[],$9::int[],$10::int[],$11::int[],$12::numeric[],$13::int[],$14::numeric[],$15::numeric[],$16::numeric[],$17::text[],$18::text[],$19::date[],$20::numeric[],$21::boolean[],$22::text[],$23::int[],$24::text[],$25::text[],$26::numeric[],$27::int[],$28::date[],$29::text[],$30::text[],$31::date[])
           AS t(street,city,state_code,zip_code,county,market_id,source,property_type,year_built,sqft,bedrooms,bathrooms,lot_size,assessed_value,estimated_value,equity_percent,property_status,condition,last_sale_date,last_sale_price,vacant,apn,stories,structure_type,legal_description,total_tax_owed,tax_delinquent_year,tax_auction_date,deed_type,lien_type,lien_date)
-          ON CONFLICT (street,city,state_code,zip_code) DO UPDATE SET
+          ON CONFLICT (tenant_id, street, city, state_code, zip_code) DO UPDATE SET
             county=COALESCE(EXCLUDED.county,properties.county),source=COALESCE(EXCLUDED.source,properties.source),
             property_type=COALESCE(EXCLUDED.property_type,properties.property_type),year_built=COALESCE(EXCLUDED.year_built,properties.year_built),
             sqft=COALESCE(EXCLUDED.sqft,properties.sqft),bedrooms=COALESCE(EXCLUDED.bedrooms,properties.bedrooms),

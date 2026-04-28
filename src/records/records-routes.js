@@ -535,7 +535,7 @@ router.post('/_new', requireAuth, async (req, res) => {
       const mktRes = await client.query(`SELECT id FROM markets WHERE tenant_id = $1 AND state_code = $2 LIMIT 1`, [req.tenantId, stateNorm]);
       let mktId = mktRes.rows[0]?.id || null;
       if (!mktId) {
-        const ins = await client.query(`INSERT INTO markets (tenant_id, state_code, name, state_name) VALUES ($1,$2,$2,$2) ON CONFLICT (state_code) DO UPDATE SET state_code=EXCLUDED.state_code RETURNING id`, [req.tenantId, stateNorm]);
+        const ins = await client.query(`INSERT INTO markets (tenant_id, state_code, name, state_name) VALUES ($1,$2,$2,$2) ON CONFLICT (tenant_id, state_code) DO UPDATE SET state_code=EXCLUDED.state_code RETURNING id`, [req.tenantId, stateNorm]);
         mktId = ins.rows[0].id;
       }
 
@@ -546,7 +546,7 @@ router.post('/_new', requireAuth, async (req, res) => {
                                 assessed_value, estimated_value, equity_percent,
                                 last_sale_date, last_sale_price, vacant, first_seen_at)
         VALUES ($19,$1,$2,$3,$4,$5,$6,'manual',$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,NOW())
-        ON CONFLICT (street, city, state_code, zip_code) DO UPDATE SET
+        ON CONFLICT (tenant_id, street, city, state_code, zip_code) DO UPDATE SET
           county = COALESCE(EXCLUDED.county, properties.county),
           property_type = COALESCE(EXCLUDED.property_type, properties.property_type),
           year_built = COALESCE(EXCLUDED.year_built, properties.year_built),
@@ -1336,15 +1336,19 @@ router.get('/_state_cleanup', requireAuth, async (req, res) => {
     // value differs from ANY one element, which is true for every row (IN
     // differs from AL, AK, etc). We want `NOT = ANY` / `<> ALL` instead.
     const validArr = Array.from(VALID_STATES);
+    // 2026-04-28 audit fix S-1: tenant-scope. Pre-fix, this SELECT scanned
+    // every tenant's properties and exposed bad rows to whoever opened the
+    // page (any authenticated user from any tenant).
     const badRes = await query(
       `SELECT id, street, city, state_code, zip_code, county, created_at
          FROM properties
-        WHERE state_code IS NULL
-           OR TRIM(state_code) = ''
-           OR NOT (UPPER(TRIM(state_code)) = ANY($1::text[]))
+        WHERE tenant_id = $2
+          AND (state_code IS NULL
+            OR TRIM(state_code) = ''
+            OR NOT (UPPER(TRIM(state_code)) = ANY($1::text[])))
         ORDER BY created_at DESC
         LIMIT 5000`,
-      [validArr]
+      [validArr, req.tenantId]
     );
     const bad = badRes.rows;
 
@@ -1534,12 +1538,15 @@ router.post('/_state_cleanup/fix', requireAuth, async (req, res) => {
 
     // 1) Re-scan bad rows
     const validArr = Array.from(VALID_STATES);
+    // 2026-04-28 audit fix S-1: tenant-scope. Pre-fix, the fix path could
+    // mutate any tenant's rows.
     const badRes = await client.query(
       `SELECT id, street, city, state_code, zip_code FROM properties
-        WHERE state_code IS NULL
-           OR TRIM(state_code) = ''
-           OR NOT (UPPER(TRIM(state_code)) = ANY($1::text[]))`,
-      [validArr]
+        WHERE tenant_id = $2
+          AND (state_code IS NULL
+            OR TRIM(state_code) = ''
+            OR NOT (UPPER(TRIM(state_code)) = ANY($1::text[])))`,
+      [validArr, req.tenantId]
     );
     const candidates = [];
     for (const r of badRes.rows) {
@@ -1565,13 +1572,18 @@ router.post('/_state_cleanup/fix', requireAuth, async (req, res) => {
     const cities  = candidates.map(c => c.city);
     const states  = candidates.map(c => c.target_state);
     const zips    = candidates.map(c => c.zip_code);
+    // 2026-04-28 audit fix S-1: tenant-scope. The collision check now only
+    // matches against the calling tenant's existing rows — a different
+    // tenant's "correct" copy of the same address must never be mistaken
+    // for a collision in this tenant's cleanup.
     const existRes = await client.query(
       `SELECT id, LOWER(TRIM(street)) || '|' || LOWER(TRIM(city)) || '|' || UPPER(TRIM(state_code)) || '|' || SUBSTRING(TRIM(zip_code) FROM 1 FOR 5) AS k
          FROM properties
-        WHERE (street, city, state_code, zip_code) IN (
-          SELECT * FROM UNNEST($1::text[], $2::text[], $3::text[], $4::text[])
-        )`,
-      [streets, cities, states, zips]
+        WHERE tenant_id = $5
+          AND (street, city, state_code, zip_code) IN (
+            SELECT * FROM UNNEST($1::text[], $2::text[], $3::text[], $4::text[])
+          )`,
+      [streets, cities, states, zips, req.tenantId]
     );
     const existingByKey = {};
     for (const r of existRes.rows) existingByKey[r.k] = r.id;
@@ -1596,18 +1608,21 @@ router.post('/_state_cleanup/fix', requireAuth, async (req, res) => {
 
     // 3) Market-id map for all target states
     const neededStates = [...new Set(candidates.map(c => c.target_state))];
+    // 2026-04-28 audit fix S-1: markets lookup + insert tenant-scoped.
+    // The INSERT was also missing tenant_id entirely (NOT NULL column would
+    // fail) — fix included here.
     const mktRes = await client.query(
-      `SELECT state_code, id FROM markets WHERE state_code = ANY($1::text[])`,
-      [neededStates]
+      `SELECT state_code, id FROM markets WHERE tenant_id = $2 AND state_code = ANY($1::text[])`,
+      [neededStates, req.tenantId]
     );
     const mktMap = {};
     for (const m of mktRes.rows) mktMap[m.state_code] = m.id;
     for (const s of neededStates) {
       if (mktMap[s]) continue;
       const ins = await client.query(
-        `INSERT INTO markets (state_code, name, state_name) VALUES ($1,$1,$1)
-         ON CONFLICT (state_code) DO UPDATE SET state_code=EXCLUDED.state_code RETURNING id`,
-        [s]
+        `INSERT INTO markets (tenant_id, state_code, name, state_name) VALUES ($1, $2, $2, $2)
+         ON CONFLICT (tenant_id, state_code) DO UPDATE SET state_code=EXCLUDED.state_code RETURNING id`,
+        [req.tenantId, s]
       );
       mktMap[s] = ins.rows[0].id;
     }
@@ -1620,12 +1635,16 @@ router.post('/_state_cleanup/fix', requireAuth, async (req, res) => {
       const byState = {};
       for (const u of safeUpdates) { (byState[u.target_state] = byState[u.target_state] || []).push(u.id); }
       for (const [state, ids] of Object.entries(byState)) {
-        const r = await client.query(
+        // 2026-04-28 audit fix S-1: tenant_id filter is defense-in-depth —
+        // ids came from a tenant-filtered SELECT above, but matching here
+        // again means a malicious id list passed through req.body would
+        // still be bounded to the tenant.
+        const upd = await client.query(
           `UPDATE properties SET state_code = $1, market_id = $2, updated_at = NOW()
-            WHERE id = ANY($3::int[])`,
-          [state, mktMap[state], ids]
+            WHERE tenant_id = $4 AND id = ANY($3::int[])`,
+          [state, mktMap[state], ids, req.tenantId]
         );
-        updated += r.rowCount;
+        updated += upd.rowCount;
       }
 
       // Collision deletes — the bad row is redundant because a correct
@@ -1633,9 +1652,10 @@ router.post('/_state_cleanup/fix', requireAuth, async (req, res) => {
       // property_tags, property_lists, property_phones (if any).
       if (collisionDeletes.length > 0) {
         const deleteIds = collisionDeletes.map(d => d.id);
+        // 2026-04-28 audit fix S-1: tenant_id filter (defense-in-depth).
         const dr = await client.query(
-          `DELETE FROM properties WHERE id = ANY($1::int[])`,
-          [deleteIds]
+          `DELETE FROM properties WHERE tenant_id = $2 AND id = ANY($1::int[])`,
+          [deleteIds, req.tenantId]
         );
         deleted = dr.rowCount;
       }
@@ -1969,7 +1989,15 @@ router.get('/_distress', requireAuth, async (req, res) => {
 // a single source of truth. Falls back to in-memory if Redis unavailable
 // (single-replica dev mode).
 
-const DISTRESS_JOB_KEY = 'loki:distress:job';
+// 2026-04-28 audit fix S-3: distress lock key + local fallback are now keyed
+// by tenant_id. Previously a single global key (`loki:distress:job`) meant
+// tenant A's recompute blocked tenant B's for up to 30 minutes. Now each
+// tenant has its own lock and recompute is filtered to that tenant's rows
+// (see scoreAllProperties tenantId param). All four helpers take tenantId.
+function distressJobKey(tenantId) {
+  if (!Number.isInteger(tenantId)) throw new Error('distressJobKey: tenantId required (int)');
+  return 'loki:distress:job:t' + tenantId;
+}
 const DISTRESS_JOB_TTL = 30 * 60; // 30 minutes — job must finish or fail in this window
 
 // Lazy Redis connection — only created if REDIS_URL is set. Avoids circular
@@ -1991,56 +2019,53 @@ function _getDistressRedis() {
   return _distressRedis;
 }
 
-// In-memory fallback only used when Redis isn't configured (local dev).
-let _localDistressJob = {
+// In-memory fallback — Maps keyed by tenantId so tenants don't share state.
+const _localDistressJobs = new Map();
+const _localClaimFlags = new Map();
+const _emptyDistressJob = () => ({
   running: false, startedAt: null, finishedAt: null,
   scored: 0, total: 0, error: null,
-};
+});
 
-async function getDistressJob() {
+async function getDistressJob(tenantId) {
+  const key = distressJobKey(tenantId);
   const redis = _getDistressRedis();
   if (redis) {
     try {
-      const raw = await redis.get(DISTRESS_JOB_KEY);
-      return raw ? JSON.parse(raw) : _localDistressJob;
+      const raw = await redis.get(key);
+      return raw ? JSON.parse(raw) : (_localDistressJobs.get(tenantId) || _emptyDistressJob());
     } catch (_) { /* fall through to local */ }
   }
-  return _localDistressJob;
+  return _localDistressJobs.get(tenantId) || _emptyDistressJob();
 }
 
-async function setDistressJob(job) {
-  _localDistressJob = job;   // always keep local copy in sync
+async function setDistressJob(tenantId, job) {
+  const key = distressJobKey(tenantId);
+  _localDistressJobs.set(tenantId, job);   // always keep local copy in sync
   const redis = _getDistressRedis();
   if (redis) {
-    try { await redis.setex(DISTRESS_JOB_KEY, DISTRESS_JOB_TTL, JSON.stringify(job)); }
+    try { await redis.setex(key, DISTRESS_JOB_TTL, JSON.stringify(job)); }
     catch (_) { /* non-fatal — memory still has it */ }
   }
 }
 
-// 2026-04-20 pass 12: atomic test-and-set.
-// Pre-pass-12 the recompute endpoint did getDistressJob() → check !running →
-// setDistressJob({running:true}) in three separate awaits. Two fast clicks
-// on the Recompute button (or two users hitting it within the same 100ms)
-// both observed running=false and both proceeded to start workers.
-// tryClaimDistressJob uses Redis SET NX EX for a single-shot atomic claim;
-// falls back to a JS-level boolean when Redis isn't available (Railway runs
-// single-process so this is race-free within one worker).
-let _localClaimFlag = false;
-async function tryClaimDistressJob(newJob) {
+// 2026-04-20 pass 12: atomic test-and-set. tryClaimDistressJob uses Redis
+// SET NX EX for a single-shot atomic claim; falls back to a JS-level Map
+// when Redis isn't available.
+async function tryClaimDistressJob(tenantId, newJob) {
+  const key = distressJobKey(tenantId);
   const redis = _getDistressRedis();
   if (redis) {
     try {
-      // NX = only set if key doesn't exist. Returns 'OK' on success, null if
-      // someone else already holds the key.
-      const result = await redis.set(DISTRESS_JOB_KEY, JSON.stringify(newJob), 'NX', 'EX', DISTRESS_JOB_TTL);
+      const result = await redis.set(key, JSON.stringify(newJob), 'NX', 'EX', DISTRESS_JOB_TTL);
       if (result === 'OK') {
-        _localDistressJob = newJob;
-        _localClaimFlag = true;
+        _localDistressJobs.set(tenantId, newJob);
+        _localClaimFlags.set(tenantId, true);
         return true;
       }
       // Someone else claimed it; make sure our local copy reflects that.
-      const raw = await redis.get(DISTRESS_JOB_KEY);
-      if (raw) _localDistressJob = JSON.parse(raw);
+      const raw = await redis.get(key);
+      if (raw) _localDistressJobs.set(tenantId, JSON.parse(raw));
       return false;
     } catch (e) {
       console.error('[distress] Redis claim failed, falling back to local flag:', e.message);
@@ -2049,15 +2074,16 @@ async function tryClaimDistressJob(newJob) {
   }
   // Local fallback — single-process node is single-threaded, this synchronous
   // read-write block cannot race with itself.
-  if (_localClaimFlag || (_localDistressJob && _localDistressJob.running)) return false;
-  _localClaimFlag = true;
-  _localDistressJob = newJob;
+  const cur = _localDistressJobs.get(tenantId);
+  if (_localClaimFlags.get(tenantId) || (cur && cur.running)) return false;
+  _localClaimFlags.set(tenantId, true);
+  _localDistressJobs.set(tenantId, newJob);
   return true;
 }
 
-async function releaseDistressJob(finalJob) {
-  _localClaimFlag = false;
-  await setDistressJob(finalJob);
+async function releaseDistressJob(tenantId, finalJob) {
+  _localClaimFlags.delete(tenantId);
+  await setDistressJob(tenantId, finalJob);
 }
 
 router.post('/_distress/recompute', requireAuth, async (req, res) => {
@@ -2070,7 +2096,7 @@ router.post('/_distress/recompute', requireAuth, async (req, res) => {
     total: 0,
     error: null,
   };
-  const claimed = await tryClaimDistressJob(newJob);
+  const claimed = await tryClaimDistressJob(req.tenantId, newJob);
   if (!claimed) {
     return res.redirect('/records/_distress?msg=' + encodeURIComponent('A rescore is already running. Check back in a minute.'));
   }
@@ -2086,9 +2112,9 @@ router.post('/_distress/recompute', requireAuth, async (req, res) => {
         if (p.finished) {
           console.log(`[distress/recompute] done: ${p.done}/${p.total}`);
         }
-      });
+      }, req.tenantId);
       const finishedAt = Date.now();
-      await releaseDistressJob({
+      await releaseDistressJob(req.tenantId, {
         running: false,
         startedAt: newJob.startedAt,
         finishedAt,
@@ -2100,7 +2126,7 @@ router.post('/_distress/recompute', requireAuth, async (req, res) => {
       console.log(`[distress/recompute] finished in ${secs}s — scored ${result.scored} of ${result.total}`);
     } catch (e) {
       console.error('[distress/recompute] FAILED:', e);
-      await releaseDistressJob({
+      await releaseDistressJob(req.tenantId, {
         running: false,
         startedAt: newJob.startedAt,
         finishedAt: Date.now(),
@@ -2114,7 +2140,7 @@ router.post('/_distress/recompute', requireAuth, async (req, res) => {
 
 // Status endpoint — lets the UI poll without doing any work
 router.get('/_distress/status', requireAuth, async (req, res) => {
-  const job = await getDistressJob();
+  const job = await getDistressJob(req.tenantId);
   const now = Date.now();
   const elapsed = job.startedAt ? Math.round((now - job.startedAt) / 1000) : 0;
   res.json({
@@ -2149,6 +2175,8 @@ router.get('/_duplicates', requireAuth, async (req, res) => {
     // had ghost duplicates the dedup page would never show. Now uses
     // street_normalized with a COALESCE fallback for any row where the
     // generated column hasn't been populated yet (defensive).
+    // 2026-04-28 audit fix S-1: tenant-scope. Pre-fix, the group finder
+    // showed every tenant's duplicates to any logged-in user.
     const groupsRes = await query(`
       WITH normalized AS (
         SELECT
@@ -2167,7 +2195,8 @@ router.get('/_duplicates', requireAuth, async (req, res) => {
           first_seen_at,
           updated_at
         FROM properties
-        WHERE street IS NOT NULL AND street != ''
+        WHERE tenant_id = $1
+          AND street IS NOT NULL AND street != ''
           AND city IS NOT NULL AND city != ''
           AND state_code IS NOT NULL AND state_code != ''
       ),
@@ -2185,7 +2214,7 @@ router.get('/_duplicates', requireAuth, async (req, res) => {
       SELECT * FROM keyed
       ORDER BY dup_count DESC, k_state, k_city, k_street
       LIMIT 200
-    `);
+    `, [req.tenantId]);
 
     const totalDupGroups = groupsRes.rows.length;
     // Postgres COUNT() returns a STRING, not a number. Cast to int to prevent
@@ -2282,12 +2311,22 @@ router.post('/_duplicates/merge', requireAuth, async (req, res) => {
     if (!keepId || isNaN(keepId)) return res.redirect('/records/_duplicates?err=' + encodeURIComponent('Missing keep_id'));
     if (dropIds.length === 0)     return res.redirect('/records/_duplicates?err=' + encodeURIComponent('No drop_ids provided'));
 
-    // Verify keep_id exists
-    const keepCheck = await query(`SELECT id FROM properties WHERE id = $1`, [keepId]);
+    // 2026-04-28 audit fix S-1: ownership gate. Pre-fix, these checks
+    // returned a row regardless of which tenant owned it — letting any
+    // logged-in user merge any tenant's properties into another tenant's
+    // record. Now the SELECT explicitly verifies tenant_id = req.tenantId
+    // for every keep + drop id; mismatch returns "not found" (not "wrong
+    // tenant") so we don't leak existence across tenants.
+    const keepCheck = await query(
+      `SELECT id FROM properties WHERE id = $1 AND tenant_id = $2`,
+      [keepId, req.tenantId]
+    );
     if (!keepCheck.rows.length) return res.redirect('/records/_duplicates?err=' + encodeURIComponent('Keep property not found: ' + keepId));
 
-    // Verify all drop_ids exist
-    const dropCheck = await query(`SELECT id FROM properties WHERE id = ANY($1::int[])`, [dropIds]);
+    const dropCheck = await query(
+      `SELECT id FROM properties WHERE tenant_id = $2 AND id = ANY($1::int[])`,
+      [dropIds, req.tenantId]
+    );
     if (dropCheck.rows.length !== dropIds.length) {
       return res.redirect('/records/_duplicates?err=' + encodeURIComponent('Some drop_ids not found'));
     }
@@ -2301,15 +2340,20 @@ router.post('/_duplicates/merge', requireAuth, async (req, res) => {
     // still exist (just with no children). User can simply click Merge again.
 
     // 1) Move list memberships from dropped → kept (skip duplicates that already exist on keep)
+    // 2026-04-28 audit fix S-1: INSERT was missing tenant_id (which is
+    // NOT NULL post Phase-1 migration) — has been silently failing on real
+    // merges since Phase 1 shipped, just rare enough nobody noticed. Now
+    // populated from req.tenantId, with a defensive tenant_id filter on
+    // each scan so cross-tenant rows can't leak in via a malicious dropId.
     const listRes = await query(`
-      INSERT INTO property_lists (property_id, list_id, added_at)
-      SELECT $1, list_id, MIN(added_at)
+      INSERT INTO property_lists (tenant_id, property_id, list_id, added_at)
+      SELECT $3, $1, list_id, MIN(added_at)
       FROM property_lists
-      WHERE property_id = ANY($2::int[])
-        AND list_id NOT IN (SELECT list_id FROM property_lists WHERE property_id = $1)
+      WHERE tenant_id = $3 AND property_id = ANY($2::int[])
+        AND list_id NOT IN (SELECT list_id FROM property_lists WHERE tenant_id = $3 AND property_id = $1)
       GROUP BY list_id
       RETURNING list_id
-    `, [keepId, dropIds]);
+    `, [keepId, dropIds, req.tenantId]);
     movedLists = listRes.rowCount || 0;
 
     // 2) Move contact relationships (skip those already on keep)
@@ -2319,21 +2363,23 @@ router.post('/_duplicates/merge', requireAuth, async (req, res) => {
     // (idx_property_contacts_single_primary) and fail the merge. Check
     // whether keep already has a primary; if so, all incoming moves come in
     // as primary_contact = false.
+    // 2026-04-28 audit fix S-1: tenant-scoped keep-primary check + INSERT
+    // populates tenant_id (was NULL → NOT NULL violation post Phase-1).
     const keepHasPrimaryRes = await query(
-      `SELECT 1 FROM property_contacts WHERE property_id = $1 AND primary_contact = true LIMIT 1`,
-      [keepId]
+      `SELECT 1 FROM property_contacts WHERE tenant_id = $2 AND property_id = $1 AND primary_contact = true LIMIT 1`,
+      [keepId, req.tenantId]
     );
     const keepHasPrimary = keepHasPrimaryRes.rows.length > 0;
 
     const contactRes = await query(`
-      INSERT INTO property_contacts (property_id, contact_id, primary_contact)
-      SELECT $1, contact_id, ${keepHasPrimary ? 'false' : 'BOOL_OR(primary_contact)'}
+      INSERT INTO property_contacts (tenant_id, property_id, contact_id, primary_contact)
+      SELECT $3, $1, contact_id, ${keepHasPrimary ? 'false' : 'BOOL_OR(primary_contact)'}
       FROM property_contacts
-      WHERE property_id = ANY($2::int[])
-        AND contact_id NOT IN (SELECT contact_id FROM property_contacts WHERE property_id = $1)
+      WHERE tenant_id = $3 AND property_id = ANY($2::int[])
+        AND contact_id NOT IN (SELECT contact_id FROM property_contacts WHERE tenant_id = $3 AND property_id = $1)
       GROUP BY contact_id
       RETURNING contact_id
-    `, [keepId, dropIds]);
+    `, [keepId, dropIds, req.tenantId]);
     movedContacts = contactRes.rowCount || 0;
 
     // 3) Move or clean FK-dependent history rows so the DELETE doesn't fail.
@@ -2347,18 +2393,22 @@ router.post('/_duplicates/merge', requireAuth, async (req, res) => {
     //    blew up the DELETE with a FK violation, leaving the merge half-
     //    complete (list memberships already moved) with no transaction to
     //    unwind. Now: reparent, then delete.
-    await query(`UPDATE call_logs          SET property_id = $1 WHERE property_id = ANY($2::int[])`, [keepId, dropIds]);
-    await query(`UPDATE sms_logs           SET property_id = $1 WHERE property_id = ANY($2::int[])`, [keepId, dropIds]);
-    await query(`UPDATE filtration_results SET property_id = $1 WHERE property_id = ANY($2::int[])`, [keepId, dropIds]);
-    await query(`UPDATE marketing_touches  SET property_id = $1 WHERE property_id = ANY($2::int[])`, [keepId, dropIds]);
-    await query(`UPDATE deals              SET property_id = $1 WHERE property_id = ANY($2::int[])`, [keepId, dropIds]);
+    // 2026-04-28 audit fix S-1: every reparent and delete is now bounded
+    // to req.tenantId. The ownership gate above already restricts dropIds
+    // to this tenant's properties, but tenant_id filters here are
+    // defense-in-depth in case the filter ever drifts in the future.
+    await query(`UPDATE call_logs          SET property_id = $1 WHERE tenant_id = $3 AND property_id = ANY($2::int[])`, [keepId, dropIds, req.tenantId]);
+    await query(`UPDATE sms_logs           SET property_id = $1 WHERE tenant_id = $3 AND property_id = ANY($2::int[])`, [keepId, dropIds, req.tenantId]);
+    await query(`UPDATE filtration_results SET property_id = $1 WHERE tenant_id = $3 AND property_id = ANY($2::int[])`, [keepId, dropIds, req.tenantId]);
+    await query(`UPDATE marketing_touches  SET property_id = $1 WHERE tenant_id = $3 AND property_id = ANY($2::int[])`, [keepId, dropIds, req.tenantId]);
+    await query(`UPDATE deals              SET property_id = $1 WHERE tenant_id = $3 AND property_id = ANY($2::int[])`, [keepId, dropIds, req.tenantId]);
 
     // 4) Delete the dropped properties — distress logs cascade automatically;
     //    property_lists / property_contacts for the drops are no longer needed
     //    (we copied the unique ones; rest were duplicates already on keep).
-    await query(`DELETE FROM property_lists    WHERE property_id = ANY($1::int[])`, [dropIds]);
-    await query(`DELETE FROM property_contacts WHERE property_id = ANY($1::int[])`, [dropIds]);
-    await query(`DELETE FROM properties        WHERE id = ANY($1::int[])`, [dropIds]);
+    await query(`DELETE FROM property_lists    WHERE tenant_id = $2 AND property_id = ANY($1::int[])`, [dropIds, req.tenantId]);
+    await query(`DELETE FROM property_contacts WHERE tenant_id = $2 AND property_id = ANY($1::int[])`, [dropIds, req.tenantId]);
+    await query(`DELETE FROM properties        WHERE tenant_id = $2 AND id = ANY($1::int[])`, [dropIds, req.tenantId]);
 
     // 5) Refresh owner_portfolio_counts — the owned-count for every property
     //    owned by this contact just changed.
@@ -2413,6 +2463,10 @@ router.post('/_duplicates/merge_all', requireAuth, async (req, res) => {
     // handler merged a different set. Now both sides use the same key.
     // COALESCE defensive fallback for any row where the generated column
     // hasn't been populated yet.
+    // 2026-04-28 audit fix S-1: tenant-scope. Pre-fix, this scanned every
+    // tenant's properties and merged across tenants — would consolidate
+    // tenant A's duplicates onto a keep id that happened to belong to
+    // tenant B. Catastrophic. Now bounded to req.tenantId.
     const groupsRes = await query(`
       WITH normalized AS (
         SELECT
@@ -2425,7 +2479,8 @@ router.post('/_duplicates/merge_all', requireAuth, async (req, res) => {
           UPPER(TRIM(state_code))              AS k_state,
           SUBSTRING(TRIM(zip_code) FROM 1 FOR 5) AS k_zip
         FROM properties
-        WHERE street IS NOT NULL AND street != ''
+        WHERE tenant_id = $1
+          AND street IS NOT NULL AND street != ''
           AND city IS NOT NULL AND city != ''
           AND state_code IS NOT NULL AND state_code != ''
       )
@@ -2437,13 +2492,16 @@ router.post('/_duplicates/merge_all', requireAuth, async (req, res) => {
       HAVING COUNT(*) > 1
       ORDER BY COUNT(*) DESC
       LIMIT 500
-    `);
+    `, [req.tenantId]);
 
-    // Gate: if merging 10+ groups, require the delete code
-    if (groupsRes.rows.length >= 10) {
+    // 2026-04-28 audit fix S-11: drop the >=10-groups gate. Bulk merge is
+    // destructive at any group count; gating only at 10+ was inconsistent
+    // with /records/delete and /lists/delete (always gated). Now: code is
+    // always required. Skipped only when there's nothing to merge.
+    if (groupsRes.rows.length > 0) {
       const verified = await settings.verifyDeleteCode(req.tenantId, req.body.code);
       if (!verified) {
-        return res.redirect('/records/_duplicates?err=' + encodeURIComponent(`Delete code required for bulk merge of ${groupsRes.rows.length} groups. Enter code and try again.`));
+        return res.redirect('/records/_duplicates?err=' + encodeURIComponent(`Delete code required for bulk merge. Enter code and try again.`));
       }
     }
 
@@ -2455,15 +2513,21 @@ router.post('/_duplicates/merge_all', requireAuth, async (req, res) => {
       const keepId = g.ids[0];
       const dropIds = g.ids.slice(1);
       try {
+        // 2026-04-28 audit fix S-1: same tenant scoping + tenant_id-on-INSERT
+        // pattern as the single-merge path above. groupsRes was already
+        // filtered to req.tenantId, so keepId/dropIds are owned by the
+        // calling tenant — but the INSERT/scans still need tenant_id
+        // explicitly because the column is NOT NULL and partial leaks
+        // would still be wrong even if rare.
         const lr = await query(`
-          INSERT INTO property_lists (property_id, list_id, added_at)
-          SELECT $1, list_id, MIN(added_at)
+          INSERT INTO property_lists (tenant_id, property_id, list_id, added_at)
+          SELECT $3, $1, list_id, MIN(added_at)
           FROM property_lists
-          WHERE property_id = ANY($2::int[])
-            AND list_id NOT IN (SELECT list_id FROM property_lists WHERE property_id = $1)
+          WHERE tenant_id = $3 AND property_id = ANY($2::int[])
+            AND list_id NOT IN (SELECT list_id FROM property_lists WHERE tenant_id = $3 AND property_id = $1)
           GROUP BY list_id
           RETURNING list_id
-        `, [keepId, dropIds]);
+        `, [keepId, dropIds, req.tenantId]);
         totalMovedLists += lr.rowCount || 0;
 
         // 2026-04-18 audit fix #38: previously used BOOL_OR(primary_contact)
@@ -2475,20 +2539,20 @@ router.post('/_duplicates/merge_all', requireAuth, async (req, res) => {
         // single-merge fix: check whether keep already has a primary and
         // assign primary_contact = false for all incoming rows if it does.
         const keepHasPrimaryRes = await query(
-          `SELECT 1 FROM property_contacts WHERE property_id = $1 AND primary_contact = true LIMIT 1`,
-          [keepId]
+          `SELECT 1 FROM property_contacts WHERE tenant_id = $2 AND property_id = $1 AND primary_contact = true LIMIT 1`,
+          [keepId, req.tenantId]
         );
         const keepHasPrimary = keepHasPrimaryRes.rows.length > 0;
 
         const cr = await query(`
-          INSERT INTO property_contacts (property_id, contact_id, primary_contact)
-          SELECT $1, contact_id, ${keepHasPrimary ? 'false' : 'BOOL_OR(primary_contact)'}
+          INSERT INTO property_contacts (tenant_id, property_id, contact_id, primary_contact)
+          SELECT $3, $1, contact_id, ${keepHasPrimary ? 'false' : 'BOOL_OR(primary_contact)'}
           FROM property_contacts
-          WHERE property_id = ANY($2::int[])
-            AND contact_id NOT IN (SELECT contact_id FROM property_contacts WHERE property_id = $1)
+          WHERE tenant_id = $3 AND property_id = ANY($2::int[])
+            AND contact_id NOT IN (SELECT contact_id FROM property_contacts WHERE tenant_id = $3 AND property_id = $1)
           GROUP BY contact_id
           RETURNING contact_id
-        `, [keepId, dropIds]);
+        `, [keepId, dropIds, req.tenantId]);
         totalMovedContacts += cr.rowCount || 0;
 
         // 2026-04-20 pass 12: reparent history to the keeper before deleting
@@ -2497,15 +2561,15 @@ router.post('/_duplicates/merge_all', requireAuth, async (req, res) => {
         // record blew up the DELETE with an FK violation, leaving the group's
         // merge half-complete (list memberships moved but dropped properties
         // still present). Now history consolidates onto the keeper.
-        await query(`UPDATE call_logs          SET property_id = $1 WHERE property_id = ANY($2::int[])`, [keepId, dropIds]);
-        await query(`UPDATE sms_logs           SET property_id = $1 WHERE property_id = ANY($2::int[])`, [keepId, dropIds]);
-        await query(`UPDATE filtration_results SET property_id = $1 WHERE property_id = ANY($2::int[])`, [keepId, dropIds]);
-        await query(`UPDATE marketing_touches  SET property_id = $1 WHERE property_id = ANY($2::int[])`, [keepId, dropIds]);
-        await query(`UPDATE deals              SET property_id = $1 WHERE property_id = ANY($2::int[])`, [keepId, dropIds]);
+        await query(`UPDATE call_logs          SET property_id = $1 WHERE tenant_id = $3 AND property_id = ANY($2::int[])`, [keepId, dropIds, req.tenantId]);
+        await query(`UPDATE sms_logs           SET property_id = $1 WHERE tenant_id = $3 AND property_id = ANY($2::int[])`, [keepId, dropIds, req.tenantId]);
+        await query(`UPDATE filtration_results SET property_id = $1 WHERE tenant_id = $3 AND property_id = ANY($2::int[])`, [keepId, dropIds, req.tenantId]);
+        await query(`UPDATE marketing_touches  SET property_id = $1 WHERE tenant_id = $3 AND property_id = ANY($2::int[])`, [keepId, dropIds, req.tenantId]);
+        await query(`UPDATE deals              SET property_id = $1 WHERE tenant_id = $3 AND property_id = ANY($2::int[])`, [keepId, dropIds, req.tenantId]);
 
-        await query(`DELETE FROM property_lists    WHERE property_id = ANY($1::int[])`, [dropIds]);
-        await query(`DELETE FROM property_contacts WHERE property_id = ANY($1::int[])`, [dropIds]);
-        await query(`DELETE FROM properties        WHERE id = ANY($1::int[])`, [dropIds]);
+        await query(`DELETE FROM property_lists    WHERE tenant_id = $2 AND property_id = ANY($1::int[])`, [dropIds, req.tenantId]);
+        await query(`DELETE FROM property_contacts WHERE tenant_id = $2 AND property_id = ANY($1::int[])`, [dropIds, req.tenantId]);
+        await query(`DELETE FROM properties        WHERE tenant_id = $2 AND id = ANY($1::int[])`, [dropIds, req.tenantId]);
 
         groupsMerged++;
         totalDropped += dropIds.length;
