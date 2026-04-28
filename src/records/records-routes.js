@@ -1487,7 +1487,11 @@ router.post('/export', requireAuth, async (req, res) => {
     let props;
     if (selectAll) {
       const qs = new URLSearchParams(filterParams || '');
-      let conditions = [], params = [], idx = 1;
+      // Tenant baseline — every bulk-action filter rebuild starts here
+      // so the row set we act on can never include another tenant's data.
+      // Filter-parity rule: every clause below this line must match the
+      // GET / handler's filters.
+      let conditions = [`p.tenant_id = $1`], params = [req.tenantId], idx = 2;
       const qv = (k) => qs.get(k) || '';
       const qvAll = (k) => qs.getAll(k).filter(v => v && String(v).trim() !== '');
       if (qv('q'))           { conditions.push(`(p.street ILIKE $${idx} OR p.city ILIKE $${idx} OR c.first_name ILIKE $${idx} OR c.last_name ILIKE $${idx})`); params.push(`%${qv('q')}%`); idx++; }
@@ -4018,7 +4022,11 @@ router.post('/delete', requireAuth, async (req, res) => {
       // Rebuild the same filter conditions as the records list, then SELECT
       // matching IDs. Mirrors the export route's selectAll logic.
       const qs = new URLSearchParams(filterParams || '');
-      let conditions = [], params = [], idx = 1;
+      // Tenant baseline — every bulk-action filter rebuild starts here
+      // so the row set we act on can never include another tenant's data.
+      // Filter-parity rule: every clause below this line must match the
+      // GET / handler's filters.
+      let conditions = [`p.tenant_id = $1`], params = [req.tenantId], idx = 2;
       const qv = (k) => qs.get(k) || '';
       const qvAll = (k) => qs.getAll(k).filter(v => v && String(v).trim() !== '');
 
@@ -4277,11 +4285,17 @@ router.post('/delete', requireAuth, async (req, res) => {
       `, params);
       idsToDelete = idsRes.rows.map(r => r.id);
     } else {
-      // ids is already cleaned via coerceIdArray above — no further parseInt needed
+      // ids is already cleaned via coerceIdArray above. Filter to IDs the
+      // current tenant actually owns — defense against a crafted POST that
+      // submits property IDs belonging to another tenant.
       if (ids.length === 0) {
         return res.status(400).json({ error: 'No records selected.' });
       }
-      idsToDelete = ids;
+      const ownRes = await query(
+        `SELECT id FROM properties WHERE tenant_id = $1 AND id = ANY($2::int[])`,
+        [req.tenantId, ids]
+      );
+      idsToDelete = ownRes.rows.map(r => r.id);
     }
 
     if (idsToDelete.length === 0) {
@@ -4299,15 +4313,20 @@ router.post('/delete', requireAuth, async (req, res) => {
     // have to delete deal rows outright — acceptable because a deal on a
     // property the operator is deleting is almost certainly a test deal or
     // stale lead, and the delete code is gated behind settings.verifyDeleteCode.
-    await query(`UPDATE call_logs          SET property_id = NULL WHERE property_id = ANY($1::int[])`, [idsToDelete]);
-    await query(`UPDATE sms_logs           SET property_id = NULL WHERE property_id = ANY($1::int[])`, [idsToDelete]);
-    await query(`UPDATE filtration_results SET property_id = NULL WHERE property_id = ANY($1::int[])`, [idsToDelete]);
-    await query(`UPDATE marketing_touches  SET property_id = NULL WHERE property_id = ANY($1::int[])`, [idsToDelete]);
-    await query(`DELETE FROM deals                           WHERE property_id = ANY($1::int[])`, [idsToDelete]);
+    // Defense in depth: idsToDelete already came from a tenant-scoped SELECT
+    // (the where clause starts with p.tenant_id = $1), so cross-tenant IDs
+    // can't be in the array. The AND tenant_id below is a belt-and-braces
+    // guard in case a future code path injects a raw idsToDelete from
+    // somewhere else.
+    await query(`UPDATE call_logs          SET property_id = NULL WHERE property_id = ANY($1::int[]) AND tenant_id = $2`, [idsToDelete, req.tenantId]);
+    await query(`UPDATE sms_logs           SET property_id = NULL WHERE property_id = ANY($1::int[]) AND tenant_id = $2`, [idsToDelete, req.tenantId]);
+    await query(`UPDATE filtration_results SET property_id = NULL WHERE property_id = ANY($1::int[]) AND tenant_id = $2`, [idsToDelete, req.tenantId]);
+    await query(`UPDATE marketing_touches  SET property_id = NULL WHERE property_id = ANY($1::int[]) AND tenant_id = $2`, [idsToDelete, req.tenantId]);
+    await query(`DELETE FROM deals                           WHERE property_id = ANY($1::int[]) AND tenant_id = $2`, [idsToDelete, req.tenantId]);
     // Distress logs cascade via FK so they clean up automatically.
-    await query(`DELETE FROM property_lists    WHERE property_id = ANY($1::int[])`, [idsToDelete]);
-    await query(`DELETE FROM property_contacts WHERE property_id = ANY($1::int[])`, [idsToDelete]);
-    const result = await query(`DELETE FROM properties WHERE id = ANY($1::int[]) RETURNING id`, [idsToDelete]);
+    await query(`DELETE FROM property_lists    WHERE property_id = ANY($1::int[]) AND tenant_id = $2`, [idsToDelete, req.tenantId]);
+    await query(`DELETE FROM property_contacts WHERE property_id = ANY($1::int[]) AND tenant_id = $2`, [idsToDelete, req.tenantId]);
+    const result = await query(`DELETE FROM properties WHERE id = ANY($1::int[]) AND tenant_id = $2 RETURNING id`, [idsToDelete, req.tenantId]);
 
     // Refresh owner_portfolio_counts MV — deleting a property changes the
     // owned-count for every remaining property owned by the same person.
@@ -4375,7 +4394,11 @@ router.post('/bulk-tag', requireAuth, async (req, res) => {
     let propertyIds = [];
     if (selectAll) {
       const qs = new URLSearchParams(filterParams || '');
-      let conditions = [], params = [], idx = 1;
+      // Tenant baseline — every bulk-action filter rebuild starts here
+      // so the row set we act on can never include another tenant's data.
+      // Filter-parity rule: every clause below this line must match the
+      // GET / handler's filters.
+      let conditions = [`p.tenant_id = $1`], params = [req.tenantId], idx = 2;
       const qv = (k) => qs.get(k) || '';
       const qvAll = (k) => qs.getAll(k).filter(v => v && String(v).trim() !== '');
 
@@ -4588,11 +4611,16 @@ router.post('/bulk-tag', requireAuth, async (req, res) => {
       const idsRes = await query(`SELECT DISTINCT p.id FROM properties p LEFT JOIN property_contacts pc ON pc.property_id = p.id AND pc.primary_contact = true LEFT JOIN contacts c ON c.id = pc.contact_id ${where}`, params);
       propertyIds = idsRes.rows.map(r => r.id);
     } else {
-      // ids is already cleaned via coerceIdArray above
+      // Filter user-supplied IDs to ones this tenant owns — defends against
+      // crafted POSTs that submit cross-tenant property IDs.
       if (ids.length === 0) {
         return res.status(400).json({ error: 'No records selected.' });
       }
-      propertyIds = ids;
+      const ownRes = await query(
+        `SELECT id FROM properties WHERE tenant_id = $1 AND id = ANY($2::int[])`,
+        [req.tenantId, ids]
+      );
+      propertyIds = ownRes.rows.map(r => r.id);
     }
 
     if (propertyIds.length === 0) {
@@ -4605,28 +4633,28 @@ router.post('/bulk-tag', requireAuth, async (req, res) => {
       if (!Array.isArray(tagNames) || tagNames.length === 0) {
         return res.status(400).json({ error: 'No tags specified.' });
       }
-      // Resolve or create each tag
+      // Resolve or create each tag (tenant-scoped — every tenant has its own tag namespace).
       const resolvedTags = [];
       for (const name of tagNames) {
         const trimmed = String(name).trim();
         if (!trimmed || trimmed.length > 100) continue;
-        let tagRes = await query(`SELECT id FROM tags WHERE LOWER(name) = LOWER($1) LIMIT 1`, [trimmed]);
+        let tagRes = await query(`SELECT id FROM tags WHERE tenant_id = $1 AND LOWER(name) = LOWER($2) LIMIT 1`, [req.tenantId, trimmed]);
         if (!tagRes.rows.length) {
           try {
-            tagRes = await query(`INSERT INTO tags (name) VALUES ($1) RETURNING id`, [trimmed]);
+            tagRes = await query(`INSERT INTO tags (tenant_id, name) VALUES ($1, $2) RETURNING id`, [req.tenantId, trimmed]);
           } catch (e) {
-            tagRes = await query(`SELECT id FROM tags WHERE LOWER(name) = LOWER($1) LIMIT 1`, [trimmed]);
+            tagRes = await query(`SELECT id FROM tags WHERE tenant_id = $1 AND LOWER(name) = LOWER($2) LIMIT 1`, [req.tenantId, trimmed]);
           }
         }
         if (tagRes.rows.length) resolvedTags.push(tagRes.rows[0].id);
       }
-      // Bulk insert property_tags via UNNEST
+      // Bulk insert property_tags via UNNEST. Tenant_id flows into every link row.
       for (const tagId of resolvedTags) {
         const r = await query(
-          `INSERT INTO property_tags (property_id, tag_id)
-           SELECT unnest($1::int[]), $2
+          `INSERT INTO property_tags (tenant_id, property_id, tag_id)
+           SELECT $3, unnest($1::int[]), $2
            ON CONFLICT DO NOTHING`,
-          [propertyIds, tagId]
+          [propertyIds, tagId, req.tenantId]
         );
         affected += r.rowCount;
       }
@@ -4639,8 +4667,9 @@ router.post('/bulk-tag', requireAuth, async (req, res) => {
       const r = await query(
         `DELETE FROM property_tags
          WHERE property_id = ANY($1::int[])
-           AND tag_id = ANY($2::int[])`,
-        [propertyIds, safeTagIds]
+           AND tag_id = ANY($2::int[])
+           AND tenant_id = $3`,
+        [propertyIds, safeTagIds, req.tenantId]
       );
       affected = r.rowCount;
       console.log(`[bulk-tag] Removed ${safeTagIds.length} tag(s) from ${propertyIds.length} properties (${affected} links removed)`);
@@ -4678,8 +4707,9 @@ router.post('/remove-from-list', requireAuth, async (req, res) => {
       return res.status(400).json({ error: 'List ID required. Filter by a specific list first.' });
     }
 
-    // Confirm the list exists — give a clearer error than "0 rows removed"
-    const listCheck = await query(`SELECT id, list_name FROM lists WHERE id = $1`, [listIdInt]);
+    // Confirm the list exists AND belongs to this tenant — gives a clean
+    // 404 if a user crafts a request targeting another tenant's list.
+    const listCheck = await query(`SELECT id, list_name FROM lists WHERE id = $1 AND tenant_id = $2`, [listIdInt, req.tenantId]);
     if (!listCheck.rowCount) {
       return res.status(404).json({ error: 'List not found.' });
     }
@@ -4689,7 +4719,11 @@ router.post('/remove-from-list', requireAuth, async (req, res) => {
       // Rebuild the same filter conditions as the records list. Mirrors the
       // delete route's selectAll logic exactly — keep them in sync.
       const qs = new URLSearchParams(filterParams || '');
-      let conditions = [], params = [], idx = 1;
+      // Tenant baseline — every bulk-action filter rebuild starts here
+      // so the row set we act on can never include another tenant's data.
+      // Filter-parity rule: every clause below this line must match the
+      // GET / handler's filters.
+      let conditions = [`p.tenant_id = $1`], params = [req.tenantId], idx = 2;
       const qv = (k) => qs.get(k) || '';
       const qvAll = (k) => qs.getAll(k).filter(v => v && String(v).trim() !== '');
 
@@ -4950,11 +4984,16 @@ router.post('/remove-from-list', requireAuth, async (req, res) => {
       `, params);
       idsToRemove = idsRes.rows.map(r => r.id);
     } else {
-      // ids is already cleaned via coerceIdArray above
+      // Filter user-supplied IDs to those owned by the current tenant —
+      // defends against crafted POSTs targeting another tenant's properties.
       if (ids.length === 0) {
         return res.status(400).json({ error: 'No records selected.' });
       }
-      idsToRemove = ids;
+      const ownRes = await query(
+        `SELECT id FROM properties WHERE tenant_id = $1 AND id = ANY($2::int[])`,
+        [req.tenantId, ids]
+      );
+      idsToRemove = ownRes.rows.map(r => r.id);
     }
 
     if (idsToRemove.length === 0) {
@@ -4967,8 +5006,9 @@ router.post('/remove-from-list', requireAuth, async (req, res) => {
       `DELETE FROM property_lists
          WHERE list_id = $1
            AND property_id = ANY($2::int[])
+           AND tenant_id = $3
          RETURNING property_id`,
-      [listIdInt, idsToRemove]
+      [listIdInt, idsToRemove, req.tenantId]
     );
 
     console.log(`[records/remove-from-list] Removed ${result.rowCount} property-list links from list "${listCheck.rows[0].list_name}" (id=${listIdInt})`);
@@ -5001,18 +5041,15 @@ router.post('/add-to-list', requireAuth, async (req, res) => {
     let listName = '';
     if (newListName && typeof newListName === 'string' && newListName.trim()) {
       const name = newListName.trim().slice(0, 200);
-      // Case-insensitive name conflict check — surface a useful error rather
-      // than silently creating a second "Hot Leads" list.
-      const existing = await query(`SELECT id, list_name FROM lists WHERE LOWER(list_name) = LOWER($1) LIMIT 1`, [name]);
+      // Case-insensitive name collision is checked within this tenant's lists.
+      const existing = await query(`SELECT id, list_name FROM lists WHERE tenant_id = $1 AND LOWER(list_name) = LOWER($2) LIMIT 1`, [req.tenantId, name]);
       if (existing.rowCount) {
         listIdInt = existing.rows[0].id;
         listName = existing.rows[0].list_name;
       } else {
-        // list_type is required in some installs; default to 'Custom' and let
-        // the lists schema's NOT NULL constraints surface any issue clearly.
         const created = await query(
-          `INSERT INTO lists (list_name, list_type, source) VALUES ($1, 'Custom', 'manual') RETURNING id, list_name`,
-          [name]
+          `INSERT INTO lists (tenant_id, list_name, list_type, source) VALUES ($1, $2, 'Custom', 'manual') RETURNING id, list_name`,
+          [req.tenantId, name]
         );
         listIdInt = created.rows[0].id;
         listName = created.rows[0].list_name;
@@ -5022,7 +5059,8 @@ router.post('/add-to-list', requireAuth, async (req, res) => {
       if (!listIdInt || isNaN(listIdInt)) {
         return res.status(400).json({ error: 'Pick a list or enter a new list name.' });
       }
-      const listCheck = await query(`SELECT id, list_name FROM lists WHERE id = $1`, [listIdInt]);
+      // Tenant-scoped lookup so a crafted POST can't target another tenant's list.
+      const listCheck = await query(`SELECT id, list_name FROM lists WHERE id = $1 AND tenant_id = $2`, [listIdInt, req.tenantId]);
       if (!listCheck.rowCount) {
         return res.status(404).json({ error: 'List not found.' });
       }
@@ -5034,7 +5072,11 @@ router.post('/add-to-list', requireAuth, async (req, res) => {
       // Filter-parity block — mirrors /remove-from-list exactly EXCEPT we
       // do not force-scope to a target list (add-to-list works from any view).
       const qs = new URLSearchParams(filterParams || '');
-      let conditions = [], params = [], idx = 1;
+      // Tenant baseline — every bulk-action filter rebuild starts here
+      // so the row set we act on can never include another tenant's data.
+      // Filter-parity rule: every clause below this line must match the
+      // GET / handler's filters.
+      let conditions = [`p.tenant_id = $1`], params = [req.tenantId], idx = 2;
       const qv = (k) => qs.get(k) || '';
       const qvAll = (k) => qs.getAll(k).filter(v => v && String(v).trim() !== '');
 
@@ -5274,10 +5316,16 @@ router.post('/add-to-list', requireAuth, async (req, res) => {
       `, params);
       idsToAdd = idsRes.rows.map(r => r.id);
     } else {
+      // Filter user-supplied IDs to those owned by the current tenant —
+      // defends against crafted POSTs targeting another tenant's properties.
       if (ids.length === 0) {
         return res.status(400).json({ error: 'No records selected.' });
       }
-      idsToAdd = ids;
+      const ownRes = await query(
+        `SELECT id FROM properties WHERE tenant_id = $1 AND id = ANY($2::int[])`,
+        [req.tenantId, ids]
+      );
+      idsToAdd = ownRes.rows.map(r => r.id);
     }
 
     if (idsToAdd.length === 0) {
@@ -5288,19 +5336,19 @@ router.post('/add-to-list', requireAuth, async (req, res) => {
     const existingRes = await query(
       `SELECT COUNT(*)::int AS n
          FROM property_lists
-        WHERE list_id = $1 AND property_id = ANY($2::int[])`,
-      [listIdInt, idsToAdd]
+        WHERE list_id = $1 AND property_id = ANY($2::int[]) AND tenant_id = $3`,
+      [listIdInt, idsToAdd, req.tenantId]
     );
     const alreadyOnList = existingRes.rows[0].n;
 
     // INSERT with ON CONFLICT DO NOTHING skips properties already on the list.
     // added_at defaults in the schema; we also explicitly set it for clarity.
     const result = await query(
-      `INSERT INTO property_lists (property_id, list_id, added_at)
-         SELECT unnest($1::int[]), $2, NOW()
+      `INSERT INTO property_lists (tenant_id, property_id, list_id, added_at)
+         SELECT $3, unnest($1::int[]), $2, NOW()
        ON CONFLICT (property_id, list_id) DO NOTHING
        RETURNING property_id`,
-      [idsToAdd, listIdInt]
+      [idsToAdd, listIdInt, req.tenantId]
     );
     const added = result.rowCount;
     const skipped = alreadyOnList;
