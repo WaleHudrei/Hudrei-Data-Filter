@@ -540,6 +540,59 @@ router.get('/records/:id(\\d+)', requireAuth, async (req, res) => {
   }
 });
 
+// ─── /ocular/activity — Activity (background import jobs) ──────────────────
+async function fetchActivityJobs(tenantId) {
+  // bulk_import_jobs uses two different column-name flavors depending on
+  // which path created it (db.js vs bulk-import-routes.js — pre-existing
+  // schema collision). Read both shapes via COALESCE so the page works
+  // regardless of which path produced the row.
+  const r = await query(`
+    SELECT j.id, j.tenant_id, j.status, j.filename, j.list_id,
+           COALESCE(j.total_rows, 0)::int      AS total_rows,
+           COALESCE(j.processed_rows, NULLIF(j.rows_processed, 0), 0)::int AS processed_rows,
+           COALESCE(j.inserted, NULLIF(j.rows_created, 0), 0)::int         AS inserted,
+           COALESCE(j.updated, NULLIF(j.rows_updated, 0), 0)::int          AS updated,
+           COALESCE(j.errors, NULLIF(j.rows_errored, 0), 0)::int           AS errors,
+           j.error_log,
+           j.created_at,
+           l.list_name
+      FROM bulk_import_jobs j
+      LEFT JOIN lists l ON l.id = j.list_id AND l.tenant_id = j.tenant_id
+     WHERE j.tenant_id = $1
+     ORDER BY j.created_at DESC NULLS LAST
+     LIMIT 50
+  `, [tenantId]);
+  return r.rows;
+}
+
+router.get('/activity', requireAuth, async (req, res) => {
+  try {
+    const { activityList } = require('./pages/activity-list');
+    const jobs = await fetchActivityJobs(req.tenantId);
+    const hasRunning = jobs.some(j => j.status === 'running' || j.status === 'pending');
+    res.send(activityList({
+      user: await getUser(req),
+      jobs,
+      hasRunning,
+    }));
+  } catch (e) {
+    console.error('[ocular/activity]', e);
+    res.status(500).send('Error loading activity: ' + e.message);
+  }
+});
+
+// Polling endpoint for the auto-refresh script on the activity page.
+router.get('/activity/poll', requireAuth, async (req, res) => {
+  try {
+    const { jobRow } = require('./pages/activity-list');
+    const jobs = await fetchActivityJobs(req.tenantId);
+    const hasRunning = jobs.some(j => j.status === 'running' || j.status === 'pending');
+    res.json({ html: jobs.map(jobRow).join(''), hasRunning });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
 // ─── /ocular/owners — Owners list page ─────────────────────────────────────
 router.get('/owners', requireAuth, async (req, res) => {
   try {
@@ -894,7 +947,7 @@ router.post('/setup/delete-code', requireAuth, async (req, res) => {
 // Note: 'lists/types' is included separately because the List Registry
 // sidebar link targets /ocular/lists/types (not /ocular/lists). Without it,
 // clicking List Registry in the sidebar 404s.
-const placeholderPages = ['campaigns', 'lists', 'lists/types', 'upload', 'activity'];
+const placeholderPages = ['campaigns', 'lists', 'lists/types', 'upload'];
 const { shell } = require('./layouts/shell');
 placeholderPages.forEach(page => {
   // Title and active-page name both need to work whether `page` is 'records'

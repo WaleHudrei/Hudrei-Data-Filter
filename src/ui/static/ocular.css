@@ -1942,3 +1942,16 @@ body { padding-bottom: 0; }
   color: var(--ocu-text-1);
   line-height: 1.4;
 }
+
+/* ─── Progress bar (Activity page job progress) ──────────────────────────── */
+.ocu-progress-track {
+  background: var(--ocu-border-soft, #f0efe9);
+  border-radius: 4px;
+  height: 6px;
+  overflow: hidden;
+}
+.ocu-progress-fill {
+  height: 6px;
+  border-radius: 4px;
+  transition: width .3s ease;
+}
