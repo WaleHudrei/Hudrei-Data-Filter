@@ -252,9 +252,13 @@ router.get('/', requireAuth, async (req, res) => {
     const limit = 25;
     const offset = (parseInt(page) - 1) * limit;
 
-    let conditions = [];
-    let params = [];
-    let idx = 1;
+    // Tenant baseline — every WHERE clause starts here so the result set
+    // can never include rows from another tenant. This is the foundation
+    // the filter parity rule extends. RLS in commit 5 will backstop it
+    // even if a downstream subquery forgets its own tenant constraint.
+    let conditions = [`p.tenant_id = $1`];
+    let params = [req.tenantId];
+    let idx = 2;
 
     if (q) {
       conditions.push(`(p.street ILIKE $${idx} OR p.city ILIKE $${idx} OR p.zip_code ILIKE $${idx} OR c.first_name ILIKE $${idx} OR c.last_name ILIKE $${idx} OR ph.phone_number ILIKE $${idx})`);
@@ -568,11 +572,11 @@ router.get('/', requireAuth, async (req, res) => {
     const total = parseInt(countRes.rows[0].count);
 
     // Fetch all lists for stack filter dropdown
-    const allListsRes = await query(`SELECT id, list_name FROM lists ORDER BY list_name ASC`);
+    const allListsRes = await query(`SELECT id, list_name FROM lists WHERE tenant_id = $1 ORDER BY list_name ASC`, [req.tenantId]);
     const allLists = allListsRes.rows;
 
     // Fetch all distinct states present in the DB for multi-select state filter
-    const allStatesRes = await query(`SELECT DISTINCT state_code FROM properties WHERE state_code IS NOT NULL AND state_code <> '' ORDER BY state_code ASC`);
+    const allStatesRes = await query(`SELECT DISTINCT state_code FROM properties WHERE tenant_id = $1 AND state_code IS NOT NULL AND state_code <> '' ORDER BY state_code ASC`, [req.tenantId]);
     const STATE_NAMES = { AL:'Alabama',AK:'Alaska',AZ:'Arizona',AR:'Arkansas',CA:'California',CO:'Colorado',CT:'Connecticut',DE:'Delaware',FL:'Florida',GA:'Georgia',HI:'Hawaii',ID:'Idaho',IL:'Illinois',IN:'Indiana',IA:'Iowa',KS:'Kansas',KY:'Kentucky',LA:'Louisiana',ME:'Maine',MD:'Maryland',MA:'Massachusetts',MI:'Michigan',MN:'Minnesota',MS:'Mississippi',MO:'Missouri',MT:'Montana',NE:'Nebraska',NV:'Nevada',NH:'New Hampshire',NJ:'New Jersey',NM:'New Mexico',NY:'New York',NC:'North Carolina',ND:'North Dakota',OH:'Ohio',OK:'Oklahoma',OR:'Oregon',PA:'Pennsylvania',RI:'Rhode Island',SC:'South Carolina',SD:'South Dakota',TN:'Tennessee',TX:'Texas',UT:'Utah',VT:'Vermont',VA:'Virginia',WA:'Washington',WV:'West Virginia',WI:'Wisconsin',WY:'Wyoming',DC:'District of Columbia' };
     const allStates = allStatesRes.rows.map(r => ({ code: r.state_code, name: STATE_NAMES[r.state_code] || r.state_code }));
 
@@ -598,10 +602,10 @@ router.get('/', requireAuth, async (req, res) => {
 
     // Fetch all tags for the tag filter dropdown + bulk-tag remove modal
     await ensureTagSchema();
-    const allTagsRes = await query(`SELECT id, name, color FROM tags ORDER BY name ASC`);
+    const allTagsRes = await query(`SELECT id, name, color FROM tags WHERE tenant_id = $1 ORDER BY name ASC`, [req.tenantId]);
     const allTags = allTagsRes.rows;
     // 2026-04-21 Phone tags for the filter dropdown.
-    const allPhoneTagsRes = await query(`SELECT id, name, color FROM phone_tags ORDER BY name ASC`);
+    const allPhoneTagsRes = await query(`SELECT id, name, color FROM phone_tags WHERE tenant_id = $1 ORDER BY name ASC`, [req.tenantId]);
     const allPhoneTags = allPhoneTagsRes.rows;
 
     const totalPages = Math.ceil(total / limit);
