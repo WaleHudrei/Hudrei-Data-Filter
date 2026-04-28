@@ -242,20 +242,23 @@ function buildPropertyFilters(parsed) {
   }
 
   // ── Properties owned (portfolio count) — uses owner_portfolio_counts MV ────
-  // Falls back to correlated subquery if MV not present.
+  // Falls back to correlated subquery if MV not present. The MV is per-tenant
+  // (tenant_id is in the unique key), so the lookup constrains by p.tenant_id.
   if (parsed.minOwned || parsed.maxOwned) {
     const ownedExpr = `(
       CASE WHEN c.mailing_address IS NULL OR TRIM(c.mailing_address) = '' THEN 1
       ELSE COALESCE(
         (SELECT owned_count FROM owner_portfolio_counts opc
-          WHERE opc.mailing_address_normalized = ${cMailN}
+          WHERE opc.tenant_id = p.tenant_id
+            AND opc.mailing_address_normalized = ${cMailN}
             AND opc.mailing_city_normalized    = LOWER(TRIM(c.mailing_city))
             AND opc.mailing_state              = UPPER(TRIM(c.mailing_state))
             AND opc.zip5                       = SUBSTRING(TRIM(c.mailing_zip) FROM 1 FOR 5)),
         (SELECT COUNT(*) FROM properties p2
-          JOIN property_contacts pc2 ON pc2.property_id = p2.id AND pc2.primary_contact = true
-          JOIN contacts c2 ON c2.id = pc2.contact_id
-          WHERE c2.mailing_address IS NOT NULL AND TRIM(c2.mailing_address) != ''
+          JOIN property_contacts pc2 ON pc2.property_id = p2.id AND pc2.primary_contact = true AND pc2.tenant_id = p.tenant_id
+          JOIN contacts c2 ON c2.id = pc2.contact_id AND c2.tenant_id = p.tenant_id
+          WHERE p2.tenant_id = p.tenant_id
+            AND c2.mailing_address IS NOT NULL AND TRIM(c2.mailing_address) != ''
             AND COALESCE(c2.mailing_address_normalized, LOWER(TRIM(c2.mailing_address))) = ${cMailN}
             AND LOWER(TRIM(c2.mailing_city)) = LOWER(TRIM(c.mailing_city))
             AND UPPER(TRIM(p2.state_code))   = UPPER(TRIM(p.state_code))

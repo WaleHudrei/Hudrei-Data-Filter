@@ -624,24 +624,41 @@ async function initSchema() {
   // campaigns.initCampaignSchema() since that's where the table is created.
   // No longer tries to drop/recreate from here to avoid the schema-init race.
 
-  // ── Owner portfolio counts MV (Audit issue #4c / min-owned filter) ──────────
+  // ── Owner portfolio counts MV — tenant-aware rebuild ────────────────────────
+  // Phase 1 SaaS migration: the original MV grouped by mailing key only,
+  // which would aggregate counts across tenants once a second tenant exists.
+  // The rebuild adds tenant_id to the GROUP BY and the unique index so the
+  // owned-count is per-tenant. The MV is dropped and recreated here (CREATE
+  // IF NOT EXISTS would skip the redefine on existing DBs that already had
+  // the old shape).
   try {
+    // Probe whether the existing MV already has tenant_id — if so, skip the
+    // expensive drop/recreate. This makes the migration idempotent.
+    const cols = await query(
+      `SELECT column_name FROM information_schema.columns
+        WHERE table_name = 'owner_portfolio_counts' AND column_name = 'tenant_id'`
+    );
+    if (!cols.rowCount) {
+      console.log('[db] rebuilding owner_portfolio_counts MV with tenant_id…');
+      await query(`DROP MATERIALIZED VIEW IF EXISTS owner_portfolio_counts`);
+    }
     await query(`
       CREATE MATERIALIZED VIEW IF NOT EXISTS owner_portfolio_counts AS
       SELECT
+        c.tenant_id                                                           AS tenant_id,
         COALESCE(c.mailing_address_normalized, LOWER(TRIM(c.mailing_address))) AS mailing_address_normalized,
         LOWER(TRIM(c.mailing_city))                                           AS mailing_city_normalized,
         UPPER(TRIM(c.mailing_state))                                          AS mailing_state,
         SUBSTRING(TRIM(c.mailing_zip) FROM 1 FOR 5)                           AS zip5,
         COUNT(*)                                                              AS owned_count
       FROM properties p
-      JOIN property_contacts pc ON pc.property_id = p.id AND pc.primary_contact = true
-      JOIN contacts c           ON c.id = pc.contact_id
+      JOIN property_contacts pc ON pc.property_id = p.id AND pc.primary_contact = true AND pc.tenant_id = p.tenant_id
+      JOIN contacts c           ON c.id = pc.contact_id AND c.tenant_id = p.tenant_id
       WHERE c.mailing_address IS NOT NULL AND TRIM(c.mailing_address) != ''
-      GROUP BY 1, 2, 3, 4
+      GROUP BY 1, 2, 3, 4, 5
     `);
     await query(`CREATE UNIQUE INDEX IF NOT EXISTS idx_opc_key
-                   ON owner_portfolio_counts(mailing_address_normalized, mailing_city_normalized, mailing_state, zip5)`);
+                   ON owner_portfolio_counts(tenant_id, mailing_address_normalized, mailing_city_normalized, mailing_state, zip5)`);
   } catch (e) {
     if (!e.message.includes('already exists')) {
       console.error('MV migration warning:', e.message);

@@ -786,6 +786,8 @@ app.get('/api/dashboard-stats', requireAuth, async (req, res) => {
 app.get('/dashboard', requireAuth, async (req, res) => {
   try {
     const { shell } = require('./shared-shell');
+    const { getUser } = require('./get-user');
+    const user = await getUser(req);
 
     // 2026-04-21 PM: stats query lives in getDashboardStats() so /api/
     // dashboard-stats can use the same source of truth for live-refresh.
@@ -903,7 +905,7 @@ app.get('/dashboard', requireAuth, async (req, res) => {
       <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:1.5rem;flex-wrap:wrap;gap:12px">
         <div>
           <div style="font-size:20px;font-weight:600">Dashboard</div>
-          <div style="font-size:13px;color:#888;margin-top:2px">HudREI · Indiana &amp; Georgia</div>
+          <div style="font-size:13px;color:#888;margin-top:2px">${user.role || ''}</div>
         </div>
         <div style="display:flex;gap:8px">
           <a href="/import/property" class="btn-primary-link" style="font-size:13px">+ Import List</a>
@@ -1115,7 +1117,7 @@ app.get('/dashboard', requireAuth, async (req, res) => {
         });
       })();
       </script>
-    `, 'dashboard'));
+    `, 'dashboard', user));
   } catch(e) {
     console.error(e);
     res.status(500).send('Dashboard error: ' + e.message);
@@ -1124,7 +1126,7 @@ app.get('/dashboard', requireAuth, async (req, res) => {
 
 
 app.listen(PORT, async ()=>{
-  console.log(`HudREI Filtration Bot v2 running on port ${PORT}`);
+  console.log(`Ocular running on port ${PORT}`);
   console.log(`Redis: ${redis?'connected':'not configured'}`);
 
   // Parallel startup — the four ensure* calls don't depend on each other,
