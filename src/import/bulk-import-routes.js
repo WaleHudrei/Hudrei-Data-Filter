@@ -194,31 +194,33 @@ async function ensureJobsTable() {
 // ── STEP 1: Upload page UI (unchanged) ────────────────────────────────────────
 router.get('/', requireAuth, (req, res) => {
   res.send(shell('Bulk Import', `
-    <div style="max-width:700px">
-      <div style="margin-bottom:1rem"><a href="/upload" style="font-size:13px;color:#888;text-decoration:none">← Upload</a></div>
-      <div style="font-size:20px;font-weight:600;margin-bottom:4px">Bulk Import — REISift Export</div>
-      <p style="font-size:13px;color:#888;margin-bottom:1.5rem">Upload your full REISift export CSV. No row limit — the server handles everything. You can close this tab after starting.</p>
-
-      <div class="card">
-        <div id="upload-area">
-          <div class="drop-zone" id="drop-zone">
-            <svg width="32" height="32" fill="none" stroke="#aaa" stroke-width="1.5" viewBox="0 0 24 24" style="margin-bottom:10px"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
-            <div style="font-size:15px;font-weight:500;margin-bottom:4px">Drop REISift CSV here or click to browse</div>
-            <div style="font-size:12px;color:#888">Supports files up to 600MB · Any number of rows</div>
-          </div>
-          <input type="file" id="file-input" accept=".csv" style="display:none">
-        </div>
-        <div id="uploading-state" style="display:none;text-align:center;padding:2rem">
-          <div class="spinner" style="width:28px;height:28px;margin:0 auto 12px"></div>
-          <div style="font-size:14px;font-weight:500;margin-bottom:4px">Uploading file…</div>
-          <div style="font-size:12px;color:#888">Please wait, do not close this tab</div>
-          <div id="upload-progress-text" style="font-size:12px;color:#aaa;margin-top:8px"></div>
-        </div>
-        <div id="error-state" style="display:none;background:#fff0f0;border:1px solid #f5c5c5;border-radius:8px;padding:12px;font-size:13px;color:#c0392b;margin-top:12px"></div>
+    <div class="ocu-page-header">
+      <div>
+        <div style="margin-bottom:6px"><a href="/ocular/upload" class="ocu-text-3" style="font-size:13px;text-decoration:none">← Upload</a></div>
+        <h1 class="ocu-page-title">Bulk import — REISift export</h1>
+        <div class="ocu-page-subtitle">Upload your full REISift export CSV. No row limit — the server handles everything. You can close this tab after starting.</div>
       </div>
-
-      <div id="active-jobs" style="margin-top:1.5rem"></div>
     </div>
+
+    <div class="ocu-card" style="padding:18px 20px;max-width:760px">
+      <div id="upload-area">
+        <div id="drop-zone" style="border:1.5px dashed var(--ocu-border);border-radius:10px;padding:32px;text-align:center;cursor:pointer;background:var(--ocu-surface);transition:all .15s">
+          <svg width="32" height="32" fill="none" stroke="var(--ocu-text-3)" stroke-width="1.5" viewBox="0 0 24 24" style="margin-bottom:10px"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
+          <div style="font-size:15px;font-weight:600;color:var(--ocu-text-1);margin-bottom:4px">Drop REISift CSV here or click to browse</div>
+          <div class="ocu-text-3" style="font-size:12px">Supports files up to 600MB · Any number of rows</div>
+        </div>
+        <input type="file" id="file-input" accept=".csv" style="display:none">
+      </div>
+      <div id="uploading-state" style="display:none;text-align:center;padding:32px 24px">
+        <div class="spinner" style="width:28px;height:28px;margin:0 auto 12px"></div>
+        <div style="font-size:14px;font-weight:600;color:var(--ocu-text-1);margin-bottom:4px">Uploading file…</div>
+        <div class="ocu-text-3" style="font-size:12px">Please wait, do not close this tab</div>
+        <div id="upload-progress-text" class="ocu-text-3" style="font-size:12px;margin-top:8px"></div>
+      </div>
+      <div id="error-state" style="display:none;background:#fdeaea;border:1px solid #f5c5c5;border-radius:8px;padding:12px;font-size:13px;color:#8b1f1f;margin-top:12px"></div>
+    </div>
+
+    <div id="active-jobs" style="margin-top:18px;max-width:760px"></div>
 
     <script>
     checkJobs();
@@ -235,21 +237,18 @@ router.get('/', requireAuth, (req, res) => {
     }
     function jobCard(j) {
       const pct = j.total_rows > 0 ? Math.round((j.rows_processed / j.total_rows) * 100) : 0;
-      const statusColor = j.status === 'completed' ? '#1a7a4a' : j.status === 'failed' ? '#c0392b' : '#9a6800';
-      const statusBg = j.status === 'completed' ? '#e8f5ee' : j.status === 'failed' ? '#fdf0f0' : '#fff8e1';
-      return \`<div style="background:#fff;border:1px solid #e0dfd8;border-radius:10px;padding:14px 16px;margin-bottom:10px">
+      const statusCls = j.status === 'completed' ? 'ocu-pill ocu-pill-good' : j.status === 'failed' ? 'ocu-pill ocu-pill-bad' : 'ocu-pill ocu-pill-warn';
+      return \`<div class="ocu-card" style="padding:14px 16px;margin-bottom:10px">
         <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px">
-          <div style="font-size:13px;font-weight:500">\${j.filename||'Unknown file'}</div>
-          <span style="font-size:11px;padding:2px 8px;border-radius:4px;background:\${statusBg};color:\${statusColor};font-weight:600">\${j.status}</span>
+          <div style="font-size:13px;font-weight:600;color:var(--ocu-text-1)">\${j.filename||'Unknown file'}</div>
+          <span class="\${statusCls}">\${j.status}</span>
         </div>
         \${j.status === 'running' ? \`
-        <div style="background:#f0efe9;border-radius:4px;height:6px;margin-bottom:6px">
-          <div style="background:#1a1a1a;height:6px;border-radius:4px;width:\${pct}%;transition:width .5s"></div>
-        </div>
-        <div style="font-size:12px;color:#888">\${j.rows_processed.toLocaleString()} / \${j.total_rows.toLocaleString()} rows (\${pct}%)</div>
+        <div class="ocu-progress-track" style="height:6px;margin-bottom:6px"><div class="ocu-progress-fill" style="height:6px;width:\${pct}%;background:var(--ocu-text-1)"></div></div>
+        <div class="ocu-text-3 ocu-mono" style="font-size:12px">\${j.rows_processed.toLocaleString()} / \${j.total_rows.toLocaleString()} rows (\${pct}%)</div>
         \` : \`
-        <div style="font-size:12px;color:#888">
-          \${j.rows_created.toLocaleString()} new · \${j.rows_updated.toLocaleString()} updated · \${j.rows_errored} errors
+        <div class="ocu-text-3" style="font-size:12px">
+          <span style="color:#1a7a4a">+\${j.rows_created.toLocaleString()}</span> new · \${j.rows_updated.toLocaleString()} updated · \${j.rows_errored} errors
           \${j.completed_at ? ' · ' + new Date(j.completed_at).toLocaleString() : ''}
         </div>
         \`}

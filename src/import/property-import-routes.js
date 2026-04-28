@@ -407,79 +407,79 @@ router.get('/', requireAuth, async (req, res) => {
   ).join('');
 
   res.send(shell('Import Properties', `
-    <div style="max-width:700px">
-      <div style="margin-bottom:1.5rem">
-        <a href="/upload" style="font-size:13px;color:#888;text-decoration:none">← Back</a>
+    <div class="ocu-page-header">
+      <div>
+        <div style="margin-bottom:6px"><a href="/ocular/upload" class="ocu-text-3" style="font-size:13px;text-decoration:none">← Upload</a></div>
+        <h1 class="ocu-page-title">Import property list</h1>
+        <div class="ocu-page-subtitle">Upload a CSV from any data source. You'll map your columns to Loki fields on the next step.</div>
       </div>
-      <div style="font-size:20px;font-weight:600;margin-bottom:4px">Import Property List</div>
-      <p style="font-size:13px;color:#888;margin-bottom:1.5rem">Upload a CSV from any data source. You'll map your columns to Loki fields on the next step.</p>
+    </div>
 
-      <div class="card">
+    <div class="ocu-card" style="padding:20px 22px;max-width:760px">
 
-        <!-- List Assignment -->
-        <div style="margin-bottom:1.25rem">
-          <div style="font-size:12px;font-weight:600;color:#888;text-transform:uppercase;letter-spacing:.06em;margin-bottom:10px">Assign to List</div>
-          <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
-            <div style="flex:1;min-width:200px">
-              <label style="font-size:12px;color:#888;display:block;margin-bottom:4px">New list name</label>
-              <input type="text" id="new-list-name" placeholder="e.g. Code Violation IN — April 2026"
-                style="width:100%;padding:9px 12px;border:1px solid #ddd;border-radius:8px;font-size:13px;font-family:inherit">
-            </div>
-            <div style="display:flex;align-items:center;font-size:12px;color:#aaa;padding-top:20px">or</div>
-            <div style="flex:1;min-width:200px">
-              <label style="font-size:12px;color:#888;display:block;margin-bottom:4px">Add to existing list</label>
-              <select id="existing-list-id" style="width:100%;padding:9px 12px;border:1px solid #ddd;border-radius:8px;font-size:13px;font-family:inherit;background:#fff">
-                <option value="">— Select existing list —</option>
-                ${listOptions}
-              </select>
-            </div>
+      <!-- List Assignment -->
+      <div style="margin-bottom:18px">
+        <div class="ocu-text-3" style="font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.06em;margin-bottom:12px">Assign to list</div>
+        <div style="display:flex;gap:10px;align-items:flex-end;flex-wrap:wrap">
+          <div style="flex:1;min-width:220px">
+            <label class="ocu-form-label">New list name</label>
+            <input type="text" id="new-list-name" placeholder="e.g. Code Violation IN — April 2026" class="ocu-input" />
           </div>
-          <div style="font-size:11px;color:#aaa;margin-top:6px">If you enter a new name and pick an existing list, the new name takes priority.</div>
-          <div style="margin-top:10px;display:flex;gap:8px;flex-wrap:wrap">
-            <div style="flex:1;min-width:150px">
-              <label style="font-size:12px;color:#888;display:block;margin-bottom:4px">List Type</label>
-              <select id="list-type" style="width:100%;padding:9px 12px;border:1px solid #ddd;border-radius:8px;font-size:13px;font-family:inherit;background:#fff">
-                <option value="">— Type (optional) —</option>
-                <option value="Cold Call">Cold Call</option>
-                <option value="SMS">SMS</option>
-                <option value="Direct Mail">Direct Mail</option>
-                <option value="PPL">PPL</option>
-                <option value="Referral">Referral</option>
-                <option value="Driving for Dollars">Driving for Dollars</option>
-              </select>
-            </div>
-            <div style="flex:1;min-width:150px">
-              <label style="font-size:12px;color:#888;display:block;margin-bottom:4px">Source</label>
-              <select id="list-source" onchange="document.getElementById('list-source-custom').style.display = this.value === '__custom__' ? 'block' : 'none'; if(this.value === '__custom__') document.getElementById('list-source-custom').focus();" style="width:100%;padding:9px 12px;border:1px solid #ddd;border-radius:8px;font-size:13px;font-family:inherit;background:#fff">
-                <option value="">— Source (optional) —</option>
-                <option value="PropStream">PropStream</option>
-                <option value="DealMachine">DealMachine</option>
-                <option value="BatchSkipTracing">BatchSkipTracing</option>
-                <option value="REISift">REISift</option>
-                <option value="DataSift">DataSift</option>
-                <option value="Listsource">Listsource</option>
-                <option value="Manual">Manual</option>
-                <option value="__custom__">+ Add custom source…</option>
-              </select>
-              <input type="text" id="list-source-custom" placeholder="e.g. County Records, Cook County Auditor"
-                style="display:none;width:100%;margin-top:6px;padding:9px 12px;border:1px solid #ddd;border-radius:8px;font-size:13px;font-family:inherit">
-            </div>
+          <div class="ocu-text-3" style="font-size:12px;padding:0 4px 12px">or</div>
+          <div style="flex:1;min-width:220px">
+            <label class="ocu-form-label">Add to existing list</label>
+            <select id="existing-list-id" class="ocu-input">
+              <option value="">— Select existing list —</option>
+              ${listOptions}
+            </select>
           </div>
         </div>
-
-        <div style="border-top:1px solid #f0efe9;margin-bottom:1.25rem"></div>
-
-        <!-- Drop zone -->
-        <div class="drop-zone" id="drop-zone">
-          <strong style="font-size:15px">Drop CSV here or click to browse</strong>
-          <p style="font-size:12px;color:#888;margin-top:6px">PropStream, DealMachine, BatchSkipTrace, or any CSV export</p>
+        <div class="ocu-text-3" style="font-size:11px;margin-top:6px">If you enter a new name and pick an existing list, the new name takes priority.</div>
+        <div style="margin-top:12px;display:flex;gap:10px;flex-wrap:wrap">
+          <div style="flex:1;min-width:180px">
+            <label class="ocu-form-label">List type</label>
+            <select id="list-type" class="ocu-input">
+              <option value="">— Type (optional) —</option>
+              <option value="Cold Call">Cold Call</option>
+              <option value="SMS">SMS</option>
+              <option value="Direct Mail">Direct Mail</option>
+              <option value="PPL">PPL</option>
+              <option value="Referral">Referral</option>
+              <option value="Driving for Dollars">Driving for Dollars</option>
+            </select>
+          </div>
+          <div style="flex:1;min-width:180px">
+            <label class="ocu-form-label">Source</label>
+            <select id="list-source" class="ocu-input"
+                    onchange="document.getElementById('list-source-custom').style.display = this.value === '__custom__' ? 'block' : 'none'; if(this.value === '__custom__') document.getElementById('list-source-custom').focus();">
+              <option value="">— Source (optional) —</option>
+              <option value="PropStream">PropStream</option>
+              <option value="DealMachine">DealMachine</option>
+              <option value="BatchSkipTracing">BatchSkipTracing</option>
+              <option value="REISift">REISift</option>
+              <option value="DataSift">DataSift</option>
+              <option value="Listsource">Listsource</option>
+              <option value="Manual">Manual</option>
+              <option value="__custom__">+ Add custom source…</option>
+            </select>
+            <input type="text" id="list-source-custom" placeholder="e.g. County Records, Cook County Auditor" class="ocu-input" style="display:none;margin-top:6px" />
+          </div>
         </div>
-        <input type="file" id="file-input" accept=".csv" style="display:none">
-        <div id="upload-spinner" style="display:none;align-items:center;gap:8px;font-size:13px;color:#888;padding:10px 0">
-          <div class="spinner"></div> Parsing CSV…
-        </div>
-        <div id="error-msg" style="display:none;background:#fff0f0;border:1px solid #f5c5c5;border-radius:8px;padding:10px 14px;font-size:13px;color:#c0392b;margin-top:10px"></div>
       </div>
+
+      <div style="border-top:1px solid var(--ocu-border-soft, #f0efe9);margin-bottom:18px"></div>
+
+      <!-- Drop zone -->
+      <div id="drop-zone" style="border:1.5px dashed var(--ocu-border);border-radius:10px;padding:32px;text-align:center;cursor:pointer;background:var(--ocu-surface);transition:all .15s">
+        <svg width="32" height="32" fill="none" stroke="var(--ocu-text-3)" stroke-width="1.5" viewBox="0 0 24 24" style="margin-bottom:10px"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
+        <div style="font-size:15px;font-weight:600;color:var(--ocu-text-1)">Drop CSV here or click to browse</div>
+        <div class="ocu-text-3" style="font-size:12px;margin-top:4px">PropStream, DealMachine, BatchSkipTrace, or any CSV export</div>
+      </div>
+      <input type="file" id="file-input" accept=".csv" style="display:none">
+      <div id="upload-spinner" style="display:none;align-items:center;gap:8px;font-size:13px;color:var(--ocu-text-3);padding:10px 0">
+        <div class="spinner"></div> Parsing CSV…
+      </div>
+      <div id="error-msg" style="display:none;background:#fdeaea;border:1px solid #f5c5c5;border-radius:8px;padding:10px 14px;font-size:13px;color:#8b1f1f;margin-top:10px"></div>
     </div>
 
     <script>
@@ -723,10 +723,10 @@ router.get('/map', requireAuth, (req, res) => {
 
   const fieldRow = f => `
     <div style="display:flex;align-items:center;gap:10px;min-width:0">
-      <div style="width:130px;font-size:13px;color:${f.required?'#1a1a1a':'#555'};flex-shrink:0;font-weight:${f.required?'500':'400'}">
+      <div style="width:130px;font-size:13px;color:${f.required?'var(--ocu-text-1)':'var(--ocu-text-2)'};flex-shrink:0;font-weight:${f.required?'600':'500'}">
         ${f.label}${f.required?' <span style="color:#c0392b">*</span>':''}
       </div>
-      <select id="map_${f.key}" data-loki="${f.key}" style="flex:1;min-width:0;padding:7px 10px;border:1px solid #ddd;border-radius:7px;font-size:13px;font-family:inherit;background:#fff">
+      <select id="map_${f.key}" data-loki="${f.key}" class="ocu-input" style="flex:1;min-width:0;padding:7px 10px;font-size:13px">
         <option value="">— Skip —</option>
       </select>
     </div>`;
@@ -741,15 +741,15 @@ router.get('/map', requireAuth, (req, res) => {
     </div>`).join('');
 
   const groupHTML = ['Property','Owner'].map(group => `
-    <div style="margin-bottom:1.5rem">
-      <div style="font-size:11px;font-weight:700;color:#aaa;text-transform:uppercase;letter-spacing:.1em;margin-bottom:12px">${group}</div>
+    <div style="margin-bottom:18px">
+      <div class="ocu-text-3" style="font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.06em;margin-bottom:12px">${group}</div>
       <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(320px,1fr));gap:10px 32px">
         ${fieldsByGroup(group).map(f => fieldRow(f)).join('')}
       </div>
     </div>`).join('') + `
-    <div style="margin-bottom:1rem">
-      <div style="font-size:11px;font-weight:700;color:#aaa;text-transform:uppercase;letter-spacing:.1em;margin-bottom:4px">Phones</div>
-      <div style="display:grid;grid-template-columns:130px 1fr;gap:4px 0;margin-bottom:8px;font-size:11px;color:#aaa;font-weight:600;text-transform:uppercase;letter-spacing:.05em;padding:0 0 4px 0;border-bottom:2px solid #e0dfd8">
+    <div style="margin-bottom:14px">
+      <div class="ocu-text-3" style="font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.06em;margin-bottom:4px">Phones</div>
+      <div style="display:grid;grid-template-columns:130px 1fr;gap:4px 0;margin-bottom:8px;font-size:11px;color:var(--ocu-text-3);font-weight:600;text-transform:uppercase;letter-spacing:.06em;padding:0 0 6px 0;border-bottom:2px solid var(--ocu-border)">
         <div></div>
         <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px 16px">
           <div>Number</div><div>Type</div><div>Status</div>
@@ -759,29 +759,27 @@ router.get('/map', requireAuth, (req, res) => {
     </div>`;
 
   res.send(shell('Map Columns', `
-    <div style="max-width:100%">
-      <div style="margin-bottom:1.5rem"><a href="/import/property" style="font-size:13px;color:#888;text-decoration:none">← Back</a></div>
-      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:1.5rem;flex-wrap:wrap;gap:12px">
-        <div>
-          <div style="font-size:20px;font-weight:600;margin-bottom:4px">Map Columns</div>
-          <div style="font-size:13px;color:#888" id="file-info">Loading…</div>
-          <div style="display:flex;gap:8px;align-items:center;margin-top:6px;flex-wrap:wrap">
-            <div id="list-badge" style="display:none;align-items:center;gap:6px;background:#e8f5ee;color:#1a7a4a;border-radius:6px;padding:4px 10px;font-size:12px;font-weight:600"></div>
-            <div id="template-badge" style="display:none;align-items:center;gap:8px;background:#eef2fb;color:#2a4a8a;border:1px solid #c5d5f5;border-radius:6px;padding:4px 10px;font-size:12px;font-weight:500">
-              <span id="template-badge-text"></span>
-              <button onclick="deleteTemplate()" title="Delete this saved mapping" style="background:none;border:none;cursor:pointer;color:#2a4a8a;font-size:14px;line-height:1;padding:0;font-family:inherit">🗑</button>
-            </div>
+    <div class="ocu-page-header" style="align-items:flex-start">
+      <div style="flex:1;min-width:0">
+        <div style="margin-bottom:6px"><a href="/import/property" class="ocu-text-3" style="font-size:13px;text-decoration:none">← Back</a></div>
+        <h1 class="ocu-page-title">Map columns</h1>
+        <div class="ocu-page-subtitle" id="file-info">Loading…</div>
+        <div style="display:flex;gap:8px;align-items:center;margin-top:8px;flex-wrap:wrap">
+          <div id="list-badge" class="ocu-pill ocu-pill-good" style="display:none;align-items:center;gap:6px"></div>
+          <div id="template-badge" class="ocu-pill ocu-pill-primary" style="display:none;align-items:center;gap:8px;padding:4px 10px">
+            <span id="template-badge-text"></span>
+            <button onclick="deleteTemplate()" title="Delete this saved mapping" style="background:none;border:none;cursor:pointer;color:inherit;font-size:14px;line-height:1;padding:0;font-family:inherit">🗑</button>
           </div>
         </div>
-        <button onclick="proceed()" class="btn-submit" style="width:auto;padding:9px 24px">Preview Import →</button>
       </div>
-
-      <div class="card">
-        ${groupHTML}
-      </div>
-
-      <div id="error-msg" style="display:none;background:#fff0f0;border:1px solid #f5c5c5;border-radius:8px;padding:10px 14px;font-size:13px;color:#c0392b;margin-top:10px"></div>
+      <button onclick="proceed()" class="ocu-btn ocu-btn-primary">Preview import →</button>
     </div>
+
+    <div class="ocu-card" style="padding:20px 22px">
+      ${groupHTML}
+    </div>
+
+    <div id="error-msg" style="display:none;background:#fdeaea;border:1px solid #f5c5c5;border-radius:8px;padding:10px 14px;font-size:13px;color:#8b1f1f;margin-top:14px;max-width:760px"></div>
 
     <script>
     const importData = JSON.parse(sessionStorage.getItem('loki_import') || '{}');
@@ -886,67 +884,59 @@ router.get('/map', requireAuth, (req, res) => {
 // ── STEP 3: Preview ───────────────────────────────────────────────────────────
 router.get('/preview', requireAuth, (req, res) => {
   res.send(shell('Preview Import', `
-    <div style="max-width:100%">
-      <div style="margin-bottom:1.5rem"><a href="/import/property/map" style="font-size:13px;color:#888;text-decoration:none">← Back to mapping</a></div>
-      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:1.5rem;flex-wrap:wrap;gap:12px">
-        <div>
-          <div style="font-size:20px;font-weight:600;margin-bottom:4px">Preview Import</div>
-          <div style="font-size:13px;color:#888" id="preview-info">Loading…</div>
-          <div id="list-badge" style="display:none;margin-top:6px;align-items:center;gap:6px;background:#e8f5ee;color:#1a7a4a;border-radius:6px;padding:4px 10px;font-size:12px;font-weight:600"></div>
-        </div>
-        <div style="display:flex;gap:8px">
-          <button onclick="startImport()" class="btn-submit" style="width:auto;padding:9px 24px" id="import-btn">Import Records</button>
-        </div>
+    <div class="ocu-page-header" style="align-items:flex-start">
+      <div style="flex:1;min-width:0">
+        <div style="margin-bottom:6px"><a href="/import/property/map" class="ocu-text-3" style="font-size:13px;text-decoration:none">← Back to mapping</a></div>
+        <h1 class="ocu-page-title">Preview import</h1>
+        <div class="ocu-page-subtitle" id="preview-info">Loading…</div>
+        <div id="list-badge" class="ocu-pill ocu-pill-good" style="display:none;align-items:center;gap:6px;margin-top:8px"></div>
       </div>
-
-      <!-- 2026-04-21 Feature 8(a): import-mode 3-way toggle. Controls the
-           UPSERT branch on the server — "add_only" skips addresses that
-           already exist (INSERT ... ON CONFLICT DO NOTHING), "update_only"
-           skips brand-new rows (WHERE EXISTS pre-filter), "add_and_update"
-           (the default) does the current COALESCE safe-merge UPSERT. -->
-      <div class="card" style="margin-bottom:1.5rem;padding:14px 16px">
-        <div style="font-size:11px;font-weight:600;color:#888;text-transform:uppercase;letter-spacing:.08em;margin-bottom:10px">Import mode</div>
-        <div style="display:flex;flex-wrap:wrap;gap:8px">
-          <label style="flex:1;min-width:220px;display:flex;align-items:flex-start;gap:10px;padding:10px 12px;border:1px solid #ddd;border-radius:8px;cursor:pointer;font-size:13px;background:#fff" onmouseover="this.style.borderColor='#1a1a1a'" onmouseout="this.style.borderColor='#ddd'">
-            <input type="radio" name="import_mode" value="add_and_update" checked style="margin-top:2px">
-            <div>
-              <div style="font-weight:600;color:#1a1a1a">Add new + update existing</div>
-              <div style="font-size:11px;color:#888;margin-top:2px">Default. New addresses get inserted; existing rows have blank fields filled in (non-blank DB values are never overwritten).</div>
-            </div>
-          </label>
-          <label style="flex:1;min-width:220px;display:flex;align-items:flex-start;gap:10px;padding:10px 12px;border:1px solid #ddd;border-radius:8px;cursor:pointer;font-size:13px;background:#fff" onmouseover="this.style.borderColor='#1a1a1a'" onmouseout="this.style.borderColor='#ddd'">
-            <input type="radio" name="import_mode" value="add_only" style="margin-top:2px">
-            <div>
-              <div style="font-weight:600;color:#1a1a1a">Add new only</div>
-              <div style="font-size:11px;color:#888;margin-top:2px">Skip any address already in Loki. Use for clean "net new" imports where existing data must not be touched.</div>
-            </div>
-          </label>
-          <label style="flex:1;min-width:220px;display:flex;align-items:flex-start;gap:10px;padding:10px 12px;border:1px solid #ddd;border-radius:8px;cursor:pointer;font-size:13px;background:#fff" onmouseover="this.style.borderColor='#1a1a1a'" onmouseout="this.style.borderColor='#ddd'">
-            <input type="radio" name="import_mode" value="update_only" style="margin-top:2px">
-            <div>
-              <div style="font-weight:600;color:#1a1a1a">Update existing only</div>
-              <div style="font-size:11px;color:#888;margin-top:2px">Skip any address not yet in Loki. Use for skip-trace re-runs where you only want to enrich known properties.</div>
-            </div>
-          </label>
-        </div>
+      <div style="display:flex;gap:8px">
+        <button onclick="startImport()" class="ocu-btn ocu-btn-primary" id="import-btn">Import records</button>
       </div>
+    </div>
 
-      <div id="progress-bar" style="display:none;margin-bottom:1rem">
-        <div style="background:#f0efe9;border-radius:6px;height:8px;overflow:hidden">
-          <div id="progress-fill" style="background:#1a1a1a;height:8px;width:0%;transition:width .3s;border-radius:6px"></div>
-        </div>
-        <div style="font-size:12px;color:#888;margin-top:4px" id="progress-text">Starting…</div>
+    <!-- Import mode 3-way toggle -->
+    <div class="ocu-card" style="margin-bottom:18px;padding:16px 18px">
+      <div class="ocu-text-3" style="font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.06em;margin-bottom:12px">Import mode</div>
+      <div style="display:flex;flex-wrap:wrap;gap:10px">
+        <label style="flex:1;min-width:220px;display:flex;align-items:flex-start;gap:10px;padding:12px 14px;border:1px solid var(--ocu-border);border-radius:10px;cursor:pointer;font-size:13px;background:#fff;transition:border-color .15s" onmouseover="this.style.borderColor='var(--ocu-text-2)'" onmouseout="this.style.borderColor='var(--ocu-border)'">
+          <input type="radio" name="import_mode" value="add_and_update" checked style="margin-top:2px">
+          <div>
+            <div style="font-weight:600;color:var(--ocu-text-1)">Add new + update existing</div>
+            <div class="ocu-text-3" style="font-size:11px;margin-top:2px">Default. New addresses get inserted; existing rows have blank fields filled in (non-blank DB values are never overwritten).</div>
+          </div>
+        </label>
+        <label style="flex:1;min-width:220px;display:flex;align-items:flex-start;gap:10px;padding:12px 14px;border:1px solid var(--ocu-border);border-radius:10px;cursor:pointer;font-size:13px;background:#fff;transition:border-color .15s" onmouseover="this.style.borderColor='var(--ocu-text-2)'" onmouseout="this.style.borderColor='var(--ocu-border)'">
+          <input type="radio" name="import_mode" value="add_only" style="margin-top:2px">
+          <div>
+            <div style="font-weight:600;color:var(--ocu-text-1)">Add new only</div>
+            <div class="ocu-text-3" style="font-size:11px;margin-top:2px">Skip any address already in Loki. Use for clean "net new" imports where existing data must not be touched.</div>
+          </div>
+        </label>
+        <label style="flex:1;min-width:220px;display:flex;align-items:flex-start;gap:10px;padding:12px 14px;border:1px solid var(--ocu-border);border-radius:10px;cursor:pointer;font-size:13px;background:#fff;transition:border-color .15s" onmouseover="this.style.borderColor='var(--ocu-text-2)'" onmouseout="this.style.borderColor='var(--ocu-border)'">
+          <input type="radio" name="import_mode" value="update_only" style="margin-top:2px">
+          <div>
+            <div style="font-weight:600;color:var(--ocu-text-1)">Update existing only</div>
+            <div class="ocu-text-3" style="font-size:11px;margin-top:2px">Skip any address not yet in Loki. Use for skip-trace re-runs where you only want to enrich known properties.</div>
+          </div>
+        </label>
       </div>
+    </div>
 
-      <div id="import-result" style="display:none;margin-bottom:1rem"></div>
+    <div id="progress-bar" style="display:none;margin-bottom:14px">
+      <div class="ocu-progress-track" style="height:8px"><div class="ocu-progress-fill" id="progress-fill" style="width:0%;height:8px;background:var(--ocu-text-1)"></div></div>
+      <div class="ocu-text-3" style="font-size:12px;margin-top:6px" id="progress-text">Starting…</div>
+    </div>
 
-      <div class="card" style="padding:0;overflow:hidden">
-        <div style="overflow-x:auto;max-height:500px;overflow-y:auto">
-          <table class="data-table" id="preview-table">
-            <thead><tr id="preview-head"></tr></thead>
-            <tbody id="preview-body"></tbody>
-          </table>
-        </div>
+    <div id="import-result" style="display:none;margin-bottom:14px"></div>
+
+    <div class="ocu-card" style="padding:0;overflow:hidden">
+      <div style="overflow-x:auto;max-height:500px;overflow-y:auto">
+        <table class="data-table" id="preview-table">
+          <thead><tr id="preview-head"></tr></thead>
+          <tbody id="preview-body"></tbody>
+        </table>
       </div>
     </div>
 
