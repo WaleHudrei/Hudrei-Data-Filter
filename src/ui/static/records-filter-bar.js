@@ -36,7 +36,8 @@
   const stateSearch   = document.getElementById('ocu-state-search');
   const stateList     = document.getElementById('ocu-state-list');
   const stateClear    = document.getElementById('ocu-state-clear');
-  const stateDone     = document.getElementById('ocu-state-done');
+  // 2026-04-29: stateDone removed — Apply lives at form level only.
+  const stateDone     = document.getElementById('ocu-state-done'); // null after rename; guarded below
   const stateBtnText  = stateBtn ? stateBtn.querySelector('.ocu-state-button-text') : null;
   const stateBtnPills = stateBtn ? stateBtn.querySelector('.ocu-state-button-pills') : null;
 
@@ -99,7 +100,7 @@
       stateList.querySelectorAll('input[name="state"]').forEach(i => { i.checked = false; });
       refreshStateButton();
     });
-    stateDone.addEventListener('click', closeStatePopover);
+    if (stateDone) stateDone.addEventListener('click', closeStatePopover);
   }
 
   // Tiny HTML-escape for client-side rendering of state codes (always 2 letters,

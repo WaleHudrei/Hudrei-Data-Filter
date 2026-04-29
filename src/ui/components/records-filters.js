@@ -111,9 +111,13 @@ function recordsFilters(opts = {}) {
               <div class="ocu-state-list" id="ocu-state-list">
                 ${stateRowsHTML}
               </div>
+              <!-- 2026-04-29: removed redundant "Done" button. The form's
+                   own "Apply filters" submit button is the canonical apply
+                   action; "Done" inside the popover only ever closed the
+                   popover, which now happens via outside-click or Esc
+                   (handled in records-filter-bar.js) — same UX, less clutter. -->
               <div class="ocu-state-footer">
-                <button type="button" class="ocu-state-clear" id="ocu-state-clear">Clear</button>
-                <button type="button" class="ocu-state-done"  id="ocu-state-done">Done</button>
+                <button type="button" class="ocu-state-clear" id="ocu-state-clear">Clear states</button>
               </div>
             </div>
           </div>

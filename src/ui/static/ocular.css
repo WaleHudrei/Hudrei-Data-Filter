@@ -1407,6 +1407,14 @@
   max-height: 360px;
   overflow: hidden;
 }
+/* 2026-04-29 fix: the explicit `display: flex` above won the cascade over
+   the browser-default `[hidden] { display: none }`, so JS toggling the
+   `hidden` attribute had no visual effect — the popover was always shown
+   the moment the filter panel itself became visible. Re-assert
+   `display: none` for the hidden state so the JS works.            */
+.ocu-state-popover[hidden] {
+  display: none;
+}
 .ocu-state-search-wrap {
   padding: 8px;
   border-bottom: 1px solid var(--ocu-border);

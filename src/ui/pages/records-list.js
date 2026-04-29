@@ -133,7 +133,7 @@ function recordsList(data = {}) {
     user: data.user || { name: 'User', initials: '?' },
     badges: data.badges || {},
     extraHead: `
-      <script src="/ocular-static/records-filter-bar.js?v=2" defer></script>
+      <script src="/ocular-static/records-filter-bar.js?v=3" defer></script>
       <script src="/ocular-static/records-bulk.js" defer></script>
     `,
   });
