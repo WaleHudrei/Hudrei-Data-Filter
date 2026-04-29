@@ -109,8 +109,11 @@
   padding: 24px 22px 22px;
   display: flex;
   align-items: center;
+  justify-content: space-between;
+  gap: 8px;
   min-height: 76px;
 }
+.ocu-logo { flex: 1; min-width: 0; }
 
 /* The Letter-O monogram with crosshair aperture */
 .ocu-logo {
@@ -284,17 +287,44 @@
 }
 .sidebar-collapsed .ocu-logout-btn { display: none; }
 
-/* 2026-04-29 sidebar toggle moved into the topbar as a flat icon-button.
-   The previous version was a floating cyan circle stuck half-off the
-   sidebar's dark edge — high contrast but visually awful. Now it's
-   the leftmost icon-button in the topbar (next to where breadcrumbs
-   would go), matching VS Code / Linear / modern dashboard patterns.
-   The .ocu-icon-btn base styling already gives it the right look;
-   this rule just gives it a margin so it doesn't crowd the topbar
-   left edge. */
-.ocu-sidebar-toggle {
-  margin-right: auto;
+/* 2026-04-29 redesigned sidebar collapse button. v1 was a floating cyan
+   circle stuck half-on the sidebar's dark right edge — looked like a
+   sticker. v2 moved it into the topbar as a hamburger (cleaner but felt
+   disconnected from the sidebar). v3 (this) puts it back ON the sidebar
+   in the header next to the logo, but as a flat 28x28 icon button with
+   a chevron, transparent background, subtle hover tint. Stays visible
+   when collapsed so the user can re-expand. */
+.ocu-sidebar-collapse {
+  width: 28px;
+  height: 28px;
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: transparent;
+  border: 0;
+  border-radius: 6px;
+  color: var(--ocu-dark-text-2, rgba(255,255,255,0.55));
+  cursor: pointer;
+  transition: background 0.12s, color 0.12s, transform 0.18s ease;
+  padding: 0;
 }
+.ocu-sidebar-collapse:hover {
+  background: rgba(255, 255, 255, 0.08);
+  color: var(--ocu-dark-text-1, rgba(255,255,255,0.95));
+}
+.ocu-sidebar-collapse:focus-visible {
+  outline: 1px solid var(--ocu-accent-bright);
+  outline-offset: 2px;
+}
+.sidebar-collapsed .ocu-sidebar-header {
+  padding-left: 18px;
+  padding-right: 18px;
+  justify-content: center;
+}
+/* When collapsed, hide the logo entirely so only the chevron stays —
+   gives the user a clear re-expand affordance in the narrow rail. */
+.sidebar-collapsed .ocu-logo { display: none; }
 
 /* ─── Main content area ─────────────────────────────────────────────────── */
 .ocu-main {
@@ -1891,6 +1921,47 @@ body { padding-bottom: 0; }
   white-space: pre-wrap; word-break: break-word;
 }
 .ocu-btn-sm { padding: 6px 12px; font-size: 12px; }
+
+/* 2026-04-29 Add-owner inline form on property detail (Option A: no
+   auto-created placeholder rows). */
+.ocu-add-owner-card {
+  padding: 16px 18px;
+  margin-bottom: 14px;
+  border: 1px dashed var(--ocu-border-strong, #d1d5db);
+  border-radius: 10px;
+  background: var(--ocu-surface, #f9fafb);
+}
+.ocu-add-owner-card .ocu-card-title {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--ocu-text-1);
+  margin-bottom: 4px;
+}
+.ocu-form-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr 1fr;
+  gap: 10px 12px;
+}
+@media (max-width: 720px) {
+  .ocu-form-grid { grid-template-columns: 1fr; }
+}
+.ocu-form-field { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+.ocu-form-label {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--ocu-text-3, #6b7280);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+/* "Add owner" link in the records-list owner cell (when contact_id null) */
+.ocu-add-owner-link {
+  font-size: 12px;
+  color: var(--ocu-accent, #2563EB);
+  font-weight: 500;
+  text-decoration: none;
+}
+.ocu-add-owner-link:hover { text-decoration: underline; }
 
 /* ─── Buttons ────────────────────────────────────────────────────────────── */
 .ocu-btn-ghost {

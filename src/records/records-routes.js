@@ -425,6 +425,85 @@ router.delete('/:id(\\d+)/notes/:noteId(\\d+)', requireAuth, async (req, res) =>
   }
 });
 
+// ── Add an owner (primary contact) to a property (2026-04-29) ──────────────
+// User chose Option A for the auto-owner feature: do NOT auto-create
+// placeholder rows. Instead, when a property has no primary contact, the
+// detail page renders an inline "Add owner" form posting here.
+//
+// Shape: POST /records/:id/owner
+//   body: { first_name, last_name, mailing_address?, mailing_city?,
+//           mailing_state?, mailing_zip?, owner_type? }
+// Creates ONE contact row + ONE property_contacts row (primary_contact=true).
+// Idempotent on (tenant_id, property_id) — if a primary contact already
+// exists, returns 409 so the UI can refresh.
+router.post('/:id(\\d+)/owner', requireAuth, async (req, res) => {
+  try {
+    const propertyId = parseInt(req.params.id, 10);
+    if (!Number.isFinite(propertyId)) return res.status(400).json({ error: 'Invalid property id.' });
+    const t = req.tenantId;
+    // Property must belong to tenant
+    const own = await query(`SELECT 1 FROM properties WHERE id = $1 AND tenant_id = $2`, [propertyId, t]);
+    if (!own.rowCount) return res.status(404).json({ error: 'Property not found.' });
+
+    // Refuse to overwrite an existing primary contact — caller should refresh.
+    const existing = await query(
+      `SELECT 1 FROM property_contacts WHERE property_id = $1 AND tenant_id = $2 AND primary_contact = true LIMIT 1`,
+      [propertyId, t]
+    );
+    if (existing.rowCount) return res.status(409).json({ error: 'This property already has a primary owner. Refresh and edit instead.' });
+
+    const fn = String(req.body.first_name || '').trim().slice(0, 100);
+    const ln = String(req.body.last_name  || '').trim().slice(0, 100);
+    if (!fn && !ln) return res.status(400).json({ error: 'Provide at least a first or last name.' });
+
+    const mAddr  = String(req.body.mailing_address || '').trim().slice(0, 255) || null;
+    const mCity  = String(req.body.mailing_city    || '').trim().slice(0, 100) || null;
+    const mState = String(req.body.mailing_state   || '').trim().slice(0, 10)  || null;
+    const mZip   = String(req.body.mailing_zip     || '').trim().slice(0, 10)  || null;
+
+    let ownerType = String(req.body.owner_type || '').trim();
+    if (!['Person','Company','Trust'].includes(ownerType)) {
+      // Fall back to inferOwnerType from the name pair so the new contact
+      // gets classified consistently with the import path.
+      try {
+        const { inferOwnerType } = require('../owner-type');
+        ownerType = inferOwnerType(fn, ln) || 'Person';
+      } catch (_) { ownerType = 'Person'; }
+    }
+
+    // Insert contact + link in a single client transaction so a partial
+    // failure doesn't leave a dangling unlinked contact behind.
+    const client = await pool.connect();
+    try {
+      await client.query('BEGIN');
+      const cRes = await client.query(
+        `INSERT INTO contacts
+           (tenant_id, first_name, last_name, owner_type,
+            mailing_address, mailing_city, mailing_state, mailing_zip)
+         VALUES ($1, NULLIF($2,''), NULLIF($3,''), $4, $5, $6, $7, $8)
+         RETURNING id, first_name, last_name, owner_type`,
+        [t, fn, ln, ownerType, mAddr, mCity, mState, mZip]
+      );
+      const contact = cRes.rows[0];
+      await client.query(
+        `INSERT INTO property_contacts (tenant_id, property_id, contact_id, primary_contact, role)
+         VALUES ($1, $2, $3, true, 'owner')`,
+        [t, propertyId, contact.id]
+      );
+      await client.query('COMMIT');
+      res.json({ ok: true, contact });
+    } catch (txErr) {
+      await client.query('ROLLBACK');
+      throw txErr;
+    } finally {
+      client.release();
+    }
+  } catch (e) {
+    console.error('[records/:id/owner POST]', e);
+    res.status(500).json({ error: e.message });
+  }
+});
+
 // ═══════════════════════════════════════════════════════════════════════════════
 // 2026-04-21 Feature 7 — Manual property creation
 // GET  /records/_new  → form

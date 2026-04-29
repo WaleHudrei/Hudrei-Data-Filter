@@ -353,6 +353,35 @@
     return false;
   };
 
+  // ─── Add owner (2026-04-29 Option A) ────────────────────────────────────
+  // No auto-created placeholder rows; when a property has no primary
+  // contact the detail page renders an inline "Add owner" form. Submitting
+  // it posts to /records/:id/owner and reloads the page so the new owner
+  // shows up in its proper card with phones/messages/etc. wired up.
+  window.ocu_addOwner = async function(e) {
+    e.preventDefault();
+    const form = e.target;
+    const propertyId = form.dataset.propertyId;
+    const data = {};
+    form.querySelectorAll('input, select').forEach(el => {
+      if (el.name) data[el.name] = el.value;
+    });
+    const fn = (data.first_name || '').trim();
+    const ln = (data.last_name  || '').trim();
+    if (!fn && !ln) { toast('Provide at least a first or last name', true); return false; }
+    try {
+      await jpost('/records/' + propertyId + '/owner', data);
+      toast('Owner added', false);
+      // Reload so the page renders the proper Owner card with phones,
+      // tag affordances, etc. — simpler and less error-prone than
+      // re-rendering the card client-side.
+      setTimeout(() => window.location.reload(), 350);
+    } catch (err) {
+      toast('Failed to add owner: ' + err.message, true);
+    }
+    return false;
+  };
+
   // ─── Pipeline dropdown — change event (not click) ────────────────────────
   document.addEventListener('change', async function(e) {
     const select = e.target.closest('[data-action="property-pipeline"]');

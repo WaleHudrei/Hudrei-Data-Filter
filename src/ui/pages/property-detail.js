@@ -76,15 +76,67 @@ function propertyDetail(data) {
   const secondaries = Array.isArray(data.secondaryContacts) ? data.secondaryContacts : [];
   const phones = Array.isArray(data.phones) ? data.phones : [];
 
-  const ownerCards = [
-    ownerCard({ contact: primary, phones, label: 'Owner 1', isPrimary: true }),
-    ...secondaries.map((sc, i) => ownerCard({
-      contact: sc,
-      phones: sc.phones || [],
-      label: 'Owner ' + (i + 2),
-      isPrimary: false,
-    })),
-  ].filter(Boolean).join('');
+  // 2026-04-29 user request: when a property has NO primary contact, render
+  // an "Add owner" inline form instead of a blank Owner 1 card. Option A
+  // — no auto-created placeholder rows in the DB; the operator chooses
+  // when to create one. POST handler is /records/:id/owner.
+  const addOwnerCard = !primary ? `
+    <div class="ocu-card ocu-add-owner-card">
+      <div class="ocu-card-title">Add owner</div>
+      <div class="ocu-text-3" style="font-size:12px;margin-bottom:10px">No owner is linked to this property yet. Add one below.</div>
+      <form id="ocu-add-owner-form" data-property-id="${p.id || ''}" onsubmit="return ocu_addOwner(event)">
+        <div class="ocu-form-grid">
+          <div class="ocu-form-field">
+            <label class="ocu-form-label">First name</label>
+            <input type="text" name="first_name" maxlength="100" class="ocu-input" autocomplete="off">
+          </div>
+          <div class="ocu-form-field">
+            <label class="ocu-form-label">Last name</label>
+            <input type="text" name="last_name" maxlength="100" class="ocu-input" autocomplete="off">
+          </div>
+          <div class="ocu-form-field">
+            <label class="ocu-form-label">Owner type</label>
+            <select name="owner_type" class="ocu-input">
+              <option value="">Auto-detect</option>
+              <option value="Person">Person</option>
+              <option value="Company">Company</option>
+              <option value="Trust">Trust</option>
+            </select>
+          </div>
+          <div class="ocu-form-field" style="grid-column:1 / -1">
+            <label class="ocu-form-label">Mailing address (optional)</label>
+            <input type="text" name="mailing_address" maxlength="255" class="ocu-input" placeholder="Street address">
+          </div>
+          <div class="ocu-form-field">
+            <label class="ocu-form-label">Mailing city</label>
+            <input type="text" name="mailing_city" maxlength="100" class="ocu-input">
+          </div>
+          <div class="ocu-form-field">
+            <label class="ocu-form-label">Mailing state</label>
+            <input type="text" name="mailing_state" maxlength="10" class="ocu-input" placeholder="2-letter code">
+          </div>
+          <div class="ocu-form-field">
+            <label class="ocu-form-label">Mailing ZIP</label>
+            <input type="text" name="mailing_zip" maxlength="10" class="ocu-input">
+          </div>
+        </div>
+        <div style="display:flex;justify-content:flex-end;margin-top:10px;gap:8px">
+          <button type="submit" class="ocu-btn ocu-btn-primary">Save owner</button>
+        </div>
+      </form>
+    </div>` : '';
+
+  const ownerCards = primary
+    ? [
+        ownerCard({ contact: primary, phones, label: 'Owner 1', isPrimary: true }),
+        ...secondaries.map((sc, i) => ownerCard({
+          contact: sc,
+          phones: sc.phones || [],
+          label: 'Owner ' + (i + 2),
+          isPrimary: false,
+        })),
+      ].filter(Boolean).join('')
+    : addOwnerCard;
 
   const distressCard = card({
     title: 'Distress score',
@@ -158,7 +210,7 @@ function propertyDetail(data) {
     // pipeline change, etc. The user reported "phone tag is broken" on
     // 2026-04-29; this was the root cause for all of them. Move to extraHead
     // with `defer` so it still runs after the DOM is parsed.
-    extraHead: '<script src="/ocular-static/detail-actions.js?v=3" defer></script>',
+    extraHead: '<script src="/ocular-static/detail-actions.js?v=4" defer></script>',
   });
 }
 
