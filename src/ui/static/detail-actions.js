@@ -296,7 +296,62 @@
       }
       return;
     }
+
+    // ── Property note remove (2026-04-29) ─────────────────────────────────
+    if (action === 'property-note-remove') {
+      e.stopPropagation();
+      const propertyId = target.dataset.propertyId;
+      const noteId = target.dataset.noteId;
+      const row = target.closest('.ocu-note');
+      const parent = row && row.parentNode;
+      const sibling = row && row.nextSibling;
+      if (row) row.remove();
+      try {
+        await jpost('/records/' + propertyId + '/notes/' + noteId, null, 'DELETE');
+        toast('Note deleted', false);
+      } catch (err) {
+        if (row && parent) parent.insertBefore(row, sibling);
+        toast('Failed to delete note: ' + err.message, true);
+      }
+      return;
+    }
   }, false);
+
+  // ─── Property note add (form submit handler exposed globally so the
+  //     onsubmit attribute can call it) ────────────────────────────────────
+  window.ocu_addNote = async function (e) {
+    e.preventDefault();
+    const form = e.target;
+    const propertyId = form.dataset.propertyId;
+    const ta = form.querySelector('textarea[name="body"]');
+    const body = (ta && ta.value || '').trim();
+    if (!body) { toast('Note is empty', true); return false; }
+    try {
+      const data = await jpost('/records/' + propertyId + '/notes', { body });
+      if (data && data.note) {
+        const n = data.note;
+        const html = '<div class="ocu-note" data-note-id="' + n.id + '">'
+          + '<div class="ocu-note-meta">'
+          + '<span class="ocu-note-author">' + escapeHTML(n.author || 'Unknown') + '</span>'
+          + '<span class="ocu-text-3" style="font-size:11px">just now</span>'
+          + '<button type="button" class="ocu-note-remove" data-action="property-note-remove"'
+          + ' data-property-id="' + propertyId + '" data-note-id="' + n.id + '" title="Delete note">×</button>'
+          + '</div>'
+          + '<div class="ocu-note-body">' + escapeHTML(n.body) + '</div>'
+          + '</div>';
+        const list = document.getElementById('ocu-notes-list');
+        // Replace the "No notes yet" placeholder if present.
+        const placeholder = list && list.querySelector('.ocu-text-3');
+        if (placeholder && /No notes yet/.test(placeholder.textContent)) list.innerHTML = '';
+        list.insertAdjacentHTML('afterbegin', html);
+        ta.value = '';
+        toast('Note added', false);
+      }
+    } catch (err) {
+      toast('Failed to add note: ' + err.message, true);
+    }
+    return false;
+  };
 
   // ─── Pipeline dropdown — change event (not click) ────────────────────────
   document.addEventListener('change', async function(e) {

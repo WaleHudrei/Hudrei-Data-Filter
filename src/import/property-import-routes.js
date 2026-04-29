@@ -1862,6 +1862,12 @@ async function runBackgroundImport(jobId, allRows, mapping, filename, resolvedLi
   // this; mirror that behavior here. Use a Set to dedupe across batches that
   // touch the same property via UPSERT.
   const touchedPropIdSet = new Set();
+  // 2026-04-29 user request: "i want when someone upload list with
+  // duplicated phone number or data, merge it and type it in activity
+  // log of the record." Track which properties were UPDATED (not freshly
+  // inserted) — those are the merge events worth surfacing. Written into
+  // property_notes at the end of the import as a single bulk UNNEST.
+  const updatedPropIdSet = new Set();
 
   try {
     await query(`UPDATE bulk_import_jobs SET status='running', updated_at=NOW() WHERE id=$1`, [jobId]);
@@ -2245,7 +2251,12 @@ async function runBackgroundImport(jobId, allRows, mapping, filename, resolvedLi
           propMap[(p.street+'|'+p.city+'|'+p.state_code+'|'+p.zip_code).toLowerCase()] = { id: p.id, wasInsert: p.xmax==='0' };
           propIds.push(p.id);
           touchedPropIdSet.add(p.id);
-          if (p.xmax==='0') inserted++; else updated++;
+          if (p.xmax==='0') {
+            inserted++;
+          } else {
+            updated++;
+            updatedPropIdSet.add(p.id);
+          }
         }
 
         // ─────────────────────────────────────────────────────────────────
@@ -3035,6 +3046,43 @@ async function runBackgroundImport(jobId, allRows, mapping, filename, resolvedLi
         console.log(`[bulk-import] scored ${scored} of ${ids.length} touched properties (${Date.now() - t}ms)`);
       } catch (e) {
         console.error(`[bulk-import] distress scoring failed (non-fatal):`, e.message);
+      }
+    }
+
+    // 2026-04-29 user request: drop a "merged" note onto every property
+    // that already existed and got updated by this import. Gives the
+    // operator an audit trail of where the latest data came from. We
+    // write one note per property in a single UNNEST'd INSERT — bounded
+    // and fast (50k notes inserted in well under a second). New
+    // (freshly-INSERTed) properties don't get a note since "merged
+    // from import" wouldn't make sense for them.
+    // Non-fatal: a notes failure shouldn't fail the whole import.
+    if (updatedPropIdSet.size > 0) {
+      try {
+        const ids = Array.from(updatedPropIdSet);
+        const dupeNote = totalDuplicatesMerged > 0
+          ? ` · ${totalDuplicatesMerged} duplicate row(s) merged`
+          : '';
+        const body = `Merged from import: ${filename || 'CSV'}${dupeNote}`;
+        await query(`
+          CREATE TABLE IF NOT EXISTS property_notes (
+            id SERIAL PRIMARY KEY,
+            tenant_id INTEGER NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+            property_id INTEGER NOT NULL REFERENCES properties(id) ON DELETE CASCADE,
+            author VARCHAR(120),
+            body TEXT NOT NULL,
+            created_at TIMESTAMPTZ DEFAULT NOW()
+          )
+        `).catch(() => {});
+        const t = Date.now();
+        await query(
+          `INSERT INTO property_notes (tenant_id, property_id, author, body)
+           SELECT $1, UNNEST($2::int[]), 'system (import)', $3`,
+          [tenantId, ids, body]
+        );
+        console.log(`[bulk-import] wrote ${ids.length} merge notes (${Date.now() - t}ms)`);
+      } catch (e) {
+        console.error(`[bulk-import] merge notes failed (non-fatal):`, e.message);
       }
     }
 

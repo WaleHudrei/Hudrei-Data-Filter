@@ -49,10 +49,18 @@ router.get('/dashboard', requireAuth, async (req, res) => {
     ] = await Promise.all([
       query(`SELECT COUNT(*)::int AS n FROM properties WHERE tenant_id = $1`, [t]),
       query(`SELECT COUNT(DISTINCT contact_id)::int AS n FROM property_contacts WHERE tenant_id = $1 AND primary_contact = true`, [t]),
+      // 2026-04-29 dash-audit fix #1: count ANY phone on file (not just
+      // primary contact's), and scope phones to tenant. Pre-fix the JOIN
+      // had no ph.tenant_id clause so on a multi-tenant deploy a phone
+      // belonging to another tenant could keep this tenant's property in
+      // the count. Also pre-fix only primary_contact phones counted —
+      // a property with a secondary owner whose phones were on file
+      // showed up as "no phones" on the dashboard.
       query(`SELECT COUNT(DISTINCT pc.property_id)::int AS n
                FROM property_contacts pc
                JOIN phones ph ON ph.contact_id = pc.contact_id
-              WHERE pc.tenant_id = $1 AND pc.primary_contact = true`, [t]),
+                              AND ph.tenant_id = pc.tenant_id
+              WHERE pc.tenant_id = $1`, [t]),
       query(`SELECT COUNT(*)::int AS n FROM (
                SELECT contact_id FROM property_contacts
                 WHERE tenant_id = $1 AND primary_contact = true
@@ -88,10 +96,17 @@ router.get('/dashboard', requireAuth, async (req, res) => {
           )::int AS due_week
         FROM list_templates WHERE tenant_id = $1
       `, [t]).catch(() => ({ rows: [{ total: 0, overdue: 0, due_week: 0 }] })),
+      // 2026-04-29 dash-audit fix #2: pl.tenant_id was missing from the
+      // LEFT JOIN, so on a multi-tenant deploy any property_lists row
+      // sharing a list_id (impossible with the current composite UNIQUE,
+      // but defensive) — and more importantly, the cross-tenant safety
+      // rule says every join touching a tenant-scoped table carries its
+      // tenant clause. Aligned with the filter-parity rule from CLAUDE.md.
       query(`
         SELECT l.list_name AS name, COUNT(pl.property_id)::int AS count
           FROM lists l
           LEFT JOIN property_lists pl ON pl.list_id = l.id
+                                      AND pl.tenant_id = l.tenant_id
           WHERE l.tenant_id = $1
           GROUP BY l.id, l.list_name
           ORDER BY count DESC
@@ -112,11 +127,20 @@ router.get('/dashboard', requireAuth, async (req, res) => {
 
     // Activity feed — for now, derive recent rows from properties + import jobs.
     // Will be replaced with a proper activity log later.
+    // 2026-04-29 dash-audit fix #3: status='completed' is what bulk-import
+    // writes; property-import (the more common path) writes 'complete'
+    // (no d) — pre-existing column-name/value drift we documented in
+    // earlier audits. Filtering by 'completed' alone meant every
+    // /import/property job (the kind operators run for property CSVs)
+    // was silently invisible in the dashboard activity feed. Accept both.
+    // Also pre-fix used `created_at` which doesn't exist on this table —
+    // it's `started_at`. Same column-drift issue.
     const recentImportsRes = await query(`
-      SELECT 'import' AS kind, total_rows::int AS n, filename, created_at
+      SELECT total_rows::int AS n, filename, started_at AS created_at
         FROM bulk_import_jobs
-       WHERE tenant_id = $1 AND status = 'completed'
-       ORDER BY created_at DESC
+       WHERE tenant_id = $1
+         AND status IN ('complete','completed')
+       ORDER BY started_at DESC
        LIMIT 3
     `, [t]).catch(() => ({ rows: [] }));
 
@@ -632,6 +656,30 @@ router.get('/records/:id(\\d+)', requireAuth, async (req, res) => {
        ORDER BY t.name ASC
     `, [id, t]).catch(() => ({ rows: [] }));
 
+    // Property notes (2026-04-29). Lazy-create on first read so the
+    // table exists even if a brand-new tenant hasn't hit the POST yet.
+    await query(`
+      CREATE TABLE IF NOT EXISTS property_notes (
+        id SERIAL PRIMARY KEY,
+        tenant_id INTEGER NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+        property_id INTEGER NOT NULL REFERENCES properties(id) ON DELETE CASCADE,
+        author VARCHAR(120),
+        body TEXT NOT NULL,
+        created_at TIMESTAMPTZ DEFAULT NOW()
+      );
+      CREATE INDEX IF NOT EXISTS idx_property_notes_property
+        ON property_notes(property_id, created_at DESC);
+      CREATE INDEX IF NOT EXISTS idx_property_notes_tenant
+        ON property_notes(tenant_id);
+    `).catch(() => {});
+    const notesRes = await query(`
+      SELECT id, author, body, created_at
+        FROM property_notes
+       WHERE property_id = $1 AND tenant_id = $2
+       ORDER BY created_at DESC
+       LIMIT 100
+    `, [id, t]).catch(() => ({ rows: [] }));
+
     // Distress breakdown — already stored as JSON on the property row
     let distressBreakdown = p.distress_breakdown;
     if (typeof distressBreakdown === 'string') {
@@ -678,6 +726,7 @@ router.get('/records/:id(\\d+)', requireAuth, async (req, res) => {
       phones,
       lists:              listsRes.rows,
       tags:               tagsRes.rows,
+      notes:              notesRes.rows,
       distressBreakdown,
       activity:           activityRes.rows,
       user:               await getUser(req),

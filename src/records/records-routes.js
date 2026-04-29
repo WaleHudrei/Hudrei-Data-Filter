@@ -108,6 +108,30 @@ async function ensureTagSchema() {
   _tagSchemaReady = true;
 }
 
+// ── Property notes ─────────────────────────────────────────────────────────
+// 2026-04-29 user request: "i also want to have notes section inside every
+// record". Each note is tenant-scoped + property-scoped, free text, with
+// an author (defaults to the logged-in user's email if available).
+let _notesSchemaReady = false;
+async function ensureNotesSchema() {
+  if (_notesSchemaReady) return;
+  await query(`
+    CREATE TABLE IF NOT EXISTS property_notes (
+      id SERIAL PRIMARY KEY,
+      tenant_id INTEGER NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+      property_id INTEGER NOT NULL REFERENCES properties(id) ON DELETE CASCADE,
+      author VARCHAR(120),
+      body TEXT NOT NULL,
+      created_at TIMESTAMPTZ DEFAULT NOW()
+    );
+    CREATE INDEX IF NOT EXISTS idx_property_notes_property
+      ON property_notes(property_id, created_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_property_notes_tenant
+      ON property_notes(tenant_id);
+  `);
+  _notesSchemaReady = true;
+}
+
 function fmt(val, fallback) { return val || fallback || '—'; }
 function fmtDate(val) { if (!val) return '—'; return new Date(val).toLocaleDateString('en-US', { month:'short', day:'numeric', year:'numeric' }); }
 function fmtMoney(val) { if (!val) return '—'; return '$' + Number(val).toLocaleString(); }
@@ -351,6 +375,52 @@ router.delete('/:id(\\d+)/tags/:tagId(\\d+)', requireAuth, async (req, res) => {
     res.json({ ok: true });
   } catch (e) {
     console.error('[tags/remove]', e);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// ── Property notes (2026-04-29 user request) ───────────────────────────────
+// POST /records/:id/notes  — create a note on this property
+// DELETE /records/:id/notes/:noteId — remove a note
+// Listing happens server-side: the property detail page pulls notes when it
+// renders, so there's no separate GET endpoint here.
+
+router.post('/:id(\\d+)/notes', requireAuth, async (req, res) => {
+  try {
+    await ensureNotesSchema();
+    const propertyId = parseInt(req.params.id);
+    const body = String(req.body.body || '').trim();
+    if (!body) return res.status(400).json({ error: 'Note body is required.' });
+    if (body.length > 4000) return res.status(400).json({ error: 'Note too long (4000 char max).' });
+    // Verify the property belongs to this tenant before any write.
+    const own = await query(`SELECT 1 FROM properties WHERE id = $1 AND tenant_id = $2`, [propertyId, req.tenantId]);
+    if (!own.rowCount) return res.status(404).json({ error: 'Property not found.' });
+    const author = (req.session && req.session.userEmail) ? String(req.session.userEmail).slice(0, 120) : 'Unknown';
+    const r = await query(
+      `INSERT INTO property_notes (tenant_id, property_id, author, body)
+       VALUES ($1, $2, $3, $4) RETURNING id, author, body, created_at`,
+      [req.tenantId, propertyId, author, body]
+    );
+    res.json({ ok: true, note: r.rows[0] });
+  } catch (e) {
+    console.error('[notes/add]', e);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+router.delete('/:id(\\d+)/notes/:noteId(\\d+)', requireAuth, async (req, res) => {
+  try {
+    await ensureNotesSchema();
+    const propertyId = parseInt(req.params.id);
+    const noteId = parseInt(req.params.noteId);
+    const r = await query(
+      `DELETE FROM property_notes WHERE id = $1 AND property_id = $2 AND tenant_id = $3 RETURNING id`,
+      [noteId, propertyId, req.tenantId]
+    );
+    if (!r.rowCount) return res.status(404).json({ error: 'Note not found.' });
+    res.json({ ok: true });
+  } catch (e) {
+    console.error('[notes/remove]', e);
     res.status(500).json({ error: e.message });
   }
 });

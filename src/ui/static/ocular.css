@@ -1844,6 +1844,36 @@ body { padding-bottom: 0; }
 }
 .ocu-textarea { resize: vertical; min-height: 80px; line-height: 1.5; }
 
+/* 2026-04-29 Notes section on property detail */
+.ocu-note-input { min-height: 56px; }
+.ocu-notes-list { display: flex; flex-direction: column; gap: 8px; margin-top: 12px; }
+.ocu-note {
+  background: var(--ocu-surface, #f9fafb);
+  border: 1px solid var(--ocu-border, #e5e7eb);
+  border-radius: 8px;
+  padding: 10px 12px;
+}
+.ocu-note-meta {
+  display: flex; align-items: center; gap: 8px;
+  margin-bottom: 4px;
+}
+.ocu-note-author {
+  font-size: 12px; font-weight: 600; color: var(--ocu-text-1);
+}
+.ocu-note-remove {
+  margin-left: auto;
+  background: transparent; border: 0; cursor: pointer;
+  color: var(--ocu-text-3, #9ca3af);
+  font-size: 16px; line-height: 1; padding: 2px 6px; border-radius: 4px;
+  transition: color .12s, background .12s;
+}
+.ocu-note-remove:hover { color: #dc2626; background: #fee2e2; }
+.ocu-note-body {
+  font-size: 13px; line-height: 1.5; color: var(--ocu-text-1);
+  white-space: pre-wrap; word-break: break-word;
+}
+.ocu-btn-sm { padding: 6px 12px; font-size: 12px; }
+
 /* ─── Buttons ────────────────────────────────────────────────────────────── */
 .ocu-btn-ghost {
   background: transparent;

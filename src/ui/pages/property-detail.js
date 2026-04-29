@@ -23,7 +23,51 @@ const { distressBreakdown }  = require('../components/distress-breakdown');
 const { tagChips }           = require('../components/tag-chips');
 const { listMembership }     = require('../components/list-membership');
 const { activityTimeline }   = require('../components/activity-timeline');
-const { fmtNum }             = require('../_helpers');
+const { fmtNum, escHTML }    = require('../_helpers');
+
+// 2026-04-29 user request: notes section per record. Each note is rendered
+// as a row with author + relative time + body + a × delete button. The
+// add-note input is a simple form posting to /records/:id/notes.
+function fmtRel(d) {
+  if (!d) return '';
+  const ms = Date.now() - new Date(d).getTime();
+  const min = Math.round(ms / 60000);
+  if (min < 1) return 'just now';
+  if (min < 60) return min + 'm ago';
+  const hr = Math.round(min / 60);
+  if (hr < 24) return hr + 'h ago';
+  const day = Math.round(hr / 24);
+  if (day < 30) return day + 'd ago';
+  return new Date(d).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+}
+function notesCard(propertyId, notes) {
+  const list = (notes || []).map(n => `
+    <div class="ocu-note" data-note-id="${escHTML(n.id)}">
+      <div class="ocu-note-meta">
+        <span class="ocu-note-author">${escHTML(n.author || 'Unknown')}</span>
+        <span class="ocu-text-3" style="font-size:11px">${escHTML(fmtRel(n.created_at))}</span>
+        <button type="button" class="ocu-note-remove" data-action="property-note-remove"
+                data-property-id="${escHTML(propertyId)}" data-note-id="${escHTML(n.id)}"
+                title="Delete note">×</button>
+      </div>
+      <div class="ocu-note-body">${escHTML(n.body)}</div>
+    </div>`).join('');
+  return `
+    <div class="ocu-notes-add">
+      <form id="ocu-note-form" data-property-id="${escHTML(propertyId)}"
+            onsubmit="return ocu_addNote(event)">
+        <textarea name="body" rows="2" maxlength="4000"
+                  placeholder="Add a note about this property…"
+                  class="ocu-textarea ocu-note-input"></textarea>
+        <div style="display:flex;justify-content:flex-end;margin-top:6px">
+          <button type="submit" class="ocu-btn ocu-btn-primary ocu-btn-sm">Add note</button>
+        </div>
+      </form>
+    </div>
+    <div class="ocu-notes-list" id="ocu-notes-list">
+      ${list || '<div class="ocu-text-3" style="font-size:12px;font-style:italic;padding:8px 4px">No notes yet.</div>'}
+    </div>`;
+}
 
 function propertyDetail(data) {
   data = data || {};
@@ -70,6 +114,12 @@ function propertyDetail(data) {
     body: propertyInfo(p),
   });
 
+  const propNotesCard = card({
+    title: 'Notes',
+    meta:  Array.isArray(data.notes) && data.notes.length ? `${data.notes.length} on file` : '',
+    body:  notesCard(p.id, data.notes || []),
+  });
+
   const body = `
     ${propertyHeader(p)}
 
@@ -79,6 +129,7 @@ function propertyDetail(data) {
         <div class="ocu-owner-grid">
           ${ownerCards}
         </div>
+        ${propNotesCard}
       </div>
       <div class="ocu-detail-side">
         ${distressCard}
@@ -107,7 +158,7 @@ function propertyDetail(data) {
     // pipeline change, etc. The user reported "phone tag is broken" on
     // 2026-04-29; this was the root cause for all of them. Move to extraHead
     // with `defer` so it still runs after the DOM is parsed.
-    extraHead: '<script src="/ocular-static/detail-actions.js?v=2" defer></script>',
+    extraHead: '<script src="/ocular-static/detail-actions.js?v=3" defer></script>',
   });
 }
 
