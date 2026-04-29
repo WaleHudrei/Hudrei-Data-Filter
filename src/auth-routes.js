@@ -474,39 +474,116 @@ router.get('/verify-email', async (req, res) => {
 // Login / logout — Phase 2c
 // ─────────────────────────────────────────────────────────────────────────────
 
-// In-memory failed-attempt counter (carried over from the old /login). Same
-// semantics: 5 failures per 15 min → 429 with Retry-After. Acceptable on a
-// single Node replica; move to Redis when we scale out.
-const _loginAttempts = new Map();
+// 2026-04-29 audit fix M1 + M2: rebuilt /login rate limiter.
+//
+//   M1 (Redis-backed): the previous Map-based counter was per-process and
+//        lost on every deploy — restart cleared all lockouts and reset every
+//        attacker's clock. With Railway scale-out the counter also wouldn't
+//        share across replicas (5×N effective limit). Now: Redis SET with
+//        per-key TTL, with a per-process Map fallback for dev mode without
+//        REDIS_URL.
+//
+//   M2 (per-account keying): pre-fix the counter was keyed by IP alone, so
+//        an attacker who hit /login with bad credentials 5 times from the
+//        victim's NAT'd IP locked out EVERY user behind that IP for 15 min.
+//        Coffee shops, mobile carriers, corporate offices — collateral DoS.
+//        Now keyed by (ip, email): a bad actor targeting alice@x.com can't
+//        lock out bob@x.com on the same IP. Attacker can still target a
+//        specific account (acceptable — that's what the limiter is for).
+//
+// Same 5-in-15-min semantics. Same 429 + Retry-After response.
 const LOGIN_WINDOW_MS = 15 * 60 * 1000;
 const LOGIN_MAX_FAILURES = 5;
+const _localLoginAttempts = new Map(); // fallback only — see _getAuthRedis
+
+let _authRedis = null;
+let _authRedisInitTried = false;
+function _getAuthRedis() {
+  if (_authRedisInitTried) return _authRedis;
+  _authRedisInitTried = true;
+  if (!process.env.REDIS_URL) return null;
+  try {
+    const Redis = require('ioredis');
+    _authRedis = new Redis(process.env.REDIS_URL, { maxRetriesPerRequest: 2, lazyConnect: true });
+    _authRedis.on('error', () => { /* fall back to local Map silently */ });
+  } catch (e) {
+    console.warn('[auth] Redis unavailable for login rate limit:', e.message);
+    _authRedis = null;
+  }
+  return _authRedis;
+}
 
 function _loginIp(req) {
   return String(req.ip || req.connection?.remoteAddress || 'unknown');
 }
 
-function _loginRateLimit(req, res, next) {
+function _loginAttemptKey(ip, email) {
+  return `loki:loginfail:${ip}|${(email || '').toLowerCase().trim()}`;
+}
+
+async function _readLoginAttempt(key) {
+  const redis = _getAuthRedis();
+  if (redis) {
+    try {
+      const raw = await redis.get(key);
+      if (raw) return JSON.parse(raw);
+    } catch (_) { /* fall through to local */ }
+  }
+  return _localLoginAttempts.get(key) || null;
+}
+
+async function _writeLoginAttempt(key, rec) {
+  _localLoginAttempts.set(key, rec); // keep local in sync as fallback
+  const redis = _getAuthRedis();
+  if (redis) {
+    try { await redis.set(key, JSON.stringify(rec), 'PX', LOGIN_WINDOW_MS); }
+    catch (_) { /* non-fatal — local has it */ }
+  }
+}
+
+async function _deleteLoginAttempt(key) {
+  _localLoginAttempts.delete(key);
+  const redis = _getAuthRedis();
+  if (redis) {
+    try { await redis.del(key); } catch (_) { /* non-fatal */ }
+  }
+}
+
+async function _loginRateLimit(req, res, next) {
   const ip = _loginIp(req);
+  const email = String(req.body?.email || '').toLowerCase().trim();
+  const key = _loginAttemptKey(ip, email);
   const now = Date.now();
-  const rec = _loginAttempts.get(ip);
+  const rec = await _readLoginAttempt(key);
   if (rec && (now - rec.firstAt) < LOGIN_WINDOW_MS && rec.count >= LOGIN_MAX_FAILURES) {
     const retryAfter = Math.ceil((LOGIN_WINDOW_MS - (now - rec.firstAt)) / 1000);
     res.set('Retry-After', String(retryAfter));
     return res.status(429).send(authShell('Too many attempts', `
-      <h1>Too many login attempts</h1>
+      <h1>Too many login attempts for this account</h1>
       <p class="lede">Try again in ${Math.ceil(retryAfter / 60)} minute(s).</p>
     `));
   }
   if (rec && (now - rec.firstAt) >= LOGIN_WINDOW_MS) {
-    _loginAttempts.delete(ip);
+    await _deleteLoginAttempt(key);
   }
   next();
 }
 
-function _bumpLoginFailure(ip) {
-  const rec = _loginAttempts.get(ip) || { count: 0, firstAt: Date.now() };
+async function _bumpLoginFailure(ip, email) {
+  const key = _loginAttemptKey(ip, email);
+  const now = Date.now();
+  const rec = (await _readLoginAttempt(key)) || { count: 0, firstAt: now };
+  // If the existing rec is from outside the window, reset it.
+  if ((now - rec.firstAt) >= LOGIN_WINDOW_MS) {
+    rec.count = 0;
+    rec.firstAt = now;
+  }
   rec.count++;
-  _loginAttempts.set(ip, rec);
+  await _writeLoginAttempt(key, rec);
+}
+
+async function _clearLoginAttempts(ip, email) {
+  await _deleteLoginAttempt(_loginAttemptKey(ip, email));
 }
 
 // ── GET /login ───────────────────────────────────────────────────────────────
@@ -544,8 +621,10 @@ router.post('/login', _loginRateLimit, async (req, res) => {
   const emailAddr = String(req.body.email || '').trim().toLowerCase();
   const password  = String(req.body.password || '');
 
-  const fail = () => {
-    _bumpLoginFailure(ip);
+  // M2: rate-limit counter is keyed by (ip, email) — fail() bumps the counter
+  // for the SPECIFIC account being attempted, not the entire IP.
+  const fail = async () => {
+    await _bumpLoginFailure(ip, emailAddr);
     return res.redirect('/login?error=1&email=' + encodeURIComponent(emailAddr));
   };
 
@@ -568,7 +647,7 @@ router.post('/login', _loginRateLimit, async (req, res) => {
     // login for suspended/canceled tenants — credentials may be valid but the
     // workspace is offline.
     if (u.tenant_status !== 'active') {
-      _bumpLoginFailure(ip);
+      await _bumpLoginFailure(ip, emailAddr);
       return res.redirect('/login?err=' + encodeURIComponent('This workspace has been suspended. Contact your account admin.'));
     }
     const ok = await passwords.verify(password, u.password_hash);
@@ -583,7 +662,7 @@ router.post('/login', _loginRateLimit, async (req, res) => {
                           '&flash=' + encodeURIComponent('Please verify your email before signing in. Fresh link sent.'));
     }
 
-    _loginAttempts.delete(ip);
+    await _clearLoginAttempts(ip, emailAddr);
     req.session.authenticated = true;
     req.session.userId        = u.id;
     req.session.tenantId      = u.tenant_id;
@@ -629,30 +708,41 @@ router.get('/forgot-password', (req, res) => {
 });
 
 // ── POST /forgot-password ────────────────────────────────────────────────────
+// 2026-04-29 audit fix H4: send the response BEFORE doing the DB lookup +
+// token issuance + email send. Pre-fix, valid emails took ~200-500ms to
+// respond (DB INSERT + Postmark roundtrip), invalid emails took ~5-30ms
+// (SELECT only) — a measurable timing side channel that lets a scripted
+// attacker enumerate registered emails by clocking response latency.
+// Now: redirect first, then do the lookup-and-maybe-send work in the
+// background. Response time is dominated by rate-limit middleware +
+// redirect, both constant. Attacker sees no timing signal.
 router.post('/forgot-password', _forgotPwRateLimit, async (req, res) => {
   const emailAddr = String(req.body.email || '').trim().toLowerCase();
 
-  // Always show the same confirmation page — never leak whether the email
-  // exists. Only act if we actually find a matching user.
-  const ok = () => res.redirect('/forgot-password?email=' + encodeURIComponent(emailAddr) +
-                                '&flash=' + encodeURIComponent('If an account exists for that email, we sent a reset link.'));
+  // Constant-time response — same redirect regardless of whether the email
+  // exists, regardless of whether subsequent background work succeeds.
+  res.redirect('/forgot-password?email=' + encodeURIComponent(emailAddr) +
+               '&flash=' + encodeURIComponent('If an account exists for that email, we sent a reset link.'));
 
-  if (!isValidEmail(emailAddr)) return ok();
-  try {
-    const r = await query(
-      `SELECT id, name FROM users WHERE email = $1 AND status = 'active' LIMIT 1`,
-      [emailAddr]
-    );
-    if (r.rows.length) {
-      const u = r.rows[0];
-      const token = await tokens.issueToken('password_reset_tokens', u.id, 60); // 1 hour
-      await email.sendPasswordResetEmail(emailAddr, u.name, token);
+  // Background work — fire and forget. Errors logged but never surface to
+  // the client. setImmediate puts this on the next tick so it doesn't block
+  // the response flush.
+  setImmediate(async () => {
+    if (!isValidEmail(emailAddr)) return;
+    try {
+      const r = await query(
+        `SELECT id, name FROM users WHERE email = $1 AND status = 'active' LIMIT 1`,
+        [emailAddr]
+      );
+      if (r.rows.length) {
+        const u = r.rows[0];
+        const token = await tokens.issueToken('password_reset_tokens', u.id, 60); // 1 hour
+        await email.sendPasswordResetEmail(emailAddr, u.name, token);
+      }
+    } catch (e) {
+      console.error('[forgot-password background]', e);
     }
-    return ok();
-  } catch (e) {
-    console.error('[forgot-password POST]', e);
-    return ok();
-  }
+  });
 });
 
 // ── GET /reset-password?token=... ────────────────────────────────────────────

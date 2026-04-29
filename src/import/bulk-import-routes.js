@@ -6,7 +6,7 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const crypto = require('crypto');
-const { query, refreshOwnerPortfolioMv } = require('../db');
+const { query, refreshOwnerPortfolioMv, pool } = require('../db');
 const { shell } = require('../shared-shell');
 const { normalizeState } = require('./state');
 // 2026-04-20 pass 12: shared phone normalizer. Replaces the prior inline
@@ -98,6 +98,34 @@ const upload = multer({
   limits: { fileSize: 600 * 1024 * 1024 } // 600MB
 });
 
+// 2026-04-29 audit fix M6: per-tenant rate limit for /start. The 600MB upload
+// limit + multi-pass UNNEST processing makes each import expensive (disk +
+// memory + DB). Pre-fix nothing throttled how often a tenant could start
+// imports — 5 abusive uploads × 600MB = 3GB of disk pressure on Railway's
+// /tmp, plus heavy concurrent DB write load. Now: 1 import per minute per
+// tenant (the typical import takes 30-60s anyway, so this isn't a UX hit).
+// In-memory Map; lost on restart, doesn't share across replicas — same trade-
+// offs as the auth rate limiter (audit M1 covers the Redis migration there;
+// same pattern would apply here later).
+const _bulkImportLastStart = new Map(); // tenantId -> timestamp
+const BULK_IMPORT_MIN_INTERVAL_MS = 60 * 1000;
+
+function _bulkImportRateLimit(req, res, next) {
+  const tenantId = req.tenantId;
+  if (!Number.isInteger(tenantId)) return next(); // shouldn't happen post-requireAuth
+  const last = _bulkImportLastStart.get(tenantId);
+  const now = Date.now();
+  if (last && (now - last) < BULK_IMPORT_MIN_INTERVAL_MS) {
+    const retryAfter = Math.ceil((BULK_IMPORT_MIN_INTERVAL_MS - (now - last)) / 1000);
+    res.set('Retry-After', String(retryAfter));
+    return res.status(429).json({
+      error: `Bulk imports are limited to 1 per minute per workspace. Try again in ${retryAfter}s.`,
+    });
+  }
+  _bulkImportLastStart.set(tenantId, now);
+  next();
+}
+
 function requireAuth(req, res, next) {
   if (!req.session || !req.session.authenticated) return res.redirect('/login');
   if (!req.session.tenantId) return res.redirect('/login');
@@ -120,55 +148,23 @@ async function primeMarketCache(tenantId) {
 }
 
 // ── REISift column mapping ─────────────────────────────────────────────────────
+// 2026-04-29 audit fix M10: coercion helpers come from src/import/coerce.js
+// (single source of truth). Pre-fix, three near-duplicate inline copies of
+// toMoney/toYear/toSmallInt/toBathrooms/toBool/toDate/toNum/toInt lived in
+// this file and property-import-routes.js — divergent in subtle ways
+// (different isNaN ordering, different range limits). Now bound with a
+// 'bulk-import' label so out-of-range warnings are still attributable.
+const _coerce = require('./coerce');
 function mapReisiftRow(row) {
   const get = (key) => (row[key] || '').toString().trim();
-  const toNum  = (v) => { const n = parseFloat(String(v).replace(/[$,%]/g,'')); return isNaN(n) ? null : n; };
-  const toInt  = (v) => { const n = parseInt(String(v).replace(/[$,%]/g,''), 10); return isNaN(n) ? null : n; };
-  // 2026-04-21 PM hotfix: bounded helpers — same semantics as
-  // property-import-routes.js. Out-of-range values clamp to NULL rather
-  // than crashing the whole batch with `numeric field overflow`. REISift
-  // exports are usually cleaner than PropStream, but defense-in-depth
-  // applies equally here. See property-import-routes.js for full rationale.
-  const MONEY_LIMIT = 9_999_999_999.99;
-  const toMoney = (v) => {
-    const n = toNum(v);
-    if (n == null) return null;
-    if (Math.abs(n) > MONEY_LIMIT) {
-      console.warn(`[bulk-import] out-of-range money value ${JSON.stringify(v)} → NULL`);
-      return null;
-    }
-    return n;
-  };
-  const toYear = (v) => {
-    const n = toNum(v);
-    if (n == null) return null;
-    const y = Math.round(n);
-    if (y < 1800 || y > 2200) {
-      console.warn(`[bulk-import] invalid year value ${JSON.stringify(v)} → NULL`);
-      return null;
-    }
-    return y;
-  };
-  const toSmallInt = (v) => {
-    const n = toInt(v);
-    if (n == null) return null;
-    if (n < -32_768 || n > 32_767) {
-      console.warn(`[bulk-import] out-of-range smallint value ${JSON.stringify(v)} → NULL`);
-      return null;
-    }
-    return n;
-  };
-  const toBathrooms = (v) => {
-    const n = toNum(v);
-    if (n == null) return null;
-    if (n < 0 || n > 99) {
-      console.warn(`[bulk-import] out-of-range bathrooms value ${JSON.stringify(v)} → NULL`);
-      return null;
-    }
-    return n;
-  };
-  const toDate = (v) => { if (!v) return null; const d = new Date(v); return isNaN(d) ? null : d.toISOString().split('T')[0]; };
-  const toBool = (v) => { const s = (v||'').toLowerCase(); return s==='true'||s==='yes'||s==='1' ? true : s==='false'||s==='no'||s==='0' ? false : null; };
+  const toNum       = _coerce.toNum;
+  const toInt       = _coerce.toInt;
+  const toMoney     = (v) => _coerce.toMoney(v, 'bulk-import');
+  const toYear      = (v) => _coerce.toYear(v, 'bulk-import');
+  const toSmallInt  = (v) => _coerce.toSmallInt(v, 'bulk-import');
+  const toBathrooms = (v) => _coerce.toBathrooms(v, 'bulk-import');
+  const toDate      = _coerce.toDate;
+  const toBool      = _coerce.toBool;
   const cleanPhone = (v) => normalizePhone(v);
   const mapStatus = (v) => {
     const s = (v||'').toLowerCase();
@@ -371,7 +367,7 @@ router.get('/', requireAuth, (req, res) => {
 });
 
 // ── START: Stage to disk, create job, fire background processor ──────────────
-router.post('/start', requireAuth, upload.single('csvfile'), async (req, res) => {
+router.post('/start', requireAuth, _bulkImportRateLimit, upload.single('csvfile'), async (req, res) => {
   try {
     if (!req.file) return res.status(400).json({ error: 'No file uploaded.' });
     await ensureJobsTable();
@@ -460,6 +456,24 @@ async function processImport(jobId, csvPath, filename, tenantId) {
   const marketCache = await primeMarketCache(tenantId);
 
   async function processBatch(raw) {
+    // 2026-04-29 audit fix H3: each batch is now atomic. Pre-fix, processBatch
+    // did 5+ bulk UNNEST passes (markets → properties → contacts → phones →
+    // marketing_touches) using the pool-level `query`, so a failure on pass
+    // 4 left passes 1-3 committed. Result: chunk N had properties+contacts
+    // but no phones; the job continued processing chunk N+1 oblivious to
+    // the inconsistency. Now: dedicated client + BEGIN/COMMIT per batch
+    // means the chunk either fully lands or fully rolls back. Same shadowed-
+    // query trick as audit K9 — the existing 290-line body keeps using
+    // `query(...)` and now routes through the txn client without per-line
+    // edits. The `query` symbol from the outer scope is reassigned via
+    // the inner `const`.
+    const client = await pool.connect();
+    // eslint-disable-next-line no-shadow
+    const query = client.query.bind(client);
+    let txnStarted = false;
+    try {
+      await query('BEGIN');
+      txnStarted = true;
     // 1. Map rows; drop any with invalid state.
     const mapped = [];
     for (const row of raw) {
@@ -753,6 +767,27 @@ async function processImport(jobId, csvPath, filename, tenantId) {
       `UPDATE bulk_import_jobs SET rows_processed=$1, rows_created=$2, rows_updated=$3, rows_errored=$4 WHERE id=$5`,
       [rowsProcessed, rowsCreated, rowsUpdated, rowsErrored, jobId]
     );
+
+    // H3: COMMIT once the batch's bulk inserts + progress update are all done.
+      await query('COMMIT');
+      txnStarted = false;
+    } catch (batchErr) {
+      // H3: roll back this batch's writes; the surrounding stream loop will
+      // see the throw and the failed-job logger will mark the whole import
+      // failed. Without this, partial-batch state leaks back to the pool.
+      if (txnStarted) {
+        try { await client.query('ROLLBACK'); } catch (_) { /* failed txn state */ }
+        txnStarted = false;
+      }
+      throw batchErr;
+    } finally {
+      // Belt-and-suspenders: any escape that bypasses both COMMIT and the
+      // catch (future early returns inside the body) is rolled back here.
+      if (txnStarted) {
+        try { await client.query('ROLLBACK'); } catch (_) {}
+      }
+      client.release();
+    }
   }
 
   try {
