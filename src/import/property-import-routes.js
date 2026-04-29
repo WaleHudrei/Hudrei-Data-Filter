@@ -1854,6 +1854,14 @@ async function runBackgroundImport(jobId, allRows, mapping, filename, resolvedLi
   let inserted = 0, updated = 0, errors = 0, processed = 0;
   const allSkipped = [];  // hoisted so the catch block can reference it
   let totalDuplicatesMerged = 0;  // 2026-04-20: tracked separately from allSkipped — these rows aren't dropped, they're merged into the keeper
+  // 2026-04-29 Tier-3 follow-up: collect every property id touched in this
+  // run so we can hand the set to distress.scoreProperties() once the import
+  // finishes. Pre-fix the bulk-import path never triggered scoring, leaving
+  // every newly imported row at the default "cold" band until somebody
+  // manually clicked Recompute. saveRunToDB (filtration upload) already does
+  // this; mirror that behavior here. Use a Set to dedupe across batches that
+  // touch the same property via UPSERT.
+  const touchedPropIdSet = new Set();
 
   try {
     await query(`UPDATE bulk_import_jobs SET status='running', updated_at=NOW() WHERE id=$1`, [jobId]);
@@ -2236,6 +2244,7 @@ async function runBackgroundImport(jobId, allRows, mapping, filename, resolvedLi
         for (const p of propRes.rows) {
           propMap[(p.street+'|'+p.city+'|'+p.state_code+'|'+p.zip_code).toLowerCase()] = { id: p.id, wasInsert: p.xmax==='0' };
           propIds.push(p.id);
+          touchedPropIdSet.add(p.id);
           if (p.xmax==='0') inserted++; else updated++;
         }
 
@@ -3008,6 +3017,25 @@ async function runBackgroundImport(jobId, allRows, mapping, filename, resolvedLi
       console.log(`[bulk-import] refreshed owner_portfolio_counts MV (${Date.now() - t}ms)`);
     } catch (e) {
       console.error(`[bulk-import] MV refresh failed (non-fatal):`, e.message);
+    }
+
+    // 2026-04-29 Tier-3 follow-up: score every property we touched. Pre-fix
+    // the bulk-import path never triggered distress scoring, leaving newly
+    // imported properties at the default "cold" band until somebody manually
+    // clicked Recompute. Use the targeted scoreProperties() (UNNEST'd, fast)
+    // not scoreAllProperties() — we already know exactly which ids changed.
+    // Non-fatal: a scoring failure shouldn't fail the whole import. The
+    // operator can still kick off a manual Recompute.
+    if (touchedPropIdSet.size > 0) {
+      try {
+        const distress = require('../scoring/distress');
+        const ids = Array.from(touchedPropIdSet);
+        const t = Date.now();
+        const { scored } = await distress.scoreProperties(ids);
+        console.log(`[bulk-import] scored ${scored} of ${ids.length} touched properties (${Date.now() - t}ms)`);
+      } catch (e) {
+        console.error(`[bulk-import] distress scoring failed (non-fatal):`, e.message);
+      }
     }
 
   } catch(e) {
