@@ -40,6 +40,17 @@ function errRefId() {
   return 'err_' + Math.random().toString(36).slice(2, 10);
 }
 
+// 2026-04-29 audit fix K6: escape user-controlled content before HTML
+// interpolation. Reflected XSS via `?msg=<script>` was possible in pages
+// (e.g. nisPage) that rendered req.query.msg into a flash banner without
+// escaping. Mirrors the helper in records-routes.js / auth-routes.js so
+// every old-Loki shell page has access to it.
+function escHTML(s) {
+  return String(s == null ? '' : s)
+    .replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')
+    .replace(/"/g,'&quot;').replace(/'/g,'&#39;');
+}
+
 const APP_USERNAME   = process.env.APP_USERNAME   || 'hudrei';
 const APP_PASSWORD   = process.env.APP_PASSWORD   || 'changeme123';
 // 2026-04-28 audit fix S-7: drop the hardcoded fallback for SESSION_SECRET.
@@ -1643,7 +1654,7 @@ function nisPage(stats, msg, user) {
       </div>
     </div>
 
-    ${msg ? `<div class="ocu-card" style="margin-bottom:16px;background:#e8f5ee;border-color:#9bd0a8;color:#1a5f1a;padding:12px 16px;font-size:13px">${msg}</div>` : ''}
+    ${msg ? `<div class="ocu-card" style="margin-bottom:16px;background:#e8f5ee;border-color:#9bd0a8;color:#1a5f1a;padding:12px 16px;font-size:13px">${escHTML(msg)}</div>` : ''}
 
     <div class="ocu-kpi-row" style="grid-template-columns:repeat(auto-fit,minmax(180px,1fr));margin-bottom:18px">
       <div class="ocu-kpi featured">
