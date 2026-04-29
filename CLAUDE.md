@@ -25,11 +25,12 @@ There is no test runner, no linter, no formatter, and no TypeScript. Don't add a
 ### One-time scripts (do NOT run in deploy pipelines)
 
 ```bash
-CONFIRM_MIGRATION=yes node src/migrate-properties.js   # backfills properties/contacts/phones from filtration_results
 LOKI_DEDUP_PHONES=confirm node src/server.js           # actually merge phone-shared duplicate contacts (default = report-only)
 ```
 
-`migrate-properties.js` exits 1 unless `CONFIRM_MIGRATION=yes` is set — by design. Phone dedup runs every boot in `report` mode (logs would-be merges); set `LOKI_DEDUP_PHONES=confirm` once to actually merge, then unset.
+Phone dedup runs every boot in `report` mode (logs would-be merges); set `LOKI_DEDUP_PHONES=confirm` once to actually merge, then unset.
+
+`migrate-properties.js` was deleted in the 2026-04-29 audit (L1) — it had served its purpose backfilling properties from filtration_results during the original Phase-2 cutover. Don't reintroduce it; if a new bootstrap script is needed, write a fresh one tailored to the current multi-tenant schema.
 
 ## Environment variables
 
@@ -64,9 +65,9 @@ There is **no view engine**. HTML is built with backtick-tagged template strings
 
 ### Data layer
 
-- All Postgres access goes through `src/db.js` (`query`, `pool`, `initSchema`, `refreshOwnerPortfolioMv`). Don't construct `new Pool()` elsewhere — `migrate-properties.js` is the only exception and is a one-shot script.
-- Schema is **created and migrated idempotently inside `initSchema()`** using `CREATE TABLE IF NOT EXISTS`, `ADD COLUMN IF NOT EXISTS`, and a chain of try/catch'd `ALTER`/`CREATE INDEX` blocks. There are **no separate migration files**. To add a column: add it to the `CREATE TABLE` block AND add an `ALTER TABLE ... ADD COLUMN IF NOT EXISTS` for in-place upgrades.
-- `_schemaReady` is a module-level flag — `initSchema()` runs at most once per process. Other domains have parallel ensure-functions: `campaigns.initCampaignSchema()`, `scoring/distress.ensureDistressSchema()`, `settings.ensureSettingsSchema()`. All four run in parallel via `Promise.allSettled` inside `app.listen`'s callback — schema failure does not block boot.
+- All Postgres access goes through `src/db.js` (`query`, `pool`, `initSchema`, `refreshOwnerPortfolioMv`). Don't construct `new Pool()` elsewhere.
+- Schema is **created and migrated idempotently inside `initSchema()`** using `CREATE TABLE IF NOT EXISTS`, `ADD COLUMN IF NOT EXISTS`, and a chain of try/catch'd `ALTER`/`CREATE INDEX` blocks. The Phase-1 SaaS rebuild (multi-tenant constraints + consent columns) is the only exception — those live as standalone SQL files under `saas-phase1-migration/` and are run once manually before deploying the matching code (see that directory's README).
+- `_schemaReady` is a module-level flag — `initSchema()` runs at most once per process. Other domains have parallel ensure-functions: `campaigns.initCampaignSchema()`, `scoring/distress.ensureDistressSchema()`, `settings.ensureSettingsSchema()`. **As of audit M8 (2026-04-29):** `initSchema()` is awaited synchronously at boot and `process.exit(1)`s on failure (deploy fails noisily); the three optional ensure-schemas keep `Promise.allSettled` so a missing distress/campaigns/settings table doesn't take the whole app down.
 - `owner_portfolio_counts` is a materialized view. Refresh after big property imports via `refreshOwnerPortfolioMv()`.
 - Two tables (`owner_messages`, `owner_activities`) are still **lazy-created on first visit to `/owners/:id`** and have not been moved into `initSchema` yet — known follow-up item.
 

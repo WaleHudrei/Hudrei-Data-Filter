@@ -80,7 +80,12 @@ if (APP_PASSWORD === 'changeme123') {
 
 let redis = null;
 if (REDIS_URL) {
-  redis = new Redis(REDIS_URL, { maxRetriesPerRequest: 3 });
+  // 2026-04-29 audit fix L5: matches the records-routes + auth-routes Redis
+  // clients (both already at 2). Pre-fix this one was 3, the others 2 —
+  // inconsistent retry budget across modules. Picked 2 because a flaky Redis
+  // adds 3× round-trip latency to every session lookup, and 2 retries is
+  // already plenty before falling back to the per-process Map / MemoryStore.
+  redis = new Redis(REDIS_URL, { maxRetriesPerRequest: 2 });
   redis.on('connect', () => console.log('Redis connected'));
   redis.on('error', (e) => console.error('Redis error:', e.message));
 }
@@ -103,6 +108,29 @@ async function clearMemory() {
 // Behind a Railway / Cloudflare proxy — required for `cookie.secure = true` to
 // not drop cookies over HTTPS, and for `req.ip` to report the real client IP.
 app.set('trust proxy', 1);
+
+// 2026-04-29 audit fix L7 + L8: minimal security-headers middleware.
+// Equivalent to a stripped-down `helmet()` — picked the headers that matter
+// for an internal CRM behind Cloudflare/Railway TLS termination, skipped the
+// ones that don't apply (CSP would break inline-style HTML, expectCt is
+// deprecated, crossOriginResourcePolicy is overkill for same-origin).
+// Adding these inline avoids pulling helmet as a new dependency (which would
+// require a package-lock.json update — risky for Railway's `npm ci` build).
+//
+//   - HSTS:           force HTTPS for 6mo, include subdomains. Only set in
+//                     production — local dev over http would otherwise pin.
+//   - X-Frame-Options: prevent click-jacking via iframe embedding.
+//   - X-Content-Type-Options: prevent MIME sniffing.
+//   - Referrer-Policy: don't leak full URL on cross-origin nav.
+app.use((req, res, next) => {
+  if (IS_PROD) {
+    res.set('Strict-Transport-Security', 'max-age=15552000; includeSubDomains');
+  }
+  res.set('X-Frame-Options', 'DENY');
+  res.set('X-Content-Type-Options', 'nosniff');
+  res.set('Referrer-Policy', 'strict-origin-when-cross-origin');
+  next();
+});
 
 // 2026-04-29 audit fix H1 + M3: tighten the global body-parser limits.
 // Pre-fix:

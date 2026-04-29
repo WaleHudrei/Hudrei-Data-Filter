@@ -867,11 +867,21 @@ router.post('/lists/delete', requireAuth, async (req, res) => {
 
 // ─── /ocular/activity — Activity (background import jobs) ──────────────────
 async function fetchActivityJobs(tenantId) {
-  // bulk_import_jobs has the db.js schema on staging/prod (created at boot
-  // via initSchema). bulk-import-routes.js's ensureJobsTable defines a
-  // different shape but its CREATE TABLE IF NOT EXISTS is a no-op once
-  // db.js's version exists, so only the db.js columns are real.
-  // Pre-existing schema collision documented in the Phase 1 status doc.
+  // bulk_import_jobs schema lives in src/import/bulk-import-routes.js's
+  // ensureJobsTable — single source of truth as of audit fix L-3 (2026-04-28).
+  //
+  // ⚠ KNOWN COLUMN-NAME DRIFT (2026-04-29 audit follow-up): the canonical
+  // ensureJobsTable defines `rows_processed / rows_created / rows_updated /
+  // rows_errored / error_message / started_at` (this is what processImport
+  // WRITES to). But this SELECT and src/activity-routes.js still reference
+  // the LEGACY names `processed_rows / inserted / updated / errors /
+  // error_log / created_at` from the pre-L-3 db.js definition. On older DBs
+  // (created when db.js still had its own CREATE TABLE) the legacy columns
+  // exist and this query works against them, but the writer's rows_processed
+  // updates silently fail — progress never updates. On fresh DBs the legacy
+  // columns DON'T exist and this SELECT throws "column does not exist".
+  // Tracked as a follow-up: align readers + writers to one column set, with
+  // an ALTER TABLE ... RENAME COLUMN pass to migrate existing tables.
   const r = await query(`
     SELECT j.id, j.tenant_id, j.status, j.filename, j.list_id,
            COALESCE(j.total_rows, 0)::int     AS total_rows,

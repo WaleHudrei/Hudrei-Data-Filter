@@ -735,10 +735,30 @@ router.post('/save-mapping', requireAuth, async (req, res) => {
     // strings into saved templates.
     const colSet = new Set(columns.map(c => String(c)));
     const cleanMapping = {};
+    // 2026-04-29 audit fix L9: warn when a saved mapping targets a Loki phone
+    // slot the row-loop will never iterate (phone_1..phone_10 is the loop
+    // bound). Pre-fix, "Phone 11" / "Phone 15" mappings would save and then
+    // silently drop on commit because the importer's `for (let i=1;i<=10;i++)`
+    // never reaches them. Operator never saw a warning. Now: collect them and
+    // surface in the response so the preview UI can flag them.
+    const PHONE_SLOT_RE = /^Ph(?:one)?[\s_]?#?(\d+)$/i;
+    const PHONE_SLOT_MAX = 10;
+    const phoneSlotOverflow = [];
     for (const [lokiKey, csvCol] of Object.entries(mapping)) {
       if (typeof lokiKey === 'string' && typeof csvCol === 'string' && colSet.has(csvCol)) {
+        const m = lokiKey.match(PHONE_SLOT_RE);
+        if (m && parseInt(m[1], 10) > PHONE_SLOT_MAX) {
+          phoneSlotOverflow.push({ lokiField: lokiKey, csvCol, slot: parseInt(m[1], 10) });
+          // Drop the overflow mapping rather than save it — the importer
+          // can't honor it, so saving it sets the operator up for the silent-
+          // drop bug on commit.
+          continue;
+        }
         cleanMapping[lokiKey] = csvCol;
       }
+    }
+    if (phoneSlotOverflow.length > 0) {
+      console.warn(`[mapping save] dropped ${phoneSlotOverflow.length} phone slot(s) > ${PHONE_SLOT_MAX}: ${phoneSlotOverflow.map(p => `${p.lokiField}=${p.csvCol}`).join(', ')}`);
     }
     if (Object.keys(cleanMapping).length === 0) {
       return res.status(400).json({ error: 'No valid mappings to save.' });

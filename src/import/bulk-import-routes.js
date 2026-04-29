@@ -137,13 +137,33 @@ function requireAuth(req, res, next) {
 
 // Module-level market cache: tenantId → { state_code → market_id }. Each
 // tenant has their own markets rows, so the cache must be keyed by tenant.
+//
+// 2026-04-29 audit fix L4: cap the cache to MARKET_CACHE_MAX entries with
+// LRU eviction. Pre-fix the Map grew unbounded — fine at a handful of
+// tenants, but at thousands the per-process memory creeps. Each entry is
+// tiny (~50 state codes × 8-byte ids = ~400 bytes), so 256 entries = ~100KB
+// upper bound. LRU semantics: re-priming a tenant moves it to the tail so
+// it's the last to be evicted.
+const MARKET_CACHE_MAX = 256;
 const marketCacheByTenant = new Map();
 async function primeMarketCache(tenantId) {
-  if (marketCacheByTenant.has(tenantId)) return marketCacheByTenant.get(tenantId);
+  if (marketCacheByTenant.has(tenantId)) {
+    // LRU touch: re-insert to move to the tail of the Map iteration order.
+    const cached = marketCacheByTenant.get(tenantId);
+    marketCacheByTenant.delete(tenantId);
+    marketCacheByTenant.set(tenantId, cached);
+    return cached;
+  }
   const mktRes = await query(`SELECT id, state_code FROM markets WHERE tenant_id = $1`, [tenantId]);
   const cache = Object.create(null);
   for (const m of mktRes.rows) cache[m.state_code] = m.id;
   marketCacheByTenant.set(tenantId, cache);
+  // Evict oldest entries when over cap. Map iterates in insertion order, so
+  // .keys().next() gives us the LRU candidate.
+  while (marketCacheByTenant.size > MARKET_CACHE_MAX) {
+    const oldest = marketCacheByTenant.keys().next().value;
+    marketCacheByTenant.delete(oldest);
+  }
   return cache;
 }
 

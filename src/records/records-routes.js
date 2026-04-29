@@ -497,14 +497,19 @@ router.post('/_new', requireAuth, async (req, res) => {
     const zipNorm = zipMatch[0];
 
     // ── Coerce numeric fields with bounds (same rules as importer) ─────────
-    const MONEY_LIMIT = 9_999_999_999.99;
-    const toMoney = v => { if (!v) return null; const n = parseFloat(String(v).replace(/[$,%]/g,'')); if (isNaN(n) || Math.abs(n) > MONEY_LIMIT) return null; return n; };
-    const toInt   = v => { if (!v) return null; const n = parseInt(String(v).replace(/[$,%]/g,''), 10); return isNaN(n) ? null : n; };
-    const toYear  = v => { const n = toInt(v); if (n === null || n < 1800 || n > 2200) return null; return n; };
-    const toSmallInt = v => { const n = toInt(v); if (n === null || n < -32768 || n > 32767) return null; return n; };
-    const toBath  = v => { if (!v) return null; const n = parseFloat(v); if (isNaN(n) || n < 0 || n > 99) return null; return n; };
-    const toPct   = v => { if (!v) return null; const n = parseFloat(v); if (isNaN(n) || n < -100 || n > 100) return null; return n; };
-    const toBool  = v => { const s = (v||'').toLowerCase(); return s==='true' ? true : s==='false' ? false : null; };
+    // 2026-04-29 audit fix M10 follow-up: this was the 4th inline copy of
+    // the bounded numeric coerce helpers that the M10 first pass missed
+    // (got the 3 in import/* but not this one in records-routes /_new).
+    // Single source of truth lives in src/import/coerce.js; bound here to
+    // the 'records-new' label so out-of-range warnings are attributable.
+    const _coerce = require('../import/coerce');
+    const toMoney    = (v) => _coerce.toMoney(v, 'records-new');
+    const toInt      = _coerce.toInt;
+    const toYear     = (v) => _coerce.toYear(v, 'records-new');
+    const toSmallInt = (v) => _coerce.toSmallInt(v, 'records-new');
+    const toBath     = (v) => _coerce.toBathrooms(v, 'records-new');
+    const toPct      = (v) => _coerce.toPercent(v, 'records-new');
+    const toBool     = _coerce.toBool;
 
     const yearBuilt = toYear(b.year_built);
     const sqft      = toInt(b.sqft);
