@@ -69,12 +69,13 @@ const MEMORY_KEY     = 'hudrei:filtration:memory';
 const IS_PROD        = process.env.NODE_ENV === 'production';
 
 // ── Production hardening checks (Audit #32 / security) ────────────────────────
-// Fail fast at boot rather than ship a production deploy with the default
-// credentials baked into the repo.
-if (IS_PROD) {
-  if (APP_PASSWORD === 'changeme123') {
-    throw new Error('Refusing to start in production with default APP_PASSWORD. Set APP_PASSWORD env var on Railway before deploying.');
-  }
+// 2026-04-29 audit fix M5: drop the IS_PROD gate, mirroring S-7's pattern.
+// Pre-fix the guard only fired when NODE_ENV === 'production'. Preview /
+// staging / non-prod deploys missing that env var would silently ship with
+// the baked-in default credential 'changeme123' — same trap S-7 closed for
+// SESSION_SECRET. Fail hard at boot regardless of environment.
+if (APP_PASSWORD === 'changeme123') {
+  throw new Error('Refusing to start with default APP_PASSWORD. Set APP_PASSWORD env var on Railway (any 16+ char random string is fine for the legacy single-user gate).');
 }
 
 let redis = null;
@@ -103,9 +104,22 @@ async function clearMemory() {
 // not drop cookies over HTTPS, and for `req.ip` to report the real client IP.
 app.set('trust proxy', 1);
 
-app.use(express.urlencoded({ extended: true }));
-app.use(express.json({ limit: '50mb' }));
-app.use(express.urlencoded({ extended: true, limit: '50mb' }));
+// 2026-04-29 audit fix H1 + M3: tighten the global body-parser limits.
+// Pre-fix:
+//   - urlencoded was registered TWICE (lines 95 and 97 of the old layout):
+//     once with default 100KB, once with 50MB. The first registration's 100KB
+//     limit fired before the 50MB one ever got a chance, so the documented
+//     50MB ceiling was misleading dead syntax. (Audit M3.)
+//   - express.json's 50MB limit applied to EVERY route. 100 abusive clients
+//     × 50MB JSON to /login = 5GB of buffered request bodies on Railway's
+//     8GB worker. (Audit H1.)
+// File uploads go through multer (server.js's 50MB CSV limit and
+// import/bulk-import-routes.js's 600MB), not these body parsers — multer
+// handles multipart/form-data independently. The only routes that send
+// non-trivial JSON bodies (e.g. /import/property/commit) post a mapping
+// object + a few flags, well under 1MB.
+app.use(express.json({ limit: '1mb' }));
+app.use(express.urlencoded({ extended: true, limit: '1mb' }));
 
 // ── Session store (Audit #6) ──────────────────────────────────────────────────
 // In-memory MemoryStore is Express's default — it's unsafe for production:
@@ -157,6 +171,30 @@ app.use(session({
 // Serve static files (client JS, CSS, images) from /public
 const path = require('path');
 app.use(express.static(path.join(__dirname, 'public')));
+
+// 2026-04-29 audit fix H2: proactive 503 when the pg pool is saturated.
+// Pre-fix, requests beyond the pool's max:20 silently waited up to 5s
+// (`connectionTimeoutMillis`) and then erupted as generic 500s. Under load
+// this looked like sporadic "internal server error" with no obvious cause.
+// Now: if 5+ requests are already queued for a connection, every new request
+// gets 503 + Retry-After immediately. The 20 in-flight queries finish without
+// being slowed by waiters; clients (browsers, dialer scripts) honour
+// Retry-After and back off. We avoid hitting the static routes by mounting
+// after express.static.
+const { pool: _pgPool } = require('./db');
+const POOL_SATURATION_THRESHOLD = 5;
+app.use((req, res, next) => {
+  if (_pgPool.waitingCount >= POOL_SATURATION_THRESHOLD) {
+    res.set('Retry-After', '5');
+    res.status(503);
+    // Send JSON for API/POST callers, HTML for browser GETs.
+    if (req.accepts('html') && req.method === 'GET') {
+      return res.send('<!DOCTYPE html><html><body style="font-family:sans-serif;max-width:600px;margin:80px auto;padding:0 24px;text-align:center"><h1>Server busy</h1><p>The server is temporarily at capacity. Please retry in a few seconds.</p></body></html>');
+    }
+    return res.json({ error: 'Server is at capacity. Please retry in a few seconds.' });
+  }
+  next();
+});
 
 // expose helpers to upload router
 app.locals.processCSV = processCSV;
@@ -590,17 +628,29 @@ app.listen(PORT, async ()=>{
   console.log(`Ocular running on port ${PORT}`);
   console.log(`Redis: ${redis?'connected':'not configured'}`);
 
-  // Parallel startup — the four ensure* calls don't depend on each other,
-  // so run them concurrently. Previously they ran sequentially (~3-4s of DDL)
-  // which delayed the first request post-deploy. (Audit #16.)
-  const [baseRes, campRes, distRes, settingsRes] = await Promise.allSettled([
-    initSchema(),
+  // 2026-04-29 audit fix M8: split startup into "core must succeed" vs
+  // "optional, log-and-continue". Pre-fix the Promise.allSettled wrapped
+  // initSchema (the foundational tenants/users/properties tables) alongside
+  // the optional ensure* calls — meaning if initSchema failed, the server
+  // still came up and started serving requests against a half-initialized
+  // schema. Now: initSchema is awaited synchronously; failure here means
+  // process.exit(1) so the deploy fails fast and the bad image doesn't ship.
+  // Optional schemas (campaigns, distress, settings) keep allSettled — their
+  // individual failure shouldn't take down the whole app.
+  try {
+    await initSchema();
+    console.log('Schema ready');
+  } catch (e) {
+    console.error('FATAL: core schema init failed — refusing to serve traffic:', e.message);
+    process.exit(1);
+  }
+
+  // Optional schemas — concurrent, log-and-continue.
+  const [campRes, distRes, settingsRes] = await Promise.allSettled([
     campaigns.initCampaignSchema(),
     require('./scoring/distress').ensureDistressSchema(),
     require('./settings').ensureSettingsSchema(),
   ]);
-  if (baseRes.status === 'fulfilled')    console.log('Schema ready');
-  else                                   console.error('Schema init error:', baseRes.reason?.message || baseRes.reason);
   if (campRes.status === 'fulfilled')    console.log('Campaign schema ready');
   else                                   console.error('Campaign schema init error:', campRes.reason?.message || campRes.reason);
   if (distRes.status === 'fulfilled')    console.log('Distress schema ready');
@@ -667,7 +717,23 @@ async function saveRunToDB(tenantId, filename, stats, listsSeen, allRows) {
 
   const distress = require('./scoring/distress');
 
+  // 2026-04-29 audit fix H3: wrap the entire 13-pass import in a single
+  // transaction. Pre-fix, each pass used the pool-level dbQuery — pass N
+  // failure left passes 1..N-1 committed, leaving inconsistent state
+  // (markets seeded but no properties; properties imported but no contacts;
+  // etc.). Now: dedicated client + BEGIN/COMMIT, with the distress rescore
+  // (Pass 13) intentionally moved OUTSIDE the txn since it's a long-running
+  // separate concern and shouldn't hold the connection.
+  // Same shadowed-symbol trick as audit K9 / H3 (bulk-import). The 16
+  // existing `dbQuery(...)` call sites inside saveRunToDB now route through
+  // the dedicated client without per-line edits.
+  const client = await _pgPool.connect();
+  // eslint-disable-next-line no-shadow
+  const dbQuery = client.query.bind(client);
+  let txnStarted = false;
   try {
+    await dbQuery('BEGIN');
+    txnStarted = true;
     // ── Pass 0: normalize + partition all rows up-front ──────────────────────
     // Rows with invalid/garbage state_codes are DROPPED (decision #2). Keeps
     // the properties table clean from "46" / "UN" / other nonsense that used
@@ -1007,6 +1073,12 @@ async function saveRunToDB(tenantId, filename, stats, listsSeen, allRows) {
       tenantId,
     ]);
 
+    // H3: COMMIT before pass 13. Distress rescoring runs OUTSIDE the txn —
+    // it's a long-running operation that shouldn't hold the connection, and
+    // its failure shouldn't roll back the import.
+    await dbQuery('COMMIT');
+    txnStarted = false;
+
     // ── Pass 13: distress rescoring ──────────────────────────────────────────
     if (touchedPropIds.length > 0) {
       try {
@@ -1020,8 +1092,21 @@ async function saveRunToDB(tenantId, filename, stats, listsSeen, allRows) {
 
     return runId;
   } catch (err) {
+    // H3: roll back the import txn if it was started so we don't leak a
+    // poisoned client back to the pool.
+    if (txnStarted) {
+      try { await client.query('ROLLBACK'); }
+      catch (rbErr) { console.error('[saveRunToDB] ROLLBACK failed:', rbErr.message); }
+      txnStarted = false;
+    }
     console.error('saveRunToDB error:', err.message);
     return null;
+  } finally {
+    // Belt-and-suspenders for any future early-return path.
+    if (txnStarted) {
+      try { await client.query('ROLLBACK'); } catch (_) {}
+    }
+    client.release();
   }
 }
 

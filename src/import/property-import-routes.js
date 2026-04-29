@@ -4,6 +4,9 @@ const multer = require('multer');
 const Papa = require('papaparse');
 const crypto = require('crypto');
 const { query, refreshOwnerPortfolioMv, pool } = require('../db');
+// 2026-04-29 audit fix M10: shared numeric coercion. Replaces the two
+// near-duplicate inline copies that lived in /commit and /start-job.
+const _propImportCoerce = require('./coerce');
 const { shell } = require('../shared-shell');
 const { normalizeState: sharedNormalizeState } = require('./state');
 // 2026-04-20 pass 12: shared phone normalizer — see phone-normalize.js.
@@ -53,6 +56,26 @@ const upload = multer({
   limits: { fileSize: 50 * 1024 * 1024 },
   fileFilter: csvFileFilter,
 });
+
+// 2026-04-29 audit fix H5: max age for session-stored import rows. After this
+// the rows are treated as abandoned and the operator is told to re-upload.
+// 2 hours is comfortably longer than any sane import workflow but short
+// enough that abandoned previews don't pile up in MemoryStore for 8 hours.
+const IMPORT_ROWS_TTL_MS = 2 * 60 * 60 * 1000;
+
+function _getFreshImportRows(req) {
+  const rows = req.session.importRows;
+  if (!rows || !rows.length) return null;
+  const addedAt = req.session.importRowsAddedAt || 0;
+  if (Date.now() - addedAt > IMPORT_ROWS_TTL_MS) {
+    // Stale — clear and treat as expired.
+    req.session.importRows = null;
+    req.session.importRowsAddedAt = null;
+    req.session.save();
+    return null;
+  }
+  return rows;
+}
 
 function requireAuth(req, res, next) {
   if (!req.session || !req.session.authenticated) return res.redirect('/login');
@@ -600,11 +623,27 @@ router.post('/parse', requireAuth, upload.single('csvfile'), async (req, res) =>
       if (template) {
         // A saved mapping might reference a column that doesn't exist in this
         // file (headers drifted slightly). Filter out dead references.
+        // 2026-04-29 audit fix H6: collect the dropped refs so the preview
+        // page can warn the user — pre-fix, dead refs vanished silently and
+        // the operator had no idea their saved mapping was missing fields.
+        // Specifically catches: saved mapping references phone_500 but the
+        // current file only has phone_1..phone_10 (or the inverse — saved
+        // for a 10-phone file, current file is 14-phone).
         const colSet = new Set(columns);
         const filtered = {};
+        const staleFields = []; // [{ lokiField, missingColumn }, ...]
         for (const [lokiKey, csvCol] of Object.entries(template.mapping || {})) {
-          if (colSet.has(csvCol)) filtered[lokiKey] = csvCol;
+          if (colSet.has(csvCol)) {
+            filtered[lokiKey] = csvCol;
+          } else {
+            staleFields.push({ lokiField: lokiKey, missingColumn: csvCol });
+          }
         }
+        if (staleFields.length > 0) {
+          console.warn(`[mapping stale-ref] fingerprint=${fingerprint} dropped ${staleFields.length} dead reference(s): ${staleFields.map(s => `${s.lokiField}=${s.missingColumn}`).join(', ')}`);
+        }
+        // Stash on the request so the response builder can include it.
+        req._mappingStaleFields = staleFields;
         // 2026-04-21 fix: merge saved template OVER autoMap instead of
         // replacing it. Pre-fix, `mapping = filtered` wiped any field
         // autoMap caught that the user hadn't explicitly configured in
@@ -643,7 +682,15 @@ router.post('/parse', requireAuth, upload.single('csvfile'), async (req, res) =>
     const rowsToStore = rows.length > ROW_CAP ? rows.slice(0, ROW_CAP) : rows;
     const wasCapped = rows.length > ROW_CAP;
 
+    // 2026-04-29 audit fix H5: tag the stored rows with a timestamp so the
+    // /commit and /start-job paths can detect abandoned previews. Pre-fix,
+    // a user who uploaded + /preview'd + closed the tab kept rows pinned in
+    // session for the full 8-hour cookie maxAge. With MemoryStore fallback
+    // (no REDIS_URL) every abandoned preview burned heap until restart.
+    // Now: rows older than IMPORT_ROWS_TTL_MS are treated as if the session
+    // expired, and the operator gets a "please re-upload" prompt instead.
     req.session.importRows = rowsToStore;
+    req.session.importRowsAddedAt = Date.now();
     req.session.save();
     res.json({
       columns,
@@ -656,6 +703,9 @@ router.post('/parse', requireAuth, upload.single('csvfile'), async (req, res) =>
       filename: req.file.originalname,
       fingerprint,
       savedTemplate,
+      // H6: surface dead-ref drops so the preview UI can show
+      // "These columns from your saved mapping aren't in this file: X, Y"
+      staleFields: req._mappingStaleFields || [],
     });
   } catch(e) { res.status(500).json({ error: e.message }); }
 });
@@ -1096,8 +1146,11 @@ router.post('/commit', requireAuth, async (req, res) => {
     // Read rows from server session BEFORE opening the transaction so a
     // missing-session early return doesn't leak a half-open txn that the
     // dedicated client would carry back to the pool. (K9.)
-    const allRows = req.session.importRows;
-    if (!allRows || !allRows.length) return res.status(400).json({ error: 'Session expired. Please re-upload your file.' });
+    // H5: _getFreshImportRows also drops rows older than IMPORT_ROWS_TTL_MS
+    // so abandoned previews aren't replayed if the user wanders back hours
+    // later — they re-upload, which is the safer path anyway.
+    const allRows = _getFreshImportRows(req);
+    if (!allRows) return res.status(400).json({ error: 'Session expired. Please re-upload your file.' });
     const rows = allRows.slice(offset || 0, (offset || 0) + (batchSize || 500));
 
     await query('BEGIN');
@@ -1109,6 +1162,13 @@ router.post('/commit', requireAuth, async (req, res) => {
     // each other's error messages, and the failure path never cleared it so
     // stale errors could contaminate the next success response.
     let firstError = null;
+    // 2026-04-29 audit fix M9: bucket row errors by message prefix so the
+    // operator can SEE patterns instead of "3 errors logged then silence".
+    // Pre-fix, a column-shift bug where rows 4..500 all failed the same way
+    // looked like 3 sporadic errors in the log. Now: every row error
+    // increments a counter for its error class; a summary block logs at the
+    // end of the batch so the pattern is obvious.
+    const errorBuckets = new Map(); // messagePrefix -> count
 
     const tenantId = req.tenantId;
 
@@ -1178,95 +1238,20 @@ router.post('/commit', requireAuth, async (req, res) => {
       return n && v.length > n ? v.slice(0, n) : v;
     };
 
-    // 2026-04-21 PM hotfix: the old `toNum = v && !isNaN(v) ? parseFloat(v.replace(...)) : null`
-    // was BROKEN for any input with a $ or % prefix. isNaN("$189,000") is true,
-    // so the function returned null for every currency-formatted value —
-    // meaning every PropStream / DealMachine import through the /commit
-    // foreground path was silently storing NULL for assessed_value,
-    // estimated_value, last_sale_price, and equity_percent. The background
-    // /start-job path got this right (stripped before isNaN). Now unified.
-    const toNum = (v) => {
-      if (!v) return null;
-      const s = String(v).replace(/[$,%]/g, '').trim();
-      if (!s || isNaN(s)) return null;
-      return parseFloat(s);
-    };
-    const toInt = (v) => {
-      if (!v) return null;
-      const s = String(v).replace(/[$,%]/g, '').trim();
-      if (!s || isNaN(s)) return null;
-      return parseInt(s, 10);
-    };
-    // 2026-04-21 PM hotfix: equity_percent column is NUMERIC(8,2) post-hotfix
-    // but even widened, a value like "$403,382" from a PropStream export is
-    // obviously wrong — a percent should be in [-100, 100]. Anything outside
-    // that range is almost certainly a dollar amount that leaked into the
-    // percent column (PropStream column-shift bug), so clamp to NULL rather
-    // than storing garbage. Logged for visibility. Applied to equity_percent
-    // in both the /commit path and the /start-job background path.
-    const toPercent = v => {
-      const n = toNum(v);
-      if (n == null) return null;
-      if (n < -100 || n > 100) {
-        console.warn(`[property-import] out-of-range percent value ${JSON.stringify(v)} → NULL`);
-        return null;
-      }
-      return n;
-    };
-    // 2026-04-21 PM hotfix: bounded-money helper for NUMERIC(12,2) columns.
-    // Max absolute value 9,999,999,999.99 (~$10B) — any row exceeding this is
-    // garbage (wrong-column, extra-zero typo, scientific notation). Used for
-    // assessed_value, estimated_value, last_sale_price, total_tax_owed.
-    const MONEY_LIMIT = 9_999_999_999.99;
-    const toMoney = v => {
-      const n = toNum(v);
-      if (n == null) return null;
-      if (Math.abs(n) > MONEY_LIMIT) {
-        console.warn(`[property-import] out-of-range money value ${JSON.stringify(v)} → NULL`);
-        return null;
-      }
-      return n;
-    };
-    // Bounded-year helper. Year values MUST be a 4-digit year — PropStream
-    // sometimes leaks money values ($57,142) into year columns. Clamp to a
-    // wide-but-sane window to catch that.
-    const toYear = v => {
-      const n = toNum(v);
-      if (n == null) return null;
-      const y = Math.round(n);
-      if (y < 1800 || y > 2200) {
-        console.warn(`[property-import] invalid year value ${JSON.stringify(v)} → NULL`);
-        return null;
-      }
-      return y;
-    };
-    // Bounded smallint helper (-32,768 to 32,767). Clamp to NULL if exceeded
-    // — a bedroom count, stories count, or similar should never approach this.
-    const toSmallInt = v => {
-      const n = toInt(v);
-      if (n == null) return null;
-      if (n < -32_768 || n > 32_767) {
-        console.warn(`[property-import] out-of-range smallint value ${JSON.stringify(v)} → NULL`);
-        return null;
-      }
-      return n;
-    };
-    // Bounded bathroom helper. NUMERIC(3,1) max 99.9. Cap at 99 to be safe.
-    const toBathrooms = v => {
-      const n = toNum(v);
-      if (n == null) return null;
-      if (n < 0 || n > 99) {
-        console.warn(`[property-import] out-of-range bathrooms value ${JSON.stringify(v)} → NULL`);
-        return null;
-      }
-      return n;
-    };
-    const toDate = v => {
-      if (!v) return null;
-      const d = new Date(v);
-      return isNaN(d) ? null : d.toISOString().split('T')[0];
-    };
-    const toBool = v => { const s = (v||'').toLowerCase(); return s==='yes'||s==='true'||s==='1'||s==='y' ? true : s==='no'||s==='false'||s==='0'||s==='n' ? false : null; };
+    // 2026-04-29 audit fix M10: coercion helpers come from src/import/coerce.js
+    // (single source of truth). Pre-fix this file had two divergent inline
+    // copies of these helpers (here in /commit foreground and again in the
+    // /start-job background path) plus a third in bulk-import-routes.js.
+    // 'property-import' label preserves the prefix on out-of-range warnings.
+    const toNum       = _propImportCoerce.toNum;
+    const toInt       = _propImportCoerce.toInt;
+    const toPercent   = (v) => _propImportCoerce.toPercent(v, 'property-import');
+    const toMoney     = (v) => _propImportCoerce.toMoney(v, 'property-import');
+    const toYear      = (v) => _propImportCoerce.toYear(v, 'property-import');
+    const toSmallInt  = (v) => _propImportCoerce.toSmallInt(v, 'property-import');
+    const toBathrooms = (v) => _propImportCoerce.toBathrooms(v, 'property-import');
+    const toDate      = _propImportCoerce.toDate;
+    const toBool      = _propImportCoerce.toBool;
     const cleanPhone = v => normalizePhone(v);
     // Normalize ZIP to 5-digit only — strips ZIP+4 suffixes ("47303-3111" → "47303")
     // and any whitespace. Prevents duplicates when same property is exported by
@@ -1281,6 +1266,17 @@ router.post('/commit', requireAuth, async (req, res) => {
       if (!v) return '';
       const s = String(v).trim();
       const m = s.match(/^\d{5}/);
+      // 2026-04-29 audit fix M11: log valid ZIP+4 inputs that we truncate to
+      // a 5-digit prefix. The dedup key (street|city|state|zip5) collapses
+      // ZIP+4 and 5-digit inputs into the same property — re-importing the
+      // same address from a different vendor silently merges via COALESCE
+      // safe-merge. The +4 information is lost on every merge. Logging the
+      // truncations gives operators visibility ("we got N ZIP+4 values, all
+      // collapsed to 5-digit") so they can decide whether to widen the dedup
+      // key in a future migration.
+      if (m && /^\d{5}-\d{4}$/.test(s)) {
+        console.warn(`[zip-normalize] ZIP+4 ${s} truncated to ${m[0]} (audit M11)`);
+      }
       return m ? m[0] : '';
     };
     // 2026-04-21 Feature 4 hotfix: phone_type normalizer. PropStream sends
@@ -1679,7 +1675,22 @@ router.post('/commit', requireAuth, async (req, res) => {
         errors++;
         if (errors<=3) console.error('Row error:',rowErr.message);
         if (errors===1) firstError = rowErr.message;
+        // M9: bucket by first 80 chars of message — Postgres errors of the
+        // same class share a prefix (e.g. "null value in column ...").
+        const prefix = String(rowErr.message || 'unknown').slice(0, 80);
+        errorBuckets.set(prefix, (errorBuckets.get(prefix) || 0) + 1);
       }
+    }
+
+    // M9: emit batched error summary — operator sees the pattern instead of
+    // 3 logged errors followed by silence. Helps spot column-shift bugs and
+    // systematic failures where rows 4..500 all fail the same way.
+    if (errorBuckets.size > 0) {
+      const buckets = [...errorBuckets.entries()]
+        .sort((a, b) => b[1] - a[1])
+        .map(([prefix, count]) => `  ${count}× ${prefix}`)
+        .join('\n');
+      console.warn(`[import/commit] error summary (${errors} total across ${errorBuckets.size} class(es)):\n${buckets}`);
     }
 
     // 2026-04-20 pass 12: refresh owner_portfolio_counts MV after the final
@@ -1756,8 +1767,10 @@ router.post('/start-job', requireAuth, async (req, res) => {
     const VALID_IMPORT_MODES = ['add_and_update', 'add_only', 'update_only'];
     const importMode = VALID_IMPORT_MODES.includes(req.body.importMode) ? req.body.importMode : 'add_and_update';
 
-    const allRows = req.session.importRows;
-    if (!allRows || !allRows.length) return res.status(400).json({ error: 'Session expired. Please re-upload your file.' });
+    // H5: _getFreshImportRows treats abandoned previews (older than
+    // IMPORT_ROWS_TTL_MS) as expired. Same UX as a real session timeout.
+    const allRows = _getFreshImportRows(req);
+    if (!allRows) return res.status(400).json({ error: 'Session expired. Please re-upload your file.' });
 
     const tenantId = req.tenantId;
 
@@ -1862,64 +1875,21 @@ async function runBackgroundImport(jobId, allRows, mapping, filename, resolvedLi
       const n = FIELD_LIMITS[key];
       return n && v.length > n ? v.slice(0, n) : v;
     };
-    const toNum = v => v && !isNaN(String(v).replace(/[$,%]/g,'')) ? parseFloat(String(v).replace(/[$,%]/g,'')) : null;
-    const toInt = v => v && !isNaN(v) ? parseInt(v) : null;
-    // 2026-04-21 PM hotfix: clamp percent values to [-100, 100]. See the
-    // /commit path's toPercent for full rationale — PropStream column-shift
-    // bug puts dollar amounts into the equity_percent column on some rows.
-    const toPercent = v => {
-      const n = toNum(v);
-      if (n == null) return null;
-      if (n < -100 || n > 100) {
-        console.warn(`[start-job] out-of-range percent value ${JSON.stringify(v)} → NULL`);
-        return null;
-      }
-      return n;
-    };
-    // 2026-04-21 PM hotfix: bounded-money/year/smallint/bathrooms helpers.
-    // All clamp out-of-range values to NULL and log. Keeps this background
-    // path in lockstep with /commit's safety. See /commit toMoney/toYear/
-    // toSmallInt/toBathrooms for full rationale.
-    const MONEY_LIMIT = 9_999_999_999.99;
-    const toMoney = v => {
-      const n = toNum(v);
-      if (n == null) return null;
-      if (Math.abs(n) > MONEY_LIMIT) {
-        console.warn(`[start-job] out-of-range money value ${JSON.stringify(v)} → NULL`);
-        return null;
-      }
-      return n;
-    };
-    const toYear = v => {
-      const n = toNum(v);
-      if (n == null) return null;
-      const y = Math.round(n);
-      if (y < 1800 || y > 2200) {
-        console.warn(`[start-job] invalid year value ${JSON.stringify(v)} → NULL`);
-        return null;
-      }
-      return y;
-    };
-    const toSmallInt = v => {
-      const n = toInt(v);
-      if (n == null) return null;
-      if (n < -32_768 || n > 32_767) {
-        console.warn(`[start-job] out-of-range smallint value ${JSON.stringify(v)} → NULL`);
-        return null;
-      }
-      return n;
-    };
-    const toBathrooms = v => {
-      const n = toNum(v);
-      if (n == null) return null;
-      if (n < 0 || n > 99) {
-        console.warn(`[start-job] out-of-range bathrooms value ${JSON.stringify(v)} → NULL`);
-        return null;
-      }
-      return n;
-    };
-    const toDate = v => { if (!v) return null; const d = new Date(v); return isNaN(d) ? null : d.toISOString().split('T')[0]; };
-    const toBool = v => { const s=(v||'').toLowerCase(); return s==='yes'||s==='true'||s==='1'||s==='y'?true:s==='no'||s==='false'||s==='0'||s==='n'?false:null; };
+    // 2026-04-29 audit fix M10: shared coercion. Pre-fix, the /start-job
+    // background path had its own toNum that was DIVERGENT from /commit:
+    // `v && !isNaN(...)` checked isNaN BEFORE the strip on the original
+    // value, while /commit checked AFTER. Different bugs in different paths.
+    // Single source now lives in src/import/coerce.js. 'start-job' label
+    // preserves the prefix on out-of-range warnings.
+    const toNum       = _propImportCoerce.toNum;
+    const toInt       = _propImportCoerce.toInt;
+    const toPercent   = (v) => _propImportCoerce.toPercent(v, 'start-job');
+    const toMoney     = (v) => _propImportCoerce.toMoney(v, 'start-job');
+    const toYear      = (v) => _propImportCoerce.toYear(v, 'start-job');
+    const toSmallInt  = (v) => _propImportCoerce.toSmallInt(v, 'start-job');
+    const toBathrooms = (v) => _propImportCoerce.toBathrooms(v, 'start-job');
+    const toDate      = _propImportCoerce.toDate;
+    const toBool      = _propImportCoerce.toBool;
     const cleanPhone = v => normalizePhone(v);
     // Normalize ZIP to 5-digit only — strips ZIP+4 suffixes ("47303-3111" → "47303")
     // and any whitespace. Prevents duplicates when same property is exported by
@@ -1932,6 +1902,17 @@ async function runBackgroundImport(jobId, allRows, mapping, filename, resolvedLi
       if (!v) return '';
       const s = String(v).trim();
       const m = s.match(/^\d{5}/);
+      // 2026-04-29 audit fix M11: log valid ZIP+4 inputs that we truncate to
+      // a 5-digit prefix. The dedup key (street|city|state|zip5) collapses
+      // ZIP+4 and 5-digit inputs into the same property — re-importing the
+      // same address from a different vendor silently merges via COALESCE
+      // safe-merge. The +4 information is lost on every merge. Logging the
+      // truncations gives operators visibility ("we got N ZIP+4 values, all
+      // collapsed to 5-digit") so they can decide whether to widen the dedup
+      // key in a future migration.
+      if (m && /^\d{5}-\d{4}$/.test(s)) {
+        console.warn(`[zip-normalize] ZIP+4 ${s} truncated to ${m[0]} (audit M11)`);
+      }
       return m ? m[0] : '';
     };
     // 2026-04-21 Feature 4 hotfix: phone_type normalizer. Maps PropStream's

@@ -101,8 +101,12 @@ async function initSchema() {
       state_code CHAR(2) NOT NULL,
       state_name VARCHAR(100) NOT NULL,
       active BOOLEAN DEFAULT true,
-      created_at TIMESTAMPTZ DEFAULT NOW(),
-      UNIQUE(state_code)
+      created_at TIMESTAMPTZ DEFAULT NOW()
+      -- 2026-04-29 audit fix M4: removed `UNIQUE(state_code)`. The composite
+      -- (tenant_id, state_code) constraint is added below by the
+      -- tenantUniqueRebuild block (idempotent DROP+ADD); the inline single-
+      -- column UNIQUE was misleading dead syntax — it produced a constraint
+      -- that the rebuild then immediately replaced. See saas-phase1-migration/04.
     );
 
     CREATE TABLE IF NOT EXISTS properties (
@@ -174,8 +178,10 @@ async function initSchema() {
       upload_date DATE,
       total_records INTEGER,
       active BOOLEAN DEFAULT true,
-      created_at TIMESTAMPTZ DEFAULT NOW(),
-      UNIQUE(list_name)
+      created_at TIMESTAMPTZ DEFAULT NOW()
+      -- 2026-04-29 audit fix M4: removed `UNIQUE(list_name)`. The composite
+      -- (tenant_id, list_name) constraint is added below by the
+      -- tenantUniqueRebuild block. Same rationale as the markets table.
     );
 
     CREATE TABLE IF NOT EXISTS property_lists (
