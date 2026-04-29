@@ -40,17 +40,24 @@ function ownerRow(o) {
   const verifiedPct = o.phone_total > 0
     ? Math.round((o.phone_correct * 100) / o.phone_total) + '%'
     : '—';
+  // 2026-04-29 Tier-3 follow-up: switched raw <th>/<td> to the .ocu-th/.ocu-td
+  // class system the rest of the app uses (see records-table.js). Pre-fix the
+  // headers used the browser-default `text-align: center` while the data
+  // cells inherited `text-align: start`, so "Owner"/"Type" labels floated to
+  // the middle of their columns while the names sat at the left edge —
+  // visually screamed "misaligned table" even though TH and TD x-positions
+  // agreed exactly.
   return `
-    <tr>
-      <td>
-        <a href="/ocular/owners/${o.id}" class="ocu-link" style="font-weight:500">${escHTML(name)}</a>
-        ${mailing ? `<div class="ocu-text-3" style="font-size:11px;margin-top:2px">${escHTML(mailing)}</div>` : ''}
+    <tr class="ocu-tr-clickable" onclick="window.location='/ocular/owners/${o.id}'">
+      <td class="ocu-td">
+        <div class="ocu-td-primary"><a href="/ocular/owners/${o.id}" class="ocu-link">${escHTML(name)}</a></div>
+        ${mailing ? `<div class="ocu-td-meta">${escHTML(mailing)}</div>` : ''}
       </td>
-      <td>${ownerTypeBadge(o.owner_type)}</td>
-      <td class="ocu-text-right ocu-mono">${fmtNum(o.property_count)}</td>
-      <td class="ocu-text-right ocu-mono">${fmtNum(o.phone_total)}</td>
-      <td class="ocu-text-right ocu-mono">${escHTML(verifiedPct)}</td>
-      <td class="ocu-text-right ocu-mono">${o.lead_count > 0 ? fmtNum(o.lead_count) : '<span class="ocu-text-3">—</span>'}</td>
+      <td class="ocu-td">${ownerTypeBadge(o.owner_type)}</td>
+      <td class="ocu-td ocu-td-num">${fmtNum(o.property_count)}</td>
+      <td class="ocu-td ocu-td-num">${fmtNum(o.phone_total)}</td>
+      <td class="ocu-td ocu-td-num">${escHTML(verifiedPct)}</td>
+      <td class="ocu-td ocu-td-num">${o.lead_count > 0 ? fmtNum(o.lead_count) : '<span class="ocu-text-3">—</span>'}</td>
     </tr>`;
 }
 
@@ -124,12 +131,12 @@ function ownersList(data = {}) {
         <table class="ocu-table">
           <thead>
             <tr>
-              <th>Owner</th>
-              <th>Type</th>
-              <th class="ocu-text-right">Properties</th>
-              <th class="ocu-text-right">Phones</th>
-              <th class="ocu-text-right">Verified</th>
-              <th class="ocu-text-right">Leads</th>
+              <th class="ocu-th">Owner</th>
+              <th class="ocu-th">Type</th>
+              <th class="ocu-th ocu-th-num">Properties</th>
+              <th class="ocu-th ocu-th-num">Phones</th>
+              <th class="ocu-th ocu-th-num">Verified</th>
+              <th class="ocu-th ocu-th-num">Leads</th>
             </tr>
           </thead>
           <tbody>${rows.map(ownerRow).join('')}</tbody>
