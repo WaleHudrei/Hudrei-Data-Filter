@@ -682,6 +682,33 @@ async function ensureNisEventsSchema() {
     `);
     await query(`CREATE INDEX IF NOT EXISTS idx_nis_events_phone ON nis_events(phone_number)`);
   } catch (e) { console.error('nis_events schema warning:', e.message); }
+  // 2026-04-29 audit follow-up — KNOWN CROSS-TENANT BUG, deferred.
+  // The PRIMARY KEY here is (phone_number, event_day), with NO tenant_id in
+  // the unique constraint. The Phase-1 migration 02-add-tenant-id-to-all-tables
+  // added a tenant_id column to nis_events but didn't rebuild the PK to be
+  // composite (unlike markets/lists/properties which were rebuilt by
+  // migration 04). Same issue on nis_numbers (campaigns.js): phone_number is
+  // PRIMARY KEY alone.
+  //
+  // Concrete failure mode: tenant A imports a NIS file with phone X dialed on
+  // 2026-04-15. Tenant B imports their own NIS file with the same phone X on
+  // the same date. The INSERT below has ON CONFLICT (phone_number, event_day)
+  // DO NOTHING, so tenant B's insert is silently no-op'd — A's row keeps the
+  // "owner" tenant_id, and B's NIS event is lost from B's perspective. The
+  // nis_numbers UPSERT a few lines below is worse: ON CONFLICT (phone_number)
+  // DO UPDATE updates last_seen_nis / times_reported / first_seen_nis on A's
+  // row using B's data, even though the tenant_id stays as A's.
+  //
+  // Mitigation today: the dialer pool overlap between tenants is rare in
+  // practice (Loki is single-tenant on prod with one operator), but this
+  // becomes data corruption the moment two tenants share any phone numbers.
+  //
+  // Fix when ready: a Phase-1.5 migration that drops the PRIMARY KEY and
+  // adds (tenant_id, phone_number, event_day) for nis_events and
+  // (tenant_id, phone_number) for nis_numbers. Then update the ON CONFLICT
+  // targets in importNisFile() to match. Migration template lives in
+  // saas-phase1-migration/04-rebuild-tenant-unique-constraints.sql — same
+  // CONCURRENTLY pattern would apply if these tables grow large.
 }
 
 async function importNisFile(tenantId, rows) {

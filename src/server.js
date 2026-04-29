@@ -957,6 +957,20 @@ async function saveRunToDB(tenantId, filename, stats, listsSeen, allRows) {
     }
 
     // ── Pass 8: bulk UPSERT phones ───────────────────────────────────────────
+    // 2026-04-29 audit fix C-1 follow-up: propagate the do_not_call flag from
+    // call-log dispositions ('do not call' / 'dnc' rows) into phones.do_not_call.
+    // Pre-fix Pass 8 wrote only phone_status and phone_tag — DNC dispositions
+    // recorded on a call log never marked the phone as DNC in the global phones
+    // table. generateCleanExport's DNC filter (line 588 of filtration.js, my
+    // C-1 fix) was reading phones.do_not_call which was always false because
+    // nothing here was setting it. Net effect: TCPA-flagged phones from the
+    // dialer's call log were re-included in the clean callable export on the
+    // next campaign cycle — exactly what the C-1 fix was supposed to prevent.
+    //
+    // Now: any row whose normalized disposition is 'do_not_call' marks the
+    // phone do_not_call=true. Idempotent — once a phone is DNC, it stays DNC
+    // (the ON CONFLICT branch uses GREATEST(EXCLUDED.do_not_call, phones.do_not_call)
+    // so a later non-DNC call log can't UN-flag the phone).
     const phoneBucket = new Map();
     for (const r of validRows) {
       if (!r.phone || !r.street) continue;
@@ -964,19 +978,31 @@ async function saveRunToDB(tenantId, filename, stats, listsSeen, allRows) {
       const cid = pid ? contactIdByProp.get(pid) : null;
       if (!cid) continue;
       const key = `${cid}|${r.phone}`;
-      phoneBucket.set(key, { contactId: cid, phone: r.phone, status: r.phoneStatus, tag: r.phoneTag });
+      const existing = phoneBucket.get(key);
+      const isDnc = (r.dispoNorm === 'do_not_call');
+      // Sticky DNC: once we see DNC for a (contact, phone) in this batch, keep it.
+      const dnc = (existing && existing.dnc) || isDnc;
+      phoneBucket.set(key, {
+        contactId: cid,
+        phone: r.phone,
+        status: r.phoneStatus,
+        tag: r.phoneTag,
+        dnc,
+      });
     }
     if (phoneBucket.size > 0) {
       const arr = Array.from(phoneBucket.values());
       const phr = await dbQuery(`
-        INSERT INTO phones (tenant_id, contact_id, phone_number, phone_status, phone_tag)
-        SELECT $5, contact_id, phone_number, phone_status, phone_tag FROM UNNEST($1::int[], $2::text[], $3::text[], $4::text[])
-          AS t(contact_id, phone_number, phone_status, phone_tag)
+        INSERT INTO phones (tenant_id, contact_id, phone_number, phone_status, phone_tag, do_not_call)
+        SELECT $6, contact_id, phone_number, phone_status, phone_tag, do_not_call
+          FROM UNNEST($1::int[], $2::text[], $3::text[], $4::text[], $5::bool[])
+          AS t(contact_id, phone_number, phone_status, phone_tag, do_not_call)
         ON CONFLICT (contact_id, phone_number) DO UPDATE SET
           phone_status = CASE WHEN EXCLUDED.phone_status NOT IN ('','unknown')
                               THEN EXCLUDED.phone_status
                               ELSE phones.phone_status END,
           phone_tag    = COALESCE(NULLIF(EXCLUDED.phone_tag,''), phones.phone_tag),
+          do_not_call  = GREATEST(EXCLUDED.do_not_call::int, phones.do_not_call::int)::bool,
           updated_at   = NOW()
         RETURNING id, contact_id, phone_number
       `, [
@@ -984,6 +1010,7 @@ async function saveRunToDB(tenantId, filename, stats, listsSeen, allRows) {
         arr.map(p => p.phone),
         arr.map(p => p.status),
         arr.map(p => p.tag),
+        arr.map(p => p.dnc),
         tenantId,
       ]);
       for (const p of phr.rows) phoneIdMap.set(`${p.contact_id}|${p.phone_number}`, p.id);
@@ -1454,10 +1481,26 @@ app.get('/campaigns/:id/export/clean', requireAuth, async (req, res) => {
     const result = await campaigns.generateCleanExport(req.params.id, req.tenantId);
     if (!result.rows.length) return res.status(400).send('No callable contacts to export.');
 
+    // 2026-04-29 audit fix: CSV-formula injection protection (CWE-1236).
+    // Pre-fix this builder dropped raw user-controlled values (names from CSV
+    // imports, addresses, mailing fields) directly into the export. A name
+    // like `=cmd|' /C calc'!A0` would execute as a formula when an operator
+    // opened the CSV in Excel. The records-routes.js export already had a
+    // csvSafe() helper for this; the campaign clean-export was the gap.
+    // Standard OWASP guidance: prefix with a single quote so spreadsheets
+    // treat the cell as text instead of a formula. Header row also quoted +
+    // escaped now (was previously naked `cols.join(',')` — would break the
+    // CSV if a column name ever contained a comma; defensive at no cost).
+    const csvSafe = (val) => {
+      const s = String(val == null ? '' : val);
+      return /^[=+\-@\t\r]/.test(s) ? "'" + s : s;
+    };
+    const csvCell = (val) => `"${csvSafe(val).replace(/"/g, '""')}"`;
     const cols = Object.keys(result.rows[0]);
-    const csv = [cols.join(','), ...result.rows.map(r =>
-      cols.map(c => `"${(r[c]||'').toString().replace(/"/g,'""')}"`).join(',')
-    )].join('\n');
+    const csv = [
+      cols.map(csvCell).join(','),
+      ...result.rows.map(r => cols.map(c => csvCell(r[c])).join(',')),
+    ].join('\n');
 
     res.setHeader('Content-Type', 'text/csv');
     res.setHeader('Content-Disposition', `attachment; filename="loki_clean_export_campaign_${req.params.id}.csv"`);
