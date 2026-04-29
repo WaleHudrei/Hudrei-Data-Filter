@@ -115,6 +115,19 @@ function recordsList(data = {}) {
       allTags:      data.allTags      || [],
       allLists:     data.allLists     || [],
       allPhoneTags: data.allPhoneTags || [],
+      sortBy:       sortBy,
+      sortDir:      sortDir,
+      // Passthrough every non-sort param so the sort form preserves
+      // filters when the user changes the dropdown.
+      sortPassthrough: (() => {
+        const out = [];
+        const qs = new URLSearchParams(data.querystring || '');
+        for (const [k, v] of qs.entries()) {
+          if (k === 'sort' || k === 'dir' || k === 'page') continue;
+          out.push([k, v]);
+        }
+        return out;
+      })(),
     })}
 
     ${filterChips}

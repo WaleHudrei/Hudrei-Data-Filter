@@ -99,7 +99,7 @@ function shell(opts = {}) {
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="/ocular-static/ocular.css?v=11">
+  <link rel="stylesheet" href="/ocular-static/ocular.css?v=12">
   ${extraHead}
 </head>
 <body class="ocu">
@@ -132,14 +132,23 @@ function shell(opts = {}) {
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/></svg>
       </a>
     </div>
-    <button class="ocu-collapse-btn" id="ocu-collapse" title="Collapse sidebar" aria-label="Collapse sidebar">
-      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3">${ICONS.chevronLeft}</svg>
-    </button>
   </aside>
 
   <main class="ocu-main">
     <div class="ocu-topbar">
-      <div></div>
+      <!-- 2026-04-29 sidebar collapse button moved out of the sidebar (was a
+           floating white circle on the dark sidebar edge — looked stuck-on)
+           and into the topbar as a flat icon-button with a hamburger glyph,
+           matching VS Code / Linear / modern dashboard patterns. -->
+      <button class="ocu-icon-btn ocu-sidebar-toggle" id="ocu-collapse"
+              title="Toggle sidebar" aria-label="Toggle sidebar">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none"
+             stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <line x1="3" y1="6" x2="21" y2="6"/>
+          <line x1="3" y1="12" x2="21" y2="12"/>
+          <line x1="3" y1="18" x2="21" y2="18"/>
+        </svg>
+      </button>
       <div style="display:flex;align-items:center;gap:8px">
         <input class="ocu-search" placeholder="${escHTML(searchPlaceholder)}">
         <button class="ocu-icon-btn" title="Notifications">
@@ -163,10 +172,10 @@ function shell(opts = {}) {
     btn.addEventListener('click', function() {
       app.classList.toggle('sidebar-collapsed');
       localStorage.setItem(KEY, app.classList.contains('sidebar-collapsed') ? '1' : '0');
-      // Flip chevron direction
-      btn.style.transform = app.classList.contains('sidebar-collapsed') ? 'rotate(180deg)' : '';
     });
-    if (app.classList.contains('sidebar-collapsed')) btn.style.transform = 'rotate(180deg)';
+    // 2026-04-29 hamburger icon doesn't need rotation — same glyph in
+    // both states, the sidebar's collapsed/expanded width is the visual
+    // affordance.
   })();
 </script>
 

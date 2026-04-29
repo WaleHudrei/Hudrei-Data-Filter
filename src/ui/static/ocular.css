@@ -284,37 +284,16 @@
 }
 .sidebar-collapsed .ocu-logout-btn { display: none; }
 
-/* Sidebar collapse button */
-/* Collapse button — sits half-on/half-off the sidebar's right edge.
-   2026-04-25 brightened — was nearly invisible at the prior subtle styling.
-   Now uses the cyan accent so it reads as an interactive control, with a
-   subtle shadow to lift it off the dark sidebar. */
-.ocu-collapse-btn {
-  position: absolute;
-  top: 16px;
-  right: -16px;
-  width: 32px;
-  height: 32px;
-  border-radius: 50%;
-  background: var(--ocu-accent-bright);
-  border: 2px solid var(--ocu-bg);
-  color: var(--ocu-dark-bg);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  cursor: pointer;
-  z-index: 20;
-  transition: all 0.12s;
-  box-shadow: 0 4px 10px rgba(0, 0, 0, 0.25);
-  font-weight: 700;
-  font-size: 14px;
-  line-height: 1;
-}
-.ocu-collapse-btn:hover {
-  background: #fff;
-  color: var(--ocu-dark-bg);
-  transform: scale(1.1);
-  box-shadow: 0 6px 14px rgba(0, 0, 0, 0.3);
+/* 2026-04-29 sidebar toggle moved into the topbar as a flat icon-button.
+   The previous version was a floating cyan circle stuck half-off the
+   sidebar's dark edge — high contrast but visually awful. Now it's
+   the leftmost icon-button in the topbar (next to where breadcrumbs
+   would go), matching VS Code / Linear / modern dashboard patterns.
+   The .ocu-icon-btn base styling already gives it the right look;
+   this rule just gives it a margin so it doesn't crowd the topbar
+   left edge. */
+.ocu-sidebar-toggle {
+  margin-right: auto;
 }
 
 /* ─── Main content area ─────────────────────────────────────────────────── */
@@ -805,7 +784,12 @@
 }
 .ocu-detail-header-right {
   display: flex;
-  align-items: center;
+  /* 2026-04-29 fix: was align-items:center; the Stage dropdown wraps a
+     small "STAGE" label above the <select>, so it was taller than the
+     distress badge sitting next to it — they sat at different vertical
+     positions. align-items:flex-end pins both to the bottom so the
+     dropdown's <select> input lines up with the badge baseline. */
+  align-items: flex-end;
   gap: 12px;
 }
 
@@ -1283,7 +1267,41 @@
 /* ── Filter bar (collapsed by default) ──────────────────────────────── */
 .ocu-filter-bar {
   margin-bottom: 14px;
+  /* 2026-04-29: lay out the Filters toggle + sort dropdowns horizontally. */
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px;
 }
+/* The collapsed form panel slides down — give it 100% width within the bar */
+#ocu-filter-panel { flex-basis: 100%; order: 99; }
+
+/* 2026-04-29 sort control next to the Filters button */
+.ocu-sort-form {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.ocu-sort-label {
+  font-size: 12px;
+  color: var(--ocu-text-3, #6B7280);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  font-weight: 600;
+}
+.ocu-sort-select {
+  font-family: inherit;
+  font-size: 13px;
+  padding: 6px 28px 6px 10px;
+  border: 1px solid var(--ocu-border, #e5e7eb);
+  border-radius: 6px;
+  background: var(--ocu-bg, #fff);
+  color: var(--ocu-text-1);
+  cursor: pointer;
+  transition: border-color .12s;
+}
+.ocu-sort-select:hover  { border-color: var(--ocu-text-2); }
+.ocu-sort-select:focus  { outline: none; border-color: var(--ocu-accent, #2563EB); }
 .ocu-filter-toggle {
   display: inline-flex;
   align-items: center;

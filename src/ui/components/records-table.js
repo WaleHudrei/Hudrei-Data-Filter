@@ -91,7 +91,15 @@ function recordsTable(opts = {}) {
     </tr>`;
 
   const body = rows.map(r => {
-    const owner = [r.first_name, r.last_name].filter(Boolean).map(escHTML).join(' ') || '—';
+    const ownerName = [r.first_name, r.last_name].filter(Boolean).map(escHTML).join(' ');
+    // 2026-04-29 user request: owner name on a record row clicks through
+    // to the owner detail page. Wrap in <a> only when we have a contact_id
+    // (some properties have no linked contact yet — fall back to plain
+    // dash). stopPropagation on the click so we don't ALSO trigger the
+    // row's own click-through to /ocular/records/:id.
+    const ownerCell = r.contact_id && ownerName
+      ? `<a href="/ocular/owners/${r.contact_id}" class="ocu-link" onclick="event.stopPropagation()">${ownerName}</a>`
+      : (ownerName || '<span class="ocu-text-3">—</span>');
     const street = escHTML(r.street || '');
     const city = escHTML(r.city || '');
     const state = escHTML(r.state_code || '');
@@ -106,7 +114,7 @@ function recordsTable(opts = {}) {
           <div class="ocu-td-primary">${street}</div>
           <div class="ocu-td-meta">${city}${city ? ', ' : ''}${state} ${zip}</div>
         </td>
-        <td class="ocu-td ocu-td-text">${owner}</td>
+        <td class="ocu-td ocu-td-text">${ownerCell}</td>
         <td class="ocu-td">${ownerTypeCell(r.owner_type)}</td>
         <td class="ocu-td ocu-td-text">${propType}</td>
         <td class="ocu-td ocu-td-num">${fmtCount(r.phone_count)}</td>

@@ -500,6 +500,7 @@ router.get('/records', requireAuth, async (req, res) => {
           p.id, p.street, p.city, p.state_code, p.zip_code,
           p.property_type, p.pipeline_stage, p.created_at,
           p.distress_score, p.distress_band,
+          c.id AS contact_id,
           c.first_name, c.last_name, c.owner_type
         FROM properties p
         LEFT JOIN property_contacts pc ON pc.property_id = p.id AND pc.tenant_id = p.tenant_id AND pc.primary_contact = true
@@ -526,6 +527,7 @@ router.get('/records', requireAuth, async (req, res) => {
         paged.id, paged.street, paged.city, paged.state_code, paged.zip_code,
         paged.property_type, paged.pipeline_stage, paged.created_at,
         paged.distress_score, paged.distress_band,
+        paged.contact_id,
         paged.first_name, paged.last_name, paged.owner_type,
         COALESCE(lc.cnt, 0) AS list_count,
         COALESCE(phc.cnt, 0) AS phone_count
@@ -538,12 +540,30 @@ router.get('/records', requireAuth, async (req, res) => {
     // ── Lookup data for filter dropdowns ───────────────────────────────────
     // States are hardcoded in records-filters.js (all 50 + DC) so we don't
     // need to query the DB for them here anymore.
-    const allTagsRes = await query(`SELECT id, name FROM tags WHERE tenant_id = $1 ORDER BY name ASC LIMIT 200`, [req.tenantId]).catch(() => ({ rows: [] }));
+    // 2026-04-29 fix: only show tags that are CURRENTLY in use on at
+    // least one property. Pre-fix the dropdown listed every row from
+    // the `tags` pool, so a tag the user added once and then removed
+    // from every property still appeared in the filter dropdown forever.
+    // INNER JOIN with property_tags ensures only assigned tags surface.
+    const allTagsRes = await query(`
+      SELECT DISTINCT t.id, t.name
+        FROM tags t
+        JOIN property_tags pt ON pt.tag_id = t.id AND pt.tenant_id = t.tenant_id
+       WHERE t.tenant_id = $1
+       ORDER BY t.name ASC
+       LIMIT 200`, [req.tenantId]).catch(() => ({ rows: [] }));
     const allListsRes = await query(`SELECT id, list_name FROM lists WHERE tenant_id = $1 ORDER BY list_name ASC LIMIT 200`, [req.tenantId]);
-    // Phone-tag pool. The phone_tags table is process-wide (not tenant-scoped
-    // — see records-routes.js:92), so this is the same list every tenant
-    // sees. catch() guards against the table being absent on a fresh boot.
-    const allPhoneTagsRes = await query(`SELECT id, name FROM phone_tags ORDER BY name ASC LIMIT 200`).catch(() => ({ rows: [] }));
+    // Same fix on phone-tag pool: only surface tags currently linked to a
+    // phone via phone_tag_links. The phone_tags table itself is
+    // process-wide (not tenant-scoped — see records-routes.js:92), but the
+    // links join through phones.tenant_id so the result is tenant-correct.
+    const allPhoneTagsRes = await query(`
+      SELECT DISTINCT pt.id, pt.name
+        FROM phone_tags pt
+        JOIN phone_tag_links ptl ON ptl.phone_tag_id = pt.id
+        JOIN phones ph ON ph.id = ptl.phone_id AND ph.tenant_id = $1
+       ORDER BY pt.name ASC
+       LIMIT 200`, [req.tenantId]).catch(() => ({ rows: [] }));
 
     // Pass through the original querystring (for chip-x removal links etc.)
     const querystring = req.url.includes('?') ? req.url.split('?')[1] : '';

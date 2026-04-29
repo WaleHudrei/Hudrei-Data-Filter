@@ -90,6 +90,33 @@ function recordsFilters(opts = {}) {
   const opt = (sel, value, label) =>
     `<option value="${value}"${sel === value ? ' selected' : ''}>${escHTML(label)}</option>`;
 
+  // 2026-04-29 user request: small sort control next to the Filters
+  // button so the filtered list can be reordered by distress (high→low
+  // or low→high). The form below already supports `sort=distress_score
+  // &dir=desc/asc` URL params; this is just a UI affordance. Submitting
+  // the sort form preserves all existing filter querystring params via
+  // hidden inputs auto-rendered from `opts.sortPassthroughHTML`.
+  const currentSort = String(opts.sortBy || 'id');
+  const currentDir  = String(opts.sortDir || 'desc').toLowerCase() === 'asc' ? 'asc' : 'desc';
+  const sortPassthroughHTML = (opts.sortPassthrough || []).map(([k, v]) =>
+    `<input type="hidden" name="${escHTML(k)}" value="${escHTML(v)}">`
+  ).join('');
+  const sortControl = `
+    <form method="GET" action="/ocular/records" class="ocu-sort-form">
+      ${sortPassthroughHTML}
+      <label class="ocu-sort-label" for="ocu-sort-by">Sort</label>
+      <select name="sort" id="ocu-sort-by" class="ocu-sort-select" onchange="this.form.submit()">
+        <option value="id"             ${currentSort === 'id' ? 'selected' : ''}>Newest first</option>
+        <option value="distress_score" ${currentSort === 'distress_score' ? 'selected' : ''}>Distress score</option>
+        <option value="street"         ${currentSort === 'street' ? 'selected' : ''}>Address</option>
+        <option value="created_at"     ${currentSort === 'created_at' ? 'selected' : ''}>Date added</option>
+      </select>
+      <select name="dir" class="ocu-sort-select" onchange="this.form.submit()">
+        <option value="desc" ${currentDir === 'desc' ? 'selected' : ''}>High → Low</option>
+        <option value="asc"  ${currentDir === 'asc'  ? 'selected' : ''}>Low → High</option>
+      </select>
+    </form>`;
+
   // ── The bar itself ─────────────────────────────────────────────────────
   return `
     <div class="ocu-filter-bar">
@@ -104,6 +131,7 @@ function recordsFilters(opts = {}) {
           <polyline points="6 9 12 15 18 9"/>
         </svg>
       </button>
+      ${sortControl}
 
       <form id="ocu-filter-panel" class="ocu-filter-panel" method="GET" action="/ocular/records" hidden>
         <div class="ocu-filter-grid">
