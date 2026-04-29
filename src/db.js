@@ -69,12 +69,21 @@ async function initSchema() {
   `);
 
   // RBAC migration (idempotent). Three-role model: tenant_user, tenant_admin,
-  // super_admin. The legacy default 'admin' is upgraded to 'tenant_admin'
-  // (workspace owners) on first boot after this code lands.
+  // super_admin. The Phase-1 saas migration added a CHECK constraint
+  // (users_role_valid) restricting role to ('admin','operator','viewer'),
+  // so we MUST drop that constraint BEFORE updating rows to the new values
+  // — otherwise the UPDATE violates the check and aborts the transaction
+  // (which is what crashed the staging deploy on 2026-04-30 first try).
+  // Order matters: drop, migrate values, add new constraint, change default.
+  // All steps idempotent so re-runs after the migration succeeded are no-ops.
+  await query(`ALTER TABLE users DROP CONSTRAINT IF EXISTS users_role_valid`);
+  await query(`UPDATE users SET role = 'tenant_admin' WHERE role IN ('admin', 'operator')`);
+  await query(`UPDATE users SET role = 'tenant_user'  WHERE role = 'viewer'`);
   await query(`
-    UPDATE users SET role = 'tenant_admin' WHERE role = 'admin';
-    ALTER TABLE users ALTER COLUMN role SET DEFAULT 'tenant_user';
+    ALTER TABLE users ADD CONSTRAINT users_role_valid
+      CHECK (role IN ('tenant_user', 'tenant_admin', 'super_admin'))
   `);
+  await query(`ALTER TABLE users ALTER COLUMN role SET DEFAULT 'tenant_user'`);
 
   // Phase 2 — auth: email-verified timestamp and one-shot tokens for
   // verify-email and forgot-password flows. Both token tables share the
