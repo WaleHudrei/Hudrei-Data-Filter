@@ -218,6 +218,46 @@ function recordsFilters(opts = {}) {
             </select>
           </div>` : ''}
 
+          <!-- 2026-04-29 filter-parity additions: these were already
+               supported by the bulk-export selectAll handler but the form
+               only exposed half of them. Same set as the bulk-export now. -->
+          <div class="ocu-filter">
+            <label class="ocu-filter-label">Property type</label>
+            <input type="text" name="type" value="${escHTML(f.property_type || '')}"
+                   placeholder="SFR, Townhouse…" class="ocu-filter-input">
+          </div>
+          <div class="ocu-filter">
+            <label class="ocu-filter-label">Source</label>
+            <input type="text" name="source" value="${escHTML(f.source || '')}"
+                   placeholder="PropStream, REISift…" class="ocu-filter-input">
+          </div>
+          <div class="ocu-filter">
+            <label class="ocu-filter-label">Assessed value ($)</label>
+            <div class="ocu-filter-pair">
+              <input type="number" name="min_assessed" value="${escHTML(f.min_assessed || '')}" placeholder="Min" class="ocu-filter-input">
+              <input type="number" name="max_assessed" value="${escHTML(f.max_assessed || '')}" placeholder="Max" class="ocu-filter-input">
+            </div>
+          </div>
+          <div class="ocu-filter">
+            <label class="ocu-filter-label">Properties owned</label>
+            <div class="ocu-filter-pair">
+              <input type="number" name="min_owned" value="${escHTML(f.min_owned || '')}" placeholder="Min" class="ocu-filter-input" min="1">
+              <input type="number" name="max_owned" value="${escHTML(f.max_owned || '')}" placeholder="Max" class="ocu-filter-input" min="1">
+            </div>
+          </div>
+          <div class="ocu-filter">
+            <label class="ocu-filter-label">Min lists (stack)</label>
+            <input type="number" name="min_stack" value="${escHTML(f.min_stack || '')}"
+                   min="1" placeholder="e.g. 2" class="ocu-filter-input">
+          </div>
+          <div class="ocu-filter">
+            <label class="ocu-filter-label">Years owned</label>
+            <div class="ocu-filter-pair">
+              <input type="number" name="min_years_owned" value="${escHTML(f.min_years_owned || '')}" placeholder="Min" class="ocu-filter-input" min="0">
+              <input type="number" name="max_years_owned" value="${escHTML(f.max_years_owned || '')}" placeholder="Max" class="ocu-filter-input" min="0">
+            </div>
+          </div>
+
           ${allTags.length > 0 ? `
           <details class="ocu-filter ocu-filter-details">
             <summary class="ocu-filter-label">Tags include (${tagInc.length || 'any'})</summary>
@@ -258,6 +298,15 @@ function countActive(f) {
   if (f.list_id) n++;
   if (Array.isArray(f.tagIncludeList) && f.tagIncludeList.length) n += f.tagIncludeList.length;
   if (Array.isArray(f.tagExcludeList) && f.tagExcludeList.length) n += f.tagExcludeList.length;
+  // 2026-04-29 new filters: count active ones in the toggle-button badge
+  if (f.property_type) n++;
+  if (f.source) n++;
+  if (f.min_assessed || f.max_assessed) n++;
+  if (f.min_owned || f.max_owned) n++;
+  if (f.min_stack) n++;
+  if (f.min_years_owned || f.max_years_owned) n++;
+  if (Array.isArray(f.phoneTagIncludeList) && f.phoneTagIncludeList.length) n += f.phoneTagIncludeList.length;
+  if (Array.isArray(f.phoneTagExcludeList) && f.phoneTagExcludeList.length) n += f.phoneTagExcludeList.length;
   return n;
 }
 

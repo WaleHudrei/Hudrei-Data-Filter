@@ -206,6 +206,21 @@ router.get('/records', requireAuth, async (req, res) => {
     const min_equity     = String(req.query.min_equity || '').trim();
     const max_equity     = String(req.query.max_equity || '').trim();
     const phone_type     = String(req.query.phone_type || '').trim().toLowerCase();
+    // 2026-04-29 filter-parity gap fix: these were already supported by the
+    // bulk-export selectAll path (records-routes.js /export) but the list
+    // view silently ignored them. Users would type a value into the form
+    // and the list would render unchanged — looks broken even when the
+    // SQL was fine on the export side. Wiring all of them through.
+    const property_type  = String(req.query.type || '').trim();
+    const prop_status    = String(req.query.prop_status || '').trim();
+    const source_filter  = String(req.query.source || '').trim();
+    const min_assessed   = String(req.query.min_assessed || '').trim();
+    const max_assessed   = String(req.query.max_assessed || '').trim();
+    const min_owned      = String(req.query.min_owned || '').trim();
+    const max_owned      = String(req.query.max_owned || '').trim();
+    const min_stack      = String(req.query.min_stack || '').trim();
+    const min_years_owned = String(req.query.min_years_owned || '').trim();
+    const max_years_owned = String(req.query.max_years_owned || '').trim();
 
     // Multi-arrays — state, tag_include, tag_exclude
     const normArr = (raw) => {
@@ -216,6 +231,8 @@ router.get('/records', requireAuth, async (req, res) => {
     const stateList = normArr(req.query.state).map(s => String(s).toUpperCase());
     const tagIncludeList = normArr(req.query.tag_include).map(v => parseInt(v, 10)).filter(Number.isFinite);
     const tagExcludeList = normArr(req.query.tag_exclude).map(v => parseInt(v, 10)).filter(Number.isFinite);
+    const phoneTagIncludeList = normArr(req.query.phone_tag_include).map(v => parseInt(v, 10)).filter(Number.isFinite);
+    const phoneTagExcludeList = normArr(req.query.phone_tag_exclude).map(v => parseInt(v, 10)).filter(Number.isFinite);
 
     // Sort + pagination
     const allowedSort = { id: 'p.id', street: 'p.street', distress_score: 'p.distress_score', created_at: 'p.created_at' };
@@ -343,6 +360,96 @@ router.get('/records', requireAuth, async (req, res) => {
       params.push(tagExcludeList); idx++;
     }
 
+    // 2026-04-29 filter-parity gap fix: every clause from here down was
+    // already implemented in the bulk-export selectAll handler
+    // (records-routes.js POST /export). The list view now mirrors them so
+    // typing into the form actually changes the rendered list — that was
+    // the user-reported "filters don't filter anything" bug.
+
+    // Property type
+    if (property_type) {
+      conditions.push(`p.property_type = $${idx}`);
+      params.push(property_type); idx++;
+    }
+    // Property status
+    if (prop_status) {
+      conditions.push(`p.property_status = $${idx}`);
+      params.push(prop_status); idx++;
+    }
+    // Source (free-text contains)
+    if (source_filter) {
+      conditions.push(`p.source ILIKE $${idx}`);
+      params.push('%' + source_filter + '%'); idx++;
+    }
+    // Assessed value range
+    if (min_assessed && /^-?\d+(\.\d+)?$/.test(min_assessed)) {
+      conditions.push(`p.assessed_value >= $${idx}`); params.push(parseFloat(min_assessed)); idx++;
+    }
+    if (max_assessed && /^-?\d+(\.\d+)?$/.test(max_assessed)) {
+      conditions.push(`p.assessed_value <= $${idx}`); params.push(parseFloat(max_assessed)); idx++;
+    }
+    // Min list-stack count — property is on at least N lists
+    if (min_stack && /^\d+$/.test(min_stack)) {
+      conditions.push(`(SELECT COUNT(*) FROM property_lists plc WHERE plc.property_id = p.id AND plc.tenant_id = p.tenant_id) >= $${idx}`);
+      params.push(parseInt(min_stack, 10)); idx++;
+    }
+    // Multi-property (owned-count) range — uses owner_portfolio_counts MV
+    // for performance, falling back to 1 when there's no mailing address.
+    // Mirrors the bulk-export sub-expression exactly.
+    if (min_owned || max_owned) {
+      const ownedSubX = `
+        CASE WHEN c.mailing_address IS NULL OR TRIM(c.mailing_address) = '' THEN 1
+        ELSE COALESCE(
+          (SELECT opc.owned_count FROM owner_portfolio_counts opc
+            WHERE opc.mailing_address_normalized = c.mailing_address_normalized
+              AND opc.mailing_city_normalized = LOWER(TRIM(c.mailing_city))
+              AND opc.mailing_state = UPPER(TRIM(c.mailing_state))
+              AND opc.zip5 = SUBSTRING(TRIM(c.mailing_zip) FROM 1 FOR 5)),
+          1
+        ) END`;
+      if (min_owned && /^\d+$/.test(min_owned)) {
+        conditions.push(`${ownedSubX} >= $${idx}`); params.push(parseInt(min_owned, 10)); idx++;
+      }
+      if (max_owned && /^\d+$/.test(max_owned)) {
+        conditions.push(`${ownedSubX} <= $${idx}`); params.push(parseInt(max_owned, 10)); idx++;
+      }
+    }
+    // Years-owned (ownership duration) — needs last_sale_date.
+    if (min_years_owned && /^\d+$/.test(min_years_owned)) {
+      conditions.push(`p.last_sale_date IS NOT NULL AND EXTRACT(YEAR FROM AGE(CURRENT_DATE, p.last_sale_date)) >= $${idx}`);
+      params.push(parseInt(min_years_owned, 10)); idx++;
+    }
+    if (max_years_owned && /^\d+$/.test(max_years_owned)) {
+      conditions.push(`p.last_sale_date IS NOT NULL AND EXTRACT(YEAR FROM AGE(CURRENT_DATE, p.last_sale_date)) <= $${idx}`);
+      params.push(parseInt(max_years_owned, 10)); idx++;
+    }
+    // Phone tag include / exclude. Tag → phone link is `phone_tag_links`
+    // (phone_id, phone_tag_id); the tag pool itself lives in `phone_tags`.
+    // We join through the link table back to property_contacts so the
+    // filter applies per-property.
+    if (phoneTagIncludeList.length) {
+      conditions.push(`EXISTS (
+        SELECT 1 FROM phone_tag_links ptl
+          JOIN phones ph_pti ON ph_pti.id = ptl.phone_id
+          JOIN property_contacts pc_pti ON pc_pti.contact_id = ph_pti.contact_id
+        WHERE pc_pti.property_id = p.id
+          AND pc_pti.tenant_id = p.tenant_id
+          AND ph_pti.tenant_id = p.tenant_id
+          AND ptl.phone_tag_id = ANY($${idx}::int[]))`);
+      params.push(phoneTagIncludeList); idx++;
+    }
+    if (phoneTagExcludeList.length) {
+      conditions.push(`NOT EXISTS (
+        SELECT 1 FROM phone_tag_links ptl
+          JOIN phones ph_pte ON ph_pte.id = ptl.phone_id
+          JOIN property_contacts pc_pte ON pc_pte.contact_id = ph_pte.contact_id
+        WHERE pc_pte.property_id = p.id
+          AND pc_pte.tenant_id = p.tenant_id
+          AND ph_pte.tenant_id = p.tenant_id
+          AND ptl.phone_tag_id = ANY($${idx}::int[]))`);
+      params.push(phoneTagExcludeList); idx++;
+    }
+
     const whereSQL = conditions.length ? 'WHERE ' + conditions.join(' AND ') : '';
 
     // ── COUNT ──────────────────────────────────────────────────────────────
@@ -422,6 +529,12 @@ router.get('/records', requireAuth, async (req, res) => {
         q, city, zip, county, pipeline, phones, min_distress, list_id, stateList,
         owner_type, occupancy, min_year, max_year, min_equity, max_equity, phone_type,
         tagIncludeList, tagExcludeList,
+        // 2026-04-29 filter-parity gap fix: surface the new filters back to
+        // the form so existing filter values stay populated on reload.
+        property_type, prop_status, source: source_filter,
+        min_assessed, max_assessed, min_owned, max_owned, min_stack,
+        min_years_owned, max_years_owned,
+        phoneTagIncludeList, phoneTagExcludeList,
       },
       allTags:   allTagsRes.rows,
       allLists:  allListsRes.rows,

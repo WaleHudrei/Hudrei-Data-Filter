@@ -17,14 +17,14 @@ function listRow(l) {
   const safeType = JSON.stringify(l.list_type || '');
   const safeSrc  = JSON.stringify(l.source || '');
   return `<tr>
-    <td>
-      <a href="/ocular/records?list_id=${l.id}" class="ocu-link" style="font-weight:500">${escHTML(l.list_name)}</a>
+    <td class="ocu-td">
+      <a href="/ocular/records?list_id=${l.id}" class="ocu-link ocu-td-primary">${escHTML(l.list_name)}</a>
     </td>
-    <td>${listTypeBadge(l.list_type)}</td>
-    <td class="ocu-text-3">${l.source ? escHTML(l.source) : '—'}</td>
-    <td class="ocu-text-right ocu-mono">${fmtNum(l.property_count)}</td>
-    <td class="ocu-text-3 ocu-mono" style="font-size:11px;white-space:nowrap">${fmtRelative(l.created_at)}</td>
-    <td class="ocu-text-right" style="white-space:nowrap">
+    <td class="ocu-td">${listTypeBadge(l.list_type)}</td>
+    <td class="ocu-td ocu-td-text">${l.source ? escHTML(l.source) : '<span class="ocu-text-3">—</span>'}</td>
+    <td class="ocu-td ocu-td-num"><span class="ocu-mono">${fmtNum(l.property_count)}</span></td>
+    <td class="ocu-td ocu-td-date">${fmtRelative(l.created_at)}</td>
+    <td class="ocu-td ocu-td-num" style="white-space:nowrap">
       <a href="/ocular/records?list_id=${l.id}" class="ocu-btn ocu-btn-secondary">View</a>
       <button class="ocu-btn ocu-btn-secondary" onclick="lists_openEdit(${l.id}, ${safeName}, ${safeType}, ${safeSrc})">Edit</button>
       <button class="ocu-btn ocu-btn-secondary" style="color:#c0392b" onclick="lists_openDelete(${l.id}, ${safeName})">Delete</button>
@@ -83,12 +83,12 @@ function listsPage(data = {}) {
         <table class="ocu-table">
           <thead>
             <tr>
-              <th>List name</th>
-              <th>Type</th>
-              <th>Source</th>
-              <th class="ocu-text-right">Properties</th>
-              <th>Created</th>
-              <th class="ocu-text-right">Actions</th>
+              <th class="ocu-th">List name</th>
+              <th class="ocu-th">Type</th>
+              <th class="ocu-th">Source</th>
+              <th class="ocu-th ocu-th-num">Properties</th>
+              <th class="ocu-th ocu-th-date">Created</th>
+              <th class="ocu-th ocu-th-num">Actions</th>
             </tr>
           </thead>
           <tbody>${rows.map(listRow).join('')}</tbody>

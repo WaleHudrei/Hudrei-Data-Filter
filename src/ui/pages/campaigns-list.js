@@ -28,17 +28,17 @@ function row(c) {
   const counts = c.contact_counts || {};
   const callable = (counts.total_phones || 0) - (counts.wrong_phones || 0) - (counts.nis_phones || 0);
   return `<tr>
-    <td>
-      <a href="/ocular/campaigns/${c.id}" class="ocu-link" style="font-weight:500">${escHTML(c.name)}</a>
-      <div class="ocu-text-3" style="font-size:11px;margin-top:2px">${escHTML(c.market_name || '')}${c.state_code ? ' · ' + escHTML(c.state_code) : ''}</div>
+    <td class="ocu-td">
+      <a href="/ocular/campaigns/${c.id}" class="ocu-link ocu-td-primary">${escHTML(c.name)}</a>
+      ${c.market_name || c.state_code ? `<div class="ocu-td-meta">${escHTML(c.market_name || '')}${c.state_code ? ' · ' + escHTML(c.state_code) : ''}</div>` : ''}
     </td>
-    <td><span class="ocu-pill">${escHTML(c.list_type || '—')}</span></td>
-    <td>${channelBadge(c.active_channel)}</td>
-    <td>${statusBadge(c.status)}</td>
-    <td class="ocu-text-right ocu-mono">${fmtNum(counts.total_contacts || 0)}</td>
-    <td class="ocu-text-right ocu-mono">${fmtNum(Math.max(0, callable))}</td>
-    <td class="ocu-text-right ocu-mono">${counts.lead_contacts > 0 ? fmtNum(counts.lead_contacts) : '<span class="ocu-text-3">—</span>'}</td>
-    <td class="ocu-text-3 ocu-mono" style="font-size:11px;white-space:nowrap">${fmtRelative(c.start_date || c.created_at)}</td>
+    <td class="ocu-td"><span class="ocu-pill">${escHTML(c.list_type || '—')}</span></td>
+    <td class="ocu-td">${channelBadge(c.active_channel)}</td>
+    <td class="ocu-td">${statusBadge(c.status)}</td>
+    <td class="ocu-td ocu-td-num"><span class="ocu-mono">${fmtNum(counts.total_contacts || 0)}</span></td>
+    <td class="ocu-td ocu-td-num"><span class="ocu-mono">${fmtNum(Math.max(0, callable))}</span></td>
+    <td class="ocu-td ocu-td-num">${counts.lead_contacts > 0 ? `<span class="ocu-mono">${fmtNum(counts.lead_contacts)}</span>` : '<span class="ocu-text-3">—</span>'}</td>
+    <td class="ocu-td ocu-td-date">${fmtRelative(c.start_date || c.created_at)}</td>
   </tr>`;
 }
 
@@ -82,14 +82,14 @@ function campaignsList(data = {}) {
         <table class="ocu-table">
           <thead>
             <tr>
-              <th>Campaign</th>
-              <th>List type</th>
-              <th>Channel</th>
-              <th>Status</th>
-              <th class="ocu-text-right">Contacts</th>
-              <th class="ocu-text-right">Callable</th>
-              <th class="ocu-text-right">Leads</th>
-              <th>Started</th>
+              <th class="ocu-th">Campaign</th>
+              <th class="ocu-th">List type</th>
+              <th class="ocu-th">Channel</th>
+              <th class="ocu-th">Status</th>
+              <th class="ocu-th ocu-th-num">Contacts</th>
+              <th class="ocu-th ocu-th-num">Callable</th>
+              <th class="ocu-th ocu-th-num">Leads</th>
+              <th class="ocu-th ocu-th-date">Started</th>
             </tr>
           </thead>
           <tbody>${filtered.map(row).join('')}</tbody>

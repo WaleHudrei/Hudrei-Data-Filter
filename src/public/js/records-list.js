@@ -520,8 +520,8 @@ function openRemoveFromListModal() {
     return;
   }
   var msg = _allSelected
-    ? 'Remove <strong>all ' + count.toLocaleString() + ' selected properties</strong> from this list? The properties themselves remain in Loki; only their link to this list is removed.'
-    : 'Remove <strong>' + count + ' propert' + (count===1?'y':'ies') + '</strong> from this list? The propert' + (count===1?'y remains':'ies remain') + ' in Loki; only the link to this list is removed.';
+    ? 'Remove <strong>all ' + count.toLocaleString() + ' selected properties</strong> from this list? The properties themselves remain in Ocular; only their link to this list is removed.'
+    : 'Remove <strong>' + count + ' propert' + (count===1?'y':'ies') + '</strong> from this list? The propert' + (count===1?'y remains':'ies remain') + ' in Ocular; only the link to this list is removed.';
   document.getElementById('rfl-modal-msg').innerHTML = msg;
   document.getElementById('rfl-modal-err').style.display = 'none';
   document.getElementById('rfl-code-input').value = '';

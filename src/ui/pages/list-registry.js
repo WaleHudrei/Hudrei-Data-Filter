@@ -75,29 +75,29 @@ function rowHTML(r) {
   const lastDate = r.last_pull_date ? new Date(r.last_pull_date).toISOString().slice(0, 10) : '';
 
   return `<tr data-id="${r.id}">
-    <td>${selectCell('action', r.action, Object.entries(ACTION_LABELS), r.id)}</td>
-    <td>${selectCell('state_code', r.state_code, STATES.map(s => [s, s || '—']), r.id)}</td>
-    <td>
+    <td class="ocu-td">${selectCell('action', r.action, Object.entries(ACTION_LABELS), r.id)}</td>
+    <td class="ocu-td">${selectCell('state_code', r.state_code, STATES.map(s => [s, s || '—']), r.id)}</td>
+    <td class="ocu-td">
       <input class="ocu-cell-input" type="text" value="${escHTML(r.list_name)}"
              onblur="lr_save(${r.id}, 'list_name', this.value)"
              onkeydown="if(event.key==='Enter')this.blur()" />
     </td>
-    <td>${selectCell('list_tier', r.list_tier, Object.entries(TIER_LABELS), r.id)}</td>
-    <td>${selectCell('source', r.source, [...VALID_SOURCES.map(s => [s, s || '—']), ['Other', 'Other']], r.id)}</td>
-    <td>${selectCell('frequency_days', r.frequency_days != null ? String(r.frequency_days) : '', Object.entries(FREQ_LABELS), r.id)}</td>
-    <td>
+    <td class="ocu-td">${selectCell('list_tier', r.list_tier, Object.entries(TIER_LABELS), r.id)}</td>
+    <td class="ocu-td">${selectCell('source', r.source, [...VALID_SOURCES.map(s => [s, s || '—']), ['Other', 'Other']], r.id)}</td>
+    <td class="ocu-td">${selectCell('frequency_days', r.frequency_days != null ? String(r.frequency_days) : '', Object.entries(FREQ_LABELS), r.id)}</td>
+    <td class="ocu-td">
       <select class="ocu-cell-input" onchange="lr_save(${r.id}, 'require_bot', this.value)">
         <option value=""      ${r.require_bot === null ? 'selected' : ''}>—</option>
         <option value="true"  ${r.require_bot === true  ? 'selected' : ''}>Yes</option>
         <option value="false" ${r.require_bot === false ? 'selected' : ''}>No</option>
       </select>
     </td>
-    <td>
+    <td class="ocu-td ocu-td-date">
       <input class="ocu-cell-input" type="date" value="${lastDate}"
              onchange="lr_save(${r.id}, 'last_pull_date', this.value)" />
     </td>
-    <td style="${nextStyle}">${escHTML(nextLabel)}</td>
-    <td class="ocu-text-right" style="white-space:nowrap">
+    <td class="ocu-td ocu-td-date" style="${nextStyle}">${escHTML(nextLabel)}</td>
+    <td class="ocu-td ocu-td-num" style="white-space:nowrap">
       <button class="ocu-btn ocu-btn-primary" style="padding:4px 10px;font-size:11px" onclick="lr_pull(${r.id})">✓ Pulled</button>
       <button class="ocu-btn ocu-btn-ghost" style="padding:4px 8px;font-size:14px;color:#c0392b" onclick="lr_delete(${r.id})" title="Delete row">×</button>
     </td>
@@ -133,16 +133,16 @@ function listRegistry(data = {}) {
         <table class="ocu-table ocu-list-registry-table">
           <thead>
             <tr>
-              <th style="width:90px">Action</th>
-              <th style="width:70px">State</th>
-              <th>List name</th>
-              <th style="width:110px">Tier</th>
-              <th style="width:120px">Source</th>
-              <th style="width:140px">Frequency</th>
-              <th style="width:80px">Bot</th>
-              <th style="width:140px">Last pull</th>
-              <th style="width:130px">Next pull</th>
-              <th class="ocu-text-right" style="width:130px">Actions</th>
+              <th class="ocu-th" style="width:90px">Action</th>
+              <th class="ocu-th" style="width:70px">State</th>
+              <th class="ocu-th">List name</th>
+              <th class="ocu-th" style="width:110px">Tier</th>
+              <th class="ocu-th" style="width:120px">Source</th>
+              <th class="ocu-th" style="width:140px">Frequency</th>
+              <th class="ocu-th" style="width:80px">Bot</th>
+              <th class="ocu-th ocu-th-date" style="width:140px">Last pull</th>
+              <th class="ocu-th ocu-th-date" style="width:130px">Next pull</th>
+              <th class="ocu-th ocu-th-num" style="width:130px">Actions</th>
             </tr>
           </thead>
           <tbody id="lr-tbody">${rows.map(rowHTML).join('')}</tbody>

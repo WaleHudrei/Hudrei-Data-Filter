@@ -52,12 +52,12 @@ function uploadRow(u) {
                      : u.channel === 'sms_accepted' ? 'SMS accepted'
                      : 'Cold call';
   return `<tr>
-    <td>${escHTML(u.filename || '—')}</td>
-    <td><span class="ocu-pill" data-channel="${escHTML(u.channel || '')}">${escHTML(channelLabel)}</span></td>
-    <td class="ocu-text-right ocu-mono">${fmtNum(u.total_records || 0)}</td>
-    <td class="ocu-text-right ocu-mono">+${fmtNum(u.records_kept || 0)}</td>
-    <td class="ocu-text-right ocu-mono">${fmtNum(u.records_filtered || 0)}</td>
-    <td class="ocu-text-3 ocu-mono" style="font-size:11px;white-space:nowrap">${fmtRelative(u.uploaded_at)}</td>
+    <td class="ocu-td">${escHTML(u.filename || '—')}</td>
+    <td class="ocu-td"><span class="ocu-pill" data-channel="${escHTML(u.channel || '')}">${escHTML(channelLabel)}</span></td>
+    <td class="ocu-td ocu-td-num"><span class="ocu-mono">${fmtNum(u.total_records || 0)}</span></td>
+    <td class="ocu-td ocu-td-num"><span class="ocu-mono">+${fmtNum(u.records_kept || 0)}</span></td>
+    <td class="ocu-td ocu-td-num"><span class="ocu-mono">${fmtNum(u.records_filtered || 0)}</span></td>
+    <td class="ocu-td ocu-td-date">${fmtRelative(u.uploaded_at)}</td>
   </tr>`;
 }
 
@@ -140,17 +140,17 @@ function campaignDetail(data = {}) {
     title: 'Recent uploads',
     meta:  uploads.length ? `${uploads.length} most recent` : '',
     body:  uploads.length === 0
-      ? `<div class="ocu-text-3" style="font-size:13px;text-align:center;padding:20px">No uploads to this campaign yet. Use the existing Loki page to upload a call log or SMS export.</div>`
+      ? `<div class="ocu-text-3" style="font-size:13px;text-align:center;padding:20px">No uploads to this campaign yet. Use the upload page to upload a call log or SMS export.</div>`
       : `<div class="ocu-table-wrap">
           <table class="ocu-table">
             <thead>
               <tr>
-                <th>File</th>
-                <th>Channel</th>
-                <th class="ocu-text-right">Total</th>
-                <th class="ocu-text-right">Kept</th>
-                <th class="ocu-text-right">Filtered</th>
-                <th>Uploaded</th>
+                <th class="ocu-th">File</th>
+                <th class="ocu-th">Channel</th>
+                <th class="ocu-th ocu-th-num">Total</th>
+                <th class="ocu-th ocu-th-num">Kept</th>
+                <th class="ocu-th ocu-th-num">Filtered</th>
+                <th class="ocu-th ocu-th-date">Uploaded</th>
               </tr>
             </thead>
             <tbody>${uploads.map(uploadRow).join('')}</tbody>
@@ -185,7 +185,7 @@ function campaignDetail(data = {}) {
     </div>
 
     <div style="margin-top:18px;display:flex;gap:8px;justify-content:flex-end">
-      <a href="/campaigns/${c.id}" class="ocu-btn ocu-btn-secondary">Open in Loki (uploads)</a>
+      <a href="/campaigns/${c.id}" class="ocu-btn ocu-btn-secondary">Open uploads page</a>
       ${newRoundBtn}
       ${closeBtn}
     </div>

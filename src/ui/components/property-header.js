@@ -66,7 +66,7 @@ function propertyHeader(p = {}) {
         <div class="ocu-detail-header-right">
           ${p.id ? pipelineDropdown(p.id, p.pipeline_stage) : ''}
           ${distressBadge(p.distress_score)}
-          <a href="/records/${escHTML(p.id)}/edit" class="ocu-btn ocu-btn-secondary">Edit in Loki</a>
+          <a href="/records/${escHTML(p.id)}/edit" class="ocu-btn ocu-btn-secondary">Edit (legacy)</a>
         </div>
       </div>
     </div>`;
