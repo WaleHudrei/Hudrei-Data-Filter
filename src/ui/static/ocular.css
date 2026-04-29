@@ -1958,6 +1958,15 @@ body { padding-bottom: 0; }
    Using the HTML5 dialog element (no JS framework needed). showModal()
    gives us a built-in backdrop + focus trap. */
 .ocu-dialog {
+  /* 2026-04-29: explicit centering so we don't rely on the browser's
+     default <dialog> centering, which can be defeated by the UA inheriting
+     stray styles from app.css resets. position+top/left+translate gives
+     pixel-perfect center regardless. */
+  position: fixed;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  margin: 0;
   border: 1px solid var(--ocu-border, #e5e7eb);
   border-radius: 12px;
   padding: 0;
