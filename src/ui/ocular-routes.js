@@ -1162,18 +1162,25 @@ router.get('/owners/:id(\\d+)', requireAuth, async (req, res) => {
     const phones = phonesRes.rows;
 
     // KPIs — single query, scoped to this owner's property + phone set.
+    // Param $3 was previously `props.length` but never referenced in any
+    // expression of this SELECT — Postgres couldn't infer its type and threw
+    // "could not determine data type of parameter $3" the first time an
+    // owner detail page was actually requested. Latent since this file was
+    // added; surfaced on 2026-04-29 after the 100K import created the first
+    // contacts. props.length is already known in JS, so we just drop the
+    // unused param and renumber tenant_id from $4 to $3.
     const kpiRes = await query(
       `SELECT
-         (SELECT COUNT(*)::int FROM properties WHERE tenant_id = $4 AND id = ANY($1::int[]) AND pipeline_stage='closed')   AS sold,
-         (SELECT COUNT(*)::int FROM properties WHERE tenant_id = $4 AND id = ANY($1::int[]) AND pipeline_stage='lead')     AS lead,
-         (SELECT COUNT(*)::int FROM properties WHERE tenant_id = $4 AND id = ANY($1::int[]) AND pipeline_stage='contract') AS contract,
-         (SELECT COUNT(*)::int FROM call_logs WHERE tenant_id = $4 AND property_id = ANY($1::int[])) AS calls,
-         (SELECT COUNT(*)::int FROM phones WHERE tenant_id = $4 AND contact_id = $2) AS phone_total,
-         (SELECT COUNT(*)::int FROM phones WHERE tenant_id = $4 AND contact_id = $2 AND LOWER(phone_status) = 'correct') AS phone_correct,
+         (SELECT COUNT(*)::int FROM properties WHERE tenant_id = $3 AND id = ANY($1::int[]) AND pipeline_stage='closed')   AS sold,
+         (SELECT COUNT(*)::int FROM properties WHERE tenant_id = $3 AND id = ANY($1::int[]) AND pipeline_stage='lead')     AS lead,
+         (SELECT COUNT(*)::int FROM properties WHERE tenant_id = $3 AND id = ANY($1::int[]) AND pipeline_stage='contract') AS contract,
+         (SELECT COUNT(*)::int FROM call_logs WHERE tenant_id = $3 AND property_id = ANY($1::int[])) AS calls,
+         (SELECT COUNT(*)::int FROM phones WHERE tenant_id = $3 AND contact_id = $2) AS phone_total,
+         (SELECT COUNT(*)::int FROM phones WHERE tenant_id = $3 AND contact_id = $2 AND LOWER(phone_status) = 'correct') AS phone_correct,
          (SELECT COALESCE(SUM(COALESCE(assessed_value, estimated_value, 0)), 0)::numeric
-            FROM properties WHERE tenant_id = $4 AND id = ANY($1::int[])) AS total_value
+            FROM properties WHERE tenant_id = $3 AND id = ANY($1::int[])) AS total_value
       `,
-      [propIds.length ? propIds : [0], contactId, props.length, t]
+      [propIds.length ? propIds : [0], contactId, t]
     );
     const kr = kpiRes.rows[0] || {};
 
