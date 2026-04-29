@@ -105,9 +105,26 @@ async function clearMemory() {
   try { await redis.del(MEMORY_KEY); } catch (e) { console.error(e.message); }
 }
 
-// Behind a Railway / Cloudflare proxy — required for `cookie.secure = true` to
-// not drop cookies over HTTPS, and for `req.ip` to report the real client IP.
-app.set('trust proxy', 1);
+// Behind Railway + Fastly (CDN) — the full chain is
+// Client → Fastly edge → Railway internal LB → Node.
+//
+// 2026-04-29 audit follow-up: `trust proxy: 1` (the previous value) only
+// trusted ONE upstream hop, so Express's req.ip was the Railway internal LB
+// address — which rotates per-request across LB instances. Result: every
+// rate-limited POST hit a fresh bucket and the limiter never fired. Verified
+// by stress test: 30 quick /signup POSTs all returned 302 redirects (route
+// handler ran), 0 returned 429 (limiter never engaged). Same effect on
+// /login (Redis-backed) — even a stable shared store can't dedupe if the
+// "client IP" is different per request.
+//
+// Setting `trust proxy: true` tells Express to use the LEFTMOST X-Forwarded-For
+// entry (the original client IP) regardless of how many proxies are in the
+// chain. This is the standard Railway+CDN configuration and is safe ONLY
+// because both Fastly and Railway strip any client-supplied X-Forwarded-For
+// before forwarding (preventing IP spoofing). Required for:
+//   - cookie.secure = true to not drop cookies on HTTPS-terminated proxies
+//   - req.ip to identify the actual client (rate limiters key off this)
+app.set('trust proxy', true);
 
 // 2026-04-29 audit fix L7 + L8: minimal security-headers middleware.
 // Equivalent to a stripped-down `helmet()` — picked the headers that matter
