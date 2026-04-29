@@ -1755,7 +1755,7 @@ router.get('/_distress', requireAuth, async (req, res) => {
     res.send(shell('Distress Score Audit', `
       <div style="margin-bottom:1rem"><a href="/records" style="font-size:13px;color:#888;text-decoration:none">← Records</a></div>
 
-      ${flashMsg ? `<div id="flash-msg" style="background:#e8f0ff;border:1px solid #b5ccf0;border-radius:8px;padding:12px 16px;margin-bottom:1rem;font-size:13px;color:#1a4a9a">${flashMsg}</div>` : ''}
+      ${flashMsg ? `<div id="flash-msg" style="background:#e8f0ff;border:1px solid #b5ccf0;border-radius:8px;padding:12px 16px;margin-bottom:1rem;font-size:13px;color:#1a4a9a">${escHTML(flashMsg)}</div>` : ''}
 
       <!-- Job status banner (populated by the poller below) -->
       <div id="distress-job-status" style="display:none;margin-bottom:1rem"></div>
@@ -2259,8 +2259,8 @@ router.get('/_duplicates', requireAuth, async (req, res) => {
         <a href="/records" class="btn btn-ghost" style="font-size:13px">← Back to Records</a>
       </div>
 
-      ${msg ? `<div class="card" style="margin-bottom:1rem;background:#eaf6ea;border-color:#9bd09b;padding:12px 16px;color:#1a5f1a;font-size:13px">✅ ${msg}</div>` : ''}
-      ${err ? `<div class="card" style="margin-bottom:1rem;background:#fdeaea;border-color:#f5c5c5;padding:12px 16px;color:#8b1f1f;font-size:13px">❌ ${err}</div>` : ''}
+      ${msg ? `<div class="card" style="margin-bottom:1rem;background:#eaf6ea;border-color:#9bd09b;padding:12px 16px;color:#1a5f1a;font-size:13px">✅ ${escHTML(msg)}</div>` : ''}
+      ${err ? `<div class="card" style="margin-bottom:1rem;background:#fdeaea;border-color:#f5c5c5;padding:12px 16px;color:#8b1f1f;font-size:13px">❌ ${escHTML(err)}</div>` : ''}
 
       <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin-bottom:1.5rem">
         <div class="card" style="padding:14px">
@@ -2442,19 +2442,60 @@ router.post('/_duplicates/merge', requireAuth, async (req, res) => {
 // POST /records/_duplicates/merge_all — finds and merges every duplicate group
 // in one shot. Same logic as single merge, just iterated. Capped at 500 groups
 // per request to avoid Express timeouts.
-// 2026-04-20 pass 12: merge_all concurrency guard. Pre-pass-12 two
-// simultaneous requests both ran the full merge sequence; the second one
-// tried to touch properties the first had already deleted, producing FK-
-// violation noise in logs. A module-level flag suffices since node is
-// single-threaded per process and merge_all is a big synchronous-ish
-// job (typically 30-60s per the UI copy).
-let _mergeAllRunning = false;
+// 2026-04-20 pass 12: merge_all concurrency guard.
+// 2026-04-29 audit fix K2: rebuilt per-tenant + Redis-backed. The previous
+// `let _mergeAllRunning = false;` had two failure modes:
+//   (a) cross-tenant interference — single global flag meant tenant A's
+//       merge blocked tenant B's, even though they touch zero shared rows.
+//   (b) multi-replica race — each Node process had its own flag, so two
+//       Railway replicas could both run merge_all for the same tenant
+//       simultaneously, the exact race pass-12's comment claimed to prevent.
+// Mirrors the S-3 distress-lock pattern earlier in this file: Redis SET NX EX
+// keyed per-tenant, with a local Map fallback for dev mode without REDIS_URL.
+// Reuses the _getDistressRedis() connection so we don't open a second one.
+const MERGE_ALL_LOCK_TTL = 10 * 60; // 10 minutes — bigger than the 30-60s typical so a slow run can't lose its own lock
+
+function _mergeAllLockKey(tenantId) {
+  if (!Number.isInteger(tenantId)) throw new Error('_mergeAllLockKey: tenantId required (int)');
+  return 'loki:mergeall:t' + tenantId;
+}
+
+const _localMergeAllFlags = new Map();
+
+async function tryClaimMergeAll(tenantId) {
+  const redis = _getDistressRedis();
+  if (redis) {
+    try {
+      const result = await redis.set(_mergeAllLockKey(tenantId), '1', 'NX', 'EX', MERGE_ALL_LOCK_TTL);
+      if (result === 'OK') {
+        _localMergeAllFlags.set(tenantId, true);
+        return true;
+      }
+      return false;
+    } catch (e) {
+      console.error('[merge_all] Redis claim failed, falling back to local flag:', e.message);
+      // fall through to local
+    }
+  }
+  if (_localMergeAllFlags.get(tenantId)) return false;
+  _localMergeAllFlags.set(tenantId, true);
+  return true;
+}
+
+async function releaseMergeAll(tenantId) {
+  _localMergeAllFlags.delete(tenantId);
+  const redis = _getDistressRedis();
+  if (redis) {
+    try { await redis.del(_mergeAllLockKey(tenantId)); }
+    catch (_) { /* non-fatal — TTL will reap it */ }
+  }
+}
 
 router.post('/_duplicates/merge_all', requireAuth, async (req, res) => {
-  if (_mergeAllRunning) {
-    return res.redirect('/records/_duplicates?err=' + encodeURIComponent('Another merge_all is already running. Wait for it to finish and try again.'));
+  const claimed = await tryClaimMergeAll(req.tenantId);
+  if (!claimed) {
+    return res.redirect('/records/_duplicates?err=' + encodeURIComponent('Another merge_all is already running for this workspace. Wait for it to finish and try again.'));
   }
-  _mergeAllRunning = true;
   try {
     const startedAt = Date.now();
     // 2026-04-18 audit fix #37: previously grouped by LOWER(TRIM(street)) —
@@ -2603,7 +2644,7 @@ router.post('/_duplicates/merge_all', requireAuth, async (req, res) => {
     console.error('[duplicates/merge_all]', e);
     res.redirect('/records/_duplicates?err=' + encodeURIComponent('Bulk merge failed: ' + e.message));
   } finally {
-    _mergeAllRunning = false;
+    await releaseMergeAll(req.tenantId);
   }
 });
 

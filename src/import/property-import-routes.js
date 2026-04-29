@@ -3,7 +3,7 @@ const router = express.Router();
 const multer = require('multer');
 const Papa = require('papaparse');
 const crypto = require('crypto');
-const { query, refreshOwnerPortfolioMv } = require('../db');
+const { query, refreshOwnerPortfolioMv, pool } = require('../db');
 const { shell } = require('../shared-shell');
 const { normalizeState: sharedNormalizeState } = require('./state');
 // 2026-04-20 pass 12: shared phone normalizer — see phone-normalize.js.
@@ -1061,7 +1061,30 @@ router.get('/preview', requireAuth, (req, res) => {
 });
 
 // ── COMMIT: Save batch to DB ──────────────────────────────────────────────────
+// 2026-04-29 audit fix K9: the /commit handler used to issue every query via
+// the pool-level helper, meaning the multi-pass batch (list upsert → markets
+// seed → bulk property UPSERT → row-by-row contact/phone/list inserts) wasn't
+// atomic. A failure on pass 4 left passes 1-3 committed; the operator saw
+// addresses imported but no contacts attached. This wrap pulls a single
+// dedicated client from the pool, BEGINs a transaction, and shadows the
+// `query` symbol locally so ALL existing query(...) calls in the handler now
+// run on that client without per-line edits. Per-row failures use SAVEPOINTs
+// so a single bad row no longer aborts the entire batch (which would happen
+// inside a transaction by default — Postgres marks the txn as failed on the
+// first error and rejects every subsequent statement until ROLLBACK).
+//
+// Audit fix K8 (race condition): each row also takes a per-property advisory
+// lock before the SELECT-then-INSERT primary-contact resolution, serializing
+// concurrent imports of the same address so they don't both create duplicate
+// contact rows.
 router.post('/commit', requireAuth, async (req, res) => {
+  const client = await pool.connect();
+  // Shadow the module-level `query` so the existing handler body — which
+  // already calls `query(...)` everywhere — now runs against the dedicated
+  // transactional client without a 400-line search-and-replace.
+  // eslint-disable-next-line no-shadow
+  const query = client.query.bind(client);
+  let txnStarted = false;
   try {
     const { mapping, filename, listName, listId, listType, listSource, offset, batchSize } = req.body;
     if (!mapping) return res.status(400).json({ error: 'Missing mapping.' });
@@ -1070,10 +1093,15 @@ router.post('/commit', requireAuth, async (req, res) => {
     const VALID_IMPORT_MODES = ['add_and_update', 'add_only', 'update_only'];
     const MODE = VALID_IMPORT_MODES.includes(req.body.importMode) ? req.body.importMode : 'add_and_update';
 
-    // Read rows from server session
+    // Read rows from server session BEFORE opening the transaction so a
+    // missing-session early return doesn't leak a half-open txn that the
+    // dedicated client would carry back to the pool. (K9.)
     const allRows = req.session.importRows;
     if (!allRows || !allRows.length) return res.status(400).json({ error: 'Session expired. Please re-upload your file.' });
     const rows = allRows.slice(offset || 0, (offset || 0) + (batchSize || 500));
+
+    await query('BEGIN');
+    txnStarted = true;
 
     let created = 0, updated = 0, errors = 0;
     // 2026-04-20 pass 12: local error var instead of `global._importFirstError`.
@@ -1304,6 +1332,12 @@ router.post('/commit', requireAuth, async (req, res) => {
     }
 
     if (!validRows.length) {
+      // K9: commit any work done so far (list upsert + markets seed) so the
+      // existing pre-K9 contract holds: an empty-batch import still creates
+      // the named list. Closing the txn here also prevents leaking it back
+      // to the pool via finally.
+      await query('COMMIT');
+      txnStarted = false;
       return res.json({ created, updated, errors, resolvedListId, skipped: skippedReasons, firstError: firstError || null });
     }
 
@@ -1367,6 +1401,9 @@ router.post('/commit', requireAuth, async (req, res) => {
     }
 
     if (!dedupedRows.length) {
+      // K9: commit list/markets work and close the txn before returning.
+      await query('COMMIT');
+      txnStarted = false;
       return res.json({ created, updated, errors, resolvedListId, skipped: skippedReasons, firstError: firstError || null });
     }
 
@@ -1497,16 +1534,37 @@ router.post('/commit', requireAuth, async (req, res) => {
     }
 
     // ── Bulk upsert contacts + phones row by row (contacts need property_id lookup) ──
+    // 2026-04-29 audit fix K9 (per-row savepoints): each row's writes happen
+    // inside a SAVEPOINT so a single bad row no longer aborts the whole batch.
+    // Without savepoints, the first row error inside our outer transaction
+    // would leave the txn in failed state — every subsequent row's query would
+    // throw "current transaction is aborted, commands ignored until end of
+    // transaction block" and the whole batch would be unrecoverable.
+    //
+    // 2026-04-29 audit fix K8 (race fix): each row also takes a per-property
+    // advisory lock right after propertyId is known. Two concurrent imports
+    // that both touch the same address now serialize at the lock — preventing
+    // the SELECT-then-INSERT race that produced duplicate contact rows + a
+    // unique-violation on idx_property_contacts_single_primary.
     for (const row of dedupedRows) {
       try {
+        await query(`SAVEPOINT row_sp`);
         const street = get(row,'street');
         const city   = get(row,'city');
         const state  = normalizeState(get(row,'state_code'), get(row,'zip_code'));
         const zip    = normalizeZip(get(row,'zip_code'));
         const key    = (street+'|'+city+'|'+state+'|'+zip).toLowerCase();
         const prop   = propMap[key];
-        if (!prop) continue;
+        if (!prop) {
+          // K9: release the savepoint we opened — skipping rows must not
+          // accumulate inactive savepoints over the loop's lifetime.
+          await query(`RELEASE SAVEPOINT row_sp`);
+          continue;
+        }
         const propertyId = prop.id;
+        // K8: serialize concurrent /commit calls that touch the same property.
+        // Auto-released at txn end (COMMIT or ROLLBACK).
+        await query(`SELECT pg_advisory_xact_lock(hashtext($1))`, [`pc:${tenantId}:${propertyId}`]);
 
         const firstName = getClip(row,'first_name');
         const lastName  = get(row,'last_name');
@@ -1606,7 +1664,18 @@ router.post('/commit', requireAuth, async (req, res) => {
           await query(`INSERT INTO property_lists (tenant_id,property_id,list_id,added_at) VALUES ($1,$2,$3,NOW()) ON CONFLICT DO NOTHING`,
             [tenantId,propertyId,resolvedListId]);
         }
+        // K9: row succeeded — release the savepoint so it doesn't stack.
+        await query(`RELEASE SAVEPOINT row_sp`);
       } catch(rowErr) {
+        // K9: roll the row's writes back, then release the savepoint so the
+        // next iteration starts clean. Without RELEASE after ROLLBACK TO, the
+        // savepoint stays active and subsequent SAVEPOINTs of the same name
+        // stack — Postgres allows it but it's unbounded growth per batch.
+        try {
+          await query(`ROLLBACK TO SAVEPOINT row_sp`);
+          await query(`RELEASE SAVEPOINT row_sp`);
+        } catch (_) { /* outer txn may already be failed; the catch at the route
+                          level will ROLLBACK the whole transaction */ }
         errors++;
         if (errors<=3) console.error('Row error:',rowErr.message);
         if (errors===1) firstError = rowErr.message;
@@ -1620,6 +1689,13 @@ router.post('/commit', requireAuth, async (req, res) => {
     // next bulk op. The UI invokes /commit in fixed-size slices with an
     // explicit offset; the last batch is the one whose offset+batchSize
     // reaches or exceeds allRows.length.
+    // 2026-04-29 audit fix K9: COMMIT before MV refresh / session cleanup.
+    // The MV refresh is a separate concern (heavy, can be retried) and must
+    // not be inside the import transaction — REFRESH MATERIALIZED VIEW takes
+    // an exclusive lock that we don't want held for the row loop's duration.
+    await query('COMMIT');
+    txnStarted = false;
+
     const isLastBatch = (offset || 0) + rows.length >= allRows.length;
     if (isLastBatch) {
       try {
@@ -1629,12 +1705,42 @@ router.post('/commit', requireAuth, async (req, res) => {
       } catch (e) {
         console.error('[import/commit] MV refresh failed (non-fatal):', e.message);
       }
+      // 2026-04-29 audit fix K7: drop the staged rows from the session once the
+      // last batch is committed. Pre-fix the session held the entire parsed CSV
+      // (up to ROW_CAP rows) until the session expired — abandoned imports left
+      // the rows pinned in MemoryStore for the full TTL, and even completed
+      // imports stayed in memory until the next /preview overwrote them. With
+      // 100s of users and an 8-hour cookie maxAge this added up.
+      req.session.importRows = null;
+      req.session.save();
     }
 
     res.json({ created, updated, errors, skipped: skippedReasons, firstError: firstError || null, resolvedListId });
   } catch(e) {
     console.error('Import commit error:', e.message);
+    // K9: roll back the import transaction if it was started. Without this
+    // the dedicated client returns to the pool with an aborted transaction
+    // and the next caller of pool.connect() inherits a poisoned session.
+    if (txnStarted) {
+      try { await client.query('ROLLBACK'); }
+      catch (rbErr) { console.error('Import commit ROLLBACK failed:', rbErr.message); }
+      txnStarted = false;
+    }
+    // 2026-04-29 audit fix K7: also drop session rows on error so a failed
+    // import doesn't leave its rows pinned indefinitely. Operator will need to
+    // re-upload anyway.
+    try { req.session.importRows = null; req.session.save(); } catch (_) { /* best effort */ }
     res.status(500).json({ error: e.message });
+  } finally {
+    // K9 belt-and-suspenders: if anything in the try escaped via early return
+    // (e.g. a future code path that res.json's after BEGIN without committing)
+    // the txn is still open. Roll it back before returning the client to the
+    // pool — otherwise the next pool.connect() inherits an open transaction.
+    if (txnStarted) {
+      try { await client.query('ROLLBACK'); }
+      catch (_) { /* client may already be in failed state */ }
+    }
+    client.release();
   }
 });
 

@@ -104,6 +104,59 @@ async function uniqueSlug(base) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Rate limiters — Phase 2 / 2026-04-29 audit fix K1
+// ─────────────────────────────────────────────────────────────────────────────
+// /signup, /forgot-password and /reset-password were previously unprotected —
+// allowing tenant-creation spam, email-bomb attacks against any user, and
+// unbounded SMTP cost via /forgot-password. Same in-memory pattern as the
+// /login limiter further down (same caveats: per-process, lost on restart,
+// doesn't share across replicas — move to Redis when we scale out; tracked
+// as audit M1).
+//
+// Unlike /login, these don't distinguish failures from successes — every
+// POST counts toward the limit. A successful /forgot-password still costs
+// an email send, so the rate-limit layer cares about call rate, not outcome.
+//
+// IP extraction reuses _loginIp (defined further down with the /login
+// limiter); declared as a forward-reference function so the IIFE order is
+// fine (function declarations are hoisted, const declarations are not).
+function _authRateIp(req) {
+  return String(req.ip || req.connection?.remoteAddress || 'unknown');
+}
+
+function _makeAuthRateLimit(windowMs, max) {
+  const attempts = new Map();
+  return function rateLimitMiddleware(req, res, next) {
+    const ip = _authRateIp(req);
+    const now = Date.now();
+    const rec = attempts.get(ip);
+    if (rec && (now - rec.firstAt) < windowMs && rec.count >= max) {
+      const retryAfter = Math.ceil((windowMs - (now - rec.firstAt)) / 1000);
+      res.set('Retry-After', String(retryAfter));
+      return res.status(429).send(authShell('Too many attempts', `
+        <h1>Too many requests</h1>
+        <p class="lede">Try again in ${Math.ceil(retryAfter / 60)} minute(s).</p>
+      `));
+    }
+    if (rec && (now - rec.firstAt) >= windowMs) {
+      attempts.delete(ip);
+    }
+    const cur = attempts.get(ip) || { count: 0, firstAt: Date.now() };
+    cur.count++;
+    attempts.set(ip, cur);
+    next();
+  };
+}
+
+// 3/hour for /signup — most expensive (tenant row + user row + email).
+const _signupRateLimit   = _makeAuthRateLimit(60 * 60 * 1000,  3);
+// 5/hour for /forgot-password — costs an email if the address exists.
+const _forgotPwRateLimit = _makeAuthRateLimit(60 * 60 * 1000,  5);
+// 10/hour for /reset-password — already token-gated, but blocks token-stuffing
+// scripts and DB write spam.
+const _resetPwRateLimit  = _makeAuthRateLimit(60 * 60 * 1000, 10);
+
+// ─────────────────────────────────────────────────────────────────────────────
 // GET / — public landing page (Phase 2e). Logged-in users go straight to
 // the dashboard; everyone else gets the marketing splash.
 // ─────────────────────────────────────────────────────────────────────────────
@@ -230,7 +283,7 @@ router.get('/signup', (req, res) => {
 });
 
 // ── POST /signup ─────────────────────────────────────────────────────────────
-router.post('/signup', async (req, res) => {
+router.post('/signup', _signupRateLimit, async (req, res) => {
   const name      = String(req.body.name || '').trim().slice(0, 100);
   const workspace = String(req.body.workspace || '').trim().slice(0, 60);
   const emailAddr = String(req.body.email || '').trim().toLowerCase().slice(0, 254);
@@ -576,7 +629,7 @@ router.get('/forgot-password', (req, res) => {
 });
 
 // ── POST /forgot-password ────────────────────────────────────────────────────
-router.post('/forgot-password', async (req, res) => {
+router.post('/forgot-password', _forgotPwRateLimit, async (req, res) => {
   const emailAddr = String(req.body.email || '').trim().toLowerCase();
 
   // Always show the same confirmation page — never leak whether the email
@@ -657,7 +710,7 @@ router.get('/reset-password', async (req, res) => {
 });
 
 // ── POST /reset-password ─────────────────────────────────────────────────────
-router.post('/reset-password', async (req, res) => {
+router.post('/reset-password', _resetPwRateLimit, async (req, res) => {
   const token    = String(req.body.token    || '');
   const password = String(req.body.password || '');
   const confirm  = String(req.body.confirm  || '');

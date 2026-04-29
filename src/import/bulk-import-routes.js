@@ -35,6 +35,64 @@ const { bufferToCsvText, stripBom } = require('../csv-utils');
 //     job. Invalidated on server restart — which happens on every deploy.
 // ─────────────────────────────────────────────────────────────────────────────
 
+// 2026-04-29 audit fix K10: temp-file cleanup hardening.
+// Pre-fix, the only cleanup was the finally{} in processImport(). If the
+// Node process died mid-import (OOM kill, unhandled exception in any other
+// route, segfault), the finally never ran and the staged CSV was orphaned.
+// Repeated crashes filled /tmp until uploads started failing with disk-full
+// errors that surfaced as generic 500s with no breadcrumb.
+//
+// Two layers, both at module-load time:
+//   (1) Boot-time sweep: deletes any loki-bulk-*.csv older than 1h. Catches
+//       orphans from prior process exits, INCLUDING crashes where no exit
+//       handler could possibly run (SIGKILL, OOM kill, kernel-level kills).
+//   (2) Active-file tracking + exit handler: each new temp file joins
+//       _activeTempFiles; the finally in processImport unregisters. On clean
+//       shutdown ('exit') and on uncaughtException, we sweep the set.
+const _activeTempFiles = new Set();
+
+(function _bootSweepOldTempFiles() {
+  const ONE_HOUR_MS = 60 * 60 * 1000;
+  const tmpDir = os.tmpdir();
+  try {
+    const files = fs.readdirSync(tmpDir);
+    let cleaned = 0;
+    const cutoff = Date.now() - ONE_HOUR_MS;
+    for (const f of files) {
+      if (!f.startsWith('loki-bulk-') || !f.endsWith('.csv')) continue;
+      const fullPath = path.join(tmpDir, f);
+      try {
+        const stat = fs.statSync(fullPath);
+        if (stat.mtimeMs < cutoff) {
+          fs.unlinkSync(fullPath);
+          cleaned++;
+        }
+      } catch (_) { /* file vanished between readdir and stat — fine */ }
+    }
+    if (cleaned > 0) {
+      console.log(`[bulk-import] boot sweep: removed ${cleaned} orphaned temp file(s) older than 1h`);
+    }
+  } catch (e) {
+    console.warn('[bulk-import] boot sweep failed (non-fatal):', e.message);
+  }
+})();
+
+process.on('exit', () => {
+  for (const p of _activeTempFiles) {
+    try { fs.unlinkSync(p); } catch (_) { /* already gone */ }
+  }
+});
+process.on('uncaughtException', (e) => {
+  // Note: this fires on uncaughtException anywhere in the process, not just
+  // bulk-import. Goal here is to ensure our staged CSVs don't outlive us;
+  // we re-throw via process.exit(1) so Node's default crash behaviour wins.
+  console.error('[bulk-import] uncaughtException — sweeping staged temp files first:', e.message);
+  for (const p of _activeTempFiles) {
+    try { fs.unlinkSync(p); } catch (_) { /* already gone */ }
+  }
+  process.exit(1);
+});
+
 const upload = multer({
   storage: multer.memoryStorage(),
   limits: { fileSize: 600 * 1024 * 1024 } // 600MB
@@ -365,6 +423,7 @@ router.post('/start', requireAuth, upload.single('csvfile'), async (req, res) =>
     const tmpName = `loki-bulk-${Date.now()}-${crypto.randomBytes(4).toString('hex')}.csv`;
     const tmpPath = path.join(os.tmpdir(), tmpName);
     fs.writeFileSync(tmpPath, req.file.buffer);
+    _activeTempFiles.add(tmpPath); // K10: track for crash-cleanup
 
     const jobRes = await query(
       `INSERT INTO bulk_import_jobs (tenant_id, filename, source, status, total_rows) VALUES ($1, $2, 'reisift', 'running', $3) RETURNING id`,
@@ -751,6 +810,7 @@ async function processImport(jobId, csvPath, filename, tenantId) {
   } finally {
     // Clean up the staged CSV so /tmp doesn't fill up.
     try { fs.unlinkSync(csvPath); } catch (e) { /* already gone */ }
+    _activeTempFiles.delete(csvPath); // K10: unregister from crash-cleanup tracking
   }
 }
 
