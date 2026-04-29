@@ -9,32 +9,25 @@
 (function() {
   'use strict';
 
-  const STORAGE_KEY = 'ocularFilterPanelOpen';
-
   const toggle  = document.getElementById('ocu-filter-toggle');
   const panel   = document.getElementById('ocu-filter-panel');
   if (!toggle || !panel) return;
 
   // ─── Panel open/close ─────────────────────────────────────────────────────
+  // 2026-04-29 Tier-3 follow-up: removed the localStorage persistence and the
+  // "auto-open if filters are active" behavior. Pre-fix the panel re-opened
+  // on every page load whenever the URL had any filter param OR localStorage
+  // had previously been '1' — which made users think the panel "popped out
+  // automatically without me touching it." Now: always closed on initial
+  // page load. The active-filter count badge on the toggle button still
+  // tells users which filters are applied, and clicking the toggle opens it.
   function setPanelOpen(open) {
     panel.hidden = !open;
     toggle.setAttribute('aria-expanded', open ? 'true' : 'false');
     toggle.classList.toggle('open', open);
-    try { localStorage.setItem(STORAGE_KEY, open ? '1' : '0'); } catch (_) {}
   }
 
-  // Initial state: open if any filter is active (so users see why the count
-  // badge is non-zero), or if localStorage previously had it open.
-  // Otherwise default to closed.
-  const hasActiveFilters = !!toggle.querySelector('.ocu-filter-toggle-count');
-  let initialOpen = false;
-  try {
-    const stored = localStorage.getItem(STORAGE_KEY);
-    if (stored === '1') initialOpen = true;
-  } catch (_) {}
-  if (hasActiveFilters) initialOpen = true;
-  setPanelOpen(initialOpen);
-
+  setPanelOpen(false);
   toggle.addEventListener('click', () => setPanelOpen(panel.hidden));
 
   // ─── State multi-select popover ───────────────────────────────────────────

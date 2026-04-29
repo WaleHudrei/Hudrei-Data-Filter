@@ -57,16 +57,21 @@ function jobRow(j) {
     ? `<span class="ocu-pill ocu-pill-good">+${fmtNum(inserted)}</span> new, <span class="ocu-pill ocu-pill-primary">${fmtNum(updated)}</span> updated${errors > 0 ? `, <span class="ocu-pill ocu-pill-bad">${fmtNum(errors)}</span> errors` : ''}`
     : '<span class="ocu-text-3">—</span>';
 
+  // 2026-04-29 Tier-3 follow-up: switched raw <td> to .ocu-td so the data
+  // cells line up with the .ocu-th headers below. Pre-fix every cell got
+  // text-align:start while every header got browser-default text-align:center,
+  // so File/List/Status/Started labels floated to the middle of their wide
+  // columns while the data sat at the left edge.
   return `<tr>
-    <td>
-      <div style="font-weight:500">${escHTML(j.filename || '—')}</div>
+    <td class="ocu-td">
+      <div class="ocu-td-primary">${escHTML(j.filename || '—')}</div>
       ${errBlock}
     </td>
-    <td>${j.list_name ? `<a href="/ocular/records?list_id=${j.list_id}" class="ocu-link">${escHTML(j.list_name)}</a>` : '<span class="ocu-text-3">—</span>'}</td>
-    <td>${statusBadge(j.status)}</td>
-    <td style="min-width:200px">${progressBar(j)}</td>
-    <td style="font-size:12px">${resultsCell}</td>
-    <td class="ocu-text-3 ocu-mono" style="font-size:11px;white-space:nowrap">${fmtRelative(startedAt)}</td>
+    <td class="ocu-td">${j.list_name ? `<a href="/ocular/records?list_id=${j.list_id}" class="ocu-link">${escHTML(j.list_name)}</a>` : '<span class="ocu-text-3">—</span>'}</td>
+    <td class="ocu-td">${statusBadge(j.status)}</td>
+    <td class="ocu-td" style="min-width:200px">${progressBar(j)}</td>
+    <td class="ocu-td" style="font-size:12px">${resultsCell}</td>
+    <td class="ocu-td ocu-td-date">${fmtRelative(startedAt)}</td>
   </tr>`;
 }
 
@@ -90,12 +95,12 @@ function activityList(data = {}) {
         <table class="ocu-table">
           <thead>
             <tr>
-              <th>File</th>
-              <th>List</th>
-              <th>Status</th>
-              <th>Progress</th>
-              <th>Results</th>
-              <th>Started</th>
+              <th class="ocu-th">File</th>
+              <th class="ocu-th">List</th>
+              <th class="ocu-th">Status</th>
+              <th class="ocu-th">Progress</th>
+              <th class="ocu-th">Results</th>
+              <th class="ocu-th ocu-th-date">Started</th>
             </tr>
           </thead>
           <tbody>${jobs.map(jobRow).join('')}</tbody>

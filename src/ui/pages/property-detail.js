@@ -100,9 +100,14 @@ function propertyDetail(data) {
     activePage:  'records',
     user:        data.user || { name: 'User', initials: '?' },
     badges:      data.badges || {},
-    // Load the click-handlers bundle. `defer` so it runs after the DOM
-    // is parsed, and so it doesn't block initial render.
-    extraBodyEnd: '<script src="/ocular-static/detail-actions.js" defer></script>',
+    // 2026-04-29 Tier-3 follow-up: was extraBodyEnd, but shell() only honors
+    // extraHead. The script silently never loaded, so every onclick handler
+    // wired up by detail-actions.js was dead — phone-tag-add/remove,
+    // property-tag-add/remove, distress recompute, owner-occupancy toggle,
+    // pipeline change, etc. The user reported "phone tag is broken" on
+    // 2026-04-29; this was the root cause for all of them. Move to extraHead
+    // with `defer` so it still runs after the DOM is parsed.
+    extraHead: '<script src="/ocular-static/detail-actions.js?v=2" defer></script>',
   });
 }
 

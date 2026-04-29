@@ -69,15 +69,19 @@ function propRow(p) {
   const stage = p.pipeline_stage || 'prospect';
   const color = pipelineColor(stage);
   const value = p.estimated_value || p.assessed_value;
+  // 2026-04-29 Tier-3 follow-up: data cells now use .ocu-td so they line
+  // up with the .ocu-th headers (same root cause as owners-list and
+  // activity-list — raw <td> defaults to text-align:start while raw <th>
+  // defaults to center).
   return `<tr>
-      <td>
+      <td class="ocu-td">
         <a href="/ocular/records/${p.id}" class="ocu-link">${escHTML(address)}</a>
         ${p.primary_contact ? '<span class="ocu-pill ocu-pill-primary" style="margin-left:6px">PRIMARY</span>' : ''}
       </td>
-      <td class="ocu-text-2">${escHTML(p.property_type || '—')}</td>
-      <td><span class="ocu-pill" style="background:${color}15;color:${color}">${escHTML(stage)}</span></td>
-      <td class="ocu-mono ocu-text-right">${fmtMoney(value)}</td>
-      <td class="ocu-text-3">${fmtDate(p.last_sale_date)}</td>
+      <td class="ocu-td ocu-td-text">${escHTML(p.property_type || '—')}</td>
+      <td class="ocu-td"><span class="ocu-pill" style="background:${color}15;color:${color}">${escHTML(stage)}</span></td>
+      <td class="ocu-td ocu-td-num"><span class="ocu-mono">${fmtMoney(value)}</span></td>
+      <td class="ocu-td ocu-td-date">${fmtDate(p.last_sale_date)}</td>
     </tr>`;
 }
 
@@ -177,11 +181,11 @@ function ownerDetail(data = {}) {
         <table class="ocu-table">
           <thead>
             <tr>
-              <th>Address</th>
-              <th>Type</th>
-              <th>Stage</th>
-              <th class="ocu-text-right">Value</th>
-              <th>Last sale</th>
+              <th class="ocu-th">Address</th>
+              <th class="ocu-th">Type</th>
+              <th class="ocu-th">Stage</th>
+              <th class="ocu-th ocu-th-num">Value</th>
+              <th class="ocu-th ocu-th-date">Last sale</th>
             </tr>
           </thead>
           <tbody>${props.map(propRow).join('')}</tbody>
