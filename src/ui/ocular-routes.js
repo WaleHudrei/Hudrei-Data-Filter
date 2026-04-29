@@ -516,6 +516,10 @@ router.get('/records', requireAuth, async (req, res) => {
     // need to query the DB for them here anymore.
     const allTagsRes = await query(`SELECT id, name FROM tags WHERE tenant_id = $1 ORDER BY name ASC LIMIT 200`, [req.tenantId]).catch(() => ({ rows: [] }));
     const allListsRes = await query(`SELECT id, list_name FROM lists WHERE tenant_id = $1 ORDER BY list_name ASC LIMIT 200`, [req.tenantId]);
+    // Phone-tag pool. The phone_tags table is process-wide (not tenant-scoped
+    // — see records-routes.js:92), so this is the same list every tenant
+    // sees. catch() guards against the table being absent on a fresh boot.
+    const allPhoneTagsRes = await query(`SELECT id, name FROM phone_tags ORDER BY name ASC LIMIT 200`).catch(() => ({ rows: [] }));
 
     // Pass through the original querystring (for chip-x removal links etc.)
     const querystring = req.url.includes('?') ? req.url.split('?')[1] : '';
@@ -536,9 +540,10 @@ router.get('/records', requireAuth, async (req, res) => {
         min_years_owned, max_years_owned,
         phoneTagIncludeList, phoneTagExcludeList,
       },
-      allTags:   allTagsRes.rows,
-      allLists:  allListsRes.rows,
-      user:      await getUser(req),
+      allTags:      allTagsRes.rows,
+      allLists:     allListsRes.rows,
+      allPhoneTags: allPhoneTagsRes.rows,
+      user:         await getUser(req),
     }));
   } catch (e) {
     console.error('[ocular/records]', e);

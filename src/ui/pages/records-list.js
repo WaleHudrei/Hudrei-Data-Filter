@@ -112,8 +112,9 @@ function recordsList(data = {}) {
 
     ${recordsFilters({
       filters,
-      allTags:   data.allTags   || [],
-      allLists:  data.allLists  || [],
+      allTags:      data.allTags      || [],
+      allLists:     data.allLists     || [],
+      allPhoneTags: data.allPhoneTags || [],
     })}
 
     ${filterChips}

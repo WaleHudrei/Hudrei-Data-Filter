@@ -13,9 +13,18 @@ function listTypeBadge(t) {
 }
 
 function listRow(l) {
-  const safeName = JSON.stringify(l.list_name || '');
-  const safeType = JSON.stringify(l.list_type || '');
-  const safeSrc  = JSON.stringify(l.source || '');
+  // 2026-04-29 fix: previously JSON.stringify(...) was inlined into an
+  // onclick="..." attribute. JSON's quotes ("Stress Test 100K") collided
+  // with the surrounding double-quoted attribute, ending the attribute
+  // mid-string and producing
+  //   onclick="lists_openEdit(1, " stress="" test=""...
+  // — the Edit button silently did nothing because the handler couldn't
+  // parse. Same bug latent on the Delete button. Fix: encode the JSON
+  // string for HTML-attribute context (every " becomes &quot;).
+  const attr = (s) => JSON.stringify(s || '').replace(/"/g, '&quot;');
+  const safeName = attr(l.list_name);
+  const safeType = attr(l.list_type);
+  const safeSrc  = attr(l.source);
   return `<tr>
     <td class="ocu-td">
       <a href="/ocular/records?list_id=${l.id}" class="ocu-link ocu-td-primary">${escHTML(l.list_name)}</a>

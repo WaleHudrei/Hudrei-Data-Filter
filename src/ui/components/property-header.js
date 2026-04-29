@@ -47,16 +47,25 @@ function pipelineDropdown(propertyId, current) {
 }
 
 function propertyHeader(p = {}) {
-  const addr = [p.property_address, p.property_city, p.property_state]
-    .filter(Boolean).map(escHTML).join(', ');
-  const zip  = p.property_zip ? ` ${escHTML(p.property_zip)}` : '';
+  // 2026-04-29 fix: was reading p.property_address / p.property_city /
+  // p.property_state / p.property_zip — those columns don't exist. The
+  // DB row from `SELECT * FROM properties` exposes street / city /
+  // state_code / zip_code. The H1 was silently rendering as empty for
+  // every property since the page was created. User reported "the
+  // address on the top left to be bold and much bigger so we can see
+  // it" — but it wasn't even rendering.
+  const addrLine1 = escHTML(p.street || '');
+  const addrLine2 = [p.city, p.state_code].filter(Boolean).map(escHTML).join(', ')
+    + (p.zip_code ? ' ' + escHTML(p.zip_code) : '');
+  const fullAddr = addrLine1 + (addrLine2 ? ', ' + addrLine2 : '');
 
   return `
     <div class="ocu-detail-header">
       <a href="/ocular/records" class="ocu-detail-backlink">← All records</a>
       <div class="ocu-detail-header-main">
         <div class="ocu-detail-title-block">
-          <h1 class="ocu-detail-title">${addr}${zip}</h1>
+          <h1 class="ocu-detail-title" title="${fullAddr}">${addrLine1 || '(no address)'}</h1>
+          ${addrLine2 ? `<div class="ocu-detail-address-line2">${addrLine2}</div>` : ''}
           <div class="ocu-detail-subtitle">
             ${escHTML(p.property_type || 'Unknown type')}
             ${p.year_built ? ` · Built ${escHTML(p.year_built)}` : ''}

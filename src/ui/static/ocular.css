@@ -753,14 +753,25 @@
 .ocu-detail-header {
   margin-bottom: 24px;
 }
+/* 2026-04-29 typography bump: user reported the address on the property
+   detail page wasn't visible and the "All records" backlink was too
+   muted. Bumping both up so the page hierarchy is clear at a glance. */
 .ocu-detail-backlink {
-  display: inline-block;
-  font-size: 13px;
-  color: var(--ocu-text-2);
+  display: inline-flex;
+  align-items: center;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--ocu-accent, #2563EB);
   text-decoration: none;
-  margin-bottom: 12px;
+  margin-bottom: 14px;
+  padding: 4px 10px 4px 6px;
+  border-radius: 6px;
+  transition: background 0.12s, color 0.12s;
 }
-.ocu-detail-backlink:hover { color: var(--ocu-accent); }
+.ocu-detail-backlink:hover {
+  color: var(--ocu-accent);
+  background: var(--ocu-surface, #f3f4f6);
+}
 
 .ocu-detail-header-main {
   display: flex;
@@ -772,16 +783,25 @@
 .ocu-detail-title-block { flex: 1; min-width: 0; }
 .ocu-detail-title {
   font-family: var(--ocu-display);
-  font-size: 28px;
-  font-weight: 700;
-  letter-spacing: -0.02em;
+  font-size: 40px;
+  font-weight: 800;
+  letter-spacing: -0.025em;
   color: var(--ocu-text-1);
-  line-height: 1.2;
+  line-height: 1.15;
+  margin: 0;
+}
+.ocu-detail-address-line2 {
+  font-size: 18px;
+  font-weight: 500;
+  color: var(--ocu-text-2);
+  margin-top: 4px;
+  letter-spacing: -0.005em;
 }
 .ocu-detail-subtitle {
   font-size: 14px;
-  color: var(--ocu-text-2);
-  margin-top: 6px;
+  color: var(--ocu-text-3, #6B7280);
+  margin-top: 8px;
+  letter-spacing: 0.01em;
 }
 .ocu-detail-header-right {
   display: flex;

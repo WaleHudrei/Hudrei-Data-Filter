@@ -27,6 +27,7 @@ function recordsFilters(opts = {}) {
   const f = opts.filters || {};
   const allTags  = Array.isArray(opts.allTags)  ? opts.allTags  : [];
   const allLists = Array.isArray(opts.allLists) ? opts.allLists : [];
+  const allPhoneTags = Array.isArray(opts.allPhoneTags) ? opts.allPhoneTags : [];
   const activeFilterCount = countActive(f);
 
   // ── State multi-select: rendered as a searchable popover dropdown ─────
@@ -62,6 +63,23 @@ function recordsFilters(opts = {}) {
   const tagExcludeChecks = allTags.map(t => `
     <label class="ocu-check ocu-check-line">
       <input type="checkbox" name="tag_exclude" value="${t.id}"${tagExc.includes(String(t.id)) ? ' checked' : ''}>
+      <span>${escHTML(t.name)}</span>
+    </label>`).join('');
+
+  // 2026-04-29 phone-tag filter UI. Backend wires were added earlier
+  // (commit bcb73d8); this exposes a checkbox list in the form so users
+  // can actually pick phone tags. Mirrors the structure of property-tag
+  // include/exclude.
+  const phoneTagInc = (f.phoneTagIncludeList || []).map(String);
+  const phoneTagExc = (f.phoneTagExcludeList || []).map(String);
+  const phoneTagIncludeChecks = allPhoneTags.map(t => `
+    <label class="ocu-check ocu-check-line">
+      <input type="checkbox" name="phone_tag_include" value="${t.id}"${phoneTagInc.includes(String(t.id)) ? ' checked' : ''}>
+      <span>${escHTML(t.name)}</span>
+    </label>`).join('');
+  const phoneTagExcludeChecks = allPhoneTags.map(t => `
+    <label class="ocu-check ocu-check-line">
+      <input type="checkbox" name="phone_tag_exclude" value="${t.id}"${phoneTagExc.includes(String(t.id)) ? ' checked' : ''}>
       <span>${escHTML(t.name)}</span>
     </label>`).join('');
 
@@ -270,6 +288,16 @@ function recordsFilters(opts = {}) {
           <details class="ocu-filter ocu-filter-details">
             <summary class="ocu-filter-label">Tags exclude (${tagExc.length || 'none'})</summary>
             <div class="ocu-check-list">${tagExcludeChecks}</div>
+          </details>` : ''}
+
+          ${allPhoneTags.length > 0 ? `
+          <details class="ocu-filter ocu-filter-details">
+            <summary class="ocu-filter-label">Phone tags include (${phoneTagInc.length || 'any'})</summary>
+            <div class="ocu-check-list">${phoneTagIncludeChecks}</div>
+          </details>
+          <details class="ocu-filter ocu-filter-details">
+            <summary class="ocu-filter-label">Phone tags exclude (${phoneTagExc.length || 'none'})</summary>
+            <div class="ocu-check-list">${phoneTagExcludeChecks}</div>
           </details>` : ''}
 
         </div>
