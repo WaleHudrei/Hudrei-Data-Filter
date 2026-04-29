@@ -4,6 +4,7 @@
 // ─────────────────────────────────────────────────────────────────────────────
 
 const { query } = require('../db');
+const distressConfig = require('./distress-config');
 
 // Module-level idempotency flag — ensureDistressSchema pays DDL cost at most
 // once per process. Prior code called it at the top of every exported function,
@@ -39,11 +40,13 @@ const WEIGHTS = {
 // Display cap so the score reads as a 0-100 percentage-feel
 const DISPLAY_CAP = 100;
 
-// Bands
-function bandFor(score) {
-  if (score >= 75) return 'burning';
-  if (score >= 55) return 'hot';
-  if (score >= 30) return 'warm';
+// Bands. With a per-tenant config the cutoffs are tenant-overridable; without
+// one (legacy callers) the defaults are applied.
+function bandFor(score, bands) {
+  const b = bands || { warm: 30, hot: 55, burning: 75 };
+  if (score >= b.burning) return 'burning';
+  if (score >= b.hot)     return 'hot';
+  if (score >= b.warm)    return 'warm';
   return 'cold';
 }
 
@@ -90,7 +93,19 @@ function classifyList(listType, listName) {
 //     has_county_source: boolean,
 //   }
 // Returns: { score, capped_score, band, breakdown: [{key, label, points}] }
-function computeScore(ctx) {
+function computeScore(ctx, config) {
+  // When called with no config (legacy in-process callers), fall back to the
+  // built-in defaults so nothing breaks. Per-tenant config is supplied by
+  // scoreProperty() after a config lookup.
+  const W      = (config && config.weights) || {
+    list_tax_sale: 30, list_tax_delinquent: 15, list_pre_foreclosure: 15,
+    list_mortgage_foreclosure: 20, list_probate: 20, list_code_violation: 15,
+    list_vacant: 15, stack_5_plus: 15, stack_3_4: 10, stack_2: 5,
+    high_equity: 10, out_of_state: 10, marketing_lead: 5, county_source: 10,
+  };
+  const bands  = (config && config.bands) || { warm: 30, hot: 55, burning: 75 };
+  const custom = (config && Array.isArray(config.custom_signals)) ? config.custom_signals : [];
+
   const breakdown = [];
   let raw = 0;
   const add = (key, points, label) => {
@@ -116,35 +131,35 @@ function computeScore(ctx) {
   const hasTaxDelinquent = ctx.list_signals && ctx.list_signals.has('tax_delinquent');
   const hasMortgageFc    = ctx.list_signals && ctx.list_signals.has('mortgage_foreclosure');
   const hasPreFc         = ctx.list_signals && ctx.list_signals.has('pre_foreclosure');
-  if (hasTaxSale)                            add('list_tax_sale',        WEIGHTS.list_tax_sale,        'On Tax Sale / Sheriff Sale list');
-  if (hasTaxDelinquent && !hasTaxSale)       add('list_tax_delinquent',  WEIGHTS.list_tax_delinquent,  'On Tax Delinquent list');
-  if (hasMortgageFc)                         add('list_mortgage_foreclosure', WEIGHTS.list_mortgage_foreclosure, 'On Mortgage Foreclosure list');
-  if (hasPreFc && !hasMortgageFc)            add('list_pre_foreclosure', WEIGHTS.list_pre_foreclosure, 'On Pre-Foreclosure list');
-  if (ctx.list_signals && ctx.list_signals.has('probate'))         add('list_probate',         WEIGHTS.list_probate,         'On Probate list');
-  if (ctx.list_signals && ctx.list_signals.has('code_violation'))  add('list_code_violation',  WEIGHTS.list_code_violation,  'On Code Violation list');
-  if (ctx.list_signals && ctx.list_signals.has('vacant'))          add('list_vacant',          WEIGHTS.list_vacant,          'On Vacant list');
+  if (hasTaxSale)                            add('list_tax_sale',        W.list_tax_sale,        'On Tax Sale / Sheriff Sale list');
+  if (hasTaxDelinquent && !hasTaxSale)       add('list_tax_delinquent',  W.list_tax_delinquent,  'On Tax Delinquent list');
+  if (hasMortgageFc)                         add('list_mortgage_foreclosure', W.list_mortgage_foreclosure, 'On Mortgage Foreclosure list');
+  if (hasPreFc && !hasMortgageFc)            add('list_pre_foreclosure', W.list_pre_foreclosure, 'On Pre-Foreclosure list');
+  if (ctx.list_signals && ctx.list_signals.has('probate'))         add('list_probate',         W.list_probate,         'On Probate list');
+  if (ctx.list_signals && ctx.list_signals.has('code_violation'))  add('list_code_violation',  W.list_code_violation,  'On Code Violation list');
+  if (ctx.list_signals && ctx.list_signals.has('vacant'))          add('list_vacant',          W.list_vacant,          'On Vacant list');
 
   // Stack count (mutually exclusive bands)
   const lc = parseInt(ctx.list_count) || 0;
-  if (lc >= 5)      add('stack_5_plus', WEIGHTS.stack_5_plus, 'Stacked on 5+ lists');
-  else if (lc >= 3) add('stack_3_4',    WEIGHTS.stack_3_4,    'Stacked on 3-4 lists');
-  else if (lc === 2) add('stack_2',     WEIGHTS.stack_2,      'Stacked on 2 lists');
+  if (lc >= 5)      add('stack_5_plus', W.stack_5_plus, 'Stacked on 5+ lists');
+  else if (lc >= 3) add('stack_3_4',    W.stack_3_4,    'Stacked on 3-4 lists');
+  else if (lc === 2) add('stack_2',     W.stack_2,      'Stacked on 2 lists');
 
   // High equity
   const eq = parseFloat(ctx.equity_percent);
-  if (!isNaN(eq) && eq >= 50) add('high_equity', WEIGHTS.high_equity, 'High equity (≥50%)');
+  if (!isNaN(eq) && eq >= 50) add('high_equity', W.high_equity, 'High equity (≥50%)');
 
   // Out-of-state owner (only if BOTH states populated)
   const ps = String(ctx.property_state_code || '').trim().toUpperCase();
   const ms = String(ctx.mailing_state || '').trim().toUpperCase();
-  if (ps && ms && ps !== ms) add('out_of_state', WEIGHTS.out_of_state, 'Out-of-state owner');
+  if (ps && ms && ps !== ms) add('out_of_state', W.out_of_state, 'Out-of-state owner');
 
   // Marketing already engaged — property has advanced beyond "prospect" in the
   // pipeline. Uses pipeline_stage (set by filtration.js on transfer) rather
   // than marketing_result (which was never populated). (Audit issue #12.)
   const stage = String(ctx.pipeline_stage || '').toLowerCase().trim();
   if (stage === 'lead' || stage === 'contract' || stage === 'closed') {
-    add('marketing_lead', WEIGHTS.marketing_lead, 'Already engaged (' + stage + ')');
+    add('marketing_lead', W.marketing_lead, 'Already engaged (' + stage + ')');
   }
 
   // County-sourced data bonus — authoritative records, less competition from
@@ -156,14 +171,25 @@ function computeScore(ctx) {
   const hasAnyDistressSignal = hasTaxSale || hasTaxDelinquent || hasMortgageFc || hasPreFc ||
     (ctx.list_signals && (ctx.list_signals.has('probate') || ctx.list_signals.has('code_violation') || ctx.list_signals.has('vacant')));
   if (ctx.has_county_source && hasAnyDistressSignal) {
-    add('county_source', WEIGHTS.county_source, 'County-sourced distress list');
+    add('county_source', W.county_source, 'County-sourced distress list');
+  }
+
+  // Custom user-defined signals (Task 9). Each is a list-keyword matcher: if
+  // any list this property is on has a name or type containing the keyword
+  // (case-insensitive), the signal's points are added. Keyword set comes
+  // from ctx.custom_matches which the caller pre-computes from list rows.
+  const matchedCustom = ctx.custom_matches instanceof Set ? ctx.custom_matches : new Set();
+  for (const sig of custom) {
+    if (matchedCustom.has(sig.id)) {
+      add('custom:' + sig.id, sig.weight, sig.label);
+    }
   }
 
   const capped = Math.min(raw, DISPLAY_CAP);
   return {
     score: capped,
     raw_score: raw,
-    band: bandFor(capped),
+    band: bandFor(capped, bands),
     breakdown,
   };
 }
@@ -248,7 +274,7 @@ async function scoreProperty(propertyId) {
   await ensureDistressSchema();
 
   const propRes = await query(
-    `SELECT p.id, p.state_code, p.equity_percent, p.pipeline_stage,
+    `SELECT p.id, p.tenant_id, p.state_code, p.equity_percent, p.pipeline_stage,
             c.mailing_state
        FROM properties p
        LEFT JOIN property_contacts pc ON pc.property_id = p.id AND pc.primary_contact = true
@@ -259,7 +285,11 @@ async function scoreProperty(propertyId) {
   if (!propRes.rows.length) return null;
   const p = propRes.rows[0];
 
-  // Lists this property is on
+  // Per-tenant config: weights, bands, and custom keyword signals.
+  const config = await distressConfig.getConfig(p.tenant_id);
+
+  // Lists this property is on — needed for built-in signals AND for matching
+  // custom keyword signals.
   const listRes = await query(
     `SELECT l.list_type, l.list_name, l.source
        FROM property_lists pl
@@ -268,12 +298,22 @@ async function scoreProperty(propertyId) {
     [propertyId]
   );
   const list_signals = new Set();
+  const custom_matches = new Set();
   let has_county_source = false;
   for (const l of listRes.rows) {
     const sig = classifyList(l.list_type, l.list_name);
     if (sig) list_signals.add(sig);
     if (l.source && /county/i.test(String(l.source))) {
       has_county_source = true;
+    }
+    // Custom signals: list-keyword matchers. Each looks for its match_value
+    // in the lowercased "list_type list_name" combined string. Same lookup
+    // semantics as classifyList so users get consistent matching.
+    const both = (String(l.list_type || '') + ' ' + String(l.list_name || '')).toLowerCase();
+    for (const cs of config.custom_signals) {
+      if (cs.match_type === 'list_keyword' && cs.match_value && both.includes(cs.match_value)) {
+        custom_matches.add(cs.id);
+      }
     }
   }
   const list_count = listRes.rows.length;
@@ -286,7 +326,8 @@ async function scoreProperty(propertyId) {
     list_signals,
     list_count,
     has_county_source,
-  });
+    custom_matches,
+  }, config);
 
   // Get prior score to detect changes
   const priorRes = await query(`SELECT distress_score FROM properties WHERE id = $1`, [propertyId]);
@@ -319,9 +360,35 @@ async function scoreProperty(propertyId) {
 
 // ── Score a specific SET of properties (bulk SQL, no breakdown) ────────────
 // Fast path used after imports/uploads — only rescores touched properties.
+// 2026-04-30: with per-tenant distress config (Task 9), the bulk SQL path
+// can no longer produce correct scores for tenants who have customized their
+// matrix — it would apply default weights and bands, clobbering tenant-set
+// scores. When the property set belongs to a single tenant AND that tenant
+// has overrides, we fall back to looping scoreProperty() per id (slower but
+// honors weights, bands, AND custom keyword signals). For everyone else the
+// fast SQL path runs unchanged.
 async function scoreProperties(propertyIds) {
   if (!Array.isArray(propertyIds) || propertyIds.length === 0) return { scored: 0 };
   await ensureDistressSchema();
+
+  // Detect tenant of these ids. If they all share a tenant AND that tenant
+  // has overrides, route through the per-property path.
+  const tenantRes = await query(
+    `SELECT DISTINCT tenant_id FROM properties WHERE id = ANY($1::int[])`,
+    [propertyIds]
+  );
+  if (tenantRes.rows.length === 1) {
+    const tid = tenantRes.rows[0].tenant_id;
+    const cfg = await distressConfig.getConfig(tid);
+    if (cfg._hasOverrides) {
+      let scored = 0;
+      for (const id of propertyIds) {
+        try { await scoreProperty(id); scored++; }
+        catch (e) { console.error('[distress] per-id score failed', id, e.message); }
+      }
+      return { scored };
+    }
+  }
 
   const w = WEIGHTS;
   const sql = `

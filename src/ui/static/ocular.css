@@ -24,9 +24,9 @@
   --ocu-surface-2:      #F3F4F6;
   --ocu-border:         #E5E7EB;
   --ocu-border-strong:  #D1D5DB;
-  --ocu-text-1:         #111827;
-  --ocu-text-2:         #4B5563;
-  --ocu-text-3:         #9CA3AF;
+  --ocu-text-1:         #0B1220;
+  --ocu-text-2:         #374151;
+  --ocu-text-3:         #6B7280;
   --ocu-accent:         #0891B2;
   --ocu-accent-soft:    rgba(8, 145, 178, 0.08);
 
@@ -76,11 +76,21 @@
 .ocu {
   font-family: var(--ocu-display);
   font-size: 14px;
+  font-weight: 500;
   line-height: 1.55;
   color: var(--ocu-text-1);
   background: var(--ocu-bg);
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
+  text-rendering: optimizeLegibility;
+}
+.ocu input, .ocu textarea, .ocu select, .ocu button {
+  font-family: inherit;
+  font-weight: 500;
+}
+.ocu input::placeholder, .ocu textarea::placeholder {
+  color: var(--ocu-text-3);
+  opacity: 1;
 }
 
 /* ─── Layout shell ──────────────────────────────────────────────────────── */
@@ -366,6 +376,59 @@
 .ocu-search:focus {
   outline: none;
   border-color: var(--ocu-accent);
+}
+.ocu-search-form { display: flex; }
+
+/* Distress matrix editor */
+.ocu-distress-grid { display: flex; flex-direction: column; gap: 8px; }
+.ocu-distress-row {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 8px 0; border-bottom: 1px solid var(--ocu-border);
+}
+.ocu-distress-row:last-child { border-bottom: 0; }
+.ocu-distress-row-label { font-size: 13.5px; color: var(--ocu-text-1); flex: 1; }
+.ocu-distress-row-input { display: flex; align-items: center; gap: 6px; }
+
+.ocu-custom-signal-row {
+  display: grid;
+  grid-template-columns: 1.2fr 1.2fr auto auto;
+  gap: 10px;
+  align-items: end;
+  padding: 10px 0;
+  border-bottom: 1px solid var(--ocu-border);
+}
+.ocu-custom-signal-row:last-child { border-bottom: 0; }
+.ocu-custom-signal-remove {
+  width: 32px; height: 32px;
+  font-size: 18px; line-height: 1;
+  color: var(--ocu-danger);
+  padding: 0;
+}
+@media (max-width: 700px) {
+  .ocu-custom-signal-row { grid-template-columns: 1fr; }
+}
+
+/* Lists page: search at 50% width with filters laid out beside it */
+.ocu-list-filter-bar {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  background: var(--ocu-bg);
+  border: 1px solid var(--ocu-border);
+  border-radius: 10px;
+  padding: 14px 16px;
+}
+.ocu-list-search { width: 50%; min-width: 240px; }
+.ocu-list-filters {
+  display: grid;
+  grid-template-columns: 1fr 1fr auto;
+  gap: 10px;
+  align-items: end;
+}
+.ocu-list-filter-actions { display: flex; gap: 6px; }
+@media (max-width: 760px) {
+  .ocu-list-search { width: 100%; }
+  .ocu-list-filters { grid-template-columns: 1fr; }
 }
 
 .ocu-icon-btn {
@@ -2013,6 +2076,37 @@ body { padding-bottom: 0; }
   overflow-y: auto;
   flex: 1;
 }
+
+/* Multi-section dialog body wrapper. When a dialog wraps its content in
+   .ocu-dialog-body the body owns the padding + scrolling instead of the
+   first .ocu-form-grid. The grid padding is then suppressed below. */
+.ocu-dialog-form .ocu-dialog-body {
+  padding: 18px 20px;
+  overflow-y: auto;
+  flex: 1;
+}
+.ocu-dialog-form .ocu-dialog-body .ocu-form-grid {
+  padding: 0;
+  overflow: visible;
+  flex: 0 0 auto;
+  margin-bottom: 6px;
+}
+
+/* Section headers inside the multi-section property edit dialog. */
+.ocu-edit-section-header {
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--ocu-text-3);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  margin: 14px 0 8px;
+  padding-bottom: 4px;
+  border-bottom: 1px solid var(--ocu-border);
+}
+.ocu-dialog-body > .ocu-edit-section-header:first-of-type { margin-top: 0; }
+
+/* Wider variant for dialogs that need to fit a 3-column form (property edit). */
+.ocu-dialog.ocu-dialog-wide { width: min(820px, 94vw); }
 .ocu-dialog-footer {
   display: flex;
   justify-content: flex-end;
@@ -2047,11 +2141,21 @@ body { padding-bottom: 0; }
 .ocu-text-right { text-align: right; }
 .ocu-mono { font-family: 'JetBrains Mono', ui-monospace, monospace; font-size: 12.5px; }
 .ocu-link {
-  color: #2563eb;
+  color: #1e40af;
   text-decoration: none;
-  transition: color .15s;
+  font-weight: 500;
+  border-bottom: 1px solid transparent;
+  transition: color .15s, border-color .15s;
 }
-.ocu-link:hover { color: #1d4ed8; text-decoration: underline; }
+.ocu-link:hover {
+  color: #1d4ed8;
+  border-bottom-color: currentColor;
+}
+.ocu-link:focus-visible {
+  outline: 2px solid #93c5fd;
+  outline-offset: 2px;
+  border-radius: 2px;
+}
 
 /* ─── Empty-state placeholder ────────────────────────────────────────────── */
 .ocu-empty {

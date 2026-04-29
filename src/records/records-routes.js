@@ -517,25 +517,57 @@ router.post('/:id(\\d+)/edit-fields', requireAuth, async (req, res) => {
     const own = await query(`SELECT 1 FROM properties WHERE id = $1 AND tenant_id = $2`, [propertyId, req.tenantId]);
     if (!own.rowCount) return res.status(404).json({ error: 'Property not found.' });
 
-    // Whitelisted fields. Each has a coercion + COALESCE-preserve semantic
-    // so a blank/missing value leaves the column alone.
+    // Whitelisted fields. Each declares its SQL column, a coercion type, and
+    // whether a blank value clears the column (SET col=NULL) or is a no-op.
+    // NOT-NULL columns (street/city/state_code/zip_code) keep the no-op
+    // semantic — emptying them in the UI shouldn't crash the UPDATE.
+    const T = (col, opts = {}) => ({ col, cast: 'text', nullable: opts.nullable !== false, max: opts.max || 255 });
+    const N = (col, cast) => ({ col, cast, nullable: true });
+    const B = (col)       => ({ col, cast: 'bool', nullable: true });
+    const D = (col)       => ({ col, cast: 'date', nullable: true });
     const map = {
-      property_type:    { col: 'property_type',    cast: 'text'   },
-      condition:        { col: 'condition',        cast: 'text'   },
-      property_status:  { col: 'property_status',  cast: 'text'   },
-      bedrooms:         { col: 'bedrooms',         cast: 'smallint' },
-      bathrooms:        { col: 'bathrooms',        cast: 'numeric'  },
-      sqft:             { col: 'sqft',             cast: 'integer'  },
-      year_built:       { col: 'year_built',       cast: 'smallint' },
-      estimated_value:  { col: 'estimated_value',  cast: 'numeric'  },
-      assessed_value:   { col: 'assessed_value',   cast: 'numeric'  },
-      equity_percent:   { col: 'equity_percent',   cast: 'numeric'  },
-      last_sale_date:   { col: 'last_sale_date',   cast: 'date'     },
-      last_sale_price:  { col: 'last_sale_price',  cast: 'numeric'  },
-      vacant:           { col: 'vacant',           cast: 'bool'     },
-      source:           { col: 'source',           cast: 'text'     },
-      county:           { col: 'county',           cast: 'text'     },
-      pipeline_stage:   { col: 'pipeline_stage',   cast: 'text'     },
+      // Address (NOT NULL columns — never set to null)
+      street:           T('street',           { nullable: false }),
+      city:             T('city',             { nullable: false, max: 100 }),
+      state_code:       { col: 'state_code',  cast: 'state', nullable: false },
+      zip_code:         T('zip_code',         { nullable: false, max: 10 }),
+      county:           T('county',           { max: 100 }),
+      apn:              T('apn',              { max: 50 }),
+
+      // Property characteristics
+      property_type:    T('property_type',    { max: 50 }),
+      structure_type:   T('structure_type',   { max: 50 }),
+      condition:        T('condition',        { max: 50 }),
+      property_status:  T('property_status',  { max: 50 }),
+      year_built:       N('year_built',       'smallint'),
+      sqft:             N('sqft',             'integer'),
+      lot_size:         N('lot_size',         'integer'),
+      stories:          N('stories',          'smallint'),
+      bedrooms:         N('bedrooms',         'smallint'),
+      bathrooms:        N('bathrooms',        'numeric'),
+      vacant:           B('vacant'),
+
+      // Valuation
+      estimated_value:  N('estimated_value',  'numeric'),
+      assessed_value:   N('assessed_value',   'numeric'),
+      equity_percent:   N('equity_percent',   'numeric'),
+      last_sale_date:   D('last_sale_date'),
+      last_sale_price:  N('last_sale_price',  'numeric'),
+
+      // Tax & liens
+      total_tax_owed:       N('total_tax_owed',      'numeric'),
+      tax_delinquent_year:  N('tax_delinquent_year', 'integer'),
+      tax_auction_date:     D('tax_auction_date'),
+      deed_type:            T('deed_type',           { max: 50 }),
+      lien_type:            T('lien_type',           { max: 50 }),
+      lien_date:            D('lien_date'),
+
+      // Legal (TEXT — no length cap to mirror the schema)
+      legal_description:    { col: 'legal_description', cast: 'text-long', nullable: true },
+
+      // Pipeline & meta
+      source:           T('source',           { max: 100 }),
+      pipeline_stage:   T('pipeline_stage',   { max: 50 }),
     };
 
     const sets = [];
@@ -544,10 +576,32 @@ router.post('/:id(\\d+)/edit-fields', requireAuth, async (req, res) => {
     for (const [key, def] of Object.entries(map)) {
       if (!(key in req.body)) continue;
       const raw = req.body[key];
-      if (raw == null || String(raw).trim() === '') continue;  // skip blanks
+      const isBlank = raw == null || String(raw).trim() === '';
+
+      if (isBlank) {
+        // Required column → ignore the blank. Optional → explicit NULL.
+        if (!def.nullable) continue;
+        sets.push(`${def.col} = NULL`);
+        continue;
+      }
+
       try {
         if (def.cast === 'text') {
-          sets.push(`${def.col} = $${idx}`); params.push(String(raw).slice(0, 255)); idx++;
+          sets.push(`${def.col} = $${idx}`);
+          params.push(String(raw).slice(0, def.max || 255));
+          idx++;
+        } else if (def.cast === 'text-long') {
+          // legal_description is TEXT — no Postgres length cap, but bound to
+          // 16 KB so a copy-paste accident doesn't bloat the row arbitrarily.
+          sets.push(`${def.col} = $${idx}`);
+          params.push(String(raw).slice(0, 16000));
+          idx++;
+        } else if (def.cast === 'state') {
+          // CHAR(2). Uppercase, exactly 2 letters, otherwise reject silently
+          // (UI's <select> already restricts; this is the defense layer).
+          const v = String(raw).trim().toUpperCase();
+          if (!/^[A-Z]{2}$/.test(v)) continue;
+          sets.push(`${def.col} = $${idx}`); params.push(v); idx++;
         } else if (def.cast === 'bool') {
           const b = String(raw).toLowerCase() === 'true' || raw === true;
           sets.push(`${def.col} = $${idx}`); params.push(b); idx++;

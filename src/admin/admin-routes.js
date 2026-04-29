@@ -81,17 +81,25 @@ function fmtDateTime(d) {
 // admin is as simple as changing the env var; no session invalidation
 // dance required.
 function requireSuperAdmin(req, res, next) {
+  // Path A: dedicated /hq/login portal. Session was authed via env-var
+  // credentials and is platform-only (no tenant context). Preferred path
+  // going forward.
+  if (req.session && req.session.superAdmin === true) {
+    req.superAdminEmail = req.session.superAdminUsername || 'hq';
+    return next();
+  }
+
+  // Path B (legacy): tenant-side login where the user's email matches the
+  // SUPER_ADMIN_EMAIL env var. Kept for back-compat — operators who were
+  // already using this gate before /hq/login landed don't get locked out.
   if (!req.session || !req.session.authenticated || !req.session.userId) {
-    return res.redirect('/login?info=' + encodeURIComponent('Please sign in to continue.'));
+    return res.redirect('/hq/login');
   }
   const allowed = String(process.env.SUPER_ADMIN_EMAIL || '').trim().toLowerCase();
   if (!allowed) {
-    return res.status(503).send(adminShell('Admin disabled', `
-      <div class="card">
-        <h1>Admin console disabled</h1>
-        <p class="lede">Set <code>SUPER_ADMIN_EMAIL</code> on the deployment to enable this console.</p>
-      </div>
-    `));
+    // No legacy gate configured AND no /hq session → bounce to the new
+    // portal. The portal itself handles the "fully disabled" case.
+    return res.redirect('/hq/login');
   }
   query(`SELECT email FROM users WHERE id = $1 LIMIT 1`, [req.session.userId])
     .then(r => {
@@ -183,11 +191,10 @@ function adminShell(title, bodyHtml, opts = {}) {
 </style>
 </head><body>
 <header class="topbar">
-  <div class="brand">Ocular <span class="tag">Admin</span></div>
+  <div class="brand">Ocular <span class="tag">HQ</span></div>
   <nav>
     <a href="/admin">Tenants</a>
-    <a href="/ocular/dashboard">My workspace</a>
-    <a href="/logout">Sign out</a>
+    <a href="/hq/logout">Sign out</a>
   </nav>
 </header>
 <main>
@@ -358,7 +365,7 @@ router.post('/tenants/new', async (req, res) => {
 
     await query(
       `INSERT INTO users (tenant_id, email, password_hash, name, role, status, email_verified_at)
-       VALUES ($1, $2, $3, $4, 'admin', 'active', NOW())`,
+       VALUES ($1, $2, $3, $4, 'tenant_admin', 'active', NOW())`,
       [tenantId, emailAddr, hashed, name]
     );
 

@@ -73,15 +73,32 @@ function listsPage(data = {}) {
     ? `<div class="ocu-card" style="margin-bottom:14px;background:#fdeaea;border-color:#f5c5c5;color:#8b1f1f;padding:12px 16px;font-size:13px">${escHTML(flash.err)}</div>`
     : '';
 
+  const hasAnyFilter = !!(filters.q || filters.type || filters.source);
   const filterBar = `
-    <form method="GET" action="/ocular/lists" class="ocu-card" style="padding:12px 14px;margin-bottom:14px;display:grid;grid-template-columns:1fr auto;gap:10px;align-items:end">
-      <div>
+    <form method="GET" action="/ocular/lists" class="ocu-list-filter-bar" style="margin-bottom:14px">
+      <div class="ocu-list-search">
         <label class="ocu-form-label">Search lists</label>
-        <input type="text" name="q" value="${escHTML(filters.q || '')}" placeholder="List name…" class="ocu-input" />
+        <input type="search" name="q" value="${escHTML(filters.q || '')}" placeholder="List name…" class="ocu-input" />
       </div>
-      <div style="display:flex;gap:6px">
-        <button type="submit" class="ocu-btn ocu-btn-primary">Filter</button>
-        ${filters.q ? `<a href="/ocular/lists" class="ocu-btn ocu-btn-ghost">Reset</a>` : ''}
+      <div class="ocu-list-filters">
+        <div>
+          <label class="ocu-form-label">Type</label>
+          <select name="type" class="ocu-input">
+            <option value="">All types</option>
+            ${LIST_TYPES.map(t => `<option value="${escHTML(t)}"${filters.type === t ? ' selected' : ''}>${escHTML(t)}</option>`).join('')}
+          </select>
+        </div>
+        <div>
+          <label class="ocu-form-label">Source</label>
+          <select name="source" class="ocu-input">
+            <option value="">All sources</option>
+            ${SOURCES.map(s => `<option value="${escHTML(s)}"${filters.source === s ? ' selected' : ''}>${escHTML(s)}</option>`).join('')}
+          </select>
+        </div>
+        <div class="ocu-list-filter-actions">
+          <button type="submit" class="ocu-btn ocu-btn-primary">Filter</button>
+          ${hasAnyFilter ? `<a href="/ocular/lists" class="ocu-btn ocu-btn-ghost">Reset</a>` : ''}
+        </div>
       </div>
     </form>`;
 

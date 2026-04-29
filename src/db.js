@@ -68,6 +68,14 @@ async function initSchema() {
     CREATE INDEX IF NOT EXISTS users_tenant_id_idx ON users(tenant_id);
   `);
 
+  // RBAC migration (idempotent). Three-role model: tenant_user, tenant_admin,
+  // super_admin. The legacy default 'admin' is upgraded to 'tenant_admin'
+  // (workspace owners) on first boot after this code lands.
+  await query(`
+    UPDATE users SET role = 'tenant_admin' WHERE role = 'admin';
+    ALTER TABLE users ALTER COLUMN role SET DEFAULT 'tenant_user';
+  `);
+
   // Phase 2 — auth: email-verified timestamp and one-shot tokens for
   // verify-email and forgot-password flows. Both token tables share the
   // same shape (token + expires_at + used_at) so they can be reused via

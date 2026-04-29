@@ -442,22 +442,20 @@ router.get('/', requireAuth, async (req, res) => {
 
       <!-- List Assignment -->
       <div style="margin-bottom:18px">
-        <div class="ocu-text-3" style="font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.06em;margin-bottom:12px">Assign to list</div>
-        <div style="display:flex;gap:10px;align-items:flex-end;flex-wrap:wrap">
+        <div class="ocu-text-3" style="font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.06em;margin-bottom:12px">Assign to list(s)</div>
+        <div style="display:flex;gap:10px;align-items:flex-start;flex-wrap:wrap">
           <div style="flex:1;min-width:220px">
-            <label class="ocu-form-label">New list name</label>
+            <label class="ocu-form-label">New list name <span class="ocu-text-3" style="font-weight:400">(optional)</span></label>
             <input type="text" id="new-list-name" placeholder="e.g. Code Violation IN — April 2026" class="ocu-input" />
           </div>
-          <div class="ocu-text-3" style="font-size:12px;padding:0 4px 12px">or</div>
-          <div style="flex:1;min-width:220px">
-            <label class="ocu-form-label">Add to existing list</label>
-            <select id="existing-list-id" class="ocu-input">
-              <option value="">— Select existing list —</option>
+          <div style="flex:1.2;min-width:240px">
+            <label class="ocu-form-label">Add to existing list(s) <span class="ocu-text-3" style="font-weight:400">(hold Ctrl/Cmd to pick multiple)</span></label>
+            <select id="existing-list-id" class="ocu-input" multiple size="6" style="height:auto;min-height:140px">
               ${listOptions}
             </select>
           </div>
         </div>
-        <div class="ocu-text-3" style="font-size:11px;margin-top:6px">If you enter a new name and pick an existing list, the new name takes priority.</div>
+        <div class="ocu-text-3" style="font-size:11px;margin-top:6px">Pick any number of existing lists. Optionally create one new list at the same time. Every imported property is added to every chosen list.</div>
         <div style="margin-top:12px;display:flex;gap:10px;flex-wrap:wrap">
           <div style="flex:1;min-width:180px">
             <label class="ocu-form-label">List type</label>
@@ -514,20 +512,24 @@ router.get('/', requireAuth, async (req, res) => {
     dz.addEventListener('drop', e => { e.preventDefault(); dz.style.borderColor=''; if(e.dataTransfer.files[0]) handleFile(e.dataTransfer.files[0]); });
     fi.addEventListener('change', e => { if(e.target.files[0]) handleFile(e.target.files[0]); });
 
-    // Mutual exclusivity: typing new name clears existing list selection
-    document.getElementById('new-list-name').addEventListener('input', function() {
-      if (this.value.trim()) document.getElementById('existing-list-id').value = '';
-    });
-    document.getElementById('existing-list-id').addEventListener('change', function() {
-      if (this.value) document.getElementById('new-list-name').value = '';
-    });
+    // Multi-list selection: read the array of selected option values and the
+    // matching display names. The user may also type a new list name; that
+    // creates an additional list and includes it in the assignment set.
+    function readSelectedListIds() {
+      const sel = document.getElementById('existing-list-id');
+      return Array.from(sel.selectedOptions).map(o => o.value).filter(Boolean);
+    }
+    function readSelectedListNames() {
+      const sel = document.getElementById('existing-list-id');
+      return Array.from(sel.selectedOptions).map(o => o.dataset.name || o.text).filter(Boolean);
+    }
 
     async function handleFile(file) {
       if (!file.name.endsWith('.csv')) { showError('CSV files only.'); return; }
       const newName = document.getElementById('new-list-name').value.trim();
-      const existingId = document.getElementById('existing-list-id').value;
+      const existingIds = readSelectedListIds();
+      const existingNames = readSelectedListNames();
       const listType = document.getElementById('list-type').value;
-      // Source: if "Custom..." was selected, read the text input instead
       const sourceSelect = document.getElementById('list-source').value;
       const listSource = sourceSelect === '__custom__'
         ? document.getElementById('list-source-custom').value.trim()
@@ -535,7 +537,9 @@ router.get('/', requireAuth, async (req, res) => {
       if (sourceSelect === '__custom__' && !listSource) {
         showError('Please type a custom source name or pick a different option.'); return;
       }
-      if (!newName && !existingId) { showError('Please enter a list name or select an existing list before uploading.'); return; }
+      if (!newName && existingIds.length === 0) {
+        showError('Please enter a new list name or pick at least one existing list.'); return;
+      }
       document.getElementById('upload-spinner').style.display = 'flex';
       dz.style.opacity = '0.5';
       const form = new FormData();
@@ -544,6 +548,8 @@ router.get('/', requireAuth, async (req, res) => {
         const res = await fetch('/import/property/parse', { method: 'POST', body: form });
         const data = await res.json();
         if (!res.ok || data.error) { showError(data.error || 'Failed to parse.'); return; }
+        // Composite display name: new list (if any) + existing names, comma-joined.
+        const displayName = [newName, ...existingNames].filter(Boolean).join(', ');
         const importMeta = {
           columns:    data.columns,
           previewRows: data.previewRows,
@@ -552,8 +558,10 @@ router.get('/', requireAuth, async (req, res) => {
           filename:   data.filename,
           fingerprint: data.fingerprint,
           savedTemplate: data.savedTemplate,
-          listName:   newName || document.getElementById('existing-list-id').options[document.getElementById('existing-list-id').selectedIndex]?.dataset?.name || '',
-          listId:     existingId || null,
+          listName:   newName || '',
+          listId:     existingIds[0] || null,   // back-compat: legacy single-list field
+          listIds:    existingIds,              // new multi-list field
+          listDisplayName: displayName,
           listType:   listType,
           listSource: listSource
         };
@@ -1058,6 +1066,7 @@ router.get('/preview', requireAuth, (req, res) => {
             filename: importData.filename,
             listName:   importData.listName   || null,
             listId:     importData.listId     || null,
+            listIds:    importData.listIds    || [],
             listType:   importData.listType   || null,
             listSource: importData.listSource || null,
             importMode: importMode
@@ -1192,8 +1201,11 @@ router.post('/commit', requireAuth, async (req, res) => {
 
     const tenantId = req.tenantId;
 
-    // ── Resolve list: create new or use existing ──────────────────────────────
-    let resolvedListId = null;
+    // ── Resolve lists: create-new + N existing (Task 8 multi-list) ───────────
+    // resolvedListIds is the full set every imported property is added to;
+    // resolvedListId is kept as the "primary" (first in array) for the legacy
+    // response field that the post-import banner still reads.
+    const resolvedListIds = [];
     if (listName && listName.trim()) {
       // 2026-04-20 pass 12: atomic UPSERT. 2026-04-28 audit fix S-2 / L-1:
       // ON CONFLICT key updated to (tenant_id, list_name); legacy single-col
@@ -1205,10 +1217,14 @@ router.post('/commit', requireAuth, async (req, res) => {
          RETURNING id`,
         [tenantId, listName.trim(), listType || null, listSource || null]
       );
-      resolvedListId = upserted.rows[0].id;
-    } else if (listId) {
-      resolvedListId = parseInt(listId);
+      resolvedListIds.push(upserted.rows[0].id);
     }
+    const idsFromBody = Array.isArray(req.body.listIds) ? req.body.listIds : (listId ? [listId] : []);
+    for (const raw of idsFromBody) {
+      const n = parseInt(raw, 10);
+      if (Number.isFinite(n) && !resolvedListIds.includes(n)) resolvedListIds.push(n);
+    }
+    let resolvedListId = resolvedListIds[0] || null;
 
     // Ensure markets exist for this tenant. ON CONFLICT key is (state_code) —
     // works for one tenant; Phase 2 needs (tenant_id, state_code).
@@ -1675,10 +1691,10 @@ router.post('/commit', requireAuth, async (req, res) => {
           }
         }
 
-        // Tag to list
-        if (resolvedListId) {
+        // Tag to every selected list (multi-list fan-out, Task 8).
+        for (const lid of resolvedListIds) {
           await query(`INSERT INTO property_lists (tenant_id,property_id,list_id,added_at) VALUES ($1,$2,$3,NOW()) ON CONFLICT DO NOTHING`,
-            [tenantId,propertyId,resolvedListId]);
+            [tenantId, propertyId, lid]);
         }
         // K9: row succeeded — release the savepoint so it doesn't stack.
         await query(`RELEASE SAVEPOINT row_sp`);
@@ -1794,8 +1810,13 @@ router.post('/start-job', requireAuth, async (req, res) => {
 
     const tenantId = req.tenantId;
 
-    // Resolve or create list first
-    let resolvedListId = null;
+    // Resolve list assignments. Multi-list (Task 8 / 2026-04-30): one CSV may
+    // be tagged into any number of lists in a single import — operators stop
+    // re-uploading the same file just to add it to a second list. Order:
+    //   1. New list created from `listName` (if provided) goes first so the
+    //      job record's primary list_id is the freshly-created one.
+    //   2. Every existing list id from `listIds[]` (or legacy `listId`).
+    const resolvedListIds = [];
     if (listName && listName.trim()) {
       const upserted = await query(
         `INSERT INTO lists (tenant_id, list_name, list_type, source, upload_date, active)
@@ -1804,16 +1825,22 @@ router.post('/start-job', requireAuth, async (req, res) => {
          RETURNING id`,
         [tenantId, listName.trim(), listType || null, listSource || null]
       );
-      resolvedListId = upserted.rows[0].id;
-    } else if (listId) {
-      resolvedListId = parseInt(listId);
+      resolvedListIds.push(upserted.rows[0].id);
     }
+    const idsFromBody = Array.isArray(req.body.listIds) ? req.body.listIds : (listId ? [listId] : []);
+    for (const raw of idsFromBody) {
+      const n = parseInt(raw, 10);
+      if (Number.isFinite(n) && !resolvedListIds.includes(n)) resolvedListIds.push(n);
+    }
+    const primaryListId = resolvedListIds[0] || null;
 
-    // Create job record. tenant_id is persisted on the row so the
-    // background worker can pick it up without needing a session.
+    // Create job record. tenant_id is persisted on the row so the background
+    // worker can pick it up without needing a session. list_id stays a single
+    // INT for back-compat with bulk_import_jobs schema; secondary lists are
+    // applied later via property_lists rows.
     const jobRes = await query(
       `INSERT INTO bulk_import_jobs (tenant_id, status, filename, list_id, total_rows) VALUES ($1,'pending',$2,$3,$4) RETURNING id`,
-      [tenantId, filename || 'import.csv', resolvedListId, allRows.length]
+      [tenantId, filename || 'import.csv', primaryListId, allRows.length]
     );
     const jobId = jobRes.rows[0].id;
 
@@ -1822,10 +1849,11 @@ router.post('/start-job', requireAuth, async (req, res) => {
     req.session.importRows = null;
     req.session.save();
 
-    // Fire background processing
-    setImmediate(() => runBackgroundImport(jobId, rows, mapping, filename, resolvedListId, listType, listSource, importMode, tenantId));
+    // Fire background processing — pass the full list-id array so the worker
+    // can fan rows out into property_lists for every chosen list.
+    setImmediate(() => runBackgroundImport(jobId, rows, mapping, filename, primaryListId, listType, listSource, importMode, tenantId, resolvedListIds));
 
-    res.json({ jobId, resolvedListId, total: allRows.length });
+    res.json({ jobId, resolvedListId: primaryListId, resolvedListIds, total: allRows.length });
   } catch(e) {
     console.error('Start job error:', e.message);
     res.status(500).json({ error: e.message });
@@ -1833,7 +1861,15 @@ router.post('/start-job', requireAuth, async (req, res) => {
 });
 
 // ── BACKGROUND IMPORT WORKER ──────────────────────────────────────────────────
-async function runBackgroundImport(jobId, allRows, mapping, filename, resolvedListId, listTypeIgnored, listSourceIgnored, importMode, tenantId) {
+async function runBackgroundImport(jobId, allRows, mapping, filename, resolvedListId, listTypeIgnored, listSourceIgnored, importMode, tenantId, resolvedListIds) {
+  // Multi-list fan-out (Task 8 / 2026-04-30). resolvedListIds is the full set
+  // of lists every imported property should be tagged into; resolvedListId is
+  // kept as a back-compat single value (= the first/primary list, also the
+  // one stored on bulk_import_jobs.list_id). When the caller is older code
+  // that hasn't been updated to pass the array, fall back to the singleton.
+  if (!Array.isArray(resolvedListIds) || resolvedListIds.length === 0) {
+    resolvedListIds = resolvedListId ? [resolvedListId] : [];
+  }
   // 2026-04-21 Feature 8(a): importMode is one of 'add_and_update' (default),
   // 'add_only', 'update_only' — branches the property UPSERT behavior below.
   // Validated against a whitelist in the caller before we get here; guard
@@ -2953,13 +2989,17 @@ async function runBackgroundImport(jobId, allRows, mapping, filename, resolvedLi
         }
 
         // Bulk INSERT property_lists links for every property in the batch
-        if (resolvedListId && propIds.length > 0) {
+        // Multi-list fan-out: every property in the batch is added to every
+        // list the operator selected on the upload screen. Cartesian via
+        // UNNEST × UNNEST so it stays one bulk insert regardless of count.
+        if (resolvedListIds.length > 0 && propIds.length > 0) {
           await query(`
             INSERT INTO property_lists (tenant_id, property_id, list_id, added_at)
-            SELECT $3, property_id, $2, NOW()
-              FROM UNNEST($1::int[]) AS t(property_id)
+            SELECT $3, p.property_id, l.list_id, NOW()
+              FROM UNNEST($1::int[]) AS p(property_id)
+              CROSS JOIN UNNEST($2::int[]) AS l(list_id)
             ON CONFLICT DO NOTHING
-          `, [propIds, resolvedListId, tenantId]);
+          `, [propIds, resolvedListIds, tenantId]);
         }
       }
 
@@ -3047,6 +3087,23 @@ async function runBackgroundImport(jobId, allRows, mapping, filename, resolvedLi
       } catch (e) {
         console.error(`[bulk-import] distress scoring failed (non-fatal):`, e.message);
       }
+    }
+
+    // Auto-dedup (Task 10 / 2026-04-30): merge any contacts now sharing a
+    // phone number with another contact in this tenant. Imports are the main
+    // source of new duplicates — the same person showing up in two skip-trace
+    // exports under slightly different names — so the safest place to clean
+    // up is right after the rows land. Tenant-scoped so cross-tenant data is
+    // never touched. Non-fatal: a dedup failure shouldn't fail the import.
+    try {
+      const { dedupByPhone } = require('../maintenance');
+      const t = Date.now();
+      const stats = await dedupByPhone('confirm', { tenantId });
+      if (stats.losersMerged > 0) {
+        console.log(`[bulk-import] auto-dedup: merged ${stats.losersMerged} duplicate contact(s) across ${stats.groups} shared phone(s) (${Date.now() - t}ms)`);
+      }
+    } catch (e) {
+      console.error(`[bulk-import] auto-dedup failed (non-fatal):`, e.message);
     }
 
     // 2026-04-29 user request: drop a "merged" note onto every property

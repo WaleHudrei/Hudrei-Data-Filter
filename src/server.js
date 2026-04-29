@@ -256,6 +256,12 @@ app.use('/upload', uploadRoutes);
 const authRoutes = require('./auth-routes');
 app.use('/', authRoutes);
 
+// Phase 2 / RBAC: dedicated HQ login portal (separate from tenant auth).
+// Operators authenticate against HQ_USERNAME / HQ_PASSWORD env vars and the
+// session carries `superAdmin:true` which the /admin/* console accepts.
+const hqRoutes = require('./auth/hq-routes');
+app.use('/', hqRoutes);
+
 function requireAuth(req, res, next) {
   if (!req.session || !req.session.authenticated) return res.redirect('/login');
   // Sessions created before Phase 1 don't carry tenant context. Bounce them
@@ -1404,8 +1410,13 @@ app.get('/nis', requireAuth, async (req, res) => {
   res.send(nisPage(stats, req.query.msg, user));
 });
 
-// Changelog page
+// Changelog page — admin-only. Regular workspace members (tenant_user) can't
+// reach it: they redirect to the dashboard instead. The sidebar entry is
+// already hidden via shell.js; this is the matching server-side gate so a
+// hand-typed URL doesn't leak the page.
 app.get('/changelog', requireAuth, async (req, res) => {
+  const { isWorkspaceAdmin } = require('./auth/roles');
+  if (!isWorkspaceAdmin(req)) return res.redirect('/ocular/dashboard');
   const { getUser } = require('./get-user');
   const user = await getUser(req);
   res.send(changelogPage(user));

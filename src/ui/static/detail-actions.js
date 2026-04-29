@@ -382,26 +382,43 @@
     return false;
   };
 
-  // ─── Edit property (2026-04-29) ─────────────────────────────────────────
-  // Modal opens via showModal() in the inline onclick on the Edit button.
-  // Submit collects every populated field, posts JSON to
-  // /records/:id/edit-fields, closes the dialog and reloads.
+  // ─── Edit property (2026-04-29 / expanded 2026-04-30) ───────────────────
+  // Modal opens via showModal() on the Edit button. Submit collects every
+  // named field (input, select, textarea), including blanks so the server
+  // can clear optional columns. Posts JSON to /records/:id/edit-fields,
+  // shows an inline error on failure, closes dialog + reloads on success.
   window.ocu_editProperty = async function(e) {
     e.preventDefault();
     const form = e.target;
     const propertyId = form.dataset.propertyId;
+    const errEl = form.querySelector('.ocu-edit-property-error');
+    if (errEl) { errEl.style.display = 'none'; errEl.textContent = ''; }
+
     const data = {};
-    form.querySelectorAll('input, select').forEach(el => {
-      if (el.name && el.value !== '') data[el.name] = el.value;
+    form.querySelectorAll('input, select, textarea').forEach(el => {
+      if (!el.name) return;
+      // Send EVERY named field, even blanks. The server treats blank on a
+      // nullable column as "clear it" and skips blank on required columns.
+      data[el.name] = el.value;
     });
+
+    const submitBtn = form.querySelector('button[type="submit"]');
+    if (submitBtn) { submitBtn.disabled = true; submitBtn.textContent = 'Saving…'; }
     try {
-      await jpost('/records/' + propertyId + '/edit-fields', data);
-      toast('Property updated', false);
+      const resp = await jpost('/records/' + propertyId + '/edit-fields', data);
+      toast('Property updated · ' + (resp && resp.updated || 0) + ' field(s) changed', false);
       const dlg = document.getElementById('ocu-edit-property-dialog');
       if (dlg && dlg.close) dlg.close();
       setTimeout(() => window.location.reload(), 350);
     } catch (err) {
-      toast('Failed to save: ' + err.message, true);
+      if (errEl) {
+        errEl.textContent = 'Save failed: ' + (err && err.message || 'unknown error');
+        errEl.style.display = 'block';
+      } else {
+        toast('Failed to save: ' + (err && err.message || 'error'), true);
+      }
+    } finally {
+      if (submitBtn) { submitBtn.disabled = false; submitBtn.textContent = 'Save changes'; }
     }
     return false;
   };

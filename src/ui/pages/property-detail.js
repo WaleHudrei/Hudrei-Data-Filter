@@ -172,13 +172,65 @@ function propertyDetail(data) {
     body:  notesCard(p.id, data.notes || []),
   });
 
-  // 2026-04-29 user request: Edit button on property page. Modal uses
-  // the native <dialog> element so we don't need a 3rd-party modal lib.
-  // Pre-populated with current property values; on submit, posts JSON
-  // to /records/:id/edit-fields and reloads the page.
+  // 2026-04-30 user request: full editor — every property column is
+  // editable from this dialog. Sectioned layout (Address / Property /
+  // Valuation / Tax & Liens / Pipeline / Legal). Required NOT-NULL columns
+  // (street, city, state_code, zip_code) carry the `required` attribute so
+  // the browser blocks submit if the user blanks them. Optional columns
+  // accept empty input — the server clears them via `SET col = NULL`.
   const editFieldVal = (key) => p[key] != null ? escHTML(String(p[key])) : '';
+  const editDateVal = (key) => p[key] ? new Date(p[key]).toISOString().slice(0, 10) : '';
+
+  const US_STATES = ['AL','AK','AZ','AR','CA','CO','CT','DE','DC','FL','GA','HI','ID','IL','IN','IA','KS','KY','LA','ME','MD','MA','MI','MN','MS','MO','MT','NE','NV','NH','NJ','NM','NY','NC','ND','OH','OK','OR','PA','RI','SC','SD','TN','TX','UT','VT','VA','WA','WV','WI','WY'];
+  const stateSelected = String(p.state_code || '').toUpperCase();
+  const stateOptions = US_STATES.map(s =>
+    `<option value="${s}"${s === stateSelected ? ' selected' : ''}>${s}</option>`
+  ).join('');
+
+  const PIPELINE_STAGES = [
+    { v: 'prospect', label: 'Prospect' },
+    { v: 'lead',     label: 'Lead' },
+    { v: 'contract', label: 'Contract' },
+    { v: 'closed',   label: 'Closed' },
+    { v: 'dead',     label: 'Dead' },
+  ];
+  const stageSelected = String(p.pipeline_stage || 'prospect').toLowerCase();
+  const stageOptions = PIPELINE_STAGES.map(s =>
+    `<option value="${s.v}"${s.v === stageSelected ? ' selected' : ''}>${escHTML(s.label)}</option>`
+  ).join('');
+
+  const vacantSelected = p.vacant === true ? 'true' : p.vacant === false ? 'false' : '';
+  const vacantOptions = `
+    <option value=""${vacantSelected === '' ? ' selected' : ''}>— Unknown —</option>
+    <option value="true"${vacantSelected === 'true' ? ' selected' : ''}>Yes (vacant)</option>
+    <option value="false"${vacantSelected === 'false' ? ' selected' : ''}>No (occupied)</option>`;
+
+  // Compact field helper to keep the markup readable.
+  const field = (label, name, html) => `
+    <div class="ocu-form-field">
+      <label class="ocu-form-label">${escHTML(label)}</label>
+      ${html}
+    </div>`;
+  const txt = (name, opts = {}) => {
+    const required = opts.required ? ' required' : '';
+    const max      = opts.maxlength ? ` maxlength="${opts.maxlength}"` : '';
+    const ph       = opts.placeholder ? ` placeholder="${escHTML(opts.placeholder)}"` : '';
+    return `<input type="text" name="${name}" value="${editFieldVal(name)}"${max}${required}${ph} class="ocu-input">`;
+  };
+  const num = (name, opts = {}) => {
+    const min  = opts.min  != null ? ` min="${opts.min}"`  : '';
+    const max  = opts.max  != null ? ` max="${opts.max}"`  : '';
+    const step = opts.step != null ? ` step="${opts.step}"` : '';
+    return `<input type="number" name="${name}" value="${editFieldVal(name)}"${min}${max}${step} class="ocu-input">`;
+  };
+  const dat = (name) =>
+    `<input type="date" name="${name}" value="${editDateVal(name)}" class="ocu-input">`;
+
+  const sectionHdr = (title) =>
+    `<div class="ocu-edit-section-header">${escHTML(title)}</div>`;
+
   const editPropertyDialog = `
-    <dialog id="ocu-edit-property-dialog" class="ocu-dialog">
+    <dialog id="ocu-edit-property-dialog" class="ocu-dialog ocu-dialog-wide">
       <form id="ocu-edit-property-form" data-property-id="${p.id || ''}"
             onsubmit="return ocu_editProperty(event)" class="ocu-dialog-form">
         <div class="ocu-dialog-header">
@@ -186,32 +238,66 @@ function propertyDetail(data) {
           <button type="button" class="ocu-dialog-close"
                   onclick="document.getElementById('ocu-edit-property-dialog').close()" aria-label="Close">×</button>
         </div>
+
+        <div class="ocu-dialog-body">
+        <div class="ocu-edit-property-error" style="display:none;background:#fdeaea;border:1px solid #f5c5c5;border-radius:8px;padding:10px 14px;font-size:13px;color:#8b1f1f;margin-bottom:14px"></div>
+
+        ${sectionHdr('Address')}
         <div class="ocu-form-grid">
-          <div class="ocu-form-field"><label class="ocu-form-label">Property type</label>
-            <input type="text" name="property_type" value="${editFieldVal('property_type')}" class="ocu-input"></div>
-          <div class="ocu-form-field"><label class="ocu-form-label">Year built</label>
-            <input type="number" name="year_built" value="${editFieldVal('year_built')}" class="ocu-input" min="1800" max="2100"></div>
-          <div class="ocu-form-field"><label class="ocu-form-label">Sqft</label>
-            <input type="number" name="sqft" value="${editFieldVal('sqft')}" class="ocu-input" min="0"></div>
-          <div class="ocu-form-field"><label class="ocu-form-label">Bedrooms</label>
-            <input type="number" name="bedrooms" value="${editFieldVal('bedrooms')}" class="ocu-input" min="0"></div>
-          <div class="ocu-form-field"><label class="ocu-form-label">Bathrooms</label>
-            <input type="number" name="bathrooms" value="${editFieldVal('bathrooms')}" class="ocu-input" min="0" step="0.5"></div>
-          <div class="ocu-form-field"><label class="ocu-form-label">Estimated value ($)</label>
-            <input type="number" name="estimated_value" value="${editFieldVal('estimated_value')}" class="ocu-input" min="0"></div>
-          <div class="ocu-form-field"><label class="ocu-form-label">Assessed value ($)</label>
-            <input type="number" name="assessed_value" value="${editFieldVal('assessed_value')}" class="ocu-input" min="0"></div>
-          <div class="ocu-form-field"><label class="ocu-form-label">Equity %</label>
-            <input type="number" name="equity_percent" value="${editFieldVal('equity_percent')}" class="ocu-input" min="-100" max="100" step="0.1"></div>
-          <div class="ocu-form-field"><label class="ocu-form-label">Last sale date</label>
-            <input type="date" name="last_sale_date" value="${p.last_sale_date ? new Date(p.last_sale_date).toISOString().slice(0,10) : ''}" class="ocu-input"></div>
-          <div class="ocu-form-field"><label class="ocu-form-label">Last sale price ($)</label>
-            <input type="number" name="last_sale_price" value="${editFieldVal('last_sale_price')}" class="ocu-input" min="0"></div>
-          <div class="ocu-form-field"><label class="ocu-form-label">Source</label>
-            <input type="text" name="source" value="${editFieldVal('source')}" class="ocu-input"></div>
-          <div class="ocu-form-field"><label class="ocu-form-label">County</label>
-            <input type="text" name="county" value="${editFieldVal('county')}" class="ocu-input"></div>
+          ${field('Street *', 'street', txt('street', { required: true, maxlength: 255 }))}
+          ${field('City *',   'city',   txt('city',   { required: true, maxlength: 100 }))}
+          ${field('State *',  'state_code', `<select name="state_code" required class="ocu-input"><option value="">— Select state —</option>${stateOptions}</select>`)}
+          ${field('Zip *',    'zip_code', txt('zip_code', { required: true, maxlength: 10, placeholder: '12345' }))}
+          ${field('County',   'county',   txt('county',   { maxlength: 100 }))}
+          ${field('APN',      'apn',      txt('apn',      { maxlength: 50, placeholder: 'Parcel number' }))}
         </div>
+
+        ${sectionHdr('Property details')}
+        <div class="ocu-form-grid">
+          ${field('Property type',  'property_type',  txt('property_type',  { maxlength: 50, placeholder: 'SFR, MFR, Condo…' }))}
+          ${field('Structure type', 'structure_type', txt('structure_type', { maxlength: 50 }))}
+          ${field('Year built',     'year_built',     num('year_built',     { min: 1800, max: 2100 }))}
+          ${field('Sqft',           'sqft',           num('sqft',           { min: 0 }))}
+          ${field('Lot size (sqft)','lot_size',       num('lot_size',       { min: 0 }))}
+          ${field('Stories',        'stories',        num('stories',        { min: 0, max: 10 }))}
+          ${field('Bedrooms',       'bedrooms',       num('bedrooms',       { min: 0 }))}
+          ${field('Bathrooms',      'bathrooms',      num('bathrooms',      { min: 0, step: 0.5 }))}
+          ${field('Condition',      'condition',      txt('condition',      { maxlength: 50, placeholder: 'Excellent / Good / Fair / Poor' }))}
+          ${field('Vacant',         'vacant',         `<select name="vacant" class="ocu-input">${vacantOptions}</select>`)}
+        </div>
+
+        ${sectionHdr('Valuation')}
+        <div class="ocu-form-grid">
+          ${field('Estimated value ($)', 'estimated_value',  num('estimated_value',  { min: 0 }))}
+          ${field('Assessed value ($)',  'assessed_value',   num('assessed_value',   { min: 0 }))}
+          ${field('Equity %',            'equity_percent',   num('equity_percent',   { min: -100, max: 100, step: 0.1 }))}
+          ${field('Last sale date',      'last_sale_date',   dat('last_sale_date'))}
+          ${field('Last sale price ($)', 'last_sale_price',  num('last_sale_price',  { min: 0 }))}
+        </div>
+
+        ${sectionHdr('Tax & liens')}
+        <div class="ocu-form-grid">
+          ${field('Total tax owed ($)',     'total_tax_owed',      num('total_tax_owed',      { min: 0 }))}
+          ${field('Tax delinquent year',    'tax_delinquent_year', num('tax_delinquent_year', { min: 1900, max: 2100 }))}
+          ${field('Tax auction date',       'tax_auction_date',    dat('tax_auction_date'))}
+          ${field('Deed type',              'deed_type',           txt('deed_type',           { maxlength: 50 }))}
+          ${field('Lien type',              'lien_type',           txt('lien_type',           { maxlength: 50 }))}
+          ${field('Lien date',              'lien_date',           dat('lien_date'))}
+        </div>
+
+        ${sectionHdr('Pipeline & meta')}
+        <div class="ocu-form-grid">
+          ${field('Pipeline stage',  'pipeline_stage',  `<select name="pipeline_stage" class="ocu-input">${stageOptions}</select>`)}
+          ${field('Property status', 'property_status', txt('property_status', { maxlength: 50 }))}
+          ${field('Source',          'source',          txt('source',          { maxlength: 100 }))}
+        </div>
+
+        ${sectionHdr('Legal description')}
+        <div class="ocu-form-field" style="margin-bottom:8px">
+          <textarea name="legal_description" rows="4" class="ocu-input" placeholder="Optional legal description from county records.">${editFieldVal('legal_description')}</textarea>
+        </div>
+        </div><!-- /.ocu-dialog-body -->
+
         <div class="ocu-dialog-footer">
           <button type="button" class="ocu-btn ocu-btn-ghost"
                   onclick="document.getElementById('ocu-edit-property-dialog').close()">Cancel</button>
@@ -259,7 +345,7 @@ function propertyDetail(data) {
     // pipeline change, etc. The user reported "phone tag is broken" on
     // 2026-04-29; this was the root cause for all of them. Move to extraHead
     // with `defer` so it still runs after the DOM is parsed.
-    extraHead: '<script src="/ocular-static/detail-actions.js?v=5" defer></script>',
+    extraHead: '<script src="/ocular-static/detail-actions.js?v=6" defer></script>',
   });
 }
 

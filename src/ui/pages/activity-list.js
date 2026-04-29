@@ -100,7 +100,7 @@ function activityList(data = {}) {
               <th class="ocu-th">Status</th>
               <th class="ocu-th">Progress</th>
               <th class="ocu-th">Results</th>
-              <th class="ocu-th ocu-th-date">Started</th>
+              <th class="ocu-th ocu-th-date">Upload Date</th>
             </tr>
           </thead>
           <tbody>${jobs.map(jobRow).join('')}</tbody>

@@ -6,11 +6,12 @@
 // the Ocular shell and the legacy shared-shell expect.
 // ═══════════════════════════════════════════════════════════════════════════
 const { query } = require('./db');
+const { ROLE_LABELS } = require('./auth/roles');
 
 async function getUser(req) {
   if (req._cachedUser) return req._cachedUser;
   if (!req.userId) {
-    return { name: '—', role: '—', initials: '·' };
+    return { name: '—', role: '—', initials: '·', roleKey: null };
   }
   try {
     const r = await query(
@@ -21,7 +22,7 @@ async function getUser(req) {
       [req.userId]
     );
     if (!r.rows.length) {
-      req._cachedUser = { name: '—', role: '—', initials: '·' };
+      req._cachedUser = { name: '—', role: '—', initials: '·', roleKey: null };
       return req._cachedUser;
     }
     const u = r.rows[0];
@@ -32,15 +33,17 @@ async function getUser(req) {
       .slice(0, 2)
       .map(s => s[0].toUpperCase())
       .join('') || '·';
+    const roleLabel = ROLE_LABELS[u.role] || u.role || 'Member';
     req._cachedUser = {
       name: displayName,
-      role: u.role === 'admin' ? `Admin · ${u.tenant_name}` : `${u.role} · ${u.tenant_name}`,
+      role: `${roleLabel} · ${u.tenant_name}`,
+      roleKey: u.role,
       initials,
     };
     return req._cachedUser;
   } catch (e) {
     console.error('[get-user] lookup failed:', e.message);
-    return { name: '—', role: '—', initials: '·' };
+    return { name: '—', role: '—', initials: '·', roleKey: null };
   }
 }
 

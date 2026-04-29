@@ -990,6 +990,8 @@ router.get('/lists', requireAuth, async (req, res) => {
     const { listsPage } = require('./pages/lists');
     const t = req.tenantId;
     const q = String(req.query.q || '').trim();
+    const filterType   = String(req.query.type || '').trim();
+    const filterSource = String(req.query.source || '').trim();
     const page  = Math.max(1, parseInt(req.query.page, 10) || 1);
     const limit = 50;
     const offset = (page - 1) * limit;
@@ -1000,6 +1002,14 @@ router.get('/lists', requireAuth, async (req, res) => {
     if (q) {
       conditions.push(`l.list_name ILIKE $${idx}`);
       params.push(`%${q}%`); idx++;
+    }
+    if (filterType) {
+      conditions.push(`l.list_type = $${idx}`);
+      params.push(filterType); idx++;
+    }
+    if (filterSource) {
+      conditions.push(`l.source = $${idx}`);
+      params.push(filterSource); idx++;
     }
     const whereSQL = `WHERE ${conditions.join(' AND ')}`;
 
@@ -1024,7 +1034,7 @@ router.get('/lists', requireAuth, async (req, res) => {
       rows: rowsRes.rows,
       total, page, limit,
       querystring,
-      filters: { q },
+      filters: { q, type: filterType, source: filterSource },
       flash: {
         msg: req.query.msg ? String(req.query.msg).slice(0, 500) : '',
         err: req.query.err ? String(req.query.err).slice(0, 500) : '',
@@ -1495,7 +1505,104 @@ router.get('/setup', requireAuth, async (req, res) => {
   }
 });
 
+// ─── /ocular/setup/distress — Custom distress matrix editor ──────────────
+// Admin-only. Per-tenant weights, band thresholds, and user-defined keyword
+// signals. Save persists to distress_settings.config (JSONB); existing scores
+// are NOT auto-recomputed (operator runs Recompute from /records/_distress).
+router.get('/setup/distress', requireAuth, async (req, res) => {
+  const { isWorkspaceAdmin } = require('../auth/roles');
+  if (!isWorkspaceAdmin(req)) return res.redirect('/ocular/setup');
+  try {
+    const { distressSettingsPage } = require('./pages/distress-settings');
+    const distressConfig = require('../scoring/distress-config');
+    const config = await distressConfig.getConfig(req.tenantId);
+    res.send(distressSettingsPage({
+      user: await getUser(req),
+      config,
+      flash: {
+        msg: req.query.msg ? String(req.query.msg).slice(0, 500) : '',
+        err: req.query.err ? String(req.query.err).slice(0, 500) : '',
+      },
+    }));
+  } catch (e) {
+    console.error('[ocular/setup/distress GET]', e);
+    res.status(500).send('Error loading distress settings: ' + e.message);
+  }
+});
+
+router.post('/setup/distress', requireAuth, async (req, res) => {
+  const { isWorkspaceAdmin } = require('../auth/roles');
+  if (!isWorkspaceAdmin(req)) return res.redirect('/ocular/setup');
+  try {
+    const distressConfig = require('../scoring/distress-config');
+
+    // Form posts as flat keys: weights[list_tax_sale], bands[warm],
+    // custom_signals[0][label], custom_signals[0][weight], etc. Express's
+    // urlencoded parser already turns these into nested objects when the
+    // 'extended' option is true (it is in server.js boot). Re-shape into
+    // the structure setConfig expects: { weights, bands, custom_signals }.
+    const raw = req.body || {};
+    const customArr = [];
+    if (raw.custom_signals) {
+      // Indexed object — Object.values drops the indices and keeps order.
+      for (const v of Object.values(raw.custom_signals)) {
+        if (v && typeof v === 'object') customArr.push(v);
+      }
+    }
+
+    await distressConfig.setConfig(req.tenantId, {
+      weights:        raw.weights        || {},
+      bands:          raw.bands          || {},
+      custom_signals: customArr,
+    });
+
+    res.redirect('/ocular/setup/distress?msg=' + encodeURIComponent('Distress matrix saved. Run Records → Recompute to apply to existing scores.'));
+  } catch (e) {
+    console.error('[ocular/setup/distress POST]', e);
+    res.redirect('/ocular/setup/distress?err=' + encodeURIComponent(e.message || 'Failed to save matrix.'));
+  }
+});
+
+router.get('/setup/distress/reset', requireAuth, async (req, res) => {
+  const { isWorkspaceAdmin } = require('../auth/roles');
+  if (!isWorkspaceAdmin(req)) return res.redirect('/ocular/setup');
+  try {
+    const distressConfig = require('../scoring/distress-config');
+    await distressConfig.resetConfig(req.tenantId);
+    res.redirect('/ocular/setup/distress?msg=' + encodeURIComponent('Distress matrix reset to defaults.'));
+  } catch (e) {
+    console.error('[ocular/setup/distress/reset]', e);
+    res.redirect('/ocular/setup/distress?err=' + encodeURIComponent('Reset failed.'));
+  }
+});
+
+// On-demand duplicate cleanup (Task 10). Admin-only. Calls the same
+// dedup-by-phone routine that runs automatically after bulk imports — handy
+// for cleaning up legacy duplicates that pre-date the auto-merge hook.
+router.post('/setup/dedup', requireAuth, async (req, res) => {
+  const { isWorkspaceAdmin } = require('../auth/roles');
+  if (!isWorkspaceAdmin(req)) {
+    return res.redirect('/ocular/setup?err=' + encodeURIComponent('Only workspace admins can run dedup.'));
+  }
+  try {
+    const { dedupByPhone } = require('../maintenance');
+    const stats = await dedupByPhone('confirm', { tenantId: req.tenantId });
+    const msg = stats.losersMerged > 0
+      ? `Merged ${stats.losersMerged} duplicate contact(s) across ${stats.groups} shared phone(s). Re-homed ${stats.linksMoved} property link(s) and ${stats.phonesMoved} phone row(s).`
+      : 'No duplicate contacts found — your data is clean.';
+    res.redirect('/ocular/setup?msg=' + encodeURIComponent(msg));
+  } catch (e) {
+    console.error('[setup/dedup]', e);
+    res.redirect('/ocular/setup?err=' + encodeURIComponent('Dedup failed: ' + e.message));
+  }
+});
+
 router.post('/setup/delete-code', requireAuth, async (req, res) => {
+  // RBAC: tenant_user cannot change the delete code. Workspace admins only.
+  const { isWorkspaceAdmin } = require('../auth/roles');
+  if (!isWorkspaceAdmin(req)) {
+    return res.redirect('/ocular/setup?err=' + encodeURIComponent('Only workspace admins can change the delete code.'));
+  }
   const settings = require('../settings');
   const { old_code, new_code, confirm_code } = req.body;
   if (!old_code || !new_code || !confirm_code) {

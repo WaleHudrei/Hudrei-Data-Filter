@@ -338,7 +338,7 @@ router.post('/signup', _signupRateLimit, async (req, res) => {
 
     const u = await query(
       `INSERT INTO users (tenant_id, email, password_hash, name, role, status)
-       VALUES ($1, $2, $3, $4, 'admin', 'active') RETURNING id`,
+       VALUES ($1, $2, $3, $4, 'tenant_admin', 'active') RETURNING id`,
       [tenantId, emailAddr, hashed, name]
     );
     const userId = u.rows[0].id;

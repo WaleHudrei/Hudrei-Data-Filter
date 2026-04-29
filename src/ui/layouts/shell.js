@@ -5,9 +5,11 @@
 // shared-shell.js but for the new design system.
 // ═══════════════════════════════════════════════════════════════════════════
 const { escHTML } = require('../_helpers');
+const { ROLES } = require('../../auth/roles');
 
 // Nav structure — one source of truth. Add items here, they appear in
-// every page's sidebar.
+// every page's sidebar. `adminOnly: true` hides the entry from tenant_user
+// (regular workspace members); only tenant_admin and super_admin see it.
 const NAV = [
   { section: 'Workspace', items: [
     { id: 'dashboard',     href: '/ocular/dashboard',  label: 'Dashboard',     icon: 'grid' },
@@ -20,11 +22,10 @@ const NAV = [
     { id: 'upload',        href: '/ocular/upload',     label: 'Upload',        icon: 'upload' },
     { id: 'activity',      href: '/ocular/activity',   label: 'Activity',      icon: 'activity' },
     { id: 'list-registry', href: '/ocular/lists/types', label: 'List Registry', icon: 'layers', badge: 'overdue-count' },
-    { id: 'nis',           href: '/nis',               label: 'NIS Numbers',   icon: 'shield' },
   ]},
   { section: 'System', items: [
     { id: 'settings',      href: '/ocular/setup',      label: 'Settings',      icon: 'settings' },
-    { id: 'changelog',     href: '/changelog',         label: 'Changelog',     icon: 'history' },
+    { id: 'changelog',     href: '/changelog',         label: 'Changelog',     icon: 'history', adminOnly: true },
   ]},
 ];
 
@@ -73,9 +74,23 @@ function shell(opts = {}) {
     extraHead = '',
   } = opts;
 
-  const navHTML = NAV.map(section => `
+  // Top-bar search is only relevant on Records and Owners — every other page
+  // (Settings, Changelog, Activity, Dashboard, Upload, Lists, etc.) either has
+  // its own search UI or has nothing meaningful to search globally.
+  const SEARCH_PAGES = new Set(['records', 'owners']);
+  const showTopSearch = SEARCH_PAGES.has(activePage);
+  const searchAction = activePage === 'owners' ? '/ocular/owners' : '/ocular/records';
+
+  // RBAC: admin-only nav items (e.g. Changelog) are hidden from tenant_user.
+  const userRole = (user && user.roleKey) || ROLES.TENANT_ADMIN;
+  const isAdminRole = userRole === ROLES.TENANT_ADMIN || userRole === ROLES.SUPER_ADMIN;
+
+  const navHTML = NAV.map(section => {
+    const visibleItems = section.items.filter(it => !it.adminOnly || isAdminRole);
+    if (!visibleItems.length) return '';
+    return `
     <div class="ocu-nav-label">${escHTML(section.section)}</div>
-    ${section.items.map(item => {
+    ${visibleItems.map(item => {
       const isActive = item.id === activePage;
       const badgeVal = item.badge ? badges[item.badge] : null;
       // Don't render the badge wrapper if value is null/undefined/empty.
@@ -88,7 +103,8 @@ function shell(opts = {}) {
           ${showBadge ? `<span class="ocu-nav-badge">${escHTML(badgeVal)}</span>` : ''}
         </a>`;
     }).join('')}
-  `).join('');
+  `;
+  }).join('');
 
   return `<!DOCTYPE html>
 <html lang="en">
@@ -99,7 +115,7 @@ function shell(opts = {}) {
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="/ocular-static/ocular.css?v=15">
+  <link rel="stylesheet" href="/ocular-static/ocular.css?v=18">
   ${extraHead}
 </head>
 <body class="ocu">
@@ -151,7 +167,10 @@ function shell(opts = {}) {
     <div class="ocu-topbar">
       <div></div>
       <div style="display:flex;align-items:center;gap:8px">
-        <input class="ocu-search" placeholder="${escHTML(searchPlaceholder)}">
+        ${showTopSearch ? `
+        <form method="GET" action="${searchAction}" class="ocu-search-form" role="search">
+          <input class="ocu-search" type="search" name="q" placeholder="${escHTML(searchPlaceholder)}">
+        </form>` : ''}
         <button class="ocu-icon-btn" title="Notifications">
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">${ICONS.bell}</svg>
         </button>

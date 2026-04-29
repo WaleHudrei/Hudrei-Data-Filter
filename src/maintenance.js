@@ -41,12 +41,20 @@ const { query } = require('./db');
  * Dedup contacts that share a phone number. See module header for semantics.
  *
  * @param {'report'|'confirm'|'skip'} mode
+ * @param {Object}  [opts]
+ * @param {number}  [opts.tenantId]  if set, restrict the scan to one tenant.
+ *                                   Used by the on-demand Settings button and
+ *                                   the post-import auto-dedup hook (Task 10).
+ *                                   Without it, scans every tenant — the
+ *                                   original boot-time maintenance behavior.
  * @returns {Promise<{groups:number, losersMerged:number, phonesMoved:number, linksMoved:number}>}
  */
-async function dedupByPhone(mode = 'report') {
+async function dedupByPhone(mode = 'report', opts = {}) {
   const stats = { groups: 0, losersMerged: 0, phonesMoved: 0, linksMoved: 0 };
 
   if (mode === 'skip') return stats;
+
+  const tenantFilter = Number.isFinite(opts.tenantId) ? opts.tenantId : null;
 
   // ── Find groups: phones that appear on more than one contact ──────────────
   // Groups are keyed by (tenant_id, phone_number) so dedup never merges
@@ -57,9 +65,10 @@ async function dedupByPhone(mode = 'report') {
            ARRAY_AGG(contact_id ORDER BY contact_id ASC) AS contact_ids
       FROM phones
      WHERE phone_number IS NOT NULL AND phone_number <> ''
+       AND ($1::int IS NULL OR tenant_id = $1)
      GROUP BY tenant_id, phone_number
     HAVING COUNT(DISTINCT contact_id) > 1
-  `);
+  `, [tenantFilter]);
 
   stats.groups = groupsRes.rows.length;
   if (stats.groups === 0) return stats;

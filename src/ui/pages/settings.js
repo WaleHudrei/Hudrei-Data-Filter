@@ -21,6 +21,7 @@ const { escHTML } = require('../_helpers');
  *   - flash: { msg?, err?, pwMsg?, pwErr? } — from query string after redirect
  */
 function settingsPage(data = {}) {
+  const isAdmin = data.user && (data.user.roleKey === 'tenant_admin' || data.user.roleKey === 'super_admin');
   const lastUpdated = data.lastUpdatedAt
     ? new Date(data.lastUpdatedAt).toLocaleString('en-US', {
         year:'numeric', month:'short', day:'numeric',
@@ -99,6 +100,23 @@ function settingsPage(data = {}) {
       </div>
     </form>`;
 
+  const distressCard = `
+    <div style="font-size:13px;color:var(--ocu-text-2);line-height:1.6;margin-bottom:16px">
+      Tune how Ocular ranks your leads. Adjust the weight of each built-in signal, change the band thresholds (cold/warm/hot/burning), or add your own keyword-based signals to match list patterns specific to your team.
+    </div>
+    <div style="display:flex;justify-content:flex-end">
+      <a href="/ocular/setup/distress" class="ocu-btn ocu-btn-primary">Open distress matrix →</a>
+    </div>`;
+
+  const dedupCard = `
+    <div style="font-size:13px;color:var(--ocu-text-2);line-height:1.6;margin-bottom:16px">
+      Find contacts that share a phone number and merge them. Auto-runs after every bulk import — use this button to clean up duplicates that pre-date the auto-merge or accumulated from manual edits.
+      Merging keeps the oldest contact record and re-homes property links, phones, tags, and call history onto it.
+    </div>
+    <form method="POST" action="/ocular/setup/dedup">
+      <button type="submit" class="ocu-btn ocu-btn-primary">Run duplicate cleanup</button>
+    </form>`;
+
   const recoveryNote = `
     <div style="font-size:13px;color:var(--ocu-text-2);line-height:1.6">
       <strong style="color:var(--ocu-text-1)">If you forget this code,</strong> an admin with database access
@@ -121,6 +139,7 @@ function settingsPage(data = {}) {
         meta:  'Update your sign-in password',
         body:  passwordForm,
       })}
+      ${isAdmin ? `
       <div style="margin-top:16px">
         ${flashHTML}
         ${defaultBanner}
@@ -132,10 +151,24 @@ function settingsPage(data = {}) {
       </div>
       <div style="margin-top:16px">
         ${card({
+          title: 'Distress score matrix',
+          meta:  'Customize weights, bands, and signals',
+          body:  distressCard,
+        })}
+      </div>
+      <div style="margin-top:16px">
+        ${card({
+          title: 'Duplicate cleanup',
+          meta:  'Auto-runs on import — manual trigger for legacy data',
+          body:  dedupCard,
+        })}
+      </div>
+      <div style="margin-top:16px">
+        ${card({
           title: 'Recovery',
           body:  recoveryNote,
         })}
-      </div>
+      </div>` : ''}
     </div>`;
 
   return shell({

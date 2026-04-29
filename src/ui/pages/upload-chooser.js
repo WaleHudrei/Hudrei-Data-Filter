@@ -46,6 +46,12 @@ function uploadChooser(data = {}) {
       icon: '<path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/>',
       badge: 'REISift',
     }),
+    uploadCard({
+      href: '/nis',
+      title: 'Not in Service numbers',
+      desc: 'A CSV of disconnected/NIS phone numbers. Cumulative across uploads — once a number is tagged NIS, it stays caught.',
+      icon: '<path d="M12 2L4 5v6c0 5 3.5 9 8 11 4.5-2 8-6 8-11V5l-8-3z"/><line x1="4.5" y1="4.5" x2="19.5" y2="19.5"/>',
+    }),
   ].join('');
 
   const body = `
