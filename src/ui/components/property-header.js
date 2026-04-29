@@ -75,6 +75,8 @@ function propertyHeader(p = {}) {
         <div class="ocu-detail-header-right">
           ${p.id ? pipelineDropdown(p.id, p.pipeline_stage) : ''}
           ${distressBadge(p.distress_score)}
+          ${p.id ? `<button type="button" class="ocu-btn ocu-btn-secondary"
+            onclick="document.getElementById('ocu-edit-property-dialog').showModal()">Edit</button>` : ''}
         </div>
       </div>
     </div>`;

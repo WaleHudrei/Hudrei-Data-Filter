@@ -172,8 +172,57 @@ function propertyDetail(data) {
     body:  notesCard(p.id, data.notes || []),
   });
 
+  // 2026-04-29 user request: Edit button on property page. Modal uses
+  // the native <dialog> element so we don't need a 3rd-party modal lib.
+  // Pre-populated with current property values; on submit, posts JSON
+  // to /records/:id/edit-fields and reloads the page.
+  const editFieldVal = (key) => p[key] != null ? escHTML(String(p[key])) : '';
+  const editPropertyDialog = `
+    <dialog id="ocu-edit-property-dialog" class="ocu-dialog">
+      <form id="ocu-edit-property-form" data-property-id="${p.id || ''}"
+            onsubmit="return ocu_editProperty(event)" class="ocu-dialog-form">
+        <div class="ocu-dialog-header">
+          <div class="ocu-dialog-title">Edit property</div>
+          <button type="button" class="ocu-dialog-close"
+                  onclick="document.getElementById('ocu-edit-property-dialog').close()" aria-label="Close">×</button>
+        </div>
+        <div class="ocu-form-grid">
+          <div class="ocu-form-field"><label class="ocu-form-label">Property type</label>
+            <input type="text" name="property_type" value="${editFieldVal('property_type')}" class="ocu-input"></div>
+          <div class="ocu-form-field"><label class="ocu-form-label">Year built</label>
+            <input type="number" name="year_built" value="${editFieldVal('year_built')}" class="ocu-input" min="1800" max="2100"></div>
+          <div class="ocu-form-field"><label class="ocu-form-label">Sqft</label>
+            <input type="number" name="sqft" value="${editFieldVal('sqft')}" class="ocu-input" min="0"></div>
+          <div class="ocu-form-field"><label class="ocu-form-label">Bedrooms</label>
+            <input type="number" name="bedrooms" value="${editFieldVal('bedrooms')}" class="ocu-input" min="0"></div>
+          <div class="ocu-form-field"><label class="ocu-form-label">Bathrooms</label>
+            <input type="number" name="bathrooms" value="${editFieldVal('bathrooms')}" class="ocu-input" min="0" step="0.5"></div>
+          <div class="ocu-form-field"><label class="ocu-form-label">Estimated value ($)</label>
+            <input type="number" name="estimated_value" value="${editFieldVal('estimated_value')}" class="ocu-input" min="0"></div>
+          <div class="ocu-form-field"><label class="ocu-form-label">Assessed value ($)</label>
+            <input type="number" name="assessed_value" value="${editFieldVal('assessed_value')}" class="ocu-input" min="0"></div>
+          <div class="ocu-form-field"><label class="ocu-form-label">Equity %</label>
+            <input type="number" name="equity_percent" value="${editFieldVal('equity_percent')}" class="ocu-input" min="-100" max="100" step="0.1"></div>
+          <div class="ocu-form-field"><label class="ocu-form-label">Last sale date</label>
+            <input type="date" name="last_sale_date" value="${p.last_sale_date ? new Date(p.last_sale_date).toISOString().slice(0,10) : ''}" class="ocu-input"></div>
+          <div class="ocu-form-field"><label class="ocu-form-label">Last sale price ($)</label>
+            <input type="number" name="last_sale_price" value="${editFieldVal('last_sale_price')}" class="ocu-input" min="0"></div>
+          <div class="ocu-form-field"><label class="ocu-form-label">Source</label>
+            <input type="text" name="source" value="${editFieldVal('source')}" class="ocu-input"></div>
+          <div class="ocu-form-field"><label class="ocu-form-label">County</label>
+            <input type="text" name="county" value="${editFieldVal('county')}" class="ocu-input"></div>
+        </div>
+        <div class="ocu-dialog-footer">
+          <button type="button" class="ocu-btn ocu-btn-ghost"
+                  onclick="document.getElementById('ocu-edit-property-dialog').close()">Cancel</button>
+          <button type="submit" class="ocu-btn ocu-btn-primary">Save changes</button>
+        </div>
+      </form>
+    </dialog>`;
+
   const body = `
     ${propertyHeader(p)}
+    ${editPropertyDialog}
 
     <div class="ocu-detail-grid">
       <div class="ocu-detail-main">
@@ -210,7 +259,7 @@ function propertyDetail(data) {
     // pipeline change, etc. The user reported "phone tag is broken" on
     // 2026-04-29; this was the root cause for all of them. Move to extraHead
     // with `defer` so it still runs after the DOM is parsed.
-    extraHead: '<script src="/ocular-static/detail-actions.js?v=4" defer></script>',
+    extraHead: '<script src="/ocular-static/detail-actions.js?v=5" defer></script>',
   });
 }
 

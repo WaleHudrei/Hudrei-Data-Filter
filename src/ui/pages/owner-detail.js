@@ -229,14 +229,61 @@ function ownerDetail(data = {}) {
       : `<div class="ocu-text-3" style="font-size:12px;font-style:italic">No email on file</div>`,
   });
 
+  // 2026-04-29 user request: Edit button on owner detail. Native <dialog>
+  // modal pre-populated with the contact's current values; submit posts
+  // JSON to /owners/:id/edit and reloads.
+  const ownerEditDialog = `
+    <dialog id="ocu-edit-owner-dialog" class="ocu-dialog">
+      <form id="ocu-edit-owner-form" data-contact-id="${c.id || ''}"
+            onsubmit="return ocu_editOwner(event)" class="ocu-dialog-form">
+        <div class="ocu-dialog-header">
+          <div class="ocu-dialog-title">Edit owner</div>
+          <button type="button" class="ocu-dialog-close"
+                  onclick="document.getElementById('ocu-edit-owner-dialog').close()" aria-label="Close">×</button>
+        </div>
+        <div class="ocu-form-grid">
+          <div class="ocu-form-field"><label class="ocu-form-label">First name</label>
+            <input type="text" name="first_name" value="${escHTML(c.first_name || '')}" class="ocu-input" maxlength="100"></div>
+          <div class="ocu-form-field"><label class="ocu-form-label">Last name</label>
+            <input type="text" name="last_name" value="${escHTML(c.last_name || '')}" class="ocu-input" maxlength="100"></div>
+          <div class="ocu-form-field"><label class="ocu-form-label">Owner type</label>
+            <select name="owner_type" class="ocu-input">
+              <option value="">— unchanged —</option>
+              <option value="Person"  ${c.owner_type === 'Person'  ? 'selected' : ''}>Person</option>
+              <option value="Company" ${c.owner_type === 'Company' ? 'selected' : ''}>Company</option>
+              <option value="Trust"   ${c.owner_type === 'Trust'   ? 'selected' : ''}>Trust</option>
+            </select>
+          </div>
+          <div class="ocu-form-field" style="grid-column:1 / -1"><label class="ocu-form-label">Mailing address</label>
+            <input type="text" name="mailing_address" value="${escHTML(c.mailing_address || '')}" class="ocu-input" maxlength="255"></div>
+          <div class="ocu-form-field"><label class="ocu-form-label">Mailing city</label>
+            <input type="text" name="mailing_city" value="${escHTML(c.mailing_city || '')}" class="ocu-input" maxlength="100"></div>
+          <div class="ocu-form-field"><label class="ocu-form-label">Mailing state</label>
+            <input type="text" name="mailing_state" value="${escHTML(c.mailing_state || '')}" class="ocu-input" maxlength="10"></div>
+          <div class="ocu-form-field"><label class="ocu-form-label">Mailing ZIP</label>
+            <input type="text" name="mailing_zip" value="${escHTML(c.mailing_zip || '')}" class="ocu-input" maxlength="10"></div>
+          <div class="ocu-form-field" style="grid-column:1 / -1"><label class="ocu-form-label">Email</label>
+            <input type="email" name="email" value="${escHTML(c.email || '')}" class="ocu-input" maxlength="255"></div>
+        </div>
+        <div class="ocu-dialog-footer">
+          <button type="button" class="ocu-btn ocu-btn-ghost"
+                  onclick="document.getElementById('ocu-edit-owner-dialog').close()">Cancel</button>
+          <button type="submit" class="ocu-btn ocu-btn-primary">Save changes</button>
+        </div>
+      </form>
+    </dialog>`;
+
   // ─── Page body ────────────────────────────────────────────────────────
   const body = `
-    <div class="ocu-page-header">
-      <div>
+    ${ownerEditDialog}
+    <div class="ocu-page-header" style="display:flex;align-items:flex-start;justify-content:space-between;gap:14px">
+      <div style="flex:1;min-width:0">
         <div style="margin-bottom:6px"><a href="/ocular/owners" class="ocu-text-3" style="font-size:13px;text-decoration:none">← Owners</a></div>
         <h1 class="ocu-page-title">${escHTML(ownerName)}</h1>
         <div class="ocu-page-subtitle" style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">${subtitleBits.join(' ')}</div>
       </div>
+      ${c.id ? `<button type="button" class="ocu-btn ocu-btn-secondary"
+        onclick="document.getElementById('ocu-edit-owner-dialog').showModal()">Edit</button>` : ''}
     </div>
 
     ${flashHTML}
@@ -280,6 +327,9 @@ function ownerDetail(data = {}) {
     user:       data.user,
     badges:     data.badges || {},
     body,
+    // 2026-04-29 load detail-actions.js so the ocu_editOwner submit
+    // handler is available. Same pattern as the property detail page.
+    extraHead:  '<script src="/ocular-static/detail-actions.js?v=5" defer></script>',
   });
 }
 

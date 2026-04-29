@@ -107,4 +107,54 @@ router.post('/:id(\\d+)/message', requireAuth, async (req, res) => {
   }
 });
 
+// 2026-04-29 user request: Edit button on owner detail page. JSON
+// endpoint with whitelisted-field updater — missing keys preserve the
+// column. Rejects values that would clobber tenant scoping.
+router.post('/:id(\\d+)/edit', requireAuth, async (req, res) => {
+  try {
+    const contactId = parseInt(req.params.id, 10);
+    if (!contactId) return res.status(400).json({ error: 'Invalid owner id' });
+    // Tenant scope check
+    const own = await query(`SELECT 1 FROM contacts WHERE id = $1 AND tenant_id = $2`, [contactId, req.tenantId]);
+    if (!own.rowCount) return res.status(404).json({ error: 'Owner not found' });
+
+    const map = {
+      first_name:      { col: 'first_name',      max: 100 },
+      last_name:       { col: 'last_name',       max: 100 },
+      owner_type:      { col: 'owner_type',      enum: ['Person','Company','Trust'] },
+      mailing_address: { col: 'mailing_address', max: 255 },
+      mailing_city:    { col: 'mailing_city',    max: 100 },
+      mailing_state:   { col: 'mailing_state',   max: 10 },
+      mailing_zip:     { col: 'mailing_zip',     max: 10 },
+      email:           { col: 'email',           max: 255 },
+    };
+    const sets = [];
+    const params = [];
+    let idx = 1;
+    for (const [key, def] of Object.entries(map)) {
+      if (!(key in req.body)) continue;
+      let raw = req.body[key];
+      if (raw == null) continue;
+      raw = String(raw).trim();
+      if (!raw) continue;
+      if (def.enum && !def.enum.includes(raw)) continue;
+      if (def.max && raw.length > def.max) raw = raw.slice(0, def.max);
+      sets.push(`${def.col} = $${idx}`); params.push(raw); idx++;
+    }
+    if (sets.length === 0) return res.json({ ok: true, updated: 0 });
+
+    sets.push(`updated_at = NOW()`);
+    params.push(contactId);
+    params.push(req.tenantId);
+    await query(
+      `UPDATE contacts SET ${sets.join(', ')} WHERE id = $${idx} AND tenant_id = $${idx + 1}`,
+      params
+    );
+    res.json({ ok: true, updated: sets.length - 1 });
+  } catch (e) {
+    console.error('[owners/:id/edit POST]', e);
+    res.status(500).json({ error: e.message });
+  }
+});
+
 module.exports = router;
