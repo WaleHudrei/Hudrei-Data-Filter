@@ -218,14 +218,14 @@ const path = require('path');
 app.use(express.static(path.join(__dirname, 'public')));
 
 // 2026-04-29 audit fix H2: proactive 503 when the pg pool is saturated.
-// Pre-fix, requests beyond the pool's max:20 silently waited up to 5s
+// Pre-fix, requests beyond the pool's cap silently waited up to 5s
 // (`connectionTimeoutMillis`) and then erupted as generic 500s. Under load
 // this looked like sporadic "internal server error" with no obvious cause.
 // Now: if 5+ requests are already queued for a connection, every new request
-// gets 503 + Retry-After immediately. The 20 in-flight queries finish without
-// being slowed by waiters; clients (browsers, dialer scripts) honour
-// Retry-After and back off. We avoid hitting the static routes by mounting
-// after express.static.
+// gets 503 + Retry-After immediately. In-flight queries finish without being
+// slowed by waiters; clients (browsers, dialer scripts) honour Retry-After
+// and back off. We avoid hitting the static routes by mounting after
+// express.static. (Pool cap is currently max: 50 — see db.js.)
 const { pool: _pgPool } = require('./db');
 const POOL_SATURATION_THRESHOLD = 5;
 app.use((req, res, next) => {

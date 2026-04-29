@@ -3,6 +3,14 @@
 
 const ENTRIES = [
   {
+    date: 'April 29, 2026 (Tier-3 follow-up)',
+    title: '/ocular/records performance: pool capacity + query rewrite',
+    items: [
+      { tag: 'fix', text: 'pg pool max bumped 20 → 50. Tier-3 stress (50 req/s × 60s) showed pool saturation, not the database itself, became the dominant bottleneck under sustained traffic: requests queued at the pool cap and then tripped the H2 backpressure 503 well before Postgres was strained. 50 keeps us safely under Railway\'s default 100-connection cap on shared Postgres while restoring headroom for bursts. Pair with the existing H2 middleware (server.js) — the 503 threshold (waitingCount >= 5) is unchanged because it should kick in well before saturation, not at it.' },
+      { tag: 'fix', text: '/ocular/records list query rewrite: per-row correlated subqueries (list_count, phone_count) replaced with a CTE that pages first then LEFT JOINs two GROUP BY aggregates bounded to the 25 paged ids. Combined with the 3 indexes added earlier (idx_property_lists_property, idx_property_contacts_property_full, idx_property_contacts_contact), single-request latency on /ocular/records?limit=50 went from p50≈1.8s / p99≈6.8s pre-fix to p50≈0.5s / p99≈0.7s on staging. Functionally identical query (count semantics preserved), but the planner can now pick a more efficient aggregate strategy and the per-row correlated overhead is gone.' },
+    ],
+  },
+  {
     date: 'April 29, 2026 (late)',
     title: 'Data-flow audit: 2 real bugs fixed, 1 known issue documented',
     items: [

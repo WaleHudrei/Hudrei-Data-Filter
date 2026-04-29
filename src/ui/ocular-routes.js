@@ -356,22 +356,52 @@ router.get('/records', requireAuth, async (req, res) => {
     const total = countRes.rows[0].n || 0;
 
     // ── ROWS ───────────────────────────────────────────────────────────────
+    // 2026-04-29 Tier-3 follow-up: rewrote the per-row correlated subqueries
+    // (list_count, phone_count) as post-pagination CTE LEFT JOINs. The old
+    // shape evaluated the two COUNT(*) subqueries once per output row using
+    // an Index Scan; the new shape pages first (CTE `paged`) and then runs
+    // exactly two GROUP BY scans bounded to the 25 paged ids. Functionally
+    // identical, but the planner can pick a better aggregate strategy and
+    // we no longer pay correlated-subquery overhead.
     const rowsRes = await query(`
+      WITH paged AS (
+        SELECT
+          p.id, p.street, p.city, p.state_code, p.zip_code,
+          p.property_type, p.pipeline_stage, p.created_at,
+          p.distress_score, p.distress_band,
+          c.first_name, c.last_name, c.owner_type
+        FROM properties p
+        LEFT JOIN property_contacts pc ON pc.property_id = p.id AND pc.tenant_id = p.tenant_id AND pc.primary_contact = true
+        LEFT JOIN contacts c ON c.id = pc.contact_id AND c.tenant_id = p.tenant_id
+        ${whereSQL}
+        ORDER BY ${sortCol} ${sortDir} NULLS LAST, p.id DESC
+        LIMIT $${idx} OFFSET $${idx + 1}
+      ),
+      list_counts AS (
+        SELECT pl.property_id, COUNT(*)::int AS cnt
+        FROM property_lists pl
+        WHERE pl.tenant_id = $1 AND pl.property_id IN (SELECT id FROM paged)
+        GROUP BY pl.property_id
+      ),
+      phone_counts AS (
+        SELECT pc2.property_id, COUNT(*)::int AS cnt
+        FROM phones ph2
+        JOIN property_contacts pc2 ON pc2.contact_id = ph2.contact_id
+        WHERE pc2.tenant_id = $1 AND ph2.tenant_id = $1
+          AND pc2.property_id IN (SELECT id FROM paged)
+        GROUP BY pc2.property_id
+      )
       SELECT
-        p.id, p.street, p.city, p.state_code, p.zip_code,
-        p.property_type, p.pipeline_stage, p.created_at,
-        p.distress_score, p.distress_band,
-        c.first_name, c.last_name, c.owner_type,
-        (SELECT COUNT(*) FROM property_lists pl WHERE pl.property_id = p.id AND pl.tenant_id = p.tenant_id) AS list_count,
-        (SELECT COUNT(*) FROM phones ph2
-           JOIN property_contacts pc2 ON pc2.contact_id = ph2.contact_id
-          WHERE pc2.property_id = p.id AND pc2.tenant_id = p.tenant_id AND ph2.tenant_id = p.tenant_id) AS phone_count
-      FROM properties p
-      LEFT JOIN property_contacts pc ON pc.property_id = p.id AND pc.tenant_id = p.tenant_id AND pc.primary_contact = true
-      LEFT JOIN contacts c ON c.id = pc.contact_id AND c.tenant_id = p.tenant_id
-      ${whereSQL}
-      ORDER BY ${sortCol} ${sortDir} NULLS LAST, p.id DESC
-      LIMIT $${idx} OFFSET $${idx + 1}
+        paged.id, paged.street, paged.city, paged.state_code, paged.zip_code,
+        paged.property_type, paged.pipeline_stage, paged.created_at,
+        paged.distress_score, paged.distress_band,
+        paged.first_name, paged.last_name, paged.owner_type,
+        COALESCE(lc.cnt, 0) AS list_count,
+        COALESCE(phc.cnt, 0) AS phone_count
+      FROM paged
+      LEFT JOIN list_counts lc ON lc.property_id = paged.id
+      LEFT JOIN phone_counts phc ON phc.property_id = paged.id
+      ORDER BY paged.${sortBy} ${sortDir} NULLS LAST, paged.id DESC
     `, [...params, limit, offset]);
 
     // ── Lookup data for filter dropdowns ───────────────────────────────────

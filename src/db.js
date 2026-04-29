@@ -6,8 +6,14 @@ const pool = new Pool({
   ssl: process.env.DATABASE_URL && process.env.DATABASE_URL.includes('railway')
     ? { rejectUnauthorized: false }
     : false,
-  // Tuned for Railway shared workers — keep at or below Railway's default cap.
-  max: 20,
+  // Bumped 20 → 50 (2026-04-29 audit Tier-3 follow-up). Tier-3 stress test
+  // (50 req/s × 60s) showed pool saturation became the dominant bottleneck
+  // after we added the H2 503 backpressure middleware: sustained traffic
+  // queued at the pool cap and tripped 503s well before the DB itself was
+  // strained. 50 keeps us well under Railway's default 100-conn cap on shared
+  // Postgres while restoring headroom for bursts. Revisit if Railway plan or
+  // Postgres `max_connections` changes.
+  max: 50,
   idleTimeoutMillis: 30_000,
   connectionTimeoutMillis: 5_000,
 });

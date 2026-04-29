@@ -117,7 +117,7 @@ Two `multer` instances exist (one in `server.js`, one in `routes/upload-routes.j
 - The fail-fast guards on default `APP_PASSWORD` / `SESSION_SECRET` in production.
 - `connect-redis` import is wrapped in try/catch with three module-shape detections (`mod.RedisStore` | callable default | `mod.default.RedisStore`) — different `connect-redis` versions ship differently.
 - `_schemaReady` / `_distressSchemaReady` / `_ensured` idempotency flags. Removing them re-introduces multi-second DDL latency on every request.
-- `pg` Pool capped at `max: 20` to stay under Railway's connection cap.
+- `pg` Pool capped at `max: 50` (was 20 until the 2026-04-29 Tier-3 follow-up). Sized to stay under Railway's default 100-conn shared Postgres cap. If you bump it again, also revisit the H2 backpressure threshold in `server.js` (`waitingCount >= 5`).
 
 ## Style notes specific to this codebase
 
