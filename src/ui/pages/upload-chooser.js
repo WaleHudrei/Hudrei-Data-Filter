@@ -59,18 +59,7 @@ function uploadChooser(data = {}) {
       </div>
     </div>
 
-    <div class="ocu-upload-grid">${cards}</div>
-
-    <div class="ocu-card" style="margin-top:18px;padding:14px 18px;display:flex;gap:12px;align-items:center">
-      <div style="flex-shrink:0;width:32px;height:32px;background:var(--ocu-surface);border-radius:8px;display:flex;align-items:center;justify-content:center">
-        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/></svg>
-      </div>
-      <div style="font-size:13px;color:var(--ocu-text-2);line-height:1.5">
-        <strong style="color:var(--ocu-text-1)">Heads up:</strong> the multi-step upload flow
-        (parse → map columns → review) still runs in the older Loki UI after you click a card.
-        That's the part that hasn't been ported to Ocular yet.
-      </div>
-    </div>`;
+    <div class="ocu-upload-grid">${cards}</div>`;
 
   return shell({
     title:      'Upload',

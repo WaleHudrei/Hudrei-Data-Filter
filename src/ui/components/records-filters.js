@@ -90,28 +90,25 @@ function recordsFilters(opts = {}) {
   const opt = (sel, value, label) =>
     `<option value="${value}"${sel === value ? ' selected' : ''}>${escHTML(label)}</option>`;
 
-  // 2026-04-29 user request: small sort control next to the Filters
-  // button so the filtered list can be reordered by distress (high→low
-  // or low→high). The form below already supports `sort=distress_score
-  // &dir=desc/asc` URL params; this is just a UI affordance. Submitting
-  // the sort form preserves all existing filter querystring params via
-  // hidden inputs auto-rendered from `opts.sortPassthroughHTML`.
-  const currentSort = String(opts.sortBy || 'id');
-  const currentDir  = String(opts.sortDir || 'desc').toLowerCase() === 'asc' ? 'asc' : 'desc';
+  // 2026-04-29 user request (v2): keep ONLY distress sort, drop the field
+  // selector. One compact dropdown — High→Low / Low→High. The form below
+  // already supports `sort=distress_score&dir=...` URL params; this is
+  // just a UI affordance. Hidden inputs preserve every other active
+  // filter when sort changes.
+  const sortingByDistress = String(opts.sortBy || '') === 'distress_score';
+  const currentDir = sortingByDistress
+    ? (String(opts.sortDir || 'desc').toLowerCase() === 'asc' ? 'asc' : 'desc')
+    : '';
   const sortPassthroughHTML = (opts.sortPassthrough || []).map(([k, v]) =>
     `<input type="hidden" name="${escHTML(k)}" value="${escHTML(v)}">`
   ).join('');
   const sortControl = `
     <form method="GET" action="/ocular/records" class="ocu-sort-form">
       ${sortPassthroughHTML}
-      <label class="ocu-sort-label" for="ocu-sort-by">Sort</label>
-      <select name="sort" id="ocu-sort-by" class="ocu-sort-select" onchange="this.form.submit()">
-        <option value="id"             ${currentSort === 'id' ? 'selected' : ''}>Newest first</option>
-        <option value="distress_score" ${currentSort === 'distress_score' ? 'selected' : ''}>Distress score</option>
-        <option value="street"         ${currentSort === 'street' ? 'selected' : ''}>Address</option>
-        <option value="created_at"     ${currentSort === 'created_at' ? 'selected' : ''}>Date added</option>
-      </select>
-      <select name="dir" class="ocu-sort-select" onchange="this.form.submit()">
+      <input type="hidden" name="sort" value="distress_score">
+      <label class="ocu-sort-label" for="ocu-sort-distress">Distress</label>
+      <select name="dir" id="ocu-sort-distress" class="ocu-sort-select" onchange="this.form.submit()">
+        <option value=""     ${currentDir === ''     ? 'selected' : ''}>Default</option>
         <option value="desc" ${currentDir === 'desc' ? 'selected' : ''}>High → Low</option>
         <option value="asc"  ${currentDir === 'asc'  ? 'selected' : ''}>Low → High</option>
       </select>

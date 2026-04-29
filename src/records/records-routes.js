@@ -314,6 +314,36 @@ router.post('/phones/:phoneId(\\d+)/type', requireAuth, async (req, res) => {
   }
 });
 
+// 2026-04-29 fix: detail-actions.js POSTs to this route every time the
+// operator clicks the phone-status pill (Correct / Wrong / Unknown), but
+// the handler was never wired up — every click 404'd silently. Same shape
+// as the phone-type handler above.
+router.post('/phones/:phoneId(\\d+)/status', requireAuth, async (req, res) => {
+  try {
+    const phoneId = parseInt(req.params.phoneId, 10);
+    const allowed = ['correct', 'wrong', 'do_not_call', 'unknown', ''];
+    const newStatus = String(req.body.phone_status || '').toLowerCase();
+    if (!phoneId || !allowed.includes(newStatus)) return res.status(400).json({ error: 'Invalid phone_status. Use correct / wrong / do_not_call / unknown.' });
+    // wrong_number column is the legacy boolean — keep it in sync so the
+    // existing /export "clean phones only" filter stays consistent.
+    const r = await query(
+      `UPDATE phones
+         SET phone_status = NULLIF($1,''),
+             wrong_number = ($1 = 'wrong'),
+             do_not_call  = ($1 = 'do_not_call' OR do_not_call),
+             updated_at   = NOW()
+       WHERE id = $2 AND tenant_id = $3
+       RETURNING id, phone_status, wrong_number, do_not_call`,
+      [newStatus, phoneId, req.tenantId]
+    );
+    if (!r.rowCount) return res.status(404).json({ error: 'Phone not found' });
+    res.json({ ok: true, phone: r.rows[0] });
+  } catch (e) {
+    console.error('[phones/:id/status POST]', e);
+    res.status(500).json({ error: e.message });
+  }
+});
+
 // Add tag to a property — creates the tag if it doesn't exist
 router.post('/:id(\\d+)/tags', requireAuth, async (req, res) => {
   try {
@@ -421,6 +451,127 @@ router.delete('/:id(\\d+)/notes/:noteId(\\d+)', requireAuth, async (req, res) =>
     res.json({ ok: true });
   } catch (e) {
     console.error('[notes/remove]', e);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// ── Pipeline stage change (2026-04-29) ─────────────────────────────────────
+// detail-actions.js has been POSTing to /records/:id/pipeline since the
+// inline-stage dropdown was added, but the route was never wired up — it
+// 404'd silently every time the user changed Stage on the property
+// detail page. The toast still said "Pipeline → lead" because the
+// optimistic UI update fired before the network error came back; users
+// only noticed when they reloaded and the change was gone.
+const VALID_PIPELINE_STAGES = ['prospect','lead','contract','closed'];
+router.post('/:id(\\d+)/pipeline', requireAuth, async (req, res) => {
+  try {
+    const propertyId = parseInt(req.params.id, 10);
+    if (!Number.isFinite(propertyId)) return res.status(400).json({ error: 'Invalid property id.' });
+    const stage = String(req.body.pipeline_stage || '').trim().toLowerCase();
+    if (!VALID_PIPELINE_STAGES.includes(stage)) {
+      return res.status(400).json({ error: `Invalid stage. Must be one of: ${VALID_PIPELINE_STAGES.join(', ')}` });
+    }
+    // Capture previous stage for the outcome log + tenant scope check.
+    const beforeRes = await query(
+      `SELECT pipeline_stage FROM properties WHERE id = $1 AND tenant_id = $2`,
+      [propertyId, req.tenantId]
+    );
+    if (!beforeRes.rowCount) return res.status(404).json({ error: 'Property not found.' });
+    const prev = beforeRes.rows[0].pipeline_stage || '';
+    if (prev === stage) return res.json({ ok: true, stage, unchanged: true });
+
+    await query(
+      `UPDATE properties SET pipeline_stage = $1, updated_at = NOW() WHERE id = $2 AND tenant_id = $3`,
+      [stage, propertyId, req.tenantId]
+    );
+    // Distress signal: the marketing_lead weight uses pipeline_stage
+    // (lead/contract/closed → +5 points). Re-score this property so the
+    // band stays in sync — non-fatal.
+    try {
+      await distress.scoreProperties([propertyId]);
+    } catch (e) {
+      console.warn('[pipeline] post-change rescore skipped:', e.message);
+    }
+    // Outcome log if available — non-fatal.
+    try {
+      if (typeof distress.logOutcomeChange === 'function') {
+        await distress.logOutcomeChange(propertyId, 'pipeline_stage', prev, stage);
+      }
+    } catch (_) { /* ignore */ }
+    res.json({ ok: true, stage, previous: prev });
+  } catch (e) {
+    console.error('[records/:id/pipeline POST]', e);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// ── Property edit (2026-04-29) ─────────────────────────────────────────────
+// JSON edit endpoint paired with the new in-page Edit modal. Only updates
+// fields that are explicitly present in the body — anything missing is
+// preserved. Mirrors the legacy POST /records/:id/edit field semantics
+// but returns JSON so the modal can stay open on validation errors.
+router.post('/:id(\\d+)/edit-fields', requireAuth, async (req, res) => {
+  try {
+    const propertyId = parseInt(req.params.id, 10);
+    if (!Number.isFinite(propertyId)) return res.status(400).json({ error: 'Invalid property id.' });
+    const own = await query(`SELECT 1 FROM properties WHERE id = $1 AND tenant_id = $2`, [propertyId, req.tenantId]);
+    if (!own.rowCount) return res.status(404).json({ error: 'Property not found.' });
+
+    // Whitelisted fields. Each has a coercion + COALESCE-preserve semantic
+    // so a blank/missing value leaves the column alone.
+    const map = {
+      property_type:    { col: 'property_type',    cast: 'text'   },
+      condition:        { col: 'condition',        cast: 'text'   },
+      property_status:  { col: 'property_status',  cast: 'text'   },
+      bedrooms:         { col: 'bedrooms',         cast: 'smallint' },
+      bathrooms:        { col: 'bathrooms',        cast: 'numeric'  },
+      sqft:             { col: 'sqft',             cast: 'integer'  },
+      year_built:       { col: 'year_built',       cast: 'smallint' },
+      estimated_value:  { col: 'estimated_value',  cast: 'numeric'  },
+      assessed_value:   { col: 'assessed_value',   cast: 'numeric'  },
+      equity_percent:   { col: 'equity_percent',   cast: 'numeric'  },
+      last_sale_date:   { col: 'last_sale_date',   cast: 'date'     },
+      last_sale_price:  { col: 'last_sale_price',  cast: 'numeric'  },
+      vacant:           { col: 'vacant',           cast: 'bool'     },
+      source:           { col: 'source',           cast: 'text'     },
+      county:           { col: 'county',           cast: 'text'     },
+      pipeline_stage:   { col: 'pipeline_stage',   cast: 'text'     },
+    };
+
+    const sets = [];
+    const params = [];
+    let idx = 1;
+    for (const [key, def] of Object.entries(map)) {
+      if (!(key in req.body)) continue;
+      const raw = req.body[key];
+      if (raw == null || String(raw).trim() === '') continue;  // skip blanks
+      try {
+        if (def.cast === 'text') {
+          sets.push(`${def.col} = $${idx}`); params.push(String(raw).slice(0, 255)); idx++;
+        } else if (def.cast === 'bool') {
+          const b = String(raw).toLowerCase() === 'true' || raw === true;
+          sets.push(`${def.col} = $${idx}`); params.push(b); idx++;
+        } else if (def.cast === 'date') {
+          sets.push(`${def.col} = $${idx}::date`); params.push(String(raw)); idx++;
+        } else { // numeric / int / smallint
+          const n = Number(raw);
+          if (!Number.isFinite(n)) continue;
+          sets.push(`${def.col} = $${idx}::${def.cast}`); params.push(n); idx++;
+        }
+      } catch (_) { /* skip bad coercion */ }
+    }
+    if (sets.length === 0) return res.json({ ok: true, updated: 0 });
+
+    sets.push(`updated_at = NOW()`);
+    params.push(propertyId);
+    params.push(req.tenantId);
+    await query(
+      `UPDATE properties SET ${sets.join(', ')} WHERE id = $${idx} AND tenant_id = $${idx + 1}`,
+      params
+    );
+    res.json({ ok: true, updated: sets.length - 1 });
+  } catch (e) {
+    console.error('[records/:id/edit-fields]', e);
     res.status(500).json({ error: e.message });
   }
 });
