@@ -118,13 +118,20 @@ router.post('/:id(\\d+)/edit', requireAuth, async (req, res) => {
     const own = await query(`SELECT 1 FROM contacts WHERE id = $1 AND tenant_id = $2`, [contactId, req.tenantId]);
     if (!own.rowCount) return res.status(404).json({ error: 'Owner not found' });
 
+    // Note: mailing_state is CHAR(2) in the contacts schema — values
+    // longer than 2 chars cause "value too long" errors. Normalize via
+    // the shared state helper (accepts "California", "CAA", "ca", etc.
+    // and returns either a clean 2-letter code or null). Skip the
+    // column entirely when the value can't be normalized so we don't
+    // overwrite a previously-good value with garbage.
+    const { normalizeState } = require('../import/state');
     const map = {
       first_name:      { col: 'first_name',      max: 100 },
       last_name:       { col: 'last_name',       max: 100 },
       owner_type:      { col: 'owner_type',      enum: ['Person','Company','Trust'] },
       mailing_address: { col: 'mailing_address', max: 255 },
       mailing_city:    { col: 'mailing_city',    max: 100 },
-      mailing_state:   { col: 'mailing_state',   max: 10 },
+      mailing_state:   { col: 'mailing_state',   max: 2, normalize: normalizeState },
       mailing_zip:     { col: 'mailing_zip',     max: 10 },
       email:           { col: 'email',           max: 255 },
     };
@@ -138,6 +145,11 @@ router.post('/:id(\\d+)/edit', requireAuth, async (req, res) => {
       raw = String(raw).trim();
       if (!raw) continue;
       if (def.enum && !def.enum.includes(raw)) continue;
+      if (def.normalize) {
+        const normed = def.normalize(raw);
+        if (!normed) continue;  // unrecognized state — leave column alone
+        raw = normed;
+      }
       if (def.max && raw.length > def.max) raw = raw.slice(0, def.max);
       sets.push(`${def.col} = $${idx}`); params.push(raw); idx++;
     }

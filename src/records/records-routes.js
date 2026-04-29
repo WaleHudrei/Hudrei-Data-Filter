@@ -609,7 +609,17 @@ router.post('/:id(\\d+)/owner', requireAuth, async (req, res) => {
 
     const mAddr  = String(req.body.mailing_address || '').trim().slice(0, 255) || null;
     const mCity  = String(req.body.mailing_city    || '').trim().slice(0, 100) || null;
-    const mState = String(req.body.mailing_state   || '').trim().slice(0, 10)  || null;
+    // contacts.mailing_state is CHAR(2). Normalize via the shared state
+    // helper (accepts "California" / "CAA" / "ca", returns clean 2-letter
+    // or null) so we don't slam a too-long value into the column.
+    const rawState = String(req.body.mailing_state || '').trim();
+    let mState = null;
+    if (rawState) {
+      try {
+        const { normalizeState } = require('../import/state');
+        mState = normalizeState(rawState) || null;
+      } catch (_) { mState = rawState.slice(0, 2).toUpperCase(); }
+    }
     const mZip   = String(req.body.mailing_zip     || '').trim().slice(0, 10)  || null;
 
     let ownerType = String(req.body.owner_type || '').trim();

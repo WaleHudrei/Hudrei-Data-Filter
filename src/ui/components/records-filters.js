@@ -102,15 +102,17 @@ function recordsFilters(opts = {}) {
   const sortPassthroughHTML = (opts.sortPassthrough || []).map(([k, v]) =>
     `<input type="hidden" name="${escHTML(k)}" value="${escHTML(v)}">`
   ).join('');
+  // 2026-04-29: removed redundant "Default" option — when dir="" the
+  // server falls back to desc anyway, so it was visually identical to
+  // High → Low.
   const sortControl = `
     <form method="GET" action="/ocular/records" class="ocu-sort-form">
       ${sortPassthroughHTML}
       <input type="hidden" name="sort" value="distress_score">
       <label class="ocu-sort-label" for="ocu-sort-distress">Distress</label>
       <select name="dir" id="ocu-sort-distress" class="ocu-sort-select" onchange="this.form.submit()">
-        <option value=""     ${currentDir === ''     ? 'selected' : ''}>Default</option>
-        <option value="desc" ${currentDir === 'desc' ? 'selected' : ''}>High → Low</option>
-        <option value="asc"  ${currentDir === 'asc'  ? 'selected' : ''}>Low → High</option>
+        <option value="desc" ${currentDir !== 'asc' ? 'selected' : ''}>High → Low</option>
+        <option value="asc"  ${currentDir === 'asc' ? 'selected' : ''}>Low → High</option>
       </select>
     </form>`;
 
