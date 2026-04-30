@@ -30,12 +30,15 @@ function getView(id) {
 // where the [...] piece is a button that opens the view popover.
 function dashboardSwitcher({ active = 'main', defaultView = 'main' } = {}) {
   const current = getView(active);
+  // Each item shows just the view name — the popover header makes it clear
+  // we're picking a Dashboard, so doubling the word on every row caused
+  // "Campaign analytics" to wrap onto two lines and look broken.
   const items = VIEWS.map(v => {
     const isActive  = v.id === active;
     const isDefault = v.id === defaultView;
     return `
       <a class="ocu-dsw-item${isActive ? ' active' : ''}" href="${escHTML(v.href)}">
-        <span class="ocu-dsw-item-label">${escHTML(v.label)} Dashboard</span>
+        <span class="ocu-dsw-item-label">${escHTML(v.label)}</span>
         <span class="ocu-dsw-item-meta">
           ${isDefault ? '<span class="ocu-dsw-default-pill">Default</span>' : ''}
           ${!isDefault ? `<button type="button" class="ocu-dsw-set-default" data-view="${escHTML(v.id)}" title="Set as default">Set default</button>` : ''}

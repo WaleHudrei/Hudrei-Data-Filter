@@ -73,32 +73,39 @@ function listsPage(data = {}) {
     ? `<div class="ocu-card" style="margin-bottom:14px;background:#fdeaea;border-color:#f5c5c5;color:#8b1f1f;padding:12px 16px;font-size:13px">${escHTML(flash.err)}</div>`
     : '';
 
+  // Lists filter card. Two baseline-aligned rows inside one card:
+  //   Row 1 — Search (flex-grow) · "+ Import new list" CTA (right)
+  //   Row 2 — Type · Source · Filter · Reset, all baseline-aligned
+  // The Import-list button used to live in its own row above the card; the
+  // user moved it inline so the screenshot reads as one tidy filter block.
   const hasAnyFilter = !!(filters.q || filters.type || filters.source);
   const filterBar = `
-    <form method="GET" action="/oculah/lists" class="ocu-list-filter-bar" style="margin-bottom:14px">
-      <div class="ocu-list-search">
-        <label class="ocu-form-label">Search lists</label>
-        <input type="search" name="q" value="${escHTML(filters.q || '')}" placeholder="List name…" class="ocu-input" />
+    <form method="GET" action="/oculah/lists" class="ocu-card"
+          style="padding:14px 16px;margin-bottom:14px;display:flex;flex-direction:column;gap:12px">
+      <div style="display:flex;gap:10px;align-items:flex-end">
+        <div style="flex:1;min-width:0">
+          <label class="ocu-form-label">Search lists</label>
+          <input type="search" name="q" value="${escHTML(filters.q || '')}" placeholder="List name…" class="ocu-input" />
+        </div>
+        <a href="/import/property" class="ocu-btn ocu-btn-primary" style="white-space:nowrap;height:38px;display:inline-flex;align-items:center">+ Import new list</a>
       </div>
-      <div class="ocu-list-filters">
-        <div>
+      <div style="display:flex;gap:10px;align-items:flex-end;flex-wrap:wrap">
+        <div style="flex:1;min-width:160px">
           <label class="ocu-form-label">Type</label>
           <select name="type" class="ocu-input">
             <option value="">All types</option>
             ${LIST_TYPES.map(t => `<option value="${escHTML(t)}"${filters.type === t ? ' selected' : ''}>${escHTML(t)}</option>`).join('')}
           </select>
         </div>
-        <div>
+        <div style="flex:1;min-width:160px">
           <label class="ocu-form-label">Source</label>
           <select name="source" class="ocu-input">
             <option value="">All sources</option>
             ${SOURCES.map(s => `<option value="${escHTML(s)}"${filters.source === s ? ' selected' : ''}>${escHTML(s)}</option>`).join('')}
           </select>
         </div>
-        <div class="ocu-list-filter-actions">
-          <button type="submit" class="ocu-btn ocu-btn-primary">Filter</button>
-          ${hasAnyFilter ? `<a href="/oculah/lists" class="ocu-btn ocu-btn-ghost">Reset</a>` : ''}
-        </div>
+        <button type="submit" class="ocu-btn ocu-btn-primary" style="height:38px;white-space:nowrap">Filter</button>
+        ${hasAnyFilter ? `<a href="/oculah/lists" class="ocu-btn ocu-btn-ghost" style="height:38px;display:inline-flex;align-items:center">Reset</a>` : ''}
       </div>
     </form>`;
 
@@ -187,10 +194,6 @@ function listsPage(data = {}) {
     </div>`;
 
   const body = `
-    <div style="display:flex;justify-content:flex-end;margin-bottom:14px">
-      <a href="/import/property" class="ocu-btn ocu-btn-primary">+ Import new list</a>
-    </div>
-
     ${flashHTML}
     ${filterBar}
     ${tableHTML}

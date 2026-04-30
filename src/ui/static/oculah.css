@@ -392,41 +392,51 @@
 }
 
 /* ─── Dashboard switcher (in-topbar dropdown) ──────────────────────────── */
-.ocu-dsw-wrap { position: relative; display: inline-flex; }
+.ocu-dsw-wrap { position: relative; display: inline-flex; align-items: center; }
+/* The dashboard switcher trigger is a SECONDARY control next to the page
+   title, not part of the title. Sized like a regular .ocu-btn — small,
+   plain weight — so it doesn't compete with the topbar title for visual
+   weight. (Pre-fix it was 22px/800-weight, matching the title and looked
+   like a giant chunky chip.) */
 .ocu-dsw-trigger {
   display: inline-flex;
   align-items: center;
-  gap: 6px;
+  gap: 4px;
   background: var(--ocu-card-bg);
   border: 1px solid var(--ocu-border-strong);
-  border-radius: 8px;
-  padding: 4px 10px 4px 12px;
+  border-radius: 6px;
+  padding: 4px 8px 4px 10px;
   font: inherit;
-  font-size: 22px;
-  font-weight: 800;
-  color: var(--ocu-text-1);
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--ocu-text-2);
   cursor: pointer;
-  letter-spacing: -0.01em;
-  transition: background .12s, border-color .12s;
+  letter-spacing: 0;
+  line-height: 1.2;
+  transition: background .12s, border-color .12s, color .12s;
 }
-.ocu-dsw-trigger:hover { background: var(--ocu-bg); border-color: var(--ocu-text-2); }
-.ocu-dsw-trigger[aria-expanded="true"] { background: var(--ocu-bg); border-color: var(--ocu-accent); }
-.ocu-dsw-trigger-label { line-height: 1; }
-.ocu-dsw-chev { color: var(--ocu-text-3); margin-top: 2px; }
+.ocu-dsw-trigger:hover { background: var(--ocu-bg); border-color: var(--ocu-text-2); color: var(--ocu-text-1); }
+.ocu-dsw-trigger[aria-expanded="true"] { background: var(--ocu-bg); border-color: var(--ocu-accent); color: var(--ocu-accent); }
+.ocu-dsw-trigger-label { line-height: 1; text-transform: uppercase; letter-spacing: 0.06em; font-size: 11px; }
+.ocu-dsw-chev { color: currentColor; opacity: .8; }
 .ocu-dsw-suffix {
-  /* Plain "Dashboard" word that sits to the right of the dropdown trigger.
-     Matches the trigger size + weight so reading order is "[Active] Dashboard" */
+  /* The active dashboard's name reads as part of the topbar title — same
+     size and weight so "[View] Main Dashboard" feels like one heading with
+     a quiet switcher tucked to its left. */
   font-size: 22px;
   font-weight: 800;
   color: var(--ocu-text-1);
   letter-spacing: -0.01em;
+  margin-left: 8px;
 }
 
 .ocu-dsw-popover {
   position: absolute;
   top: calc(100% + 6px);
   left: 0;
-  min-width: 320px;
+  min-width: 240px;
+  width: max-content;
+  max-width: 360px;
   background: var(--ocu-bg);
   border: 1px solid var(--ocu-border-strong);
   border-radius: 10px;
@@ -439,25 +449,26 @@
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 12px;
-  padding: 10px 12px;
+  gap: 10px;
+  padding: 8px 10px;
   border-radius: 6px;
   text-decoration: none;
   color: var(--ocu-text-1);
-  font-size: 14px;
+  font-size: 13px;
   font-weight: 500;
   letter-spacing: 0;
+  white-space: nowrap;
 }
 .ocu-dsw-item:hover { background: var(--ocu-surface); }
 .ocu-dsw-item.active { background: var(--ocu-accent-soft); }
 .ocu-dsw-item-label { font-weight: 600; }
-.ocu-dsw-item-meta { display: flex; align-items: center; gap: 8px; }
+.ocu-dsw-item-meta { display: flex; align-items: center; gap: 6px; flex-shrink: 0; }
 .ocu-dsw-default-pill {
-  font-size: 11px;
+  font-size: 10px;
   font-weight: 600;
   background: var(--ocu-accent-soft);
   color: var(--ocu-accent);
-  padding: 2px 8px;
+  padding: 2px 6px;
   border-radius: 4px;
   letter-spacing: 0.04em;
   text-transform: uppercase;
@@ -467,10 +478,11 @@
   border: 1px solid var(--ocu-border-strong);
   color: var(--ocu-text-3);
   font-size: 11px;
-  padding: 3px 8px;
+  padding: 2px 8px;
   border-radius: 4px;
   cursor: pointer;
   font-family: inherit;
+  white-space: nowrap;
 }
 .ocu-dsw-set-default:hover { color: var(--ocu-text-1); border-color: var(--ocu-text-2); }
 .ocu-dsw-set-default:disabled { opacity: 0.5; cursor: wait; }

@@ -96,17 +96,18 @@ function campaignsList(data = {}) {
         </table>
       </div>`;
 
+  // "+ New campaign" lives on the tabs row right after All (2026-04-30 user
+  // request). Tabs sit on the left, button anchors to the right of the row;
+  // both share a single baseline so the button height matches the underlined
+  // tab labels.
   const body = `
-    <div style="display:flex;justify-content:flex-end;margin-bottom:14px">
-      <a href="/oculah/campaigns/new" class="ocu-btn ocu-btn-primary">+ New campaign</a>
-    </div>
-
     ${kpiStrip}
 
-    <div class="ocu-tabs" style="margin-bottom:14px">
+    <div class="ocu-tabs" style="display:flex;align-items:center;gap:14px;margin-bottom:14px">
       ${tabLink('Active', 'active', tab, counts.active)}
       ${tabLink('Completed', 'completed', tab, counts.completed)}
       ${tabLink('All', 'all', tab, counts.all)}
+      <a href="/oculah/campaigns/new" class="ocu-btn ocu-btn-primary" style="margin-left:auto">+ New campaign</a>
     </div>
 
     ${tableHTML}`;
