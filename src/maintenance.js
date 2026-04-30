@@ -257,6 +257,10 @@ async function dedupByNameAddress(mode = 'report', opts = {}) {
     for (let i = 1; i < ids.length; i++) loserToKeeper.set(ids[i], keeper);
   }
   stats.losersMerged = loserToKeeper.size;
+  // Defensive: groups with COUNT > 1 always produce at least one loser, so
+  // size should be ≥ 1 here. Guard against empty caseSql anyway — building
+  // `(CASE x END)` with no WHEN clauses is a Postgres syntax error.
+  if (loserToKeeper.size === 0) return stats;
 
   if (mode !== 'confirm') {
     console.log(`[maintenance/dedup-name-addr] REPORT ONLY:`);
