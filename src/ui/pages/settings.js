@@ -8,8 +8,34 @@
 // which delegates to the shared settings.updateDeleteCode helper.
 // ═══════════════════════════════════════════════════════════════════════════
 const { shell } = require('../layouts/shell');
-const { card }  = require('../components/card');
 const { escHTML } = require('../_helpers');
+
+// Icons — small inline SVGs, one per section. Stroke-based, currentColor.
+const ICONS = {
+  lock:    '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>',
+  shield:  '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>',
+  target:  '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="6"/><circle cx="12" cy="12" r="2"/></svg>',
+  merge:   '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="6" cy="18" r="3"/><circle cx="6" cy="6" r="3"/><circle cx="18" cy="12" r="3"/><path d="M9 6h3a3 3 0 0 1 3 3v3"/><path d="M9 18h3a3 3 0 0 0 3-3v-3"/></svg>',
+  info:    '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/></svg>',
+};
+
+// Settings card with colored icon tile + title + meta. Replaces the plain
+// `card()` component so every settings section reads as one polished
+// stack — matching the distress-matrix tab. Tones map a section's
+// "feeling" to a color (security → blue/amber, scoring → violet, etc.).
+function settingsCard({ icon = 'info', tone = 'slate', title = '', meta = '', body = '' }) {
+  return `
+    <div class="ocu-settings-card">
+      <div class="ocu-settings-card-header">
+        <div class="ocu-settings-card-icon" data-tone="${escHTML(tone)}" aria-hidden="true">${ICONS[icon] || ICONS.info}</div>
+        <div class="ocu-settings-card-titles">
+          ${title ? `<div class="ocu-settings-card-title">${escHTML(title)}</div>` : ''}
+          ${meta ? `<div class="ocu-settings-card-meta">${escHTML(meta)}</div>` : ''}
+        </div>
+      </div>
+      <div class="ocu-settings-card-body">${body}</div>
+    </div>`;
+}
 
 /**
  * @param {Object} data
@@ -124,44 +150,46 @@ function settingsPage(data = {}) {
       keyed by <code style="background:var(--ocu-bg-2);padding:2px 6px;border-radius:4px;font-size:12px;font-family:'JetBrains Mono',ui-monospace,monospace">(tenant_id, key)</code>.
     </div>`;
 
+  // All sections rendered as the same enriched card style — matches the
+  // distress matrix tab. Colored icon tiles, larger titles, soft hover
+  // shadow, consistent vertical rhythm via .ocu-settings-stack.
   const body = `
-    <div style="max-width:680px">
+    <div style="max-width:780px;margin:0 auto" class="ocu-settings-stack">
       ${pwFlashHTML}
-      ${card({
+      ${settingsCard({
+        icon: 'lock',  tone: 'blue',
         title: 'Change password',
-        meta:  'Update your sign-in password',
+        meta:  'Update your sign-in password.',
         body:  passwordForm,
       })}
       ${isAdmin ? `
-      <div style="margin-top:16px">
         ${flashHTML}
         ${defaultBanner}
-        ${card({
+        ${settingsCard({
+          icon: 'shield', tone: 'amber',
           title: 'Delete code',
-          meta:  'Required for any destructive action',
+          meta:  'Required for any destructive action — record deletion, list deletion, bulk merges.',
           body:  deleteCodeForm,
         })}
-      </div>
-      <div style="margin-top:16px">
-        ${card({
+        ${settingsCard({
+          icon: 'target', tone: 'violet',
           title: 'Distress score matrix',
-          meta:  'Customize weights, bands, and signals',
+          meta:  'Customize weights, band thresholds, and your own keyword-based signals.',
           body:  distressCard,
         })}
-      </div>
-      <div style="margin-top:16px">
-        ${card({
+        ${settingsCard({
+          icon: 'merge', tone: 'green',
           title: 'Duplicate cleanup',
-          meta:  'Auto-runs on import — manual trigger for legacy data',
+          meta:  'Auto-runs on import — manual trigger for legacy data.',
           body:  dedupCard,
         })}
-      </div>
-      <div style="margin-top:16px">
-        ${card({
+        ${settingsCard({
+          icon: 'info', tone: 'slate',
           title: 'Recovery',
+          meta:  'If you forget the delete code, an admin can reset it from the database.',
           body:  recoveryNote,
         })}
-      </div>` : ''}
+      ` : ''}
     </div>`;
 
   return shell({

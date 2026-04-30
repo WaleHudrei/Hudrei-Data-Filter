@@ -8,11 +8,32 @@
 // Save posts to /oculah/setup/distress; Reset to /oculah/setup/distress/reset.
 // ═══════════════════════════════════════════════════════════════════════════
 const { shell } = require('../layouts/shell');
-const { card } = require('../components/card');
 const { escHTML } = require('../_helpers');
 const {
   DEFAULT_WEIGHTS, DEFAULT_BANDS, BUILTIN_SIGNAL_LABELS,
 } = require('../../scoring/distress-config');
+
+// Same card shape as the Settings page — colored icon tile + title +
+// meta. Kept inline here so the distress page doesn't depend on a
+// settings-only export.
+const _ICONS = {
+  sliders: '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="4" y1="21" x2="4" y2="14"/><line x1="4" y1="10" x2="4" y2="3"/><line x1="12" y1="21" x2="12" y2="12"/><line x1="12" y1="8" x2="12" y2="3"/><line x1="20" y1="21" x2="20" y2="16"/><line x1="20" y1="12" x2="20" y2="3"/><line x1="1" y1="14" x2="7" y2="14"/><line x1="9" y1="8" x2="15" y2="8"/><line x1="17" y1="16" x2="23" y2="16"/></svg>',
+  thermo:  '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 14.76V3.5a2.5 2.5 0 0 0-5 0v11.26a4.5 4.5 0 1 0 5 0z"/></svg>',
+  plus:    '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="16"/><line x1="8" y1="12" x2="16" y2="12"/></svg>',
+};
+function _settingsCard({ icon = 'sliders', tone = 'violet', title = '', meta = '', body = '' }) {
+  return `
+    <div class="ocu-settings-card">
+      <div class="ocu-settings-card-header">
+        <div class="ocu-settings-card-icon" data-tone="${escHTML(tone)}" aria-hidden="true">${_ICONS[icon] || ''}</div>
+        <div class="ocu-settings-card-titles">
+          ${title ? `<div class="ocu-settings-card-title">${escHTML(title)}</div>` : ''}
+          ${meta ? `<div class="ocu-settings-card-meta">${escHTML(meta)}</div>` : ''}
+        </div>
+      </div>
+      <div class="ocu-settings-card-body">${body}</div>
+    </div>`;
+}
 
 function distressSettingsPage(data = {}) {
   const cfg = data.config || { weights: DEFAULT_WEIGHTS, bands: DEFAULT_BANDS, custom_signals: [], _hasOverrides: false };
@@ -94,35 +115,37 @@ function distressSettingsPage(data = {}) {
       Saving updates the matrix immediately, but existing scores are not recomputed automatically — go to <a href="/records/_distress" class="ocu-link">Records → Recompute</a> to rescore your data with the new rules.
     </div>`;
 
+  // Center the entire page (2026-04-30 user request). The form column is
+  // capped at 780px and centered with auto margins, the back link aligned
+  // to the same column so the whole tab reads as one focused stack.
   const body = `
-    <div style="margin-bottom:14px"><a href="/oculah/setup" class="ocu-text-3" style="font-size:13px;text-decoration:none">← Settings</a></div>
+    <div style="max-width:780px;margin:0 auto">
+      <div style="margin-bottom:14px"><a href="/oculah/setup" class="ocu-text-3" style="font-size:13px;text-decoration:none">← Settings</a></div>
 
-    <div style="max-width:780px">
       ${flashHTML}
       ${overridesBanner}
 
-      <form method="POST" action="/oculah/setup/distress" id="distress-form">
-        ${card({
+      <form method="POST" action="/oculah/setup/distress" id="distress-form" class="ocu-settings-stack">
+        ${_settingsCard({
+          icon: 'sliders', tone: 'violet',
           title: 'Built-in signals',
           meta:  'Adjust how strongly each pre-defined signal weighs. Set to 0 to disable.',
           body:  `<div class="ocu-distress-grid">${builtinRows}</div>`,
         })}
-        <div style="margin-top:16px">
-          ${card({
-            title: 'Band thresholds',
-            meta:  'Minimum score to enter each band. Must be increasing.',
-            body:  `<div class="ocu-distress-grid">${bandsHTML}</div>`,
-          })}
-        </div>
-        <div style="margin-top:16px">
-          ${card({
-            title: 'Custom signals',
-            meta:  'Your own list-keyword rules.',
-            body:  `${customHelp}
-              <div id="custom-signals-list">${customRowsHTML}</div>
-              <button type="button" class="ocu-btn ocu-btn-secondary" id="add-custom-signal-btn" style="margin-top:8px">+ Add custom signal</button>`,
-          })}
-        </div>
+        ${_settingsCard({
+          icon: 'thermo', tone: 'rose',
+          title: 'Band thresholds',
+          meta:  'Minimum score to enter each band. Must be increasing.',
+          body:  `<div class="ocu-distress-grid">${bandsHTML}</div>`,
+        })}
+        ${_settingsCard({
+          icon: 'plus', tone: 'green',
+          title: 'Custom signals',
+          meta:  'Your own list-keyword rules — add scoring for any list pattern your team cares about.',
+          body:  `${customHelp}
+            <div id="custom-signals-list">${customRowsHTML}</div>
+            <button type="button" class="ocu-btn ocu-btn-secondary" id="add-custom-signal-btn" style="margin-top:8px">+ Add custom signal</button>`,
+        })}
 
         <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:18px">
           <a href="/oculah/setup" class="ocu-btn ocu-btn-ghost">Cancel</a>

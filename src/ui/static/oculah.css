@@ -678,6 +678,62 @@
 }
 .ocu-card-link:hover { color: var(--ocu-text-1); }
 
+/* ─── Settings cards ────────────────────────────────────────────────────── */
+/* Richer card variant used on /oculah/setup. Each section gets a colored
+   icon tile on the left of the header, a larger title, and more
+   breathing room — same visual treatment as the distress-matrix page so
+   every settings section reads as one consistent stack. */
+.ocu-settings-card {
+  background: var(--ocu-card-bg);
+  border: 1px solid var(--ocu-border);
+  border-radius: 14px;
+  padding: 24px 26px;
+  box-shadow: 0 1px 2px rgba(11, 18, 32, 0.04), 0 0 0 1px rgba(11, 18, 32, 0.02);
+  transition: border-color 0.12s, box-shadow 0.12s;
+}
+.ocu-settings-card:hover {
+  border-color: var(--ocu-border-strong);
+  box-shadow: 0 4px 12px rgba(11, 18, 32, 0.06), 0 0 0 1px rgba(11, 18, 32, 0.02);
+}
+.ocu-settings-card-header {
+  display: flex;
+  align-items: flex-start;
+  gap: 14px;
+  margin-bottom: 18px;
+}
+.ocu-settings-card-icon {
+  width: 40px;
+  height: 40px;
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 10px;
+  border: 1px solid;
+}
+.ocu-settings-card-icon[data-tone="blue"]   { background: #DBEAFE; border-color: #BFDBFE; color: #1D4ED8; }
+.ocu-settings-card-icon[data-tone="amber"]  { background: #FEF3C7; border-color: #FDE68A; color: #B45309; }
+.ocu-settings-card-icon[data-tone="green"]  { background: #DCFCE7; border-color: #BBF7D0; color: #15803D; }
+.ocu-settings-card-icon[data-tone="violet"] { background: #F3E8FF; border-color: #E9D5FF; color: #7C3AED; }
+.ocu-settings-card-icon[data-tone="rose"]   { background: #FFE4E6; border-color: #FECDD3; color: #BE123C; }
+.ocu-settings-card-icon[data-tone="slate"]  { background: var(--ocu-surface); border-color: var(--ocu-border); color: var(--ocu-text-2); }
+.ocu-settings-card-titles { flex: 1; min-width: 0; }
+.ocu-settings-card-title {
+  font-size: 16px;
+  font-weight: 700;
+  color: var(--ocu-text-1);
+  letter-spacing: -0.01em;
+  line-height: 1.2;
+}
+.ocu-settings-card-meta {
+  font-size: 13px;
+  color: var(--ocu-text-3);
+  margin-top: 4px;
+  line-height: 1.45;
+}
+.ocu-settings-card-body { padding-left: 0; }
+.ocu-settings-stack { display: flex; flex-direction: column; gap: 16px; }
+
 /* ─── KPI cards ─────────────────────────────────────────────────────────── */
 .ocu-kpi-row {
   display: grid;
