@@ -484,6 +484,55 @@ router.post('/:id(\\d+)/pipeline', requireAuth, async (req, res) => {
       `UPDATE properties SET pipeline_stage = $1, updated_at = NOW() WHERE id = $2 AND tenant_id = $3`,
       [stage, propertyId, req.tenantId]
     );
+
+    // Lead/marketing-result sync (per user spec):
+    //   - pipeline_stage → 'lead' should propagate marketing_result='Lead'
+    //     onto every campaign_contact tied to this property's primary
+    //     contact, so the Records Leads card and per-campaign leads
+    //     totals stay in sync.
+    //   - pipeline_stage moved to anything else (contract / closed / etc.)
+    //     does NOT clear marketing_result — the historical "Lead" fact
+    //     persists unless directly edited. This preserves attribution
+    //     for properties that progressed past the lead stage.
+    // Best-effort — non-fatal.
+    if (stage === 'lead') {
+      try {
+        await query(
+          `UPDATE campaign_contacts cc
+              SET marketing_result = 'Lead', updated_at = NOW()
+            WHERE cc.tenant_id = $1
+              AND cc.contact_id IN (
+                SELECT contact_id FROM property_contacts
+                 WHERE property_id = $2 AND tenant_id = $1 AND primary_contact = true
+              )
+              AND (cc.marketing_result IS NULL OR cc.marketing_result <> 'Lead')`,
+          [req.tenantId, propertyId]
+        );
+      } catch (e) {
+        console.warn('[pipeline] lead sync skipped:', e.message);
+      }
+    }
+
+    // Sold-disposition → last_sale_date auto-stamp (per user spec):
+    // when a property moves into 'closed' (any marketing channel can
+    // trigger this — manual edit, cold-call dispo, SMS dispo), set
+    // properties.last_sale_date = today if it isn't already in the
+    // last 30 days. Mirrors the user's "Sold = recently closed" intent
+    // for the Sold KPI card and the dashboard delta.
+    if (stage === 'closed') {
+      try {
+        await query(
+          `UPDATE properties
+              SET last_sale_date = CURRENT_DATE, updated_at = NOW()
+            WHERE id = $1 AND tenant_id = $2
+              AND (last_sale_date IS NULL OR last_sale_date < (CURRENT_DATE - INTERVAL '30 days'))`,
+          [propertyId, req.tenantId]
+        );
+      } catch (e) {
+        console.warn('[pipeline] sold→last_sale_date skipped:', e.message);
+      }
+    }
+
     // Distress signal: the marketing_lead weight uses pipeline_stage
     // (lead/contract/closed → +5 points). Re-score this property so the
     // band stays in sync — non-fatal.

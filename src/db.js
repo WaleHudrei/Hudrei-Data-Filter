@@ -98,6 +98,43 @@ async function initSchema() {
     ALTER TABLE tenants ADD COLUMN IF NOT EXISTS low_equity_threshold  INT NOT NULL DEFAULT 20;
   `).catch(() => { /* harmless on race */ });
 
+  // ── Sold → last_sale_date auto-sync trigger ─────────────────────────────
+  // When a campaign marks a contact's marketing_result as 'Sold' (via any
+  // channel — cold call, SMS, manual), stamp the linked property's
+  // last_sale_date to today. Implemented as a Postgres trigger so the
+  // filtration / campaign modules stay byte-for-byte untouched (protected
+  // zones per user mandate). Idempotent CREATE OR REPLACE; safe to re-run.
+  await query(`
+    CREATE OR REPLACE FUNCTION oc_sync_sold_to_last_sale()
+    RETURNS TRIGGER AS $$
+    BEGIN
+      IF NEW.marketing_result = 'Sold'
+         AND (OLD.marketing_result IS DISTINCT FROM 'Sold') THEN
+        UPDATE properties p
+           SET last_sale_date = CURRENT_DATE,
+               updated_at = NOW()
+          FROM property_contacts pc
+         WHERE pc.contact_id = NEW.contact_id
+           AND pc.tenant_id = NEW.tenant_id
+           AND pc.primary_contact = true
+           AND p.id = pc.property_id
+           AND p.tenant_id = NEW.tenant_id
+           AND (p.last_sale_date IS NULL
+                OR p.last_sale_date < (CURRENT_DATE - INTERVAL '30 days'));
+      END IF;
+      RETURN NEW;
+    END;
+    $$ LANGUAGE plpgsql;
+  `).catch((e) => { console.warn('[schema] oc_sync_sold_to_last_sale function:', e.message); });
+
+  await query(`
+    DROP TRIGGER IF EXISTS oc_sync_sold_trg ON campaign_contacts;
+    CREATE TRIGGER oc_sync_sold_trg
+      AFTER UPDATE OF marketing_result ON campaign_contacts
+      FOR EACH ROW
+      EXECUTE FUNCTION oc_sync_sold_to_last_sale();
+  `).catch((e) => { console.warn('[schema] oc_sync_sold_trg trigger:', e.message); });
+
   // Per-tenant catalogs the user can extend without code changes:
   //   - tenant_list_types  — beyond the built-in "Third party" + "Government list"
   //   - tenant_custom_sources — beyond the built-in PropStream/REISift/etc list
