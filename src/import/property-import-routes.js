@@ -618,7 +618,7 @@ router.get('/', requireAuth, async (req, res) => {
       </div>
       <input type="file" id="file-input" accept=".csv" style="display:none">
       <div id="upload-spinner" style="display:none;align-items:center;gap:8px;font-size:13px;color:var(--ocu-text-3);padding:10px 0">
-        <div class="spinner"></div> Parsing CSV…
+        <div class="spinner"></div> Loading…
       </div>
       <div id="error-msg" style="display:none;background:#fdeaea;border:1px solid #f5c5c5;border-radius:8px;padding:10px 14px;font-size:13px;color:#8b1f1f;margin-top:10px"></div>
     </div>

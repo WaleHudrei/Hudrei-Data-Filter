@@ -81,7 +81,7 @@ function filtrationPage(data = {}) {
         </div>
 
         <div id="parseProgress" style="display:none;margin-top:14px">
-          <div style="font-size:13px;color:#6b6f7a">Parsing CSV…</div>
+          <div style="font-size:13px;color:#6b6f7a">Loading…</div>
         </div>
         <div id="parseError" class="ocu-flash ocu-flash-error" style="display:none;margin-top:14px"></div>
       </div>
