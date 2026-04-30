@@ -2229,12 +2229,19 @@
   flex-direction: column;
   gap: 2px;
   background: var(--ocu-bg);
-  border: 1px solid var(--ocu-border);
-  border-radius: 10px;
-  padding: 6px;
-  max-height: 200px;
+  border: 1px solid var(--ocu-border-strong);
+  border-radius: 7px;        /* matches .ocu-input */
+  padding: 4px;
+  /* Visually anchor to the height of the "New list name" input on its
+     left: matches input's vertical box (≈38px content + 2px borders ≈
+     40px). When more lists exist, scrolls inside the same height
+     instead of pushing the form down. (User request 2026-04-30.) */
+  height: 40px;
   overflow-y: auto;
 }
+/* When focused or empty-state, allow more height so the user sees the
+   full set of options and the empty-state message isn't truncated. */
+.ocu-list-pick-wrap:focus-within { height: auto; max-height: 240px; }
 .ocu-list-pick {
   display: flex;
   align-items: center;

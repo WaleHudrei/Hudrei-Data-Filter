@@ -159,15 +159,22 @@ const DEFAULT_USER = { name: '—', role: '', initials: '·' };
  * @param {string} body
  * @param {string} activePage  Old Loki page id ('records', 'lists', etc.)
  * @param {Object} [user]      Optional Ocular user object { name, role, initials }
+ * @param {Object} [opts]      Optional pass-through {topbarTitle, topbarTitleHTML, topbarSubtitle}
+ *                              so legacy pages can use the shared topbar slot
+ *                              (e.g. /import/property/map header).
  */
-function shell(title, body, activePage, user) {
+function shell(title, body, activePage, user, opts) {
   const ocularActive = ACTIVE_PAGE_MAP[activePage || ''] || '';
+  const passthrough = (opts && typeof opts === 'object') ? opts : {};
   return ocularShell({
-    title:      title,
-    activePage: ocularActive,
-    user:       user || DEFAULT_USER,
-    extraHead:  LEGACY_CSS,
-    body:       `<div class="loki-legacy">${body}</div>`,
+    title:           title,
+    activePage:      ocularActive,
+    user:            user || DEFAULT_USER,
+    extraHead:       LEGACY_CSS,
+    topbarTitle:     passthrough.topbarTitle || '',
+    topbarTitleHTML: passthrough.topbarTitleHTML || '',
+    topbarSubtitle:  passthrough.topbarSubtitle || '',
+    body:            `<div class="loki-legacy">${body}</div>`,
   });
 }
 

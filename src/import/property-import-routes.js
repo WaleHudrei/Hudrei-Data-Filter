@@ -422,9 +422,59 @@ function autoMap(csvColumns) {
   return map;
 }
 
+// Built-in dropdown values — anything not in these lists that the user
+// types via "+ Add custom …" is recorded in the per-tenant catalog tables
+// so it pre-populates the dropdown next time. Kept here so the module is
+// self-contained.
+const _BUILTIN_LIST_TYPES   = new Set(['Third party', 'Government list']);
+const _BUILTIN_LIST_SOURCES = new Set([
+  'PropStream', 'DealMachine', 'BatchSkipTracing', 'REISift',
+  'DataSift', 'Listsource', 'Manual',
+]);
+
+// Helper: insert any user-typed custom list_type / list_source into the
+// per-tenant catalog (idempotent via the UNIQUE(tenant_id, label)
+// constraint). Called from /commit and /start-job. Best-effort —
+// caller must wrap with .catch() so a missing table on a brand-new
+// deploy doesn't break the import path.
+async function _persistCustomCatalog(tenantId, listType, listSource) {
+  if (listType && !_BUILTIN_LIST_TYPES.has(String(listType).trim())) {
+    await query(
+      `INSERT INTO tenant_list_types (tenant_id, label) VALUES ($1, $2)
+       ON CONFLICT (tenant_id, label) DO NOTHING`,
+      [tenantId, String(listType).trim().slice(0, 80)]
+    );
+  }
+  if (listSource && !_BUILTIN_LIST_SOURCES.has(String(listSource).trim())) {
+    await query(
+      `INSERT INTO tenant_custom_sources (tenant_id, label) VALUES ($1, $2)
+       ON CONFLICT (tenant_id, label) DO NOTHING`,
+      [tenantId, String(listSource).trim().slice(0, 80)]
+    );
+  }
+}
+
 // ── STEP 1: Upload CSV ────────────────────────────────────────────────────────
 router.get('/', requireAuth, async (req, res) => {
   const existingLists = await query(`SELECT id, list_name, list_type FROM lists WHERE tenant_id = $1 ORDER BY list_name ASC`, [req.tenantId]);
+
+  // Load tenant-scoped catalogs (custom list types + custom sources) so
+  // the dropdowns include every option this workspace has ever used —
+  // built-ins first, then per-tenant additions. Falls back to empty if
+  // the tables don't exist yet on a brand-new deploy.
+  const customTypesRes = await query(
+    `SELECT label FROM tenant_list_types WHERE tenant_id = $1 ORDER BY label ASC`,
+    [req.tenantId]
+  ).catch(() => ({ rows: [] }));
+  const customSourcesRes = await query(
+    `SELECT label FROM tenant_custom_sources WHERE tenant_id = $1 ORDER BY label ASC`,
+    [req.tenantId]
+  ).catch(() => ({ rows: [] }));
+  const escAttr2 = (s) => String(s == null ? '' : s).replace(/&/g,'&amp;').replace(/"/g,'&quot;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+  const customTypeOptions = customTypesRes.rows
+    .map(r => `<option value="${escAttr2(r.label)}">${escAttr2(r.label)}</option>`).join('');
+  const customSourceOptions = customSourcesRes.rows
+    .map(r => `<option value="${escAttr2(r.label)}">${escAttr2(r.label)}</option>`).join('');
   // Render the existing-list picker as a styled checkbox list inside a
   // scrollable card. Replaces the raw <select multiple> which was rendering
   // as a 1995-style OS dropdown — gray bar, no styling, ugly.
@@ -469,15 +519,15 @@ router.get('/', requireAuth, async (req, res) => {
         <div style="margin-top:12px;display:flex;gap:10px;flex-wrap:wrap">
           <div style="flex:1;min-width:180px">
             <label class="ocu-form-label">List type</label>
-            <select id="list-type" class="ocu-input">
+            <select id="list-type" class="ocu-input"
+                    onchange="document.getElementById('list-type-custom').style.display = this.value === '__custom__' ? 'block' : 'none'; if(this.value === '__custom__') document.getElementById('list-type-custom').focus();">
               <option value="">— Type (optional) —</option>
-              <option value="Cold Call">Cold Call</option>
-              <option value="SMS">SMS</option>
-              <option value="Direct Mail">Direct Mail</option>
-              <option value="PPL">PPL</option>
-              <option value="Referral">Referral</option>
-              <option value="Driving for Dollars">Driving for Dollars</option>
+              <option value="Third party">Third party</option>
+              <option value="Government list">Government list</option>
+              ${customTypeOptions}
+              <option value="__custom__">+ Add custom type…</option>
             </select>
+            <input type="text" id="list-type-custom" placeholder="e.g. Hospital, Probate, Wholesalers Network" class="ocu-input" style="display:none;margin-top:6px" maxlength="80" />
           </div>
           <div style="flex:1;min-width:180px">
             <label class="ocu-form-label">Source</label>
@@ -491,9 +541,10 @@ router.get('/', requireAuth, async (req, res) => {
               <option value="DataSift">DataSift</option>
               <option value="Listsource">Listsource</option>
               <option value="Manual">Manual</option>
+              ${customSourceOptions}
               <option value="__custom__">+ Add custom source…</option>
             </select>
-            <input type="text" id="list-source-custom" placeholder="e.g. County Records, Cook County Auditor" class="ocu-input" style="display:none;margin-top:6px" />
+            <input type="text" id="list-source-custom" placeholder="e.g. County Records, Cook County Auditor" class="ocu-input" style="display:none;margin-top:6px" maxlength="80" />
           </div>
         </div>
       </div>
@@ -549,7 +600,10 @@ router.get('/', requireAuth, async (req, res) => {
       const newName = document.getElementById('new-list-name').value.trim();
       const existingIds = readSelectedListIds();
       const existingNames = readSelectedListNames();
-      const listType = document.getElementById('list-type').value;
+      const typeSelect = document.getElementById('list-type').value;
+      const listType = typeSelect === '__custom__'
+        ? document.getElementById('list-type-custom').value.trim()
+        : typeSelect;
       const sourceSelect = document.getElementById('list-source').value;
       const listSource = sourceSelect === '__custom__'
         ? document.getElementById('list-source-custom').value.trim()
@@ -856,12 +910,16 @@ router.get('/map', requireAuth, (req, res) => {
       ${phoneHTML}
     </div>`;
 
+  // Title + subtitle moved into the topbar via shell({topbarTitle,
+  // topbarSubtitle}) so the body starts with content. Back-link stays
+  // inline above the main column-mapping form. The list-type / template
+  // badges still live below the back-link because they're tied to the
+  // import session, not the page identity.
   res.send(shell('Map Columns', `
-    <div class="ocu-page-header" style="align-items:flex-start">
+    <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:14px;margin-bottom:14px">
       <div style="flex:1;min-width:0">
-        <div style="margin-bottom:6px"><a href="/import/property" class="ocu-text-3" style="font-size:13px;text-decoration:none">← Back</a></div>
-        <h1 class="ocu-page-title">Map columns</h1>
-        <div class="ocu-page-subtitle" id="file-info">Loading…</div>
+        <div style="margin-bottom:8px"><a href="/import/property" class="ocu-text-3" style="font-size:13px;text-decoration:none">← Back</a></div>
+        <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap" id="file-info">Loading…</div>
         <div style="display:flex;gap:8px;align-items:center;margin-top:8px;flex-wrap:wrap">
           <div id="list-badge" class="ocu-pill ocu-pill-good" style="display:none;align-items:center;gap:6px"></div>
           <div id="template-badge" class="ocu-pill ocu-pill-primary" style="display:none;align-items:center;gap:8px;padding:4px 10px">
@@ -976,7 +1034,10 @@ router.get('/map', requireAuth, (req, res) => {
       window.location.href = '/import/property/preview';
     }
     </script>
-  `, 'upload'));
+  `, 'upload', null, {
+    topbarTitle:    'Map columns',
+    topbarSubtitle: 'Match your CSV columns to Oculah fields, then continue to preview.',
+  }));
 });
 
 // ── STEP 3: Preview ───────────────────────────────────────────────────────────
@@ -1187,6 +1248,12 @@ router.post('/commit', requireAuth, async (req, res) => {
   try {
     const { mapping, filename, listName, listId, listType, listSource, offset, batchSize } = req.body;
     if (!mapping) return res.status(400).json({ error: 'Missing mapping.' });
+
+    // Persist user-typed custom list types / sources to the per-tenant
+    // catalog so they show up pre-populated in future imports. Built-in
+    // values (Third party / Government list / PropStream / etc.) are
+    // skipped — only NEW labels enter the table. Best-effort.
+    await _persistCustomCatalog(req.tenantId, listType, listSource).catch(() => {});
     // 2026-04-21 Feature 8(a): import-mode whitelist; defaults to the safe
     // "add + update" behavior Loki has always used if client omits the field.
     const VALID_IMPORT_MODES = ['add_and_update', 'add_only', 'update_only'];
@@ -1816,6 +1883,9 @@ router.post('/start-job', requireAuth, async (req, res) => {
   try {
     const { mapping, filename, listName, listId, listType, listSource } = req.body;
     if (!mapping) return res.status(400).json({ error: 'Missing mapping.' });
+
+    // Same persistence as /commit — saves any user-typed custom values.
+    await _persistCustomCatalog(req.tenantId, listType, listSource).catch(() => {});
 
     // 2026-04-21 Feature 8(a): whitelist the 3 valid import modes. Anything
     // else (including undefined) falls back to the safe default. Server-side
