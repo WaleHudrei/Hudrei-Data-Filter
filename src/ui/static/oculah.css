@@ -364,6 +364,13 @@
   top: 0;
   z-index: 10;
 }
+.ocu-topbar-title {
+  font-size: 22px;
+  font-weight: 700;
+  color: var(--ocu-text-1);
+  letter-spacing: -0.01em;
+  line-height: 1.2;
+}
 
 .ocu-search {
   background: var(--ocu-surface);

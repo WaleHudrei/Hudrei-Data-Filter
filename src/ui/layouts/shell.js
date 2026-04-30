@@ -76,6 +76,11 @@ function shell(opts = {}) {
     badges = {},
     searchPlaceholder = 'Search records, owners, addresses…',
     extraHead = '',
+    // Optional in-topbar page title. Pages that pass this should also drop
+    // their own large H1 from the body so the heading isn't duplicated.
+    // Currently used only by the Dashboard — opt-in per page to avoid a
+    // wholesale UX change.
+    topbarTitle = '',
   } = opts;
 
   // Top-bar search is only relevant on Records and Owners — every other page
@@ -122,7 +127,7 @@ function shell(opts = {}) {
        small data-table sizes that dominate Oculah pages. Includes the
        400-700 weight range we use across the design tokens. -->
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="/oculah-static/oculah.css?v=21">
+  <link rel="stylesheet" href="/oculah-static/oculah.css?v=22">
   ${extraHead}
 </head>
 <body class="ocu">
@@ -172,7 +177,7 @@ function shell(opts = {}) {
 
   <main class="ocu-main">
     <div class="ocu-topbar">
-      <div></div>
+      <div class="ocu-topbar-title">${topbarTitle ? escHTML(topbarTitle) : ''}</div>
       <div style="display:flex;align-items:center;gap:8px">
         ${showTopSearch ? `
         <form method="GET" action="${searchAction}" class="ocu-search-form" role="search">
