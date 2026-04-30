@@ -22,11 +22,13 @@
      Visual-overhaul pass (April 30, 2026): darker text tokens, stronger
      borders, more visual anchoring. Typography moved to Inter for higher
      legibility at data-table sizes. Pills below now use saturated tones. */
-  --ocu-bg:             #FFFFFF;        /* card / input white — contrast surface */
-  --ocu-page-bg:        #EBF0F7;        /* main content area — soft cool blue-grey,
-                                           slightly more blue than #F4F6FA so the
-                                           page surface feels cooler. Easy nudge
-                                           tonight: +1 blue, -1 green/red */
+  --ocu-bg:             #FFFFFF;        /* white — used by inputs, table-wraps,
+                                           topbar inputs, etc. */
+  --ocu-page-bg:        #EBF0F7;        /* main content area — cool blue-grey */
+  --ocu-card-bg:        #F4F6FA;        /* cards sit on top of the cooler page
+                                           in a slightly warmer grey, for the
+                                           layered "page on a desk, cards on
+                                           the page" look */
   --ocu-surface:        #F7F8FA;
   --ocu-surface-2:      #EEF0F3;
   --ocu-border:         #D7DBE0;        /* was #E5E7EB — bolstered for anchoring */
@@ -532,7 +534,7 @@
 
 /* ─── Cards ─────────────────────────────────────────────────────────────── */
 .ocu-card {
-  background: var(--ocu-bg);
+  background: var(--ocu-card-bg);
   border: 1px solid var(--ocu-border);
   border-radius: var(--ocu-radius-lg);
   padding: 22px 24px;
