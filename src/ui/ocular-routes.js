@@ -768,6 +768,39 @@ router.get('/upload', requireAuth, async (req, res) => {
   }
 });
 
+// ─── /ocular/filtration — Ported Loki filtration UI in the Ocular shell ──
+// Single-page interactive flow: campaign + CSV → mapping → results.
+// Reuses POST /upload/filter/parse + /upload/filter/process from
+// src/routes/upload-routes.js, plus /memory/* and /download/* from server.js.
+router.get('/filtration', requireAuth, async (req, res) => {
+  try {
+    const { filtrationPage } = require('./pages/filtration');
+    // Pull a snapshot of the in-memory filtration state for the header card.
+    // loadMemory is exposed via app.locals so we don't have to re-import Redis.
+    let memSize = 0, listsCount = 0, redisConnected = false;
+    try {
+      const loadMemory = req.app.locals.loadMemory;
+      if (typeof loadMemory === 'function') {
+        const memory = await loadMemory();
+        memSize = Object.keys(memory || {}).length;
+        const listSet = new Set(Object.keys(memory || {}).map(k => k.split('||')[0]));
+        listsCount = listSet.size;
+        redisConnected = memSize > 0 || !!process.env.REDIS_URL;
+      }
+    } catch (_) { /* non-fatal — render with zeros */ }
+
+    res.send(filtrationPage({
+      user: await getUser(req),
+      memSize,
+      listsCount,
+      redisConnected,
+    }));
+  } catch (e) {
+    console.error('[ocular/filtration]', e);
+    res.status(500).send('Error loading filtration page: ' + e.message);
+  }
+});
+
 // ─── /ocular/campaigns — Campaigns list ────────────────────────────────────
 router.get('/campaigns', requireAuth, async (req, res) => {
   try {

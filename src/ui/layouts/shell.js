@@ -20,6 +20,7 @@ const NAV = [
   ]},
   { section: 'Operations', items: [
     { id: 'upload',        href: '/ocular/upload',     label: 'Upload',        icon: 'upload' },
+    { id: 'filtration',    href: '/ocular/filtration', label: 'List Filtration', icon: 'filter' },
     { id: 'activity',      href: '/ocular/activity',   label: 'Activity',      icon: 'activity' },
     { id: 'list-registry', href: '/ocular/lists/types', label: 'List Registry', icon: 'layers', badge: 'overdue-count' },
   ]},
@@ -37,6 +38,7 @@ const ICONS = {
   phone:    '<path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6 19.79 19.79 0 0 1-3.07-8.67A2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72 12.84 12.84 0 0 0 .7 2.81 2 2 0 0 1-.45 2.11L8.09 9.91a16 16 0 0 0 6 6l1.27-1.27a2 2 0 0 1 2.11-.45 12.84 12.84 0 0 0 2.81.7A2 2 0 0 1 22 16.92z"/>',
   list:     '<line x1="8" y1="6" x2="21" y2="6"/><line x1="8" y1="12" x2="21" y2="12"/><line x1="8" y1="18" x2="21" y2="18"/><line x1="3" y1="6" x2="3.01" y2="6"/><line x1="3" y1="12" x2="3.01" y2="12"/><line x1="3" y1="18" x2="3.01" y2="18"/>',
   upload:   '<path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/>',
+  filter:   '<polygon points="22 3 2 3 10 12.46 10 19 14 21 14 12.46 22 3"/>',
   activity: '<path d="M22 12h-4l-3 9L9 3l-3 9H2"/>',
   layers:   '<path d="M12 2 2 7l10 5 10-5-10-5zM2 17l10 5 10-5M2 12l10 5 10-5"/>',
   shield:   '<path d="M12 2L4 5v6c0 5 3.5 9 8 11 4.5-2 8-6 8-11V5l-8-3z"/><line x1="4.5" y1="4.5" x2="19.5" y2="19.5"/>',
