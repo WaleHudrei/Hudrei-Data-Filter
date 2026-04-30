@@ -71,7 +71,9 @@
   /* Sidebar dimensions */
   --ocu-sidebar-w: 240px;
   --ocu-sidebar-w-collapsed: 64px;
-  --ocu-topbar-h: 60px;
+  --ocu-topbar-h: 76px;   /* matches .ocu-sidebar-header min-height so the
+                             topbar title (e.g. "Dashboard") sits on the
+                             same baseline as the OCULAH logo word */
 }
 
 /* ─── Reset (scoped to .ocu container so old Loki UI isn't affected) ───── */
