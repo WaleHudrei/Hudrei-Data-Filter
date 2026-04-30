@@ -103,10 +103,14 @@ function recordsList(data = {}) {
 
   // Top-bar layout: filters bar full-width on top, then chips, then table.
   const body = `
-    <div class="ocu-records-header">
+    <div class="ocu-records-header" style="display:flex;align-items:flex-start;justify-content:space-between;flex-wrap:wrap;gap:14px">
       <div>
         <h1 class="ocu-records-title">Records</h1>
         <div class="ocu-records-subtitle">${fmtNum(total)} ${total === 1 ? 'property' : 'properties'}</div>
+      </div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
+        <a href="/records/_duplicates" class="ocu-btn ocu-btn-secondary">Merge duplicates</a>
+        <a href="/records/_distress" class="ocu-btn ocu-btn-secondary">Recompute distress</a>
       </div>
     </div>
 

@@ -103,7 +103,7 @@ function campaignsList(data = {}) {
         <div class="ocu-page-subtitle">Track call/SMS campaigns and their results</div>
       </div>
       <div>
-        <a href="/campaigns/new" class="ocu-btn ocu-btn-primary">+ New campaign</a>
+        <a href="/oculah/campaigns/new" class="ocu-btn ocu-btn-primary">+ New campaign</a>
       </div>
     </div>
 

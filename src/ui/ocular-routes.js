@@ -57,16 +57,36 @@ router.get('/dashboard', requireAuth, async (req, res) => {
     // Each query is simple enough to run from this handler; we'll extract
     // them into a dashboard-stats service if it grows.
     const t = req.tenantId;
+
+    // Dashboard-snapshots table — created lazily so older deploys aren't blocked.
+    // Used for week-over-week deltas (e.g. burning-leads %). One row per
+    // (tenant_id, snapshot_date). Today's snapshot is upserted on dashboard
+    // load below, so historical comparisons accumulate naturally. No cron
+    // required — the dashboard is hit often enough by operators.
+    await query(`
+      CREATE TABLE IF NOT EXISTS dashboard_snapshots (
+        tenant_id      INT NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+        snapshot_date  DATE NOT NULL,
+        burning_count  INT NOT NULL DEFAULT 0,
+        owners_count   INT NOT NULL DEFAULT 0,
+        records_count  INT NOT NULL DEFAULT 0,
+        created_at     TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        PRIMARY KEY (tenant_id, snapshot_date)
+      );
+    `).catch(() => { /* concurrent CREATE on first hit — harmless */ });
+
     const [
       totalRecordsRes,
       totalOwnersRes,
       withPhonesRes,
       multiOwnersRes,
       thisWeekRes,
+      ownersThisWeekRes,
       distressRes,
       activeListsRes,
       registryRes,
       topListsRes,
+      historicalBurningRes,
     ] = await Promise.all([
       query(`SELECT COUNT(*)::int AS n FROM properties WHERE tenant_id = $1`, [t]),
       query(`SELECT COUNT(DISTINCT contact_id)::int AS n FROM property_contacts WHERE tenant_id = $1 AND primary_contact = true`, [t]),
@@ -88,6 +108,15 @@ router.get('/dashboard', requireAuth, async (req, res) => {
                 GROUP BY contact_id HAVING COUNT(*) > 1
              ) t`, [t]),
       query(`SELECT COUNT(*)::int AS n FROM properties WHERE tenant_id = $1 AND created_at > NOW() - INTERVAL '7 days'`, [t]),
+      // Gap-fix #1 (owners-this-week): mirror the records-this-week query
+      // but count distinct primary contact_ids created in the last 7 days.
+      query(`
+        SELECT COUNT(DISTINCT contact_id)::int AS n
+          FROM property_contacts
+         WHERE tenant_id = $1
+           AND primary_contact = true
+           AND created_at > NOW() - INTERVAL '7 days'
+      `, [t]).catch(() => ({ rows: [{ n: 0 }] })),
       query(`
         SELECT
           COUNT(*) FILTER (WHERE distress_band = 'burning')::int AS burning,
@@ -132,19 +161,55 @@ router.get('/dashboard', requireAuth, async (req, res) => {
           GROUP BY l.id, l.list_name
           ORDER BY count DESC
           LIMIT 5`, [t]),
+      // Gap-fix #4 (burning-leads delta): pull the snapshot from ~7 days ago.
+      // We pick the snapshot closest to (today - 7 days) within a +/-3-day
+      // window so a missed-day still resolves. Returns an empty rowset if no
+      // historical snapshot exists yet, in which case we render delta = null.
+      query(`
+        SELECT burning_count
+          FROM dashboard_snapshots
+         WHERE tenant_id = $1
+           AND snapshot_date BETWEEN (CURRENT_DATE - INTERVAL '10 days')::date
+                                 AND (CURRENT_DATE - INTERVAL '4 days')::date
+         ORDER BY ABS(EXTRACT(EPOCH FROM (snapshot_date - (CURRENT_DATE - INTERVAL '7 days')::date)))
+         LIMIT 1
+      `, [t]).catch(() => ({ rows: [] })),
     ]);
 
-    const totalRecords = totalRecordsRes.rows[0]?.n || 0;
-    const totalOwners  = totalOwnersRes.rows[0]?.n || 0;
-    const withPhones   = withPhonesRes.rows[0]?.n || 0;
-    const multiOwners  = multiOwnersRes.rows[0]?.n || 0;
-    const thisWeek     = thisWeekRes.rows[0]?.n || 0;
-    const distress     = distressRes.rows[0] || { burning: 0, hot: 0, warm: 0, cold: 0 };
-    const activeLists  = activeListsRes.rows[0]?.n || 0;
-    const reg          = registryRes.rows[0] || { total: 0, overdue: 0, due_week: 0 };
+    const totalRecords    = totalRecordsRes.rows[0]?.n || 0;
+    const totalOwners     = totalOwnersRes.rows[0]?.n || 0;
+    const withPhones      = withPhonesRes.rows[0]?.n || 0;
+    const multiOwners     = multiOwnersRes.rows[0]?.n || 0;
+    const thisWeek        = thisWeekRes.rows[0]?.n || 0;
+    const ownersThisWeek  = ownersThisWeekRes.rows[0]?.n || 0;
+    const distress        = distressRes.rows[0] || { burning: 0, hot: 0, warm: 0, cold: 0 };
+    const activeLists     = activeListsRes.rows[0]?.n || 0;
+    const reg             = registryRes.rows[0] || { total: 0, overdue: 0, due_week: 0 };
 
     const phoneCoveragePct = totalRecords > 0 ? Math.round((withPhones / totalRecords) * 100) : 0;
     const multiOwnersPct   = totalOwners  > 0 ? +(multiOwners / totalOwners * 100).toFixed(1) : 0;
+
+    // Burning-leads delta: % change from ~7 days ago.
+    // Show null when no historical baseline exists yet (first 7 days post-deploy)
+    // so the dashboard renders cleanly instead of "+∞%" or "0%" misleading copy.
+    const histBurning = historicalBurningRes.rows[0]?.burning_count;
+    let burningDeltaPct = null;
+    if (histBurning != null && histBurning > 0) {
+      burningDeltaPct = Math.round(((distress.burning - histBurning) / histBurning) * 100);
+    } else if (histBurning === 0 && distress.burning > 0) {
+      burningDeltaPct = 100; // anything from zero is +100%, not +∞
+    }
+
+    // Upsert today's snapshot (best-effort — non-fatal if it fails).
+    // Done after the SELECTs so today's row never participates in its own delta.
+    query(`
+      INSERT INTO dashboard_snapshots (tenant_id, snapshot_date, burning_count, owners_count, records_count)
+      VALUES ($1, CURRENT_DATE, $2, $3, $4)
+      ON CONFLICT (tenant_id, snapshot_date)
+        DO UPDATE SET burning_count = EXCLUDED.burning_count,
+                      owners_count  = EXCLUDED.owners_count,
+                      records_count = EXCLUDED.records_count
+    `, [t, distress.burning, totalOwners, totalRecords]).catch(() => { /* best-effort */ });
 
     // Activity feed — for now, derive recent rows from properties + import jobs.
     // Will be replaced with a proper activity log later.
@@ -195,8 +260,8 @@ router.get('/dashboard', requireAuth, async (req, res) => {
         multiOwners,
         activeLists,
         recordsThisWeek: thisWeek,
-        ownersThisWeek: null, // TODO: not currently tracked
-        burningDeltaPct: null, // TODO: needs week-over-week table
+        ownersThisWeek,                         // gap-fix #1
+        burningDeltaPct,                        // gap-fix #4
         phoneCoveragePct,
         multiOwnersPct,
         listsOverdue: reg.overdue,
@@ -827,6 +892,49 @@ router.get('/filtration', requireAuth, async (req, res) => {
 });
 
 // ─── /oculah/campaigns — Campaigns list ────────────────────────────────────
+// ─── /oculah/campaigns/new — new campaign form (gap-fix #5) ──────────────
+// Mirrors legacy /campaigns/new POST handler in server.js byte-for-byte.
+// Reuses campaigns.createCampaign() + campaigns.addListType() from the
+// PROTECTED campaigns module — UNCHANGED.
+router.get('/campaigns/new', requireAuth, async (req, res) => {
+  try {
+    const campaigns = require('../campaigns');
+    const { campaignNewPage } = require('./pages/campaign-new');
+    await campaigns.initCampaignSchema();
+    const listTypes = await campaigns.getListTypes(req.tenantId);
+    res.send(campaignNewPage({
+      user: await getUser(req),
+      listTypes,
+      error: req.query.error || null,
+    }));
+  } catch (e) {
+    console.error('[oculah/campaigns/new GET]', e);
+    res.status(500).send('Error loading new campaign page: ' + e.message);
+  }
+});
+
+router.post('/campaigns/new', requireAuth, async (req, res) => {
+  try {
+    const campaigns = require('../campaigns');
+    await campaigns.initCampaignSchema();
+    const customType = String(req.body.custom_list_type || '').trim();
+    const body = { ...req.body, created_by: 'team' };
+    if (body.list_type === '__new__' || customType) {
+      if (!customType) {
+        return res.redirect('/oculah/campaigns/new?error=' + encodeURIComponent('Enter a new list type or pick one from the dropdown'));
+      }
+      body.list_type = customType;
+      await campaigns.addListType(req.tenantId, customType);
+    }
+    delete body.custom_list_type;
+    await campaigns.createCampaign({ ...body, tenantId: req.tenantId });
+    res.redirect('/oculah/campaigns');
+  } catch (e) {
+    console.error('[oculah/campaigns/new POST]', e);
+    res.redirect('/oculah/campaigns/new?error=' + encodeURIComponent(e.message));
+  }
+});
+
 router.get('/campaigns', requireAuth, async (req, res) => {
   try {
     const { campaignsList } = require('./pages/campaigns-list');
@@ -930,8 +1038,7 @@ router.post('/campaigns/:id(\\d+)/new-round', requireAuth, async (req, res) => {
 });
 
 
-// ─── Campaign upload workflows — thin Oculah wrappers over campaigns.* ───
-// These mirror the legacy /campaigns/:id/* handlers in server.js byte-for-byte
+// ─── Campaign upload workflows — thin Oculah wrappers over campaigns.* ───// These mirror the legacy /campaigns/:id/* handlers in server.js byte-for-byte
 // in terms of business logic. Only difference: redirect target is the Ocular
 // campaign detail page so users stay in the new shell.
 //
