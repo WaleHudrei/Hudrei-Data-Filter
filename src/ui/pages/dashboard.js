@@ -9,7 +9,7 @@ const { card }           = require('../components/card');
 const { distressRings }  = require('../components/distress-rings');
 const { activityFeed }   = require('../components/activity-feed');
 const { topLists }       = require('../components/top-lists');
-const { escHTML, fmtNum, fmtRelative } = require('../_helpers');
+const { escHTML, fmtNum } = require('../_helpers');
 
 /**
  * Render the dashboard page.
@@ -135,18 +135,11 @@ function dashboard(data = {}) {
   });
 
   // ─── Page body ────────────────────────────────────────────────────────
-  const lastUpdatedStr = data.lastUpdatedAt
-    ? 'Last updated ' + fmtRelative(data.lastUpdatedAt)
-    : 'Live';
-
-  // Page heading + subtitle are rendered inside the topbar (via shell({
-  // topbarTitle, topbarSubtitle })) so the body just keeps the live-updated
-  // indicator on its own row. Avoids duplicating the title and reclaims
-  // vertical space the topbar was wasting.
+  // 2026-04-30: removed the "Last updated 0s ago" / "Live" indicator and
+  // its surrounding row. The polling logic (every-30s refresh) still runs;
+  // the visible indicator was just visual noise in a band that pushed the
+  // KPI strip down. Body now starts directly with the KPI row.
   const body = `
-    <div class="ocu-page-header" style="margin-top:0;justify-content:flex-end">
-      <div class="ocu-last-updated">${escHTML(lastUpdatedStr)}</div>
-    </div>
 
     ${kpiRow}
 

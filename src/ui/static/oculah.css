@@ -514,6 +514,17 @@
   overflow: hidden;
   text-overflow: ellipsis;
 }
+/* Back-link variant when topbarTitleHTML hosts a "← Foo" nav link
+   (property detail page does this). Override the title's font-weight
+   800 so the link reads as navigation, not a heading. */
+.ocu-topbar-title .ocu-topbar-backlink {
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--ocu-text-3);
+  text-decoration: none;
+  letter-spacing: 0;
+}
+.ocu-topbar-title .ocu-topbar-backlink:hover { color: var(--ocu-text-1); }
 
 .ocu-search {
   background: var(--ocu-surface);

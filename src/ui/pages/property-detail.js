@@ -333,11 +333,16 @@ function propertyDetail(data) {
     : 'Property #' + (p.id || '');
 
   return shell({
-    title:       titlePart,
+    title:           titlePart,
+    // Back-link to Records list lives in the topbar slot. Rendered as a
+    // small text link (not the bold page-title style) so it visually reads
+    // as a navigation aid instead of competing with the property address
+    // heading inside the body.
+    topbarTitleHTML: '<a href="/oculah/records" class="ocu-detail-backlink ocu-topbar-backlink">← All records</a>',
     body,
-    activePage:  'records',
-    user:        data.user || { name: 'User', initials: '?' },
-    badges:      data.badges || {},
+    activePage:      'records',
+    user:            data.user || { name: 'User', initials: '?' },
+    badges:          data.badges || {},
     // 2026-04-29 Tier-3 follow-up: was extraBodyEnd, but shell() only honors
     // extraHead. The script silently never loaded, so every onclick handler
     // wired up by detail-actions.js was dead — phone-tag-add/remove,

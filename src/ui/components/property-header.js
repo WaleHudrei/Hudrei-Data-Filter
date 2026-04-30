@@ -59,9 +59,11 @@ function propertyHeader(p = {}) {
     + (p.zip_code ? ' ' + escHTML(p.zip_code) : '');
   const fullAddr = addrLine1 + (addrLine2 ? ', ' + addrLine2 : '');
 
+  // 2026-04-30: back-link "← All records" moved into the topbar (rendered
+  // via shell({topbarTitleHTML})). The body now starts directly with the
+  // address heading, freeing the row of vertical space the link occupied.
   return `
     <div class="ocu-detail-header">
-      <a href="/oculah/records" class="ocu-detail-backlink">← All records</a>
       <div class="ocu-detail-header-main">
         <div class="ocu-detail-title-block">
           <h1 class="ocu-detail-title" title="${fullAddr}">${addrLine1 || '(no address)'}</h1>
