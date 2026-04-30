@@ -106,7 +106,7 @@ function recordsFilters(opts = {}) {
   // server falls back to desc anyway, so it was visually identical to
   // High → Low.
   const sortControl = `
-    <form method="GET" action="/ocular/records" class="ocu-sort-form">
+    <form method="GET" action="/oculah/records" class="ocu-sort-form">
       ${sortPassthroughHTML}
       <input type="hidden" name="sort" value="distress_score">
       <label class="ocu-sort-label" for="ocu-sort-distress">Distress</label>
@@ -132,7 +132,7 @@ function recordsFilters(opts = {}) {
       </button>
       ${sortControl}
 
-      <form id="ocu-filter-panel" class="ocu-filter-panel" method="GET" action="/ocular/records" hidden>
+      <form id="ocu-filter-panel" class="ocu-filter-panel" method="GET" action="/oculah/records" hidden>
         <div class="ocu-filter-grid">
 
           <div class="ocu-filter">
@@ -330,7 +330,7 @@ function recordsFilters(opts = {}) {
         </div>
 
         <div class="ocu-filter-actions">
-          <a href="/ocular/records" class="ocu-filters-clear">Clear all</a>
+          <a href="/oculah/records" class="ocu-filters-clear">Clear all</a>
           <button type="submit" class="ocu-btn ocu-btn-primary">Apply filters</button>
         </div>
       </form>

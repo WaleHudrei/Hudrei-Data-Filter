@@ -38,7 +38,7 @@ function authShell(title, bodyHtml, opts = {}) {
 <html><head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>${escHTML(title)} — Ocular</title>
+<title>${escHTML(title)} — Oculah</title>
 <style>
   *{box-sizing:border-box;margin:0;padding:0}
   body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;background:#f5f4f0;display:flex;align-items:center;justify-content:center;min-height:100vh;padding:24px;color:#1a1a1a}
@@ -68,7 +68,7 @@ function authShell(title, bodyHtml, opts = {}) {
 </head><body>
 <div class="auth-box">
   <div class="brand">
-    <div class="brand-name">Ocular</div>
+    <div class="brand-name">Oculah</div>
     <div class="brand-sub">Real estate data ops</div>
   </div>
   ${bodyHtml}
@@ -162,13 +162,13 @@ const _resetPwRateLimit  = _makeAuthRateLimit(60 * 60 * 1000, 10);
 // ─────────────────────────────────────────────────────────────────────────────
 router.get('/', (req, res, next) => {
   if (req.session && req.session.authenticated && req.session.tenantId) {
-    return res.redirect('/ocular/dashboard');
+    return res.redirect('/oculah/dashboard');
   }
   res.send(`<!DOCTYPE html>
 <html><head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Ocular — Real estate data ops</title>
+<title>Oculah — Real estate data ops</title>
 <style>
   *{box-sizing:border-box;margin:0;padding:0}
   body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;background:#f5f4f0;color:#1a1a1a;line-height:1.55}
@@ -204,7 +204,7 @@ router.get('/', (req, res, next) => {
 </style>
 </head><body>
 <header class="top">
-  <div class="brand">Ocular</div>
+  <div class="brand">Oculah</div>
   <nav class="top-actions">
     <a href="/login">Sign in</a>
     <a class="btn" href="/signup">Get started</a>
@@ -213,7 +213,7 @@ router.get('/', (req, res, next) => {
 
 <section class="hero">
   <h1>Real estate cold-call data, <span class="accent">cleaned and ready</span>.</h1>
-  <p>Ocular ingests your dialer exports, applies your SOP filtration rules, and gives you back two CSVs: one for REISift, one for Readymode. Cumulative memory across uploads. No spreadsheets, no copy-paste.</p>
+  <p>Oculah ingests your dialer exports, applies your SOP filtration rules, and gives you back two CSVs: one for REISift, one for Readymode. Cumulative memory across uploads. No spreadsheets, no copy-paste.</p>
   <div class="cta">
     <a class="primary" href="/signup">Create your free workspace</a>
     <a class="secondary" href="/login">I already have an account</a>
@@ -248,7 +248,7 @@ router.get('/', (req, res, next) => {
 
 // ── GET /signup ──────────────────────────────────────────────────────────────
 router.get('/signup', (req, res) => {
-  if (req.session && req.session.authenticated) return res.redirect('/ocular/dashboard');
+  if (req.session && req.session.authenticated) return res.redirect('/oculah/dashboard');
   const err  = req.query.err  ? `<div class="error">${escHTML(req.query.err)}</div>` : '';
   const e    = escHTML(req.query.email || '');
   const n    = escHTML(req.query.name  || '');
@@ -265,7 +265,7 @@ router.get('/signup', (req, res) => {
       <div class="field">
         <label for="workspace">Workspace name</label>
         <input id="workspace" type="text" name="workspace" value="${w}" required maxlength="60" placeholder="Your company">
-        <div class="hint">Shows up in your Ocular sidebar. Change later in Settings.</div>
+        <div class="hint">Shows up in your Oculah sidebar. Change later in Settings.</div>
       </div>
       <div class="field">
         <label for="email">Work email</label>
@@ -459,7 +459,7 @@ router.get('/verify-email', async (req, res) => {
     req.session.role          = u.role;
     delete req.session.pendingUserId;
 
-    res.redirect('/ocular/dashboard?welcome=1');
+    res.redirect('/oculah/dashboard?welcome=1');
   } catch (e) {
     console.error('[verify-email GET]', e);
     return res.send(authShell('Something went wrong', `
@@ -589,7 +589,7 @@ async function _clearLoginAttempts(ip, email) {
 // ── GET /login ───────────────────────────────────────────────────────────────
 router.get('/login', (req, res) => {
   if (req.session && req.session.authenticated && req.session.tenantId) {
-    return res.redirect('/ocular/dashboard');
+    return res.redirect('/oculah/dashboard');
   }
   const err   = req.query.err  ? `<div class="error">${escHTML(req.query.err)}</div>` : '';
   const info  = req.query.info ? `<div class="info">${escHTML(req.query.info)}</div>` : '';
@@ -671,7 +671,7 @@ router.post('/login', _loginRateLimit, async (req, res) => {
     // Best-effort last_login_at; non-fatal if it errors.
     query('UPDATE users SET last_login_at = NOW() WHERE id = $1', [u.id]).catch(() => {});
 
-    res.redirect('/ocular/dashboard');
+    res.redirect('/oculah/dashboard');
   } catch (e) {
     console.error('[login POST]', e);
     return res.redirect('/login?err=' + encodeURIComponent('Something went wrong. Please try again.'));

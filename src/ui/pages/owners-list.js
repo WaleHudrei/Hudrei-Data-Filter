@@ -5,7 +5,7 @@
 // with a property link, sorted by portfolio size (most properties first by
 // default), with quick filters and search.
 //
-// Each row clicks through to /ocular/owners/:id (the detail page).
+// Each row clicks through to /oculah/owners/:id (the detail page).
 // ═══════════════════════════════════════════════════════════════════════════
 const { shell }   = require('../layouts/shell');
 const { card }    = require('../components/card');
@@ -48,9 +48,9 @@ function ownerRow(o) {
   // visually screamed "misaligned table" even though TH and TD x-positions
   // agreed exactly.
   return `
-    <tr class="ocu-tr-clickable" onclick="window.location='/ocular/owners/${o.id}'">
+    <tr class="ocu-tr-clickable" onclick="window.location='/oculah/owners/${o.id}'">
       <td class="ocu-td">
-        <div class="ocu-td-primary"><a href="/ocular/owners/${o.id}" class="ocu-link">${escHTML(name)}</a></div>
+        <div class="ocu-td-primary"><a href="/oculah/owners/${o.id}" class="ocu-link">${escHTML(name)}</a></div>
         ${mailing ? `<div class="ocu-td-meta">${escHTML(mailing)}</div>` : ''}
       </td>
       <td class="ocu-td">${ownerTypeBadge(o.owner_type)}</td>
@@ -100,7 +100,7 @@ function ownersList(data = {}) {
     </div>`;
 
   const filterBar = `
-    <form method="GET" action="/ocular/owners" class="ocu-card" style="padding:12px 14px;margin-bottom:14px;display:grid;grid-template-columns:2fr 1fr 1fr auto;gap:10px;align-items:end">
+    <form method="GET" action="/oculah/owners" class="ocu-card" style="padding:12px 14px;margin-bottom:14px;display:grid;grid-template-columns:2fr 1fr 1fr auto;gap:10px;align-items:end">
       <div>
         <label class="ocu-form-label">Search</label>
         <input type="text" name="q" value="${escHTML(filters.q || '')}" placeholder="Name or city" class="ocu-input" />
@@ -120,7 +120,7 @@ function ownersList(data = {}) {
       </div>
       <div style="display:flex;gap:6px">
         <button type="submit" class="ocu-btn ocu-btn-primary">Filter</button>
-        <a href="/ocular/owners" class="ocu-btn ocu-btn-ghost">Reset</a>
+        <a href="/oculah/owners" class="ocu-btn ocu-btn-ghost">Reset</a>
       </div>
     </form>`;
 

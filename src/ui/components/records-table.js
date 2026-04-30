@@ -3,7 +3,7 @@
 //
 // Phase 1: read-only, click row to view detail.
 // Phase 2 (2026-04-25): added checkbox column for bulk selection. Selection
-// state is managed by /ocular-static/records-bulk.js — this component just
+// state is managed by /oculah-static/records-bulk.js — this component just
 // renders the checkboxes with data-id attributes.
 const { escHTML, fmtNum } = require('../_helpers');
 
@@ -96,16 +96,16 @@ function recordsTable(opts = {}) {
     // to the owner detail page. Wrap in <a> only when we have a contact_id
     // (some properties have no linked contact yet — fall back to plain
     // dash). stopPropagation on the click so we don't ALSO trigger the
-    // row's own click-through to /ocular/records/:id.
+    // row's own click-through to /oculah/records/:id.
     // 2026-04-29 Option A: when a property has NO contact, render an
     // "+ Add owner" link that takes the operator to the property detail
     // page where the inline create form is. No auto-created placeholder
     // rows — the operator chooses when to add one.
     const ownerCell = r.contact_id && ownerName
-      ? `<a href="/ocular/owners/${r.contact_id}" class="ocu-link" onclick="event.stopPropagation()">${ownerName}</a>`
+      ? `<a href="/oculah/owners/${r.contact_id}" class="ocu-link" onclick="event.stopPropagation()">${ownerName}</a>`
       : (ownerName
           ? ownerName
-          : `<a href="/ocular/records/${r.id}" class="ocu-add-owner-link" onclick="event.stopPropagation()">+ Add owner</a>`);
+          : `<a href="/oculah/records/${r.id}" class="ocu-add-owner-link" onclick="event.stopPropagation()">+ Add owner</a>`);
     const street = escHTML(r.street || '');
     const city = escHTML(r.city || '');
     const state = escHTML(r.state_code || '');

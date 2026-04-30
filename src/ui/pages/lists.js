@@ -27,14 +27,14 @@ function listRow(l) {
   const safeSrc  = attr(l.source);
   return `<tr>
     <td class="ocu-td">
-      <a href="/ocular/records?list_id=${l.id}" class="ocu-link ocu-td-primary">${escHTML(l.list_name)}</a>
+      <a href="/oculah/records?list_id=${l.id}" class="ocu-link ocu-td-primary">${escHTML(l.list_name)}</a>
     </td>
     <td class="ocu-td">${listTypeBadge(l.list_type)}</td>
     <td class="ocu-td ocu-td-text">${l.source ? escHTML(l.source) : '<span class="ocu-text-3">—</span>'}</td>
     <td class="ocu-td ocu-td-num"><span class="ocu-mono">${fmtNum(l.property_count)}</span></td>
     <td class="ocu-td ocu-td-date">${fmtRelative(l.created_at)}</td>
     <td class="ocu-td ocu-td-num" style="white-space:nowrap">
-      <a href="/ocular/records?list_id=${l.id}" class="ocu-btn ocu-btn-secondary">View</a>
+      <a href="/oculah/records?list_id=${l.id}" class="ocu-btn ocu-btn-secondary">View</a>
       <button class="ocu-btn ocu-btn-secondary" onclick="lists_openEdit(${l.id}, ${safeName}, ${safeType}, ${safeSrc})">Edit</button>
       <button class="ocu-btn ocu-btn-secondary" style="color:#c0392b" onclick="lists_openDelete(${l.id}, ${safeName})">Delete</button>
     </td>
@@ -75,7 +75,7 @@ function listsPage(data = {}) {
 
   const hasAnyFilter = !!(filters.q || filters.type || filters.source);
   const filterBar = `
-    <form method="GET" action="/ocular/lists" class="ocu-list-filter-bar" style="margin-bottom:14px">
+    <form method="GET" action="/oculah/lists" class="ocu-list-filter-bar" style="margin-bottom:14px">
       <div class="ocu-list-search">
         <label class="ocu-form-label">Search lists</label>
         <input type="search" name="q" value="${escHTML(filters.q || '')}" placeholder="List name…" class="ocu-input" />
@@ -97,7 +97,7 @@ function listsPage(data = {}) {
         </div>
         <div class="ocu-list-filter-actions">
           <button type="submit" class="ocu-btn ocu-btn-primary">Filter</button>
-          ${hasAnyFilter ? `<a href="/ocular/lists" class="ocu-btn ocu-btn-ghost">Reset</a>` : ''}
+          ${hasAnyFilter ? `<a href="/oculah/lists" class="ocu-btn ocu-btn-ghost">Reset</a>` : ''}
         </div>
       </div>
     </form>`;
@@ -130,7 +130,7 @@ function listsPage(data = {}) {
           <div class="ocu-modal-title">Edit list</div>
           <button class="ocu-modal-close" onclick="lists_closeEdit()">×</button>
         </div>
-        <form method="POST" action="/ocular/lists/edit" id="lists-edit-form">
+        <form method="POST" action="/oculah/lists/edit" id="lists-edit-form">
           <input type="hidden" name="id" id="edit-list-id" />
           <div style="margin-bottom:12px">
             <label class="ocu-form-label">List name</label>
@@ -172,7 +172,7 @@ function listsPage(data = {}) {
           <br><br>
           This cannot be undone.
         </p>
-        <form method="POST" action="/ocular/lists/delete" id="lists-delete-form">
+        <form method="POST" action="/oculah/lists/delete" id="lists-delete-form">
           <input type="hidden" name="id" id="delete-list-id" />
           <div style="margin-bottom:14px">
             <label class="ocu-form-label">Delete code</label>

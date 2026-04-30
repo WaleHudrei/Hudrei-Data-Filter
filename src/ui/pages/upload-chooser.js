@@ -61,7 +61,7 @@ function uploadChooser(data = {}) {
         <div class="ocu-page-subtitle">What are you uploading today?</div>
       </div>
       <div>
-        <a href="/ocular/activity" class="ocu-btn ocu-btn-secondary">View activity →</a>
+        <a href="/oculah/activity" class="ocu-btn ocu-btn-secondary">View activity →</a>
       </div>
     </div>
 

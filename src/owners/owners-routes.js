@@ -74,9 +74,9 @@ const fmtDateTime = (v) => !v ? '—' : new Date(v).toLocaleString('en-US', { ye
 // ═══════════════════════════════════════════════════════════════════════════════
 // GET /owners/:id — Milestone A redirect to Ocular's owner detail.
 // POST /:id/message stays below — Ocular's detail page can also use it
-// (though Ocular has its own /ocular/owners/:id/message which is preferred).
+// (though Ocular has its own /oculah/owners/:id/message which is preferred).
 // ═══════════════════════════════════════════════════════════════════════════════
-router.get('/:id(\\d+)', requireAuth, (req, res) => res.redirect('/ocular/owners/' + req.params.id));
+router.get('/:id(\\d+)', requireAuth, (req, res) => res.redirect('/oculah/owners/' + req.params.id));
 
 
 // ═══════════════════════════════════════════════════════════════════════════════

@@ -1,6 +1,6 @@
 // ═══════════════════════════════════════════════════════════════════════════
 // ui/ocular-routes.js
-// Routes for the new Ocular UI. Mounted at /ocular/* so the existing
+// Routes for the new Ocular UI. Mounted at /oculah/* so the existing
 // Loki UI keeps working while we migrate one page at a time.
 //
 // This file is a thin orchestration layer:
@@ -26,10 +26,10 @@ function requireAuth(req, res, next) {
   next();
 }
 
-// Note: Ocular CSS is served from server.js at /ocular-static/ocular.css
+// Note: Ocular CSS is served from server.js at /oculah-static/ocular.css
 // (mounted there to avoid double-mount complexity here).
 
-// ─── /ocular/dashboard ─────────────────────────────────────────────────────
+// ─── /oculah/dashboard ─────────────────────────────────────────────────────
 router.get('/dashboard', requireAuth, async (req, res) => {
   try {
     // Fetch all the data the dashboard needs in parallel.
@@ -154,7 +154,7 @@ router.get('/dashboard', requireAuth, async (req, res) => {
     if (activity.length === 0) {
       activity.push({
         dot: 'accent',
-        html: 'Welcome to Ocular. Import a CSV to get started.',
+        html: 'Welcome to Oculah. Import a CSV to get started.',
         time: 'now',
       });
     }
@@ -194,11 +194,11 @@ router.get('/dashboard', requireAuth, async (req, res) => {
     }));
   } catch (e) {
     console.error('[ocular/dashboard]', e);
-    res.status(500).send('Error loading Ocular dashboard: ' + e.message);
+    res.status(500).send('Error loading Oculah dashboard: ' + e.message);
   }
 });
 
-// ─── /ocular/records — Records list page ──────────────────────────────────
+// ─── /oculah/records — Records list page ──────────────────────────────────
 // Phase 2 (2026-04-25): full filter set + bulk action support. Param names
 // match what the old Loki bulk endpoints (/records/bulk-tag, /delete,
 // /remove-from-list, /export) understand, so the bulk action JS can pass
@@ -595,7 +595,7 @@ router.get('/records', requireAuth, async (req, res) => {
   }
 });
 
-// ─── /ocular/records/:id — Property detail page ───────────────────────────
+// ─── /oculah/records/:id — Property detail page ───────────────────────────
 // Read-only view in Ocular. Edit/delete still use old Loki routes via
 // "Edit in Loki" button on the page header. Mounted BEFORE the /records
 // placeholder so the more-specific :id route wins.
@@ -757,7 +757,7 @@ router.get('/records/:id(\\d+)', requireAuth, async (req, res) => {
   }
 });
 
-// ─── /ocular/upload — Upload chooser landing page ─────────────────────────
+// ─── /oculah/upload — Upload chooser landing page ─────────────────────────
 router.get('/upload', requireAuth, async (req, res) => {
   try {
     const { uploadChooser } = require('./pages/upload-chooser');
@@ -768,7 +768,7 @@ router.get('/upload', requireAuth, async (req, res) => {
   }
 });
 
-// ─── /ocular/filtration — Ported Loki filtration UI in the Ocular shell ──
+// ─── /oculah/filtration — Ported Loki filtration UI in the Oculah shell ──
 // Single-page interactive flow: campaign + CSV → mapping → results.
 // Reuses POST /upload/filter/parse + /upload/filter/process from
 // src/routes/upload-routes.js, plus /memory/* and /download/* from server.js.
@@ -796,12 +796,12 @@ router.get('/filtration', requireAuth, async (req, res) => {
       redisConnected,
     }));
   } catch (e) {
-    console.error('[ocular/filtration]', e);
+    console.error('[oculah/filtration]', e);
     res.status(500).send('Error loading filtration page: ' + e.message);
   }
 });
 
-// ─── /ocular/campaigns — Campaigns list ────────────────────────────────────
+// ─── /oculah/campaigns — Campaigns list ────────────────────────────────────
 router.get('/campaigns', requireAuth, async (req, res) => {
   try {
     const { campaignsList } = require('./pages/campaigns-list');
@@ -833,7 +833,7 @@ router.get('/campaigns/:id(\\d+)', requireAuth, async (req, res) => {
     const campaigns = require('../campaigns');
     const filtration = require('../filtration');
     const c = await campaigns.getCampaign(req.tenantId, req.params.id);
-    if (!c) return res.redirect('/ocular/campaigns');
+    if (!c) return res.redirect('/oculah/campaigns');
     try { c.contact_counts = await filtration.getContactStats(req.params.id); }
     catch (_) { c.contact_counts = { total_contacts: 0, total_phones: 0, wrong_phones: 0, nis_phones: 0, lead_contacts: 0 }; }
     res.send(campaignDetail({
@@ -854,9 +854,9 @@ router.post('/campaigns/:id(\\d+)/status', requireAuth, async (req, res) => {
   try {
     const campaigns = require('../campaigns');
     await campaigns.updateCampaignStatus(req.tenantId, req.params.id, req.body.status);
-    res.redirect('/ocular/campaigns/' + req.params.id + '?msg=' + encodeURIComponent('Status updated'));
+    res.redirect('/oculah/campaigns/' + req.params.id + '?msg=' + encodeURIComponent('Status updated'));
   } catch (e) {
-    res.redirect('/ocular/campaigns/' + req.params.id + '?err=' + encodeURIComponent('Failed to update status'));
+    res.redirect('/oculah/campaigns/' + req.params.id + '?err=' + encodeURIComponent('Failed to update status'));
   }
 });
 
@@ -864,9 +864,9 @@ router.post('/campaigns/:id(\\d+)/channel', requireAuth, async (req, res) => {
   try {
     const campaigns = require('../campaigns');
     await campaigns.updateCampaignChannel(req.tenantId, req.params.id, req.body.channel);
-    res.redirect('/ocular/campaigns/' + req.params.id + '?msg=' + encodeURIComponent('Channel updated'));
+    res.redirect('/oculah/campaigns/' + req.params.id + '?msg=' + encodeURIComponent('Channel updated'));
   } catch (e) {
-    res.redirect('/ocular/campaigns/' + req.params.id + '?err=' + encodeURIComponent('Failed to update channel'));
+    res.redirect('/oculah/campaigns/' + req.params.id + '?err=' + encodeURIComponent('Failed to update channel'));
   }
 });
 
@@ -875,11 +875,11 @@ router.post('/campaigns/:id(\\d+)/rename', requireAuth, async (req, res) => {
     const campaigns = require('../campaigns');
     const result = await campaigns.updateCampaignName(req.tenantId, req.params.id, req.body.name);
     if (!result.ok) {
-      return res.redirect('/ocular/campaigns/' + req.params.id + '?err=' + encodeURIComponent(result.error || 'Rename failed'));
+      return res.redirect('/oculah/campaigns/' + req.params.id + '?err=' + encodeURIComponent(result.error || 'Rename failed'));
     }
-    res.redirect('/ocular/campaigns/' + req.params.id + '?msg=' + encodeURIComponent('Campaign renamed'));
+    res.redirect('/oculah/campaigns/' + req.params.id + '?msg=' + encodeURIComponent('Campaign renamed'));
   } catch (e) {
-    res.redirect('/ocular/campaigns/' + req.params.id + '?err=' + encodeURIComponent('Rename failed'));
+    res.redirect('/oculah/campaigns/' + req.params.id + '?err=' + encodeURIComponent('Rename failed'));
   }
 });
 
@@ -887,9 +887,9 @@ router.post('/campaigns/:id(\\d+)/close', requireAuth, async (req, res) => {
   try {
     const campaigns = require('../campaigns');
     await campaigns.closeCampaign(req.tenantId, req.params.id);
-    res.redirect('/ocular/campaigns/' + req.params.id + '?msg=' + encodeURIComponent('Campaign closed'));
+    res.redirect('/oculah/campaigns/' + req.params.id + '?msg=' + encodeURIComponent('Campaign closed'));
   } catch (e) {
-    res.redirect('/ocular/campaigns/' + req.params.id + '?err=' + encodeURIComponent('Failed to close'));
+    res.redirect('/oculah/campaigns/' + req.params.id + '?err=' + encodeURIComponent('Failed to close'));
   }
 });
 
@@ -898,13 +898,13 @@ router.post('/campaigns/:id(\\d+)/new-round', requireAuth, async (req, res) => {
     const campaigns = require('../campaigns');
     await campaigns.closeCampaign(req.tenantId, req.params.id);
     const newCamp = await campaigns.cloneCampaign(req.tenantId, req.params.id);
-    res.redirect('/ocular/campaigns/' + (newCamp ? newCamp.id : req.params.id) + '?msg=' + encodeURIComponent('New round started'));
+    res.redirect('/oculah/campaigns/' + (newCamp ? newCamp.id : req.params.id) + '?msg=' + encodeURIComponent('New round started'));
   } catch (e) {
-    res.redirect('/ocular/campaigns/' + req.params.id + '?err=' + encodeURIComponent('Failed to start new round'));
+    res.redirect('/oculah/campaigns/' + req.params.id + '?err=' + encodeURIComponent('Failed to start new round'));
   }
 });
 
-// ─── /ocular/lists/types — List Registry ───────────────────────────────────
+// ─── /oculah/lists/types — List Registry ───────────────────────────────────
 const ALLOWED_REGISTRY_FIELDS = new Set([
   'action', 'state_code', 'list_name', 'list_tier',
   'source', 'frequency_days', 'require_bot', 'last_pull_date',
@@ -941,7 +941,7 @@ router.post('/lists/types', requireAuth, async (req, res) => {
                COALESCE((SELECT MAX(sort_order) + 1 FROM list_templates WHERE tenant_id = $1), 0))`,
       [req.tenantId]
     );
-    res.redirect('/ocular/lists/types?msg=' + encodeURIComponent('Row added'));
+    res.redirect('/oculah/lists/types?msg=' + encodeURIComponent('Row added'));
   } catch (e) {
     console.error('[ocular/lists/types POST]', e);
     res.status(500).send('Failed to add row');
@@ -1017,7 +1017,7 @@ router.post('/lists/types/:id(\\d+)/delete', requireAuth, async (req, res) => {
   }
 });
 
-// ─── /ocular/lists — Lists page ────────────────────────────────────────────
+// ─── /oculah/lists — Lists page ────────────────────────────────────────────
 router.get('/lists', requireAuth, async (req, res) => {
   try {
     const { listsPage } = require('./pages/lists');
@@ -1082,9 +1082,9 @@ router.get('/lists', requireAuth, async (req, res) => {
 router.post('/lists/edit', requireAuth, async (req, res) => {
   try {
     const id = parseInt(req.body.id, 10);
-    if (!id) return res.redirect('/ocular/lists?err=' + encodeURIComponent('Missing list id'));
+    if (!id) return res.redirect('/oculah/lists?err=' + encodeURIComponent('Missing list id'));
     const list_name = String(req.body.list_name || '').trim();
-    if (!list_name) return res.redirect('/ocular/lists?err=' + encodeURIComponent('List name is required'));
+    if (!list_name) return res.redirect('/oculah/lists?err=' + encodeURIComponent('List name is required'));
     const list_type = String(req.body.list_type || '').trim() || null;
     const source    = String(req.body.source    || '').trim() || null;
     const r = await query(
@@ -1095,37 +1095,37 @@ router.post('/lists/edit', requireAuth, async (req, res) => {
         WHERE id = $4 AND tenant_id = $5`,
       [list_name, list_type, source, id, req.tenantId]
     );
-    if (!r.rowCount) return res.redirect('/ocular/lists?err=' + encodeURIComponent('List not found'));
-    res.redirect('/ocular/lists?msg=' + encodeURIComponent('List updated'));
+    if (!r.rowCount) return res.redirect('/oculah/lists?err=' + encodeURIComponent('List not found'));
+    res.redirect('/oculah/lists?msg=' + encodeURIComponent('List updated'));
   } catch (e) {
     console.error('[ocular/lists/edit]', e);
-    res.redirect('/ocular/lists?err=' + encodeURIComponent('Failed to update list'));
+    res.redirect('/oculah/lists?err=' + encodeURIComponent('Failed to update list'));
   }
 });
 
 router.post('/lists/delete', requireAuth, async (req, res) => {
   try {
     const id = parseInt(req.body.id, 10);
-    if (!id) return res.redirect('/ocular/lists?err=' + encodeURIComponent('Missing list id'));
+    if (!id) return res.redirect('/oculah/lists?err=' + encodeURIComponent('Missing list id'));
     const code = String(req.body.code || '');
     const settings = require('../settings');
     const verified = await settings.verifyDeleteCode(req.tenantId, code);
-    if (!verified) return res.redirect('/ocular/lists?err=' + encodeURIComponent('Invalid delete code'));
+    if (!verified) return res.redirect('/oculah/lists?err=' + encodeURIComponent('Invalid delete code'));
 
     // Verify list belongs to this tenant before any DELETE.
     const own = await query(`SELECT 1 FROM lists WHERE id = $1 AND tenant_id = $2`, [id, req.tenantId]);
-    if (!own.rows.length) return res.redirect('/ocular/lists?err=' + encodeURIComponent('List not found'));
+    if (!own.rows.length) return res.redirect('/oculah/lists?err=' + encodeURIComponent('List not found'));
 
     await query(`DELETE FROM property_lists WHERE list_id = $1 AND tenant_id = $2`, [id, req.tenantId]);
     await query(`DELETE FROM lists WHERE id = $1 AND tenant_id = $2`, [id, req.tenantId]);
-    res.redirect('/ocular/lists?msg=' + encodeURIComponent('List deleted'));
+    res.redirect('/oculah/lists?msg=' + encodeURIComponent('List deleted'));
   } catch (e) {
     console.error('[ocular/lists/delete]', e);
-    res.redirect('/ocular/lists?err=' + encodeURIComponent('Failed to delete list'));
+    res.redirect('/oculah/lists?err=' + encodeURIComponent('Failed to delete list'));
   }
 });
 
-// ─── /ocular/activity — Activity (background import jobs) ──────────────────
+// ─── /oculah/activity — Activity (background import jobs) ──────────────────
 async function fetchActivityJobs(tenantId) {
   // bulk_import_jobs schema lives in src/import/bulk-import-routes.js's
   // ensureJobsTable — single source of truth as of audit fix L-3 (2026-04-28).
@@ -1189,7 +1189,7 @@ router.get('/activity/poll', requireAuth, async (req, res) => {
   }
 });
 
-// ─── /ocular/owners — Owners list page ─────────────────────────────────────
+// ─── /oculah/owners — Owners list page ─────────────────────────────────────
 router.get('/owners', requireAuth, async (req, res) => {
   try {
     const { ownersList } = require('./pages/owners-list');
@@ -1320,7 +1320,7 @@ router.get('/owners', requireAuth, async (req, res) => {
   }
 });
 
-// ─── /ocular/owners/:id — Owner detail page ────────────────────────────────
+// ─── /oculah/owners/:id — Owner detail page ────────────────────────────────
 router.get('/owners/:id(\\d+)', requireAuth, async (req, res) => {
   try {
     const { ownerDetail } = require('./pages/owner-detail');
@@ -1472,15 +1472,15 @@ router.get('/owners/:id(\\d+)', requireAuth, async (req, res) => {
   }
 });
 
-// POST /ocular/owners/:id/message — post a note to the message board
+// POST /oculah/owners/:id/message — post a note to the message board
 router.post('/owners/:id(\\d+)/message', requireAuth, async (req, res) => {
   const contactId = parseInt(req.params.id, 10);
   if (!contactId) return res.status(400).send('Invalid owner id');
   try {
     const author = String(req.body.author || '').trim().slice(0, 100);
     const body   = String(req.body.body   || '').trim().slice(0, 4000);
-    if (!author) return res.redirect(`/ocular/owners/${contactId}?err=` + encodeURIComponent('Your name is required'));
-    if (!body)   return res.redirect(`/ocular/owners/${contactId}?err=` + encodeURIComponent('Message body is required'));
+    if (!author) return res.redirect(`/oculah/owners/${contactId}?err=` + encodeURIComponent('Your name is required'));
+    if (!body)   return res.redirect(`/oculah/owners/${contactId}?err=` + encodeURIComponent('Message body is required'));
 
     // Verify the contact belongs to this tenant before writing — defense
     // against a crafted POST against a contact id that isn't ours.
@@ -1491,14 +1491,14 @@ router.post('/owners/:id(\\d+)/message', requireAuth, async (req, res) => {
       `INSERT INTO owner_messages (tenant_id, contact_id, author, body) VALUES ($1, $2, $3, $4)`,
       [req.tenantId, contactId, author, body]
     );
-    res.redirect(`/ocular/owners/${contactId}?msg=` + encodeURIComponent('Note posted'));
+    res.redirect(`/oculah/owners/${contactId}?msg=` + encodeURIComponent('Note posted'));
   } catch (e) {
     console.error('[ocular/owners/:id POST]', e);
-    res.redirect(`/ocular/owners/${contactId}?err=` + encodeURIComponent('Failed to post note'));
+    res.redirect(`/oculah/owners/${contactId}?err=` + encodeURIComponent('Failed to post note'));
   }
 });
 
-// ─── /ocular/setup — Settings page (delete-code + change-password) ─────────
+// ─── /oculah/setup — Settings page (delete-code + change-password) ─────────
 router.get('/setup', requireAuth, async (req, res) => {
   try {
     const { settingsPage } = require('./pages/settings');
@@ -1538,13 +1538,13 @@ router.get('/setup', requireAuth, async (req, res) => {
   }
 });
 
-// ─── /ocular/setup/distress — Custom distress matrix editor ──────────────
+// ─── /oculah/setup/distress — Custom distress matrix editor ──────────────
 // Admin-only. Per-tenant weights, band thresholds, and user-defined keyword
 // signals. Save persists to distress_settings.config (JSONB); existing scores
 // are NOT auto-recomputed (operator runs Recompute from /records/_distress).
 router.get('/setup/distress', requireAuth, async (req, res) => {
   const { isWorkspaceAdmin } = require('../auth/roles');
-  if (!isWorkspaceAdmin(req)) return res.redirect('/ocular/setup');
+  if (!isWorkspaceAdmin(req)) return res.redirect('/oculah/setup');
   try {
     const { distressSettingsPage } = require('./pages/distress-settings');
     const distressConfig = require('../scoring/distress-config');
@@ -1565,7 +1565,7 @@ router.get('/setup/distress', requireAuth, async (req, res) => {
 
 router.post('/setup/distress', requireAuth, async (req, res) => {
   const { isWorkspaceAdmin } = require('../auth/roles');
-  if (!isWorkspaceAdmin(req)) return res.redirect('/ocular/setup');
+  if (!isWorkspaceAdmin(req)) return res.redirect('/oculah/setup');
   try {
     const distressConfig = require('../scoring/distress-config');
 
@@ -1589,23 +1589,23 @@ router.post('/setup/distress', requireAuth, async (req, res) => {
       custom_signals: customArr,
     });
 
-    res.redirect('/ocular/setup/distress?msg=' + encodeURIComponent('Distress matrix saved. Run Records → Recompute to apply to existing scores.'));
+    res.redirect('/oculah/setup/distress?msg=' + encodeURIComponent('Distress matrix saved. Run Records → Recompute to apply to existing scores.'));
   } catch (e) {
     console.error('[ocular/setup/distress POST]', e);
-    res.redirect('/ocular/setup/distress?err=' + encodeURIComponent(e.message || 'Failed to save matrix.'));
+    res.redirect('/oculah/setup/distress?err=' + encodeURIComponent(e.message || 'Failed to save matrix.'));
   }
 });
 
 router.get('/setup/distress/reset', requireAuth, async (req, res) => {
   const { isWorkspaceAdmin } = require('../auth/roles');
-  if (!isWorkspaceAdmin(req)) return res.redirect('/ocular/setup');
+  if (!isWorkspaceAdmin(req)) return res.redirect('/oculah/setup');
   try {
     const distressConfig = require('../scoring/distress-config');
     await distressConfig.resetConfig(req.tenantId);
-    res.redirect('/ocular/setup/distress?msg=' + encodeURIComponent('Distress matrix reset to defaults.'));
+    res.redirect('/oculah/setup/distress?msg=' + encodeURIComponent('Distress matrix reset to defaults.'));
   } catch (e) {
     console.error('[ocular/setup/distress/reset]', e);
-    res.redirect('/ocular/setup/distress?err=' + encodeURIComponent('Reset failed.'));
+    res.redirect('/oculah/setup/distress?err=' + encodeURIComponent('Reset failed.'));
   }
 });
 
@@ -1615,7 +1615,7 @@ router.get('/setup/distress/reset', requireAuth, async (req, res) => {
 router.post('/setup/dedup', requireAuth, async (req, res) => {
   const { isWorkspaceAdmin } = require('../auth/roles');
   if (!isWorkspaceAdmin(req)) {
-    return res.redirect('/ocular/setup?err=' + encodeURIComponent('Only workspace admins can run dedup.'));
+    return res.redirect('/oculah/setup?err=' + encodeURIComponent('Only workspace admins can run dedup.'));
   }
   try {
     const { dedupByPhone } = require('../maintenance');
@@ -1623,10 +1623,10 @@ router.post('/setup/dedup', requireAuth, async (req, res) => {
     const msg = stats.losersMerged > 0
       ? `Merged ${stats.losersMerged} duplicate contact(s) across ${stats.groups} shared phone(s). Re-homed ${stats.linksMoved} property link(s) and ${stats.phonesMoved} phone row(s).`
       : 'No duplicate contacts found — your data is clean.';
-    res.redirect('/ocular/setup?msg=' + encodeURIComponent(msg));
+    res.redirect('/oculah/setup?msg=' + encodeURIComponent(msg));
   } catch (e) {
     console.error('[setup/dedup]', e);
-    res.redirect('/ocular/setup?err=' + encodeURIComponent('Dedup failed: ' + e.message));
+    res.redirect('/oculah/setup?err=' + encodeURIComponent('Dedup failed: ' + e.message));
   }
 });
 
@@ -1634,30 +1634,30 @@ router.post('/setup/delete-code', requireAuth, async (req, res) => {
   // RBAC: tenant_user cannot change the delete code. Workspace admins only.
   const { isWorkspaceAdmin } = require('../auth/roles');
   if (!isWorkspaceAdmin(req)) {
-    return res.redirect('/ocular/setup?err=' + encodeURIComponent('Only workspace admins can change the delete code.'));
+    return res.redirect('/oculah/setup?err=' + encodeURIComponent('Only workspace admins can change the delete code.'));
   }
   const settings = require('../settings');
   const { old_code, new_code, confirm_code } = req.body;
   if (!old_code || !new_code || !confirm_code) {
-    return res.redirect('/ocular/setup?err=' + encodeURIComponent('All fields required.'));
+    return res.redirect('/oculah/setup?err=' + encodeURIComponent('All fields required.'));
   }
   if (new_code !== confirm_code) {
-    return res.redirect('/ocular/setup?err=' + encodeURIComponent('New code and confirmation do not match.'));
+    return res.redirect('/oculah/setup?err=' + encodeURIComponent('New code and confirmation do not match.'));
   }
   const result = await settings.updateDeleteCode(req.tenantId, old_code, new_code);
   if (!result.ok) {
-    return res.redirect('/ocular/setup?err=' + encodeURIComponent(result.error));
+    return res.redirect('/oculah/setup?err=' + encodeURIComponent(result.error));
   }
-  res.redirect('/ocular/setup?msg=' + encodeURIComponent('Delete code updated successfully.'));
+  res.redirect('/oculah/setup?msg=' + encodeURIComponent('Delete code updated successfully.'));
 });
 
-// ─── POST /ocular/setup/password — change own password ────────────────────
+// ─── POST /oculah/setup/password — change own password ────────────────────
 router.post('/setup/password', requireAuth, async (req, res) => {
   const passwords = require('../passwords');
   const emailMod  = require('../email');
   const { current_password, new_password, confirm_password } = req.body;
 
-  const back = (msg) => res.redirect('/ocular/setup?pwErr=' + encodeURIComponent(msg));
+  const back = (msg) => res.redirect('/oculah/setup?pwErr=' + encodeURIComponent(msg));
 
   if (!current_password || !new_password || !confirm_password) {
     return back('All fields are required.');
@@ -1684,7 +1684,7 @@ router.post('/setup/password', requireAuth, async (req, res) => {
     // Best-effort confirmation email.
     emailMod.sendPasswordChangedEmail(u.email, u.name).catch(() => {});
 
-    return res.redirect('/ocular/setup?pwMsg=' + encodeURIComponent('Password updated.'));
+    return res.redirect('/oculah/setup?pwMsg=' + encodeURIComponent('Password updated.'));
   } catch (e) {
     console.error('[setup/password POST]', e);
     return back('Something went wrong. Please try again.');
@@ -1696,7 +1696,7 @@ router.post('/setup/password', requireAuth, async (req, res) => {
 // "Coming next session" until we wire up the real implementation.
 //
 // Note: 'lists/types' is included separately because the List Registry
-// sidebar link targets /ocular/lists/types (not /ocular/lists). Without it,
+// sidebar link targets /oculah/lists/types (not /oculah/lists). Without it,
 // clicking List Registry in the sidebar 404s.
 // All Ocular pages now have real implementations. Empty array kept so
 // the loop below is a no-op rather than a code-removal that future
@@ -1722,7 +1722,7 @@ placeholderPages.forEach(page => {
         <div class="ocu-page-header">
           <div>
             <h1 class="ocu-page-title">${niceTitle}</h1>
-            <div class="ocu-page-subtitle">This page hasn't been built in Ocular yet.</div>
+            <div class="ocu-page-subtitle">This page hasn't been built in Oculah yet.</div>
           </div>
         </div>
         <div class="ocu-card" style="text-align:center;padding:60px 24px">

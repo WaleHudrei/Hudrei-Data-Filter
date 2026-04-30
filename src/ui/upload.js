@@ -109,7 +109,7 @@ function uploadFilterStep1Page(error) {
   return shell('Upload Call Log', `
     <div class="ocu-page-header">
       <div>
-        <div style="margin-bottom:6px"><a href="/ocular/upload" class="ocu-text-3" style="font-size:13px;text-decoration:none">← Upload</a></div>
+        <div style="margin-bottom:6px"><a href="/oculah/upload" class="ocu-text-3" style="font-size:13px;text-decoration:none">← Upload</a></div>
         <h1 class="ocu-page-title">Upload call log</h1>
         <div class="ocu-page-subtitle">Upload your Readymode call log export to filter and prepare for REISift</div>
       </div>

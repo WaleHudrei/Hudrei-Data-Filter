@@ -596,9 +596,16 @@ app.use('/activity', activityRoutes);
 app.use('/owners', ownersRoutes);
 app.use('/lists', listTypesRoutes);
 
-// 2026-04-23 Ocular UI — new design system at /ocular/*. Old Loki routes
-// untouched. Static CSS at /ocular-static/ocular.css.
+// 2026-04-23 Ocular UI — new design system at /oculah/*. Old Loki routes
+// Static assets and Ocular UI routes.
+// 2026-04-30 rebrand to Oculah: serve static files under /oculah-static and
+// mount the UI router under /oculah. The legacy /ocular* paths are kept as
+// aliases so old bookmarks, cached HTML, and outbound emails referencing the
+// previous URL keep working — both prefixes hit the same handler. New code
+// uses the /oculah prefix.
+app.use('/oculah-static', express.static(path.join(__dirname, 'ui/static'), { maxAge: '1d' }));
 app.use('/ocular-static', express.static(path.join(__dirname, 'ui/static'), { maxAge: '1d' }));
+app.use('/oculah', ocularRoutes);
 app.use('/ocular', ocularRoutes);
 
 // 2026-04-28 SaaS super-admin console. The router self-gates via
@@ -671,12 +678,12 @@ app.get('/api/dashboard-stats', requireAuth, async (req, res) => {
 // Milestone A: /dashboard redirects to the Ocular dashboard. The legacy
 // renderer below isn't reachable from this app any more; left in place for
 // one cycle in case we need to roll back, then it can be removed.
-app.get('/dashboard', requireAuth, (req, res) => res.redirect('/ocular/dashboard'));
+app.get('/dashboard', requireAuth, (req, res) => res.redirect('/oculah/dashboard'));
 
 
 
 app.listen(PORT, async ()=>{
-  console.log(`Ocular running on port ${PORT}`);
+  console.log(`Oculah running on port ${PORT}`);
   console.log(`Redis: ${redis?'connected':'not configured'}`);
 
   // 2026-04-29 audit fix M8: split startup into "core must succeed" vs
@@ -1215,7 +1222,7 @@ app.post('/campaigns/:id/count', requireAuth, async (req, res) => {
 // still exists below for any legacy linkers.
 app.get('/campaigns', requireAuth, (req, res) => {
   const tab = req.query.tab ? '?tab=' + encodeURIComponent(req.query.tab) : '';
-  res.redirect('/ocular/campaigns' + tab);
+  res.redirect('/oculah/campaigns' + tab);
 });
 
 // New campaign form
@@ -1269,7 +1276,7 @@ app.get('/campaigns/:id', requireAuth, async (req, res) => {
   try {
     const { getUser } = require('./get-user');
     const c = await campaigns.getCampaign(req.tenantId, req.params.id);
-    if (!c) return res.redirect('/ocular/campaigns');
+    if (!c) return res.redirect('/oculah/campaigns');
     c.contact_counts = await campaigns.getContactStats(req.params.id);
     const user = await getUser(req);
     res.send(campaignDetailPage(c, { msg: req.query.msg || '', err: req.query.err || '' }, user));
@@ -1416,7 +1423,7 @@ app.get('/nis', requireAuth, async (req, res) => {
 // hand-typed URL doesn't leak the page.
 app.get('/changelog', requireAuth, async (req, res) => {
   const { isWorkspaceAdmin } = require('./auth/roles');
-  if (!isWorkspaceAdmin(req)) return res.redirect('/ocular/dashboard');
+  if (!isWorkspaceAdmin(req)) return res.redirect('/oculah/dashboard');
   const { getUser } = require('./get-user');
   const user = await getUser(req);
   res.send(changelogPage(user));
@@ -1429,7 +1436,7 @@ app.get('/changelog', requireAuth, async (req, res) => {
 // immediately via the UI here.
 // ═══════════════════════════════════════════════════════════════════════════════
 // Milestone A: legacy /settings/security redirects to the Ocular settings page.
-app.get('/settings/security', requireAuth, (req, res) => res.redirect('/ocular/setup'));
+app.get('/settings/security', requireAuth, (req, res) => res.redirect('/oculah/setup'));
 
 app.post('/settings/security/delete-code', requireAuth, async (req, res) => {
   const settings = require('./settings');
@@ -1750,7 +1757,7 @@ function newCampaignPage(error, listTypes, user) {
   return shell('New Campaign', `
     <div class="ocu-page-header">
       <div>
-        <div style="margin-bottom:6px"><a href="/ocular/campaigns" class="ocu-text-3" style="font-size:13px;text-decoration:none">← Campaigns</a></div>
+        <div style="margin-bottom:6px"><a href="/oculah/campaigns" class="ocu-text-3" style="font-size:13px;text-decoration:none">← Campaigns</a></div>
         <h1 class="ocu-page-title">New campaign</h1>
         <div class="ocu-page-subtitle">Create a campaign to start tracking filtration activity</div>
       </div>
@@ -1814,7 +1821,7 @@ function newCampaignPage(error, listTypes, user) {
         </div>
 
         <div style="display:flex;gap:8px;justify-content:flex-end">
-          <a href="/ocular/campaigns" class="ocu-btn ocu-btn-ghost">Cancel</a>
+          <a href="/oculah/campaigns" class="ocu-btn ocu-btn-ghost">Cancel</a>
           <button type="submit" class="ocu-btn ocu-btn-primary">Create campaign</button>
         </div>
       </form>
@@ -1949,7 +1956,7 @@ function campaignDetailPage(c, flash, user) {
   return shell(c.name, `
     <div class="ocu-page-header" style="align-items:flex-start">
       <div style="flex:1;min-width:0">
-        <div style="margin-bottom:6px"><a href="/ocular/campaigns" class="ocu-text-3" style="font-size:13px;text-decoration:none">← Campaigns</a></div>
+        <div style="margin-bottom:6px"><a href="/oculah/campaigns" class="ocu-text-3" style="font-size:13px;text-decoration:none">← Campaigns</a></div>
         <div style="display:flex;align-items:center;gap:10px;margin-bottom:4px;flex-wrap:wrap">
           <h1 class="ocu-page-title" style="margin:0">${escAttr(c.name)}</h1>
           <button type="button" title="Edit campaign name" class="ocu-btn ocu-btn-ghost" style="padding:4px 8px"
@@ -2116,7 +2123,7 @@ function campaignDetailPage(c, flash, user) {
 
     ${c.status === 'completed' ? `
     <div class="ocu-card" style="padding:18px 20px;margin-bottom:18px;background:var(--ocu-surface);text-align:center">
-      <div style="font-size:13px;color:var(--ocu-text-2)">This campaign is completed — no more uploads accepted. <a href="/ocular/campaigns" class="ocu-link">Start a new round</a> to continue.</div>
+      <div style="font-size:13px;color:var(--ocu-text-2)">This campaign is completed — no more uploads accepted. <a href="/oculah/campaigns" class="ocu-link">Start a new round</a> to continue.</div>
     </div>` : c.active_channel === 'cold_call' ? `
     <div class="ocu-card" style="padding:18px 20px;margin-bottom:18px">
       <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;flex-wrap:wrap;gap:10px">

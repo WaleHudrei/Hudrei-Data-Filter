@@ -29,7 +29,7 @@ function row(c) {
   const callable = (counts.total_phones || 0) - (counts.wrong_phones || 0) - (counts.nis_phones || 0);
   return `<tr>
     <td class="ocu-td">
-      <a href="/ocular/campaigns/${c.id}" class="ocu-link ocu-td-primary">${escHTML(c.name)}</a>
+      <a href="/oculah/campaigns/${c.id}" class="ocu-link ocu-td-primary">${escHTML(c.name)}</a>
       ${c.market_name || c.state_code ? `<div class="ocu-td-meta">${escHTML(c.market_name || '')}${c.state_code ? ' · ' + escHTML(c.state_code) : ''}</div>` : ''}
     </td>
     <td class="ocu-td"><span class="ocu-pill">${escHTML(c.list_type || '—')}</span></td>
@@ -44,7 +44,7 @@ function row(c) {
 
 function tabLink(label, value, currentTab, count) {
   const isActive = (currentTab || 'active') === value;
-  return `<a href="/ocular/campaigns?tab=${escHTML(value)}" class="ocu-tab ${isActive ? 'active' : ''}" style="text-decoration:none;display:inline-block">${escHTML(label)} <span class="ocu-text-3">(${fmtNum(count)})</span></a>`;
+  return `<a href="/oculah/campaigns?tab=${escHTML(value)}" class="ocu-tab ${isActive ? 'active' : ''}" style="text-decoration:none;display:inline-block">${escHTML(label)} <span class="ocu-text-3">(${fmtNum(count)})</span></a>`;
 }
 
 /**

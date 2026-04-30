@@ -89,8 +89,8 @@ async function fetchJobs(tenantId) {
 // ── Activity Page ─────────────────────────────────────────────────────────────
 // Milestone A: legacy /activity redirects to Ocular's activity page.
 // /activity/status JSON polling stays for any external consumer; Ocular
-// uses /ocular/activity/poll which is a separate endpoint.
-router.get('/', requireAuth, (req, res) => res.redirect('/ocular/activity'));
+// uses /oculah/activity/poll which is a separate endpoint.
+router.get('/', requireAuth, (req, res) => res.redirect('/oculah/activity'));
 
 
 // ── Status API (auto-refresh) ────────────────────────────────────────────────

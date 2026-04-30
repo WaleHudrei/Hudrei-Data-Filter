@@ -1,5 +1,5 @@
 // ═══════════════════════════════════════════════════════════════════════════
-// filtration-app.js — client-side controller for /ocular/filtration
+// filtration-app.js — client-side controller for /oculah/filtration
 //
 // Drives the 3-step single-page flow:
 //   1. Pick campaign + drop CSV → POST /upload/filter/parse

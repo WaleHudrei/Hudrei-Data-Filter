@@ -86,7 +86,7 @@ function safeInt(v) {
 // ── GET /lists/types ─────────────────────────────────────────────────────────
 // Milestone A: legacy /lists/types redirects to Ocular's List Registry.
 // POST handlers below stay — Ocular's grid still uses them.
-router.get('/types', requireAuth, (req, res) => res.redirect('/ocular/lists/types'));
+router.get('/types', requireAuth, (req, res) => res.redirect('/oculah/lists/types'));
 
 
 // ── POST /lists/types — create new row ───────────────────────────────────────

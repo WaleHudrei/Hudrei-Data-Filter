@@ -33,8 +33,8 @@ function requireAuth(req, res, next) {
   next();
 }
 
-// /upload is the old chooser. /ocular/upload is canonical now — redirect.
-router.get('/', requireAuth, (req, res) => res.redirect('/ocular/upload'));
+// /upload is the old chooser. /oculah/upload is canonical now — redirect.
+router.get('/', requireAuth, (req, res) => res.redirect('/oculah/upload'));
 router.get('/filter', requireAuth, (req, res) => res.send(uploadUI.uploadFilterStep1Page()));
 router.get('/filter/map', requireAuth, (req, res) => res.send(uploadUI.uploadFilterStep2Page()));
 router.get('/filter/review', requireAuth, (req, res) => res.send(uploadUI.uploadFilterStep3Page()));

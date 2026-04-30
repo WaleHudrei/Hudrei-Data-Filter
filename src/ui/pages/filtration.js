@@ -170,7 +170,7 @@ function filtrationPage(data = {}) {
       .ocu-pill{display:inline-block;padding:2px 8px;border-radius:10px;background:#e6e8ec;color:#3a3f47;font-size:11px;font-weight:600}
     </style>
 
-    <script src="/ocular-static/filtration-app.js?v=1"></script>
+    <script src="/oculah-static/filtration-app.js?v=1"></script>
   `;
 
   return shell({

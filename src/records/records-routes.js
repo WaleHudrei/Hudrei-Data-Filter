@@ -195,7 +195,7 @@ const OCCUPANCY_LABELS = {
 // Query string preserved so bookmarks like /records?list_id=42 still work.
 router.get('/', requireAuth, (req, res) => {
   const qs = req.url.includes('?') ? req.url.slice(req.url.indexOf('?')) : '';
-  res.redirect('/ocular/records' + qs);
+  res.redirect('/oculah/records' + qs);
 });
 
 
@@ -1519,7 +1519,7 @@ router.post('/export', requireAuth, async (req, res) => {
 // Milestone A: legacy /records/:id property detail redirects to Ocular's.
 // All write actions on the detail page (POST /:id/edit, /:id/delete,
 // /:id/tags, /phones/:phoneId/*) stay — Ocular calls them.
-router.get('/:id(\\d+)', requireAuth, (req, res) => res.redirect('/ocular/records/' + req.params.id));
+router.get('/:id(\\d+)', requireAuth, (req, res) => res.redirect('/oculah/records/' + req.params.id));
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // EDIT SUBMIT — POST /records/:id/edit

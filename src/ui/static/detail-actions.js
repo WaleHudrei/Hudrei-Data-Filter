@@ -1,7 +1,7 @@
 /* ═══════════════════════════════════════════════════════════════════════════
    ui/static/detail-actions.js
    Click handlers for the property detail page.
-   Loaded only on /ocular/records/:id pages.
+   Loaded only on /oculah/records/:id pages.
 
    All actions follow the same pattern:
      1. Listen for click on a [data-action="..."] element via event delegation

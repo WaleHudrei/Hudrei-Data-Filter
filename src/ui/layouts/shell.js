@@ -12,20 +12,20 @@ const { ROLES } = require('../../auth/roles');
 // (regular workspace members); only tenant_admin and super_admin see it.
 const NAV = [
   { section: 'Workspace', items: [
-    { id: 'dashboard',     href: '/ocular/dashboard',  label: 'Dashboard',     icon: 'grid' },
-    { id: 'records',       href: '/ocular/records',    label: 'Records',       icon: 'box',   badge: 'records-count' },
-    { id: 'owners',        href: '/ocular/owners',     label: 'Owners',        icon: 'users' },
-    { id: 'campaigns',     href: '/ocular/campaigns',  label: 'Campaigns',     icon: 'phone' },
-    { id: 'lists',         href: '/ocular/lists',      label: 'Lists',         icon: 'list' },
+    { id: 'dashboard',     href: '/oculah/dashboard',  label: 'Dashboard',     icon: 'grid' },
+    { id: 'records',       href: '/oculah/records',    label: 'Records',       icon: 'box',   badge: 'records-count' },
+    { id: 'owners',        href: '/oculah/owners',     label: 'Owners',        icon: 'users' },
+    { id: 'campaigns',     href: '/oculah/campaigns',  label: 'Campaigns',     icon: 'phone' },
+    { id: 'lists',         href: '/oculah/lists',      label: 'Lists',         icon: 'list' },
   ]},
   { section: 'Operations', items: [
-    { id: 'upload',        href: '/ocular/upload',     label: 'Upload',        icon: 'upload' },
-    { id: 'filtration',    href: '/ocular/filtration', label: 'List Filtration', icon: 'filter' },
-    { id: 'activity',      href: '/ocular/activity',   label: 'Activity',      icon: 'activity' },
-    { id: 'list-registry', href: '/ocular/lists/types', label: 'List Registry', icon: 'layers', badge: 'overdue-count' },
+    { id: 'upload',        href: '/oculah/upload',     label: 'Upload',        icon: 'upload' },
+    { id: 'filtration',    href: '/oculah/filtration', label: 'List Filtration', icon: 'filter' },
+    { id: 'activity',      href: '/oculah/activity',   label: 'Activity',      icon: 'activity' },
+    { id: 'list-registry', href: '/oculah/lists/types', label: 'List Registry', icon: 'layers', badge: 'overdue-count' },
   ]},
   { section: 'System', items: [
-    { id: 'settings',      href: '/ocular/setup',      label: 'Settings',      icon: 'settings' },
+    { id: 'settings',      href: '/oculah/setup',      label: 'Settings',      icon: 'settings' },
     { id: 'changelog',     href: '/changelog',         label: 'Changelog',     icon: 'history', adminOnly: true },
   ]},
 ];
@@ -67,7 +67,7 @@ function navIcon(name) {
  */
 function shell(opts = {}) {
   const {
-    title = 'Ocular',
+    title = 'Oculah',
     body = '',
     activePage = '',
     user = { name: 'User', role: '', initials: '?' },
@@ -81,7 +81,7 @@ function shell(opts = {}) {
   // its own search UI or has nothing meaningful to search globally.
   const SEARCH_PAGES = new Set(['records', 'owners']);
   const showTopSearch = SEARCH_PAGES.has(activePage);
-  const searchAction = activePage === 'owners' ? '/ocular/owners' : '/ocular/records';
+  const searchAction = activePage === 'owners' ? '/oculah/owners' : '/oculah/records';
 
   // RBAC: admin-only nav items (e.g. Changelog) are hidden from tenant_user.
   const userRole = (user && user.roleKey) || ROLES.TENANT_ADMIN;
@@ -113,11 +113,11 @@ function shell(opts = {}) {
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>${escHTML(title)} · Ocular</title>
+  <title>${escHTML(title)} · Oculah</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="/ocular-static/ocular.css?v=18">
+  <link rel="stylesheet" href="/oculah-static/oculah.css?v=19">
   ${extraHead}
 </head>
 <body class="ocu">
@@ -125,7 +125,7 @@ function shell(opts = {}) {
 <div class="ocu-app" id="ocu-app">
   <aside class="ocu-sidebar">
     <div class="ocu-sidebar-header">
-      <a class="ocu-logo" href="/ocular/dashboard">
+      <a class="ocu-logo" href="/oculah/dashboard">
         <div class="ocu-logo-mark">
           <svg viewBox="0 0 32 32">
             <circle class="letter-o" cx="16" cy="16" r="12"/>
@@ -136,7 +136,7 @@ function shell(opts = {}) {
             <circle class="center-dot" cx="16" cy="16" r="1.5"/>
           </svg>
         </div>
-        <div class="ocu-logo-text">CULAR</div>
+        <div class="ocu-logo-text">CULAH</div>
       </a>
       <!-- 2026-04-29 redesigned sidebar collapse button. The original was a
            floating cyan circle stuck on the sidebar's right edge — high

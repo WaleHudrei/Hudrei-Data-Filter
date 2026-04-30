@@ -5,8 +5,8 @@
 // abstraction that powers the dashboard's "lists overdue" badge.
 //
 // Inline editing: every cell auto-saves on blur/change via POST to
-// /ocular/lists/types/:id with field+value. Mark-pulled stamps last_pull_date
-// to today. Add Row creates a blank template via POST /ocular/lists/types.
+// /oculah/lists/types/:id with field+value. Mark-pulled stamps last_pull_date
+// to today. Add Row creates a blank template via POST /oculah/lists/types.
 // ═══════════════════════════════════════════════════════════════════════════
 const { shell }   = require('../layouts/shell');
 const { kpiCard } = require('../components/kpi-card');
@@ -166,7 +166,7 @@ function listRegistry(data = {}) {
       // Inline auto-save: POST single field+value, swap row HTML on success.
       async function lr_save(id, field, value) {
         try {
-          var r = await fetch('/ocular/lists/types/' + id, {
+          var r = await fetch('/oculah/lists/types/' + id, {
             method: 'POST',
             headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
             body: 'field=' + encodeURIComponent(field) + '&value=' + encodeURIComponent(value),
@@ -189,7 +189,7 @@ function listRegistry(data = {}) {
       }
       async function lr_pull(id) {
         try {
-          var r = await fetch('/ocular/lists/types/' + id + '/pull', { method: 'POST' });
+          var r = await fetch('/oculah/lists/types/' + id + '/pull', { method: 'POST' });
           if (!r.ok) throw new Error('pull failed');
           location.reload();
         } catch (e) { alert('Failed: ' + e.message); }
@@ -197,7 +197,7 @@ function listRegistry(data = {}) {
       async function lr_delete(id) {
         if (!confirm('Delete this list type? This cannot be undone.')) return;
         try {
-          var r = await fetch('/ocular/lists/types/' + id + '/delete', { method: 'POST' });
+          var r = await fetch('/oculah/lists/types/' + id + '/delete', { method: 'POST' });
           if (!r.ok) throw new Error('delete failed');
           var tr = document.querySelector('tr[data-id="' + id + '"]');
           if (tr) tr.remove();
@@ -205,7 +205,7 @@ function listRegistry(data = {}) {
       }
       async function lr_addRow() {
         try {
-          var r = await fetch('/ocular/lists/types', { method: 'POST' });
+          var r = await fetch('/oculah/lists/types', { method: 'POST' });
           if (!r.ok) throw new Error('add failed');
           location.reload();
         } catch (e) { alert('Failed: ' + e.message); }

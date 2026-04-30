@@ -1,6 +1,6 @@
 /* ═══════════════════════════════════════════════════════════════════════════
    ui/static/records-filter-bar.js
-   Filter bar interactions for /ocular/records:
+   Filter bar interactions for /oculah/records:
      - Toggle the filter panel open/closed (state persisted in localStorage)
      - State multi-select popover with type-to-filter search
      - Auto-open the panel if any filter is active on initial load

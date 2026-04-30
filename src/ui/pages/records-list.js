@@ -1,5 +1,5 @@
 // ui/pages/records-list.js
-// /ocular/records — list page. Layout: filter bar on top (collapsed by
+// /oculah/records — list page. Layout: filter bar on top (collapsed by
 // default), then table + pagination full-width below.
 //
 // 2026-04-25 Refactored from two-column to top-bar layout. Bulk action bar
@@ -17,7 +17,7 @@ function buildFilterChips(filters, querystring) {
     const params = new URLSearchParams(querystring);
     params.delete(removeKey);
     const qs = params.toString();
-    const href = '/ocular/records' + (qs ? '?' + qs : '');
+    const href = '/oculah/records' + (qs ? '?' + qs : '');
     chips.push(`<a class="ocu-filter-chip" href="${escHTML(href)}">${escHTML(label)} <span class="ocu-filter-chip-x">×</span></a>`);
   }
   if (filters.q)            chip('Search: "' + filters.q + '"', 'q');
@@ -36,14 +36,14 @@ function buildFilterChips(filters, querystring) {
     const params = new URLSearchParams(querystring);
     params.delete('min_year'); params.delete('max_year');
     const qs = params.toString();
-    chips.push(`<a class="ocu-filter-chip" href="${escHTML('/ocular/records' + (qs ? '?' + qs : ''))}">${escHTML(lbl)} <span class="ocu-filter-chip-x">×</span></a>`);
+    chips.push(`<a class="ocu-filter-chip" href="${escHTML('/oculah/records' + (qs ? '?' + qs : ''))}">${escHTML(lbl)} <span class="ocu-filter-chip-x">×</span></a>`);
   }
   if (filters.min_equity || filters.max_equity) {
     const lbl = 'Equity: $' + (filters.min_equity || '?') + '–$' + (filters.max_equity || '?');
     const params = new URLSearchParams(querystring);
     params.delete('min_equity'); params.delete('max_equity');
     const qs = params.toString();
-    chips.push(`<a class="ocu-filter-chip" href="${escHTML('/ocular/records' + (qs ? '?' + qs : ''))}">${escHTML(lbl)} <span class="ocu-filter-chip-x">×</span></a>`);
+    chips.push(`<a class="ocu-filter-chip" href="${escHTML('/oculah/records' + (qs ? '?' + qs : ''))}">${escHTML(lbl)} <span class="ocu-filter-chip-x">×</span></a>`);
   }
   if (Array.isArray(filters.stateList) && filters.stateList.length) {
     filters.stateList.forEach(code => {
@@ -53,7 +53,7 @@ function buildFilterChips(filters, querystring) {
         params.append(k, v);
       }
       const qs = params.toString();
-      const href = '/ocular/records' + (qs ? '?' + qs : '');
+      const href = '/oculah/records' + (qs ? '?' + qs : '');
       chips.push(`<a class="ocu-filter-chip" href="${escHTML(href)}">${escHTML('State: ' + code)} <span class="ocu-filter-chip-x">×</span></a>`);
     });
   }
@@ -66,7 +66,7 @@ function buildFilterChips(filters, querystring) {
         params.append(k, v);
       }
       const qs = params.toString();
-      const href = '/ocular/records' + (qs ? '?' + qs : '');
+      const href = '/oculah/records' + (qs ? '?' + qs : '');
       chips.push(`<a class="ocu-filter-chip" href="${escHTML(href)}">${escHTML(label + id)} <span class="ocu-filter-chip-x">×</span></a>`);
     });
   }
@@ -147,8 +147,8 @@ function recordsList(data = {}) {
     user: data.user || { name: 'User', initials: '?' },
     badges: data.badges || {},
     extraHead: `
-      <script src="/ocular-static/records-filter-bar.js?v=3" defer></script>
-      <script src="/ocular-static/records-bulk.js" defer></script>
+      <script src="/oculah-static/records-filter-bar.js?v=3" defer></script>
+      <script src="/oculah-static/records-bulk.js" defer></script>
     `,
   });
 }

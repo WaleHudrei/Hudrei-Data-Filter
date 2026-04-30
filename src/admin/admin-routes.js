@@ -130,7 +130,7 @@ function adminShell(title, bodyHtml, opts = {}) {
 <html><head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>${escHTML(title)} — Ocular Admin</title>
+<title>${escHTML(title)} — Oculah Admin</title>
 <style>
   *{box-sizing:border-box;margin:0;padding:0}
   body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;background:#0f1115;color:#e4e6eb;line-height:1.5;min-height:100vh}
@@ -191,7 +191,7 @@ function adminShell(title, bodyHtml, opts = {}) {
 </style>
 </head><body>
 <header class="topbar">
-  <div class="brand">Ocular <span class="tag">HQ</span></div>
+  <div class="brand">Oculah <span class="tag">HQ</span></div>
   <nav>
     <a href="/admin">Tenants</a>
     <a href="/hq/logout">Sign out</a>
@@ -308,7 +308,7 @@ router.get('/tenants/new', (req, res) => {
         <div class="field">
           <label>Workspace name</label>
           <input type="text" name="workspace" value="${escHTML(v.workspace || '')}" required maxlength="60" placeholder="Acme Realty">
-          <div class="hint">Shows up in the user's Ocular sidebar.</div>
+          <div class="hint">Shows up in the user's Oculah sidebar.</div>
         </div>
         <div class="field">
           <label>Admin name</label>

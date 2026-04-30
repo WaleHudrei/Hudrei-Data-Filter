@@ -432,9 +432,9 @@ router.get('/', requireAuth, async (req, res) => {
   res.send(shell('Import Properties', `
     <div class="ocu-page-header">
       <div>
-        <div style="margin-bottom:6px"><a href="/ocular/upload" class="ocu-text-3" style="font-size:13px;text-decoration:none">← Upload</a></div>
+        <div style="margin-bottom:6px"><a href="/oculah/upload" class="ocu-text-3" style="font-size:13px;text-decoration:none">← Upload</a></div>
         <h1 class="ocu-page-title">Import property list</h1>
-        <div class="ocu-page-subtitle">Upload a CSV from any data source. You'll map your columns to Ocular fields on the next step.</div>
+        <div class="ocu-page-subtitle">Upload a CSV from any data source. You'll map your columns to Oculah fields on the next step.</div>
       </div>
     </div>
 
@@ -989,14 +989,14 @@ router.get('/preview', requireAuth, (req, res) => {
           <input type="radio" name="import_mode" value="add_only" style="margin-top:2px">
           <div>
             <div style="font-weight:600;color:var(--ocu-text-1)">Add new only</div>
-            <div class="ocu-text-3" style="font-size:11px;margin-top:2px">Skip any address already in Ocular. Use for clean "net new" imports where existing data must not be touched.</div>
+            <div class="ocu-text-3" style="font-size:11px;margin-top:2px">Skip any address already in Oculah. Use for clean "net new" imports where existing data must not be touched.</div>
           </div>
         </label>
         <label style="flex:1;min-width:220px;display:flex;align-items:flex-start;gap:10px;padding:12px 14px;border:1px solid var(--ocu-border);border-radius:10px;cursor:pointer;font-size:13px;background:#fff;transition:border-color .15s" onmouseover="this.style.borderColor='var(--ocu-text-2)'" onmouseout="this.style.borderColor='var(--ocu-border)'">
           <input type="radio" name="import_mode" value="update_only" style="margin-top:2px">
           <div>
             <div style="font-weight:600;color:var(--ocu-text-1)">Update existing only</div>
-            <div class="ocu-text-3" style="font-size:11px;margin-top:2px">Skip any address not yet in Ocular. Use for skip-trace re-runs where you only want to enrich known properties.</div>
+            <div class="ocu-text-3" style="font-size:11px;margin-top:2px">Skip any address not yet in Oculah. Use for skip-trace re-runs where you only want to enrich known properties.</div>
           </div>
         </label>
       </div>
@@ -1424,7 +1424,7 @@ router.post('/commit', requireAuth, async (req, res) => {
         else if (MODE === 'update_only' && isExisting) kept.push(row);
         else {
           skippedByMode++;
-          skippedReasons.push({ street: get(row,'street'), reason: MODE === 'add_only' ? 'address already exists (add_only mode)' : 'address not in Ocular yet (update_only mode)' });
+          skippedReasons.push({ street: get(row,'street'), reason: MODE === 'add_only' ? 'address already exists (add_only mode)' : 'address not in Oculah yet (update_only mode)' });
         }
       }
       dedupedRows.length = 0;
@@ -2214,7 +2214,7 @@ async function runBackgroundImport(jobId, allRows, mapping, filename, resolvedLi
         }
         skippedByModeReason = MODE === 'add_only'
           ? `mode=add_only: skipped ${skippedByMode} row(s) whose address already exists`
-          : `mode=update_only: skipped ${skippedByMode} row(s) whose address doesn't exist in Ocular yet`;
+          : `mode=update_only: skipped ${skippedByMode} row(s) whose address doesn't exist in Oculah yet`;
         // Mutate dedupedRows in place — seenKeys map is not used after this point.
         dedupedRows.length = 0;
         for (const k of kept) dedupedRows.push(k);

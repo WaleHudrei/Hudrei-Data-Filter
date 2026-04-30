@@ -4,7 +4,7 @@
 // form (the only setting Loki has). Extend with new sections as features
 // land — each gets its own card.
 //
-// Form posts to /ocular/setup/delete-code (handler in ocular-routes.js)
+// Form posts to /oculah/setup/delete-code (handler in ocular-routes.js)
 // which delegates to the shared settings.updateDeleteCode helper.
 // ═══════════════════════════════════════════════════════════════════════════
 const { shell } = require('../layouts/shell');
@@ -59,7 +59,7 @@ function settingsPage(data = {}) {
       <span style="color:var(--ocu-text-1);font-weight:500;margin-left:6px">${escHTML(lastUpdated)}</span>
     </div>
 
-    <form method="POST" action="/ocular/setup/delete-code" autocomplete="off" style="display:flex;flex-direction:column;gap:14px">
+    <form method="POST" action="/oculah/setup/delete-code" autocomplete="off" style="display:flex;flex-direction:column;gap:14px">
       <div>
         <label class="ocu-form-label">Current code</label>
         <input type="password" name="old_code" required autocomplete="current-password" class="ocu-input" />
@@ -82,7 +82,7 @@ function settingsPage(data = {}) {
       Signed in as <strong style="color:var(--ocu-text-1)">${escHTML(data.userEmail || 'you')}</strong>.
       Choose a new password — at least 8 characters. We'll send you an email confirmation when it changes.
     </div>
-    <form method="POST" action="/ocular/setup/password" autocomplete="off" style="display:flex;flex-direction:column;gap:14px">
+    <form method="POST" action="/oculah/setup/password" autocomplete="off" style="display:flex;flex-direction:column;gap:14px">
       <div>
         <label class="ocu-form-label">Current password</label>
         <input type="password" name="current_password" required autocomplete="current-password" class="ocu-input" />
@@ -102,10 +102,10 @@ function settingsPage(data = {}) {
 
   const distressCard = `
     <div style="font-size:13px;color:var(--ocu-text-2);line-height:1.6;margin-bottom:16px">
-      Tune how Ocular ranks your leads. Adjust the weight of each built-in signal, change the band thresholds (cold/warm/hot/burning), or add your own keyword-based signals to match list patterns specific to your team.
+      Tune how Oculah ranks your leads. Adjust the weight of each built-in signal, change the band thresholds (cold/warm/hot/burning), or add your own keyword-based signals to match list patterns specific to your team.
     </div>
     <div style="display:flex;justify-content:flex-end">
-      <a href="/ocular/setup/distress" class="ocu-btn ocu-btn-primary">Open distress matrix →</a>
+      <a href="/oculah/setup/distress" class="ocu-btn ocu-btn-primary">Open distress matrix →</a>
     </div>`;
 
   const dedupCard = `
@@ -113,7 +113,7 @@ function settingsPage(data = {}) {
       Find contacts that share a phone number and merge them. Auto-runs after every bulk import — use this button to clean up duplicates that pre-date the auto-merge or accumulated from manual edits.
       Merging keeps the oldest contact record and re-homes property links, phones, tags, and call history onto it.
     </div>
-    <form method="POST" action="/ocular/setup/dedup">
+    <form method="POST" action="/oculah/setup/dedup">
       <button type="submit" class="ocu-btn ocu-btn-primary">Run duplicate cleanup</button>
     </form>`;
 

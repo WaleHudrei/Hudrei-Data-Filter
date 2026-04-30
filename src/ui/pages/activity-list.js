@@ -67,7 +67,7 @@ function jobRow(j) {
       <div class="ocu-td-primary">${escHTML(j.filename || '—')}</div>
       ${errBlock}
     </td>
-    <td class="ocu-td">${j.list_name ? `<a href="/ocular/records?list_id=${j.list_id}" class="ocu-link">${escHTML(j.list_name)}</a>` : '<span class="ocu-text-3">—</span>'}</td>
+    <td class="ocu-td">${j.list_name ? `<a href="/oculah/records?list_id=${j.list_id}" class="ocu-link">${escHTML(j.list_name)}</a>` : '<span class="ocu-text-3">—</span>'}</td>
     <td class="ocu-td">${statusBadge(j.status)}</td>
     <td class="ocu-td" style="min-width:200px">${progressBar(j)}</td>
     <td class="ocu-td" style="font-size:12px">${resultsCell}</td>
@@ -129,7 +129,7 @@ function activityList(data = {}) {
       (function () {
         var iv = setInterval(async function () {
           try {
-            var r = await fetch('/ocular/activity/poll');
+            var r = await fetch('/oculah/activity/poll');
             var data = await r.json();
             if (!data.hasRunning) { clearInterval(iv); }
             if (data.html) { document.querySelector('.ocu-table tbody').innerHTML = data.html; }

@@ -5,10 +5,10 @@
 // disposition breakdown as horizontal bars, and recent uploads.
 //
 // Inline writes wired here:
-//   - Rename (POST /ocular/campaigns/:id/rename)
-//   - Status change (POST /ocular/campaigns/:id/status)
-//   - Channel switch (POST /ocular/campaigns/:id/channel)
-//   - Close + Start new round (POST /ocular/campaigns/:id/close, /new-round)
+//   - Rename (POST /oculah/campaigns/:id/rename)
+//   - Status change (POST /oculah/campaigns/:id/status)
+//   - Channel switch (POST /oculah/campaigns/:id/channel)
+//   - Close + Start new round (POST /oculah/campaigns/:id/close, /new-round)
 //
 // Heavy uploads (contact list, SMS export, NIS, manual count) intentionally
 // link out to the existing Loki endpoints — those are multi-step flows we
@@ -93,7 +93,7 @@ function campaignDetail(data = {}) {
 
   // Channel + status controls
   const channelControl = `
-    <form method="POST" action="/ocular/campaigns/${c.id}/channel" style="display:flex;gap:6px;align-items:center">
+    <form method="POST" action="/oculah/campaigns/${c.id}/channel" style="display:flex;gap:6px;align-items:center">
       <span class="ocu-text-3" style="font-size:11px">Channel:</span>
       <select name="channel" onchange="this.form.submit()" class="ocu-input" style="padding:5px 8px;font-size:12px;width:auto">
         <option value="cold_call" ${c.active_channel === 'cold_call' ? 'selected' : ''}>Cold call</option>
@@ -102,7 +102,7 @@ function campaignDetail(data = {}) {
     </form>`;
 
   const statusControl = `
-    <form method="POST" action="/ocular/campaigns/${c.id}/status" style="display:flex;gap:6px;align-items:center">
+    <form method="POST" action="/oculah/campaigns/${c.id}/status" style="display:flex;gap:6px;align-items:center">
       <span class="ocu-text-3" style="font-size:11px">Status:</span>
       <select name="status" onchange="this.form.submit()" class="ocu-input" style="padding:5px 8px;font-size:12px;width:auto">
         <option value="active"    ${c.status === 'active'    ? 'selected' : ''}>Active</option>
@@ -113,20 +113,20 @@ function campaignDetail(data = {}) {
 
   // Rename — inline form, only shown when user clicks pencil
   const renameForm = `
-    <form method="POST" action="/ocular/campaigns/${c.id}/rename" id="cd-rename-form" style="display:none;flex:1;gap:6px">
+    <form method="POST" action="/oculah/campaigns/${c.id}/rename" id="cd-rename-form" style="display:none;flex:1;gap:6px">
       <input type="text" name="name" value="${escHTML(c.name)}" maxlength="255" required class="ocu-input" style="flex:1" />
       <button type="submit" class="ocu-btn ocu-btn-primary">Save</button>
       <button type="button" class="ocu-btn ocu-btn-ghost" onclick="cd_cancelRename()">Cancel</button>
     </form>`;
 
   const closeBtn = c.status !== 'completed'
-    ? `<form method="POST" action="/ocular/campaigns/${c.id}/close" style="display:inline-block" onsubmit="return confirm('Close this campaign? It will be marked completed.')">
+    ? `<form method="POST" action="/oculah/campaigns/${c.id}/close" style="display:inline-block" onsubmit="return confirm('Close this campaign? It will be marked completed.')">
         <button type="submit" class="ocu-btn ocu-btn-secondary">Close campaign</button>
        </form>`
     : '';
 
   const newRoundBtn = `
-    <form method="POST" action="/ocular/campaigns/${c.id}/new-round" style="display:inline-block" onsubmit="return confirm('Close this campaign and start a fresh round with the same settings?')">
+    <form method="POST" action="/oculah/campaigns/${c.id}/new-round" style="display:inline-block" onsubmit="return confirm('Close this campaign and start a fresh round with the same settings?')">
       <button type="submit" class="ocu-btn ocu-btn-secondary">Start new round</button>
     </form>`;
 
@@ -161,7 +161,7 @@ function campaignDetail(data = {}) {
   const body = `
     <div class="ocu-page-header" style="align-items:flex-start">
       <div style="flex:1;min-width:0">
-        <div style="margin-bottom:6px"><a href="/ocular/campaigns" class="ocu-text-3" style="font-size:13px;text-decoration:none">← Campaigns</a></div>
+        <div style="margin-bottom:6px"><a href="/oculah/campaigns" class="ocu-text-3" style="font-size:13px;text-decoration:none">← Campaigns</a></div>
         <div style="display:flex;align-items:center;gap:10px;margin-bottom:6px">
           <h1 class="ocu-page-title" id="cd-name" style="margin:0">${escHTML(c.name)}</h1>
           <button class="ocu-btn ocu-btn-ghost" style="padding:4px 8px;font-size:11px" onclick="cd_startRename()">Rename</button>

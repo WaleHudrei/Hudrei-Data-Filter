@@ -5,7 +5,7 @@
 //   2. Band thresholds (warm / hot / burning)
 //   3. Custom signals (repeater: label + keyword + points)
 //
-// Save posts to /ocular/setup/distress; Reset to /ocular/setup/distress/reset.
+// Save posts to /oculah/setup/distress; Reset to /oculah/setup/distress/reset.
 // ═══════════════════════════════════════════════════════════════════════════
 const { shell } = require('../layouts/shell');
 const { card } = require('../components/card');
@@ -83,7 +83,7 @@ function distressSettingsPage(data = {}) {
 
   const overridesBanner = cfg._hasOverrides
     ? `<div class="ocu-card" style="margin-bottom:16px;background:#eef9f1;border-color:#c5e8d4;color:#1a5f1a;padding:10px 14px;font-size:13px">
-        Using your custom matrix. <a href="/ocular/setup/distress/reset" class="ocu-link" onclick="return confirm('Reset all weights, bands, and custom signals to defaults?')">Reset to defaults →</a>
+        Using your custom matrix. <a href="/oculah/setup/distress/reset" class="ocu-link" onclick="return confirm('Reset all weights, bands, and custom signals to defaults?')">Reset to defaults →</a>
       </div>`
     : `<div class="ocu-card" style="margin-bottom:16px;background:#f5f4f0;border-color:#e0dfd8;color:var(--ocu-text-2);padding:10px 14px;font-size:13px">
         Currently using the built-in defaults. Customize any weight, band, or add a custom signal below.
@@ -97,9 +97,9 @@ function distressSettingsPage(data = {}) {
   const body = `
     <div class="ocu-page-header">
       <div>
-        <div style="margin-bottom:6px"><a href="/ocular/setup" class="ocu-text-3" style="font-size:13px;text-decoration:none">← Settings</a></div>
+        <div style="margin-bottom:6px"><a href="/oculah/setup" class="ocu-text-3" style="font-size:13px;text-decoration:none">← Settings</a></div>
         <h1 class="ocu-page-title">Distress score matrix</h1>
-        <div class="ocu-page-subtitle">Tune how Ocular ranks your leads. Per-workspace.</div>
+        <div class="ocu-page-subtitle">Tune how Oculah ranks your leads. Per-workspace.</div>
       </div>
     </div>
 
@@ -107,7 +107,7 @@ function distressSettingsPage(data = {}) {
       ${flashHTML}
       ${overridesBanner}
 
-      <form method="POST" action="/ocular/setup/distress" id="distress-form">
+      <form method="POST" action="/oculah/setup/distress" id="distress-form">
         ${card({
           title: 'Built-in signals',
           meta:  'Adjust how strongly each pre-defined signal weighs. Set to 0 to disable.',
@@ -131,7 +131,7 @@ function distressSettingsPage(data = {}) {
         </div>
 
         <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:18px">
-          <a href="/ocular/setup" class="ocu-btn ocu-btn-ghost">Cancel</a>
+          <a href="/oculah/setup" class="ocu-btn ocu-btn-ghost">Cancel</a>
           <button type="submit" class="ocu-btn ocu-btn-primary">Save matrix</button>
         </div>
         ${recomputeNote}

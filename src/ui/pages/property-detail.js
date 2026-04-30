@@ -1,6 +1,6 @@
 // ui/pages/property-detail.js
 // Composes the full property detail page using the shell + components.
-// Page-specific click handlers live in /ocular-static/detail-actions.js
+// Page-specific click handlers live in /oculah-static/detail-actions.js
 // (loaded at end of <body> via shell's extraBodyEnd hook).
 //
 // Write actions wired up:
@@ -345,7 +345,7 @@ function propertyDetail(data) {
     // pipeline change, etc. The user reported "phone tag is broken" on
     // 2026-04-29; this was the root cause for all of them. Move to extraHead
     // with `defer` so it still runs after the DOM is parsed.
-    extraHead: '<script src="/ocular-static/detail-actions.js?v=6" defer></script>',
+    extraHead: '<script src="/oculah-static/detail-actions.js?v=6" defer></script>',
   });
 }
 

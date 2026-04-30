@@ -282,7 +282,7 @@ router.get('/', requireAuth, (req, res) => {
   res.send(shell('Bulk Import', `
     <div class="ocu-page-header">
       <div>
-        <div style="margin-bottom:6px"><a href="/ocular/upload" class="ocu-text-3" style="font-size:13px;text-decoration:none">← Upload</a></div>
+        <div style="margin-bottom:6px"><a href="/oculah/upload" class="ocu-text-3" style="font-size:13px;text-decoration:none">← Upload</a></div>
         <h1 class="ocu-page-title">Bulk import — REISift export</h1>
         <div class="ocu-page-subtitle">Upload your full REISift export CSV. No row limit — the server handles everything. You can close this tab after starting.</div>
       </div>

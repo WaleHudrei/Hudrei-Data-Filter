@@ -26,7 +26,7 @@ function fmtDate(val) {
 // and POST /delete below stay — both old and new modal forms call them.
 router.get('/', requireAuth, (req, res) => {
   const qs = req.url.includes('?') ? req.url.slice(req.url.indexOf('?')) : '';
-  res.redirect('/ocular/lists' + qs);
+  res.redirect('/oculah/lists' + qs);
 });
 
 

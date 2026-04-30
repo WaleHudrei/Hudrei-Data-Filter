@@ -9,7 +9,7 @@
 //                    rows joined through phones.contact_id
 //
 // Right sidebar shows phones (with type/status badges) + email.
-// Message form posts to /ocular/owners/:id/message.
+// Message form posts to /oculah/owners/:id/message.
 // ═══════════════════════════════════════════════════════════════════════════
 const { shell }   = require('../layouts/shell');
 const { card }    = require('../components/card');
@@ -75,7 +75,7 @@ function propRow(p) {
   // defaults to center).
   return `<tr>
       <td class="ocu-td">
-        <a href="/ocular/records/${p.id}" class="ocu-link">${escHTML(address)}</a>
+        <a href="/oculah/records/${p.id}" class="ocu-link">${escHTML(address)}</a>
         ${p.primary_contact ? '<span class="ocu-pill ocu-pill-primary" style="margin-left:6px">PRIMARY</span>' : ''}
       </td>
       <td class="ocu-td ocu-td-text">${escHTML(p.property_type || '—')}</td>
@@ -194,7 +194,7 @@ function ownerDetail(data = {}) {
 
   // ─── Message board tab ────────────────────────────────────────────────
   const messagesTab = `
-    <form method="POST" action="/ocular/owners/${c.id}/message" class="ocu-card" style="padding:14px;margin-bottom:14px">
+    <form method="POST" action="/oculah/owners/${c.id}/message" class="ocu-card" style="padding:14px;margin-bottom:14px">
       <div style="display:grid;grid-template-columns:200px 1fr;gap:10px;margin-bottom:10px">
         <input type="text" name="author" placeholder="Your name" maxlength="100" required class="ocu-input" />
         <div></div>
@@ -278,7 +278,7 @@ function ownerDetail(data = {}) {
     ${ownerEditDialog}
     <div class="ocu-page-header" style="display:flex;align-items:flex-start;justify-content:space-between;gap:14px">
       <div style="flex:1;min-width:0">
-        <div style="margin-bottom:6px"><a href="/ocular/owners" class="ocu-text-3" style="font-size:13px;text-decoration:none">← Owners</a></div>
+        <div style="margin-bottom:6px"><a href="/oculah/owners" class="ocu-text-3" style="font-size:13px;text-decoration:none">← Owners</a></div>
         <h1 class="ocu-page-title">${escHTML(ownerName)}</h1>
         <div class="ocu-page-subtitle" style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">${subtitleBits.join(' ')}</div>
       </div>
@@ -329,7 +329,7 @@ function ownerDetail(data = {}) {
     body,
     // 2026-04-29 load detail-actions.js so the ocu_editOwner submit
     // handler is available. Same pattern as the property detail page.
-    extraHead:  '<script src="/ocular-static/detail-actions.js?v=5" defer></script>',
+    extraHead:  '<script src="/oculah-static/detail-actions.js?v=5" defer></script>',
   });
 }
 

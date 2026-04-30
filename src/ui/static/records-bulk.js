@@ -1,7 +1,7 @@
 /* ═══════════════════════════════════════════════════════════════════════════
    ui/static/records-bulk.js
    Bulk-selection logic for the Ocular records list.
-   Loaded only on /ocular/records (the list page).
+   Loaded only on /oculah/records (the list page).
 
    Design:
      - Selection state lives in two places:
@@ -181,7 +181,7 @@
     // If the click was inside the checkbox cell, we already stopPropagation'd it
     if (e.target.closest('.ocu-td-check')) return;
     const id = tr.dataset.rowId;
-    if (id) window.location = '/ocular/records/' + id;
+    if (id) window.location = '/oculah/records/' + id;
   });
 
   // ─── Bulk action dispatcher ───────────────────────────────────────────────

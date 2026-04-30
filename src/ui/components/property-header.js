@@ -61,7 +61,7 @@ function propertyHeader(p = {}) {
 
   return `
     <div class="ocu-detail-header">
-      <a href="/ocular/records" class="ocu-detail-backlink">← All records</a>
+      <a href="/oculah/records" class="ocu-detail-backlink">← All records</a>
       <div class="ocu-detail-header-main">
         <div class="ocu-detail-title-block">
           <h1 class="ocu-detail-title" title="${fullAddr}">${addrLine1 || '(no address)'}</h1>

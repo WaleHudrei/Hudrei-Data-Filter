@@ -2341,7 +2341,7 @@ body { padding-bottom: 0; }
 }
 .ocu-modal-close:hover { color: var(--ocu-text-1); }
 
-/* List-type pill colors (used on /ocular/lists) */
+/* List-type pill colors (used on /oculah/lists) */
 .ocu-pill[data-list-type="Absentee"]         { background: #e8f0fc; color: #2a4a8a; }
 .ocu-pill[data-list-type="Vacant"]           { background: #f5e8f0; color: #8a2a5a; }
 .ocu-pill[data-list-type="Pre-Foreclosure"]  { background: #fdeaea; color: #8b1f1f; }

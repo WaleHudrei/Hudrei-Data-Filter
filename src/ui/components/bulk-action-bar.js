@@ -1,7 +1,7 @@
 // ui/components/bulk-action-bar.js
 // Floating action bar that appears when at least one row is selected.
 // Shows count + the action buttons. The bar's visibility is toggled by the
-// inline JS in /ocular-static/records-bulk.js.
+// inline JS in /oculah-static/records-bulk.js.
 //
 // Design: starts hidden (visibility:hidden). Bulk JS sets `data-active="true"`
 // on a parent when count > 0, which CSS uses to show + animate it in.
