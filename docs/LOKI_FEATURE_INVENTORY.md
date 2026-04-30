@@ -1,361 +1,575 @@
-# Loki Feature Inventory — Commit 0d79f14
+# Loki Feature Inventory (Commit 0d79f14)
 
-This document captures the **user-visible features** of Loki at git commit 0d79f14 (April 17–21, 2026). Use this as a checklist to identify what's missing in the current Ocular UI.
-
-## 1. Filtration Pipeline
-
-**Routes:** `/` (GET), `/process` (POST), `/download/filtered` (GET), `/download/clean` (GET)
-
-**Core Flow:**
-- User selects a campaign from a dropdown (required before upload)
-- Drop zone accepts Readymode call log export CSVs
-- Uploads via `/process` endpoint
-- Filtration engine categorizes each record based on disposition rules
-- Applies memory (historical phone number tracking across campaigns)
-
-**Outputs (Two CSVs):**
-1. **Filtered → REISift** (phone status/tags updated per list disposition breakdowns)
-2. **Clean → Readymode** (passed all filters, ready for re-upload)
-
-**Disposition Rules (SOP Reference Table on page):**
-- **Transfer** (any) → Remove (marked as lead)
-- **Not Interested** (3+ logs) → Remove + tag
-- **Do Not Call** (any) → Remove + tag
-- **Wrong Number** (any) → Remove (phone status = Wrong)
-- **Spanish Speaker** (any) → Remove
-- **Voicemail** (4+ logs) → Remove + tag
-- **Hung Up** (4+ logs) → Remove + tag
-- **Dead Call** (4+ logs) → Remove + tag
-- **Not Available** (4+ logs) → Remove + tag
-- **Callback** (any) → Keep
-
-**Results Display:**
-- Stats cards: Total, Lists detected, Kept, Filtered, Caught by memory
-- List chips showing per-list keep/filter counts + top 3 dispositions
-- Tabbed tables (Filtered vs. Clean) with preview
-- Download buttons for both outputs
-
-## 2. Memory Operations
-
-**Routes:** `/memory/export` (GET), `/memory/import` (POST), `/memory/clear` (POST)
-
-**Features:**
-- Displays current memory size (number of tracked phone numbers)
-- Displays number of unique lists tracked
-- **Export** as JSON backup file
-- **Import** from previously exported JSON
-- **Clear** all memory (with confirmation)
-- Redis status indicator: shows if memory is persistent or will reset on restart
-
-## 3. Records
-
-**Route:** `/records` (GET)
-
-**List View Features:**
-- Paginated records table (50 per page)
-- Search by text query
-- **Filters:**
-  - City, ZIP, County
-  - Property type, Pipeline stage
-  - Stack list (list_id) — multi-checkbox
-  - Minimum stack count
-  - Marketing result (multi-value)
-  - Property status
-  - Assessed/estimated value range (min/max)
-  - Equity range
-  - Year built range
-  - Upload date range
-  - Distress score minimum
-  - Owner occupancy (Owner Occupied / Absent Owner / Unknown)
-  - Phone count
-  - Years owned range
-  - Owner type
-  - Mailing address match (toggle)
-  - **Property tags** (single select)
-  - **Phone type** (Mobile / Landline / VoIP / Unknown)
-  - **Phone tags** (single select)
-- Bulk actions (via checkbox select):
-  - Add/remove tags (modal with color picker)
-  - Merge duplicates (10+ requires delete code confirmation)
-  - Export selected
-  - Delete selected
-  - Mark Right For List (RFL)
-- Column sorting
-- Row selection (individual + select-all)
-- Detail view via row click
-
-## 4. Owners
-
-**Route:** `/owners/:id` (GET)
-
-**Owner Dashboard:**
-- Contact info card with phone/email
-- **KPIs:** Property count, Sold count, Lead count, Contract count, Total call logs, Phone verification %
-- Investment value (sum of property assessed/estimated values)
-- **Properties tab:** All properties linked to this owner (primary + co-owner roles)
-- **Message board:** Free-text notes (author, timestamp)
-- **Activity log:** Union of owner_activities table + derived call log events
-- Message post form + edit/delete per message
-
-## 5. Lists
-
-**Route:** `/lists` (GET), `/lists/edit` (POST), `/lists/delete` (POST), `/lists/types` (routes)
-
-**Lists Page:**
-- Paginated list table (50 per page)
-- Search by list name
-- Columns: Name, Type, Source, Property count, Created date
-- **Type colors** (badges): Cold Call (blue), SMS (green), Direct Mail (orange), PPL (red), Referral (purple), Driving for Dollars (pink)
-- **Sources:** PropStream, DealMachine, BatchSkipTracing, REISift, DataSift, Listsource, Manual
-- Actions per list: View, Edit, Delete
-- **Edit modal:** Update name, type, source
-- **Delete modal:** Confirmation + delete code entry
-
-**List Types Management:**
-- `/lists/types` — manage custom list type definitions
-
-## 6. Campaigns
-
-**Routes:** `/campaigns` (GET), `/campaigns/new` (GET/POST), `/campaigns/:id` (GET), `/campaigns/:id/upload` (POST), `/campaigns/:id/contacts/upload` (POST), `/campaigns/:id/status` (POST), `/campaigns/:id/channel` (POST), `/campaigns/:id/rename` (POST), `/campaigns/:id/close` (POST), `/campaigns/:id/new-round` (POST), `/campaigns/:id/contacts/delete` (POST), `/campaigns/:id/sms/upload` (POST), `/campaigns/:id/sync-wrong-numbers` (POST), `/campaigns/:id/readymode-count` (POST), `/campaigns/:id/export/clean` (GET), `/campaigns/:id/reset` (POST), `/campaigns/:id/delete` (POST)
-
-**Campaign List:**
-- List all campaigns with status badge
-- New campaign button
-
-**Campaign Detail Page:**
-- **Header:** Campaign name (editable via modal), status, market, list type, created date
-- **Channel selector:** Toggle between Cold Call / SMS (affects upload flow + KPI display)
-- **Status indicators:** Cold Call status, SMS status badges
-- **KPIs (dynamic by channel):**
-  - SMS: SMS uploads, Wrong numbers, Not interested, Leads generated, Callable
-  - Cold Call: Call logs, Connected, Wrong numbers, Not interested, Leads generated, Callable, Filtration runs
-- **KPI metrics:** W#%, NI%, LGR, LCV, Health (% callable)
-  - Additional (Cold Call only): CLR, CR
-
-**Contact List Section:**
-- Total contacts, Accepted by Readymode (editable count), Total phones, Wrong numbers, NIS flagged, Confirmed correct, Contacts reached %
-- Upload master contact list (CSV) — auto-detects columns + phone numbers
-- Delete master list button
-- (SMS only) Upload SmarterContact SMS results CSV
-
-**Filtration Upload Section:**
-- Campaign-scoped file drop zone (Cold Call only)
-- Channel selector inline
-- Auto-processes on file drop; reloads after 3s
-
-**Disposition Breakdown Table:**
-- Disposition name / Count
-
-**Channel Status Card:**
-- Cold Call status badge
-- SMS status badge
-- Wrong numbers removed (count)
-- Voicemails accumulated (count)
-
-**Filtration History Table:**
-- Columns: Date, File/Source list, Channel, Total, Kept, Filtered, Breakdown, Memory catches, Actions
-- One row per upload
-- View/delete per upload
-
-**Actions:**
-- Rename campaign (modal)
-- Sync wrong numbers (button + confirm)
-- Download clean export (Readymode format)
-- Mark campaign completed (requires status change)
-- Start new round (clone campaign)
-- Reset campaign (clear all data)
-- Delete campaign (requires code)
-
-## 7. Imports
-
-**Routes:** `/import/property` (GET/POST hierarchy), `/import/bulk` (GET/POST hierarchy)
-
-### Property Import (`/import/property/*`)
-- **Step 1 (Choose):** Upload CSV
-- **Step 2 (Map):** Auto-map columns with manual override + template save
-  - Detects column fingerprint; auto-applies saved mapping
-  - Mapping templates stored by header fingerprint
-  - Use count tracking
-- **Step 3 (Preview):** First 5 rows preview + error summary
-- **Background job tracking** in Activity page
-- Async processing (user can close tab)
-- Job status: pending / running / complete / error
-- Per-row error logging (max 500 errors shown)
-
-### Bulk Import (`/import/bulk`)
-- Upload full REISift export (up to 600MB)
-- REISift column mapping (hardcoded, auto-applied)
-- Field mapping with bounds checking:
-  - Money values (max $9.9B)
-  - Year (1800–2200)
-  - Bathrooms (0–99)
-  - SmallInt range checks
-- Async batch processing (500 rows/batch)
-- UPSERT semantics (properties, contacts, phones)
-- Job status page with progress bar + error summary
-
-## 8. Activity
-
-**Route:** `/activity` (GET), `/activity/status` (GET)
-
-**Activity Feed:**
-- Paginated import job table (50 most recent)
-- Columns: File, List, Status, Progress (%), Results (inserted/updated/errors), Started
-- Status icons + color-coded badges: pending (⏳), running (🔄), complete (✅), error (❌)
-- Progress bar per job with (processed / total) count
-- Error message summary (first 500 chars) shown inline
-- "View List" button links to Records filtered by that list
-- **Auto-refresh** if jobs running (every 2s)
-- Empty state + call-to-action to start import
-
-## 9. NIS
-
-**Route:** `/nis` (GET), `/nis/upload` (POST)
-
-**NIS Page:**
-- Stats display: Total NIS numbers, First seen, Last seen, Times reported
-- Upload form for NIS number CSV
-- Processes CSV and flags matching phones across all campaigns
-- Displays result message: rows processed, unique numbers, new vs. updated, phones flagged
-- Uses `nis_numbers` table for global NIS tracking
-
-## 10. Settings / Security
-
-**Route:** `/settings/security` (GET/POST)
-
-**Security Settings Page:**
-- Delete code management (password change form)
-  - Current code (password field)
-  - New code (min 6 characters)
-  - Confirm new code
-- Last updated timestamp display
-- Warning banner: "If you forget this code, an admin with database access will need to reset via SQL"
-- Constant-time comparison to prevent timing attacks
-
-**Default Code:** `HudREI2026`
-
-## 11. Auth
-
-**Routes:** `/login` (GET/POST), `/logout` (GET)
-
-**Login:**
-- Simple password form (`APP_PASSWORD` from env)
-- Rate-limited POST (uses rate limiter middleware)
-- Express session management (Redis-backed in production, MemoryStore in dev)
-- Session TTL: 8 hours
-- Secure cookies: `httpOnly`, `sameSite=lax`, `secure=true` in production
-
-**Logout:**
-- Destroys session, redirects to `/login`
-
-## 12. Sidebar / Shell
-
-**Sidebar Navigation Items:**
-1. Dashboard (`/dashboard`)
-2. Records (`/records`)
-3. Lists (`/lists`)
-4. Campaigns (`/campaigns`)
-5. Filter (`/`)
-6. Upload (`/upload`)
-7. Activity (`/activity`)
-8. NIS (`/nis`)
-9. Changelog (`/changelog`)
-10. **System section:**
-    - Setup (`/setup`)
-    - List Types (`/lists/types`)
-    - Security Settings (`/settings/security`)
-
-**Footer:**
-- Sign out link (`/logout`)
-
-**Shell Features:**
-- Fixed left sidebar (220px, dark theme)
-- Active page indicator (highlight nav item)
-- Responsive page wrap (margin-left: 220px)
-- Logo: "Loki" / "OOJ Acquisitions"
-
-## 13. Dashboard
-
-**Route:** `/dashboard` (GET), `/api/dashboard-stats` (GET)
-
-**Stats Section:**
-- Total properties
-- Total contacts
-- Total phones
-- Total leads (contacts with pipeline_stage = 'lead')
-- Recent imports (5 most recent with run timestamp, record counts, memory catch count)
-- Monthly trends (filtration + leads)
-
-**API Endpoint:**
-- `/api/dashboard-stats` returns JSON with all dashboard metrics for live refresh
-
-## 14. Changelog
-
-**Route:** `/changelog` (GET)
-
-**Changelog Page:**
-- Displays versioned feature/fix/note entries
-- Date, title, tag, description per entry
-- Entries at 0d79f14 include:
-  - Phone tags + phone type editing
-  - Phone type + phone tag filters
-  - Email display fix
-  - Various bug fixes and audits
-
-## 15. CSV Upload (Upload Routes)
-
-**Routes:** `/upload` (GET), `/upload/filter` (GET/POST), `/upload/property` (GET/POST), `/upload/filter/parse` (POST), `/upload/property/parse` (POST), `/upload/filter/process` (POST), `/upload/property/process` (POST)
-
-**Filter Upload Pipeline:**
-- Step 1: File upload (trigger parse)
-- Step 2: Column mapping (auto-map to REISift fields)
-- Step 3: Review preview
-- Two-phase (parse / process):
-  - `/upload/filter/parse` → returns columns + auto-mapping suggestion
-  - `/upload/filter/process` → executes filtration, returns results
-
-**Property Upload Pipeline:**
-- Similar three-step flow
-- Maps to REISift property fields
-
-## 16. Database Schema Highlights
-
-**Key Tables:**
-- `campaigns` — campaign metadata (status, channels, counts)
-- `campaign_numbers` — per-campaign phone tracking (cumulative count, status, tag, marketing result)
-- `campaign_uploads` — upload history per campaign
-- `campaign_contacts` — contact master list per campaign
-- `campaign_contact_phones` — per-phone filtration/status tracking
-- `nis_numbers` — global NIS dead-letter list
-- `properties` — property records
-- `contacts` — contact records (first/last, mailing address, owner_type)
-- `phones` — phone numbers (phone_type, phone_status, phone_tag)
-- `property_contacts` — junction (primary_contact, role)
-- `property_tags` — custom tags for properties (color, name)
-- `phone_tags` — custom tags for phone numbers (separate from property tags)
-- `lists` — list definitions (name, type, source)
-- `bulk_import_jobs` — async job tracking
-- `mapping_templates` — saved CSV column mappings by fingerprint
-- `owner_messages` — message board posts per owner (contact_id, author, body, timestamp)
-- `owner_activities` — audit log per owner (kind, summary, author, timestamp)
-- `app_settings` — app config (delete_code)
-
-**Indexes:**
-- Campaign + upload history
-- NIS last seen date
-- Property tags + phone tags
-- Contact/property relationships
-- Mapping template fingerprint
+Comprehensive checklist of user-visible features in Loki at the reference commit. Use this to identify what's missing or changed in the current Ocular UI.
 
 ---
 
-**Summary:** Loki at 0d79f14 is a **call log filtration + campaign management system** with:
-- Single-password auth + session management
-- Readymode CSV import → disposition-based filtration → two-output flow
-- Memory (persistent via Redis, local via JSON backup)
-- Campaign + contact list management
-- Multi-source bulk import (REISift, PropStream, etc.)
-- Phone + property tagging
-- NIS tracking
-- Activity logging + changelog
-- Delete-code-protected destructive operations
+## Authentication & Shell
+
+**Routes:**
+- `GET /login` — login form (single password)
+- `POST /login` — authenticate via `APP_PASSWORD` env var
+- `GET /logout` — destroy session and redirect to /login
+
+**Features:**
+- Session-based auth with configurable session secret (Redis-backed or in-memory)
+- Rate-limited login attempts
+- HTTPS-only secure cookies in production
+- Shared navigation shell with page title, sidebar nav, and breadcrumbs
+
+**Sidebar Navigation:**
+- List Filtration Bot (home)
+- Campaigns
+- Records
+- Lists
+- Import Property
+- Import Bulk
+- Activity
+- Owners
+- NIS
+- Changelog
+- Settings / Security
+
+---
+
+## Filtration Pipeline (Core `/` and `/upload/`)
+
+**Root Page: `GET /`**
+- **Purpose:** Main "List Filtration Bot" dashboard — drop Readymode call log CSVs
+- **UI Elements:**
+  - Campaign selector dropdown (required before upload allowed)
+  - Drag-drop file zone (disabled until campaign selected)
+  - File input with click-to-browse
+  - Upload progress spinner
+
+**Memory Display:**
+- Lists in memory count
+- Phone numbers tracked count
+- Memory persistence status badge (Redis connected or "will reset on restart")
+
+**Memory Operations:**
+- `GET /memory/export` — download filtration memory as JSON backup
+- `POST /memory/import` — restore from JSON backup file
+- `POST /memory/clear` — clear all memory (with confirmation)
+
+**Upload Routes: `/upload/*`**
+- `GET /upload` — choose filtration type (Filter vs Property)
+- `GET /upload/filter` — Step 1: upload CSV
+- `GET /upload/filter/map` — Step 2: auto-map columns to REISIFT_FILTER_FIELDS
+- `GET /upload/filter/review` — Step 3: preview + review before processing
+- `POST /upload/filter/parse` — parse CSV, return columns and rows
+- `POST /upload/filter/process` — execute filtration, return clean/filtered rows
+- Same pattern for `/upload/property/*` (distinct field set for property imports)
+
+**Upload Processing:**
+- Auto-detects phone columns from CSV headers
+- Normalizes phone numbers (strips non-digits, leading 1 if 11 digits, handles extensions)
+- Normalizes state codes (recovers state from ZIP if column is garbage)
+- Two-output flow:
+  - **Filtered output** (REISift) — records to update phone status/tags per campaign
+  - **Clean output** (Readymode) — records passing all filters, ready for re-upload
+- Memory-based deduplication across uploads (per campaign scope)
+
+**Memory Scope:**
+- Keyed by `campaign_id||list_name` (or synthetic scope for legacy uploads)
+- Tracks phone numbers seen across all uploads to same campaign
+- Auto-prevents re-processing same phones when re-uploading the same list
+
+**Downloads:**
+- `GET /download/filtered` — download filtered tab as CSV
+- `GET /download/clean` — download clean tab as CSV
+- `GET /download/campaigns/:id/clean` — campaign-scoped clean export for Readymode
+
+---
+
+## Campaigns (`/campaigns/` and `/campaigns/:id`)
+
+**Campaign List: `GET /campaigns`**
+- Lists all active + completed campaigns
+- Columns: name, state, list type, market, status, created date
+- Buttons: New Campaign, View Detail
+- Pagination if needed
+
+**Campaign Creation: `GET /campaigns/new` + `POST /campaigns/new`**
+- Form fields:
+  - Campaign name
+  - Market name
+  - State (dropdown)
+  - List type (Cold Call / SMS / Direct Mail / PPL / Referral / etc.)
+  - Notes
+- Creates entry in `campaigns` table
+
+**Campaign Detail: `GET /campaigns/:id`**
+- **Campaign header:** Name, status (active/completed), created date
+- **Buttons/Actions:**
+  - Rename campaign (modal dialog)
+  - Change active channel (Cold Call vs SMS)
+  - Close campaign (mark completed)
+  - New round (duplicate campaign state for next cycle)
+
+**KPI Cards:**
+- SMS mode: Upload count, wrong numbers, not interested, leads generated, callable, W#%, NI%, LGR%, LCV%, health%
+- Cold Call mode: Call logs, connected, wrong numbers, not interested, leads, callable, filtration runs, CLR%, CR%, W#%, NI%, LGR%, LCV%, health%
+
+**Contact List Section:**
+- Upload original contact list (CSV with auto-detect of all columns)
+- Sync wrong numbers button (apply historical wrong-number flags to master list)
+- Download clean export (Readymode format)
+- Stats: total properties, accepted by Readymode, total phones, wrong numbers, NIS flagged, confirmed correct, contacts reached
+- Edit Readymode count (manual override for contacts accepted by Readymode)
+
+**SMS Campaign Specific:**
+- Upload SmarterContact SMS results (separate from contact list)
+
+**Filtration Upload Section:**
+- Drop zone for Readymode CSV (channel selector if cold_call only)
+- Live results table with two tabs:
+  - Filtered → REISift (records to update phone status/tags)
+  - Clean → Readymode (passing records)
+- Stats: uploaded, kept, filtered, lists in file, caught by memory
+
+**Filtration History Table:**
+- Columns: date, file/source list, channel, total, kept, filtered, breakdown, memory catches, actions
+- Shows all uploads against this campaign with cumulative stats
+
+**Status Controls:**
+- `POST /campaigns/:id/status` — change campaign status
+- `POST /campaigns/:id/channel` — change active channel (cold_call or sms)
+- `POST /campaigns/:id/rename` — rename campaign (modal form)
+
+**Contact Management:**
+- `POST /campaigns/:id/contacts/upload` — upload contact list
+- `POST /campaigns/:id/contacts/delete` — delete master contact list (confirmation required)
+- `POST /campaigns/:id/sms/upload` — upload SMS results (SMS campaigns only)
+
+**Phone Number Tracking:**
+- `campaign_numbers` table: tracks phone numbers per campaign, last disposition, status (callable/filtered/wrong/etc.), cumulative call count, phone tag, marketing result
+
+**API:**
+- `GET /api/campaigns` — JSON list of campaigns for dropdown/selection
+
+---
+
+## Records (`/records/` and detail pages)
+
+**Records List: `GET /records`**
+- Searchable, filterable list of properties
+- **Filters (query params):**
+  - `list_id` — scope to specific list
+  - Distress/risk filters
+  - Owner type (Person / Company / Trust)
+  - Pipeline stage (lead / contract / closed / etc.)
+  - Market / state filters
+  - Custom tag filters
+  - Phone status (correct / wrong / do_not_call / etc.)
+  - Date range filters
+
+**Display:**
+- Columns: address, owner name, owner type, distress score, pipeline stage, last updated, actions
+- Pagination
+- Bulk action bar (appears when rows selected)
+- Row selection checkboxes
+
+**Bulk Actions:**
+- Add tag to selected records
+- Change pipeline stage
+- Assign to list
+- Export selected as CSV
+- Delete selected (requires delete code verification for 10+)
+- Merge duplicates (requires delete code)
+
+**Record Detail Page: `/records/:id`**
+- Property header with address, county, market, estimated value
+- Owner information: name, email, mailing address, owner type
+- Distress score breakdown (rings + percentile)
+- Phone numbers table with:
+  - Phone number
+  - Phone type (mobile/landline)
+  - Status (correct/wrong/do_not_call/unknown)
+  - Tags
+  - Last call date
+  - Call count
+  - Actions (edit, tag, delete)
+- Connected contacts (co-owners, other names for same property)
+- Pipeline stage and notes
+- Activity timeline (recent changes, calls logged, tags added)
+- Message board / notes section
+- Call logs linked to this property
+
+**Features:**
+- Tag system (property tags + phone tags kept separate)
+- Distress scoring module (computed from property data)
+- Owner occupancy detection (by comparing property address to mailing address)
+- Pipeline stages: lead, contract, sold, inactive, etc.
+- Export options: filtered list to CSV, detailed property report
+
+---
+
+## Imports (`/import/property/` and `/import/bulk/`)
+
+### Property Import (`/import/property/`)
+
+**Flow:**
+1. `GET /import/property` — upload form
+2. `POST /import/property/parse` — parse CSV, detect columns, suggest mapping
+3. `POST /import/property/preview` — show mapped rows before import
+4. `POST /import/property/start` — begin background import job
+
+**Features:**
+- **Column mapping templates:**
+  - Auto-save mapping fingerprint (header hash → saved mapping)
+  - Auto-apply mapping on subsequent uploads with same fingerprint
+  - Manual column-to-field override
+- **Field normalization:**
+  - State code cleanup (recovers from ZIP if column garbage)
+  - Phone normalization (shared across all import paths)
+  - Property type inference
+  - Vacant flag boolean conversion
+  - Money/year/date validation with overflow protection (clamp to NULL)
+- **CSV upload:**
+  - Up to 600 MB file size
+  - File type validation (.csv/.txt or common MIME types)
+  - Memory streaming (staged to temp disk file, not held in memory)
+
+**Background Job Tracking:**
+- Job status: pending / running / complete / error
+- Progress bar (processed_rows / total_rows)
+- Inserted / updated / error counts
+- Error log display (warnings for completed jobs, full errors for failed jobs)
+
+**Database Operations:**
+- UPSERT semantics: properties by (state, county, zip, street); contacts by (mailing zip + address hash)
+- Batch processing (500 rows per batch) for speed
+- Phone insertion with type detection
+- Owner-portfolio materialized view refresh on completion
+
+### Bulk Import (`/import/bulk/`)
+
+**Similar to Property Import but for REISift bulk exports:**
+- Column mapping with templates
+- Multi-round batch processing
+- Larger file support (600 MB)
+- Same phone normalization and state cleanup
+
+---
+
+## Activity Page (`/activity/`)
+
+**Purpose:** Dashboard for background import jobs
+
+**Display:**
+- List of recent import jobs (up to 50, newest first)
+- "Import running…" badge if jobs pending/running
+- `+ New Import` button
+
+**Job Table Columns:**
+- Filename
+- List name (linked to records list filtered by that list)
+- Status (⏳ pending / 🔄 running / ✅ complete / ❌ error) with color coding
+- Progress bar (percentage + row count)
+- Results: inserted, updated, errors
+- Started timestamp (relative time)
+- "View List" link (if job produced a list)
+
+**Error Handling:**
+- Warning blocks (orange) for jobs with errors but status=complete (some rows skipped)
+- Error blocks (red) for jobs with status=error (full crash)
+- Error log displayed inline (first 500 chars, truncated with "…")
+
+**Auto-Refresh:**
+- Poll `/activity/status` every 2 seconds while jobs are running
+- Stop polling when all jobs are complete
+- `GET /activity/job/:id` — single job status query (for integration)
+
+---
+
+## Lists (`/lists/`)
+
+**Purpose:** Manage imported property lists
+
+**Lists Page: `GET /lists`**
+- Search by list name
+- Pagination (50 per page)
+- Columns:
+  - List name (clickable → `/records?list_id=:id`)
+  - Type badge (Cold Call / SMS / Direct Mail / PPL / Referral / etc.) with color coding
+  - Source
+  - Property count
+  - Created date
+  - Actions: View, Edit, Delete
+
+**List Actions:**
+- **Edit modal** — update:
+  - List name
+  - List type (dropdown)
+  - Source
+  - Active flag
+- **Delete** — confirmation required, redirects with success message
+- **View** — navigate to records filtered by this list
+
+**Inline Feedback:**
+- Success messages after save or delete (with `?msg=` query param)
+- Empty state if no lists yet
+
+---
+
+## Owners Dashboard (`/owners/:id`)
+
+**Purpose:** Aggregate all properties and contacts linked to one person
+
+**Owner Detail Page: `GET /owners/:id`**
+- Owner name (first + last or "(no name)")
+- Contact info: email, mailing address
+
+**KPIs (card grid):**
+- Property count
+- Sold count
+- Lead count
+- Contract count
+- Call count
+- Phone total / Phone correct (with verified %)
+- Total investment (sum of assessed/estimated property values)
+
+**Tabs:**
+1. **Properties:** Table of all properties linked to owner
+   - Columns: address, city, state, type, pipeline stage, estimated value, last sale, primary vs co-owner role
+2. **Phones:** Table of contact's phone numbers
+   - Phone number
+   - Type (mobile/landline/unknown)
+   - Status (correct/wrong/do_not_call/unknown)
+   - Do-not-call flag
+   - Created date
+3. **Message Board:** Free-text notes with author and timestamp
+   - Add new message form
+4. **Activity Log:** Audit log of changes
+   - Kind: pipeline change, phone edit, call logged, etc.
+   - Summary
+   - Author
+   - Timestamp
+
+**Lazy-Created Tables:**
+- `owner_messages` — message board posts
+- `owner_activities` — audit log entries
+
+---
+
+## NIS (Not-In-Service) Numbers (`/nis/`)
+
+**Purpose:** Flag dead numbers across all campaigns
+
+**NIS Page: `GET /nis`**
+- Upload form for Readymode Detailed NIS CSV exports
+- Required columns: "dialed" (phone), "day" (NIS date)
+
+**Stats Display:**
+- Total NIS numbers in database
+- Flagged phones across all campaigns
+- Last upload timestamp
+
+**Upload Handler: `POST /nis/upload`**
+- Parse CSV with "dialed" and "day" columns
+- Insert into master NIS table
+- Automatically flag matching phones in all `campaign_numbers` and `campaign_contact_phones` rows
+- Return result message: rows processed, unique NIS numbers, inserted/updated counts, flagged phones count
+
+**Features:**
+- NIS numbers apply globally to all campaigns
+- Once flagged, phones excluded from "clean" exports
+- Persistent NIS list survives across campaigns
+
+---
+
+## Settings & Security (`/settings/security`)
+
+**Purpose:** Manage delete code that gates destructive operations
+
+**Delete Code:**
+- Default: `HudREI2026` (shipped in repo)
+- Required before:
+  - Deleting 10+ records
+  - Bulk merging duplicate groups
+  - Clearing record batches
+- Constant-time string comparison to prevent timing attacks
+
+**UI Elements:**
+- Current code input (password field)
+- New code input (minimum 6 characters)
+- Confirm new code input
+- Last updated timestamp
+- Warning banner if using default code (with SQL reset instructions)
+
+**Form: `POST /settings/security/delete-code`**
+- Verify old code matches stored value
+- Validate new code (6+ chars)
+- Update `app_settings` table
+- Redirect with success/error message
+
+---
+
+## Dashboard / Statistics
+
+**Dashboard Page: `GET /dashboard`**
+- Overview KPIs across all campaigns
+- Campaign status summary
+- Recent activity snapshot
+- Links to common actions
+
+**API Endpoint: `GET /api/dashboard-stats`**
+- JSON response with top-level metrics
+- Used for dashboards and integrations
+
+---
+
+## Memory System
+
+**Purpose:** Prevent re-processing same phone numbers across uploads to same campaign
+
+**Storage:**
+- Redis-backed (if `REDIS_URL` env set) — survives deploys
+- Falls back to in-memory store (resets on restart, warning logged)
+- Session store uses same Redis instance (if available)
+
+**Key Structure:**
+- `hudrei:filtration:memory` — JSON object
+- Keys: `list_name||phone_number`
+- Values: disposition, first seen, last seen, cumulative count
+
+**Operations:**
+- `GET /memory/export` — download entire memory as JSON
+- `POST /memory/import` — restore from JSON file
+- `POST /memory/clear` — flush all keys
+- Auto-loaded before each filtration run
+- Auto-saved after processing
+
+---
+
+## Changelog
+
+**Route: `GET /changelog`**
+- Renders audit log of recent fixes and features
+- Sourced from `src/changelog.js`
+- User-visible release notes
+
+---
+
+## Common UI Patterns
+
+**Buttons & Controls:**
+- Primary button: black background, white text
+- Secondary button: gray background, dark text
+- Danger button: light red background, red text
+- Ghost button: transparent with border
+- Inline buttons: small, within table rows or action bars
+
+**Forms:**
+- POST only (no PUT/PATCH)
+- Inline validation and error messages
+- Confirmation dialogs for destructive actions
+- Success redirects with `?msg=` query param
+
+**Tables:**
+- Striped rows (alternating background on hover)
+- Sortable headers (where applicable)
+- Pagination links (← Prev / Next →)
+- Bulk action checkbox column
+
+**Modals:**
+- Modal overlay with semi-transparent backdrop
+- Close button (× icon top-right)
+- Form fields stacked vertically
+- Submit + Cancel buttons
+
+**Color Coding:**
+- Green (#1a7a4a): success, correct, active
+- Red (#c0392b): danger, errors, wrong numbers
+- Blue (#2c5cc5, #185fa5): info, details
+- Amber/Gold (#9a6800): warnings, neutral counts
+- Gray (#888, #aaa): secondary text, disabled
+
+---
+
+## Navigation & Routes Summary
+
+| Feature Area | Routes |
+|--------------|--------|
+| Auth | `/login`, `/logout` |
+| Filtration | `/`, `/upload/*`, `/download/*`, `/memory/*`, `/process` |
+| Campaigns | `/campaigns`, `/campaigns/new`, `/campaigns/:id`, `/api/campaigns` |
+| Records | `/records`, `/records/:id`, `/setup/*` |
+| Lists | `/lists` |
+| Import Property | `/import/property/*` |
+| Import Bulk | `/import/bulk/*` |
+| Activity | `/activity`, `/activity/status`, `/activity/job/:id` |
+| Owners | `/owners/:id` |
+| NIS | `/nis` |
+| Settings | `/settings/security` |
+| Changelog | `/changelog` |
+| Dashboard | `/dashboard`, `/api/dashboard-stats` |
+
+---
+
+## Key Technical Features
+
+**Session Management:**
+- Express session with Redis or in-memory store
+- HTTPS-only, HttpOnly, SameSite=lax cookies
+- 8-hour max age
+- Fallback to MemoryStore with warning if Redis unavailable
+
+**File Upload:**
+- Multer with file type validation (.csv/.txt by extension and MIME)
+- Memory storage (streamed for large imports)
+- 50 MB limit for most uploads (600 MB for bulk imports)
+- BOM stripping for UTF-8 CSVs
+
+**Normalization & Validation:**
+- Phone number: strips non-digits, removes leading 1 if 11 digits, handles extensions
+- State codes: uppercase 2-letter, recovers from ZIP if garbage, rejects invalid
+- Money values: bounded range (max $9.99B), NULL if overflow
+- Years: 1800–2200 range
+- Bathrooms: 0–99 range
+- Dates: ISO 8601 format
+
+**Performance:**
+- Batch processing (500 rows per batch)
+- UNNEST for bulk inserts/updates (vs row-by-row)
+- Materialized view refresh after bulk imports
+- Market cache (state_code → market_id) survives across jobs
+
+**Security:**
+- Rate-limited login
+- Delete code verification (constant-time comparison)
+- HTML escaping for user input
+- SQL parameterized queries
+- Production hardening (rejects default credentials on boot)
+
+---
+
+## Setup Routes (`/setup/*`)
+
+Reserved for initial application setup or admin tasks. Content not extensively detailed in commit but referenced in routes mount.
+
+---
+
+## Notes for Ocular Comparison
+
+1. **Memory System:** Loki has sophisticated memory-based deduplication per campaign. Verify Ocular preserves this or provides equivalent.
+
+2. **Two-Output Filtration:** The core feature is "filtered out" vs "clean" — REISift vs Readymode. Ocular should maintain this UX.
+
+3. **Campaign Scoping:** All filtration, uploads, and phone tracking is scoped to campaigns. Properties/contacts are separate (cross-campaign).
+
+4. **Status Fields:** Campaigns track cold_call_status and sms_status separately; records track pipeline_stage (lead/contract/sold/inactive).
+
+5. **Phone Normalization:** Single source of truth in `src/phone-normalize.js` — all four prior implementations (filtration, campaigns, property-import, bulk-import) were unified to this shared function.
+
+6. **NIS System:** Global list of dead numbers that flags phones across ALL campaigns. Not campaign-specific.
+
+7. **Owner Type Inference:** Contacts auto-classified as Person / Company / Trust during import.
+
+8. **Distress Scoring:** Property distress calculated and stored; visible on records list and detail.
+
+9. **Owner-Portfolio MV:** Materialized view for fast owner KPI queries (refreshed after bulk imports).
+
+10. **Delete Code:** Single code gates all destructive ops. No per-user permissions; shared across all operators.
+
