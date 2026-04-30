@@ -117,8 +117,16 @@ function recordsFilters(opts = {}) {
     </form>`;
 
   // ── The bar itself ─────────────────────────────────────────────────────
+  // Recompute Distress lives in the same row as Filters + the distress sort
+  // since it operates on the same data the user is sorting through. Moved
+  // here from the page header (2026-04-30 user request).
+  const recomputeBtn = `
+    <a href="/records/_distress" class="ocu-btn ocu-btn-secondary ocu-filter-bar-action" title="Re-score every property's distress band">
+      Recompute distress
+    </a>`;
+
   return `
-    <div class="ocu-filter-bar">
+    <div class="ocu-filter-bar" style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
       <button type="button" class="ocu-filter-toggle" id="ocu-filter-toggle"
               aria-expanded="false" aria-controls="ocu-filter-panel">
         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" aria-hidden="true">
@@ -131,6 +139,7 @@ function recordsFilters(opts = {}) {
         </svg>
       </button>
       ${sortControl}
+      ${recomputeBtn}
 
       <form id="ocu-filter-panel" class="ocu-filter-panel" method="GET" action="/oculah/records" hidden>
         <div class="ocu-filter-grid">

@@ -465,6 +465,15 @@ router.get('/tenants/:id', async (req, res) => {
         </form>
       </div>
 
+      <div class="card">
+        <h2 style="font-size:16px;font-weight:600;margin-bottom:6px">Data maintenance</h2>
+        <p class="lede" style="margin-bottom:14px">Run a duplicate-contact merge across this tenant's records. Collapses contacts that share a phone number, and contacts that share name+state+zip. Re-homes property links and phone rows onto the lowest-id keeper. Safe to run any time; auto-runs after every bulk import as well.</p>
+        <form class="inline" method="POST" action="/admin/tenants/${id}/dedup"
+              onsubmit="return confirm('Run duplicate-contact merge for this tenant? This rewrites property_contacts and phones rows.');">
+          <button class="btn btn-primary" type="submit">Merge duplicates</button>
+        </form>
+      </div>
+
       <div class="card danger-zone">
         <h2>Danger zone</h2>
         <p>Deletes this tenant and ALL associated data — every property, contact, phone, list, campaign, upload, and user account. Cascades through every <code>tenant_id</code> foreign key in the database. This cannot be undone.</p>
@@ -486,6 +495,30 @@ router.get('/tenants/:id', async (req, res) => {
   } catch (e) {
     console.error('[admin GET /tenants/:id]', e);
     res.status(500).send(adminShell('Error', `<div class="card"><h1>Something went wrong</h1><p class="lede">${escHTML(e.message)}</p></div>`));
+  }
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// POST /admin/tenants/:id/dedup — run dedupByPhone + dedupByNameAddress
+// scoped to one tenant. Super-admin only (whole router is requireSuperAdmin).
+// Moved here from /oculah/records on 2026-04-30 — it shouldn't have been a
+// regular-user action since it rewrites cross-record state.
+// ─────────────────────────────────────────────────────────────────────────────
+router.post('/tenants/:id/dedup', async (req, res) => {
+  const id = parseInt(req.params.id, 10);
+  if (!Number.isFinite(id)) return res.redirect('/admin');
+  try {
+    const { dedupByPhone, dedupByNameAddress } = require('../maintenance');
+    const phoneStats = await dedupByPhone('confirm',       { tenantId: id });
+    const nameStats  = await dedupByNameAddress('confirm', { tenantId: id });
+    const total = phoneStats.losersMerged + nameStats.losersMerged;
+    const msg = total > 0
+      ? `Merged ${total} duplicate contact(s): ${phoneStats.losersMerged} via shared phone, ${nameStats.losersMerged} via name+address.`
+      : 'No duplicate contacts found — tenant data is clean.';
+    res.redirect('/admin/tenants/' + id + '?ok=' + encodeURIComponent(msg));
+  } catch (e) {
+    console.error('[admin POST /tenants/:id/dedup]', e);
+    res.redirect('/admin/tenants/' + id + '?err=' + encodeURIComponent('Dedup failed: ' + e.message));
   }
 });
 

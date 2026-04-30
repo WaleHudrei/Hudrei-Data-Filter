@@ -102,13 +102,9 @@ function recordsList(data = {}) {
   const actionBar = bulkActionBar();
 
   // Top-bar layout: filters bar full-width on top, then chips, then table.
-  // Title + count moved to the topbar via shell({topbarTitle,topbarSubtitle}).
+  // Title + count live in the shell topbar; "Recompute distress" moved into
+  // the filter bar (records-filters.js); "Merge duplicates" moved to HQ.
   const body = `
-    <div style="display:flex;justify-content:flex-end;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:14px">
-      <a href="/records/_duplicates" class="ocu-btn ocu-btn-secondary">Merge duplicates</a>
-      <a href="/records/_distress" class="ocu-btn ocu-btn-secondary">Recompute distress</a>
-    </div>
-
     ${recordsFilters({
       filters,
       allTags:      data.allTags      || [],
