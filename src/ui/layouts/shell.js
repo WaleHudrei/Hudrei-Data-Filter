@@ -16,6 +16,8 @@ const NAV = [
     { id: 'records',       href: '/oculah/records',    label: 'Records',       icon: 'box',   badge: 'records-count' },
     { id: 'owners',        href: '/oculah/owners',     label: 'Owners',        icon: 'users' },
     { id: 'campaigns',     href: '/oculah/campaigns',  label: 'Campaigns',     icon: 'phone' },
+    { id: 'analytics',     href: '/oculah/analytics',  label: 'Analytics',     icon: 'activity' },
+    { id: 'exec',          href: '/oculah/exec',       label: 'Executive',     icon: 'shield' },
     { id: 'lists',         href: '/oculah/lists',      label: 'Lists',         icon: 'list' },
   ]},
   { section: 'Operations', items: [

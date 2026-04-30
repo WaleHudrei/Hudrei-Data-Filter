@@ -53,13 +53,33 @@ function phoneTagChip(phoneId, t) {
   </span>`;
 }
 
-function phoneRow(ph) {
+// "Best to call" scoring (Task 4). Mirrors the rubric in pages/owner-detail.js
+// — verified+mobile wins, anything wrong/dead/DNC drops to negative. The phone
+// list rendered by ownerCard then highlights the top scorer with a ★ Best pill.
+function scorePhone(ph) {
+  if (!ph || !ph.phone_number) return -Infinity;
+  const status = String(ph.phone_status || '').toLowerCase();
+  const type   = String(ph.phone_type   || '').toLowerCase();
+  if (status === 'wrong' || status === 'dead' || status === 'dead_number' || ph.wrong_number) return -100;
+  if (ph.do_not_call) return -100;
+  let s = 0;
+  if (status === 'correct') s += 50;
+  if (type === 'mobile')    s += 20;
+  if (type === 'landline')  s += 10;
+  return s;
+}
+
+function phoneRow(ph, isBest) {
   const tags = (ph.tags || []).map(t => phoneTagChip(ph.id, t)).join('');
+  const bestPill = isBest
+    ? `<span class="ocu-pill ocu-pill-primary" title="Best phone to call — verified and most likely to reach the owner" style="background:#FEF3C7;color:#92400E">★ Best</span>`
+    : '';
   return `
-    <div class="ocu-phone-row" data-phone-id="${ph.id}">
+    <div class="ocu-phone-row" data-phone-id="${ph.id}"${isBest ? ' style="background:#FEFCE8;border-radius:6px;padding:6px 8px"' : ''}>
       <div class="ocu-phone-line">
         <span class="ocu-phone-num">${escHTML(ph.phone_number || '')}</span>
         <span class="ocu-phone-meta">
+          ${bestPill}
           ${typeChip(ph.id, ph.phone_type)}
           ${statusPill(ph.id, ph.phone_status)}
         </span>
@@ -105,7 +125,14 @@ function ownerCard(opts = {}) {
       <div class="ocu-phones-block">
         <div class="ocu-fact-label">Phones (${phones.length})</div>
         ${phones.length
-          ? phones.map(phoneRow).join('')
+          ? (() => {
+              let bestIdx = -1, bestScore = 0;
+              for (let i = 0; i < phones.length; i++) {
+                const s = scorePhone(phones[i]);
+                if (s > bestScore) { bestScore = s; bestIdx = i; }
+              }
+              return phones.map((p, i) => phoneRow(p, i === bestIdx)).join('');
+            })()
           : `<div style="color:var(--ocu-text-3);font-size:13px;padding:8px 0">No phones on record.</div>`}
       </div>
     </div>`;

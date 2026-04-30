@@ -205,6 +205,126 @@ async function dedupByPhone(mode = 'report', opts = {}) {
 }
 
 /**
+ * Dedup contacts that share a normalized first+last+mailing-zip+mailing-state
+ * combination (Task 8 — fuzzy dedup). Complements dedupByPhone which only
+ * catches owners that share a phone; some duplicates come in from list
+ * imports where the same person has different phones in each batch.
+ *
+ * Match key (case + whitespace insensitive):
+ *   LOWER(TRIM(first_name)) + LOWER(TRIM(last_name)) +
+ *   UPPER(TRIM(mailing_state)) + LEFT(TRIM(mailing_zip), 5)
+ *
+ * Owners that don't have ALL of these are skipped — too risky to merge a
+ * "John Smith, no zip" with a "John Smith, 90210". Companies and trusts
+ * (last_name = 'Smith Family Trust' etc.) collapse cleanly with this rule
+ * because their name is in last_name and mailing address is on file.
+ *
+ * Same keeper / re-home / delete-loser flow as dedupByPhone.
+ */
+async function dedupByNameAddress(mode = 'report', opts = {}) {
+  const stats = { groups: 0, losersMerged: 0, phonesMoved: 0, linksMoved: 0 };
+  if (mode === 'skip') return stats;
+  const tenantFilter = Number.isFinite(opts.tenantId) ? opts.tenantId : null;
+
+  const groupsRes = await query(`
+    SELECT tenant_id,
+           ARRAY_AGG(id ORDER BY id ASC) AS contact_ids,
+           LOWER(TRIM(first_name)) AS fn,
+           LOWER(TRIM(last_name))  AS ln,
+           UPPER(TRIM(mailing_state)) AS st,
+           LEFT(TRIM(mailing_zip), 5) AS zp
+      FROM contacts
+     WHERE first_name IS NOT NULL AND TRIM(first_name) <> ''
+       AND last_name  IS NOT NULL AND TRIM(last_name)  <> ''
+       AND mailing_state IS NOT NULL AND TRIM(mailing_state) <> ''
+       AND mailing_zip   IS NOT NULL AND TRIM(mailing_zip)   <> ''
+       AND ($1::int IS NULL OR tenant_id = $1)
+     GROUP BY tenant_id,
+              LOWER(TRIM(first_name)),
+              LOWER(TRIM(last_name)),
+              UPPER(TRIM(mailing_state)),
+              LEFT(TRIM(mailing_zip), 5)
+    HAVING COUNT(*) > 1
+  `, [tenantFilter]);
+
+  stats.groups = groupsRes.rows.length;
+  if (stats.groups === 0) return stats;
+
+  const loserToKeeper = new Map();
+  for (const g of groupsRes.rows) {
+    const ids = g.contact_ids.map(Number);
+    const keeper = ids[0];
+    for (let i = 1; i < ids.length; i++) loserToKeeper.set(ids[i], keeper);
+  }
+  stats.losersMerged = loserToKeeper.size;
+
+  if (mode !== 'confirm') {
+    console.log(`[maintenance/dedup-name-addr] REPORT ONLY:`);
+    console.log(`[maintenance/dedup-name-addr]   ${stats.groups} group(s) of contacts share name+state+zip`);
+    console.log(`[maintenance/dedup-name-addr]   ${stats.losersMerged} contact(s) would be merged`);
+    const top = groupsRes.rows.slice().sort((a, b) => b.contact_ids.length - a.contact_ids.length).slice(0, 5);
+    for (const g of top) {
+      console.log(`[maintenance/dedup-name-addr]   ${g.fn} ${g.ln} (${g.st} ${g.zp}) → keep #${g.contact_ids[0]}, merge ${g.contact_ids.slice(1).join(',')}`);
+    }
+    return stats;
+  }
+
+  const losers = Array.from(loserToKeeper.keys());
+  const caseSql = Array.from(loserToKeeper.entries())
+    .map(([loser, keeper]) => `WHEN ${loser} THEN ${keeper}`)
+    .join(' ');
+
+  const insertRes = await query(`
+    INSERT INTO property_contacts (tenant_id, property_id, contact_id, role, primary_contact, created_at)
+    SELECT pc.tenant_id,
+           pc.property_id,
+           (CASE pc.contact_id ${caseSql} END)::int AS keeper_id,
+           pc.role,
+           pc.primary_contact,
+           pc.created_at
+      FROM property_contacts pc
+     WHERE pc.contact_id = ANY($1::int[])
+    ON CONFLICT (property_id, contact_id) DO NOTHING
+  `, [losers]);
+  stats.linksMoved = insertRes.rowCount;
+
+  const phoneInsertRes = await query(`
+    INSERT INTO phones (tenant_id, contact_id, phone_number, phone_index, phone_status, phone_type,
+                        phone_tag, do_not_call, wrong_number, created_at, updated_at)
+    SELECT ph.tenant_id,
+           (CASE ph.contact_id ${caseSql} END)::int AS keeper_id,
+           ph.phone_number, ph.phone_index, ph.phone_status, ph.phone_type,
+           ph.phone_tag, ph.do_not_call, ph.wrong_number, ph.created_at, ph.updated_at
+      FROM phones ph
+     WHERE ph.contact_id = ANY($1::int[])
+    ON CONFLICT (contact_id, phone_number) DO UPDATE SET
+      phone_status = CASE
+        WHEN (phones.phone_status IS NULL OR phones.phone_status IN ('', 'unknown'))
+             AND EXCLUDED.phone_status IS NOT NULL
+             AND EXCLUDED.phone_status NOT IN ('', 'unknown')
+          THEN EXCLUDED.phone_status
+        ELSE phones.phone_status
+      END,
+      phone_type = CASE
+        WHEN (phones.phone_type IS NULL OR phones.phone_type IN ('', 'unknown'))
+             AND EXCLUDED.phone_type IS NOT NULL
+             AND EXCLUDED.phone_type NOT IN ('', 'unknown')
+          THEN EXCLUDED.phone_type
+        ELSE phones.phone_type
+      END,
+      do_not_call = phones.do_not_call OR EXCLUDED.do_not_call,
+      wrong_number = phones.wrong_number OR EXCLUDED.wrong_number,
+      updated_at = NOW()
+  `, [losers]);
+  stats.phonesMoved = phoneInsertRes.rowCount;
+
+  await query(`DELETE FROM contacts WHERE id = ANY($1::int[])`, [losers]);
+
+  console.log(`[maintenance/dedup-name-addr] EXECUTED: merged ${stats.losersMerged} contact(s) across ${stats.groups} groups (${stats.linksMoved} links, ${stats.phonesMoved} phones moved)`);
+  return stats;
+}
+
+/**
  * Entry point called from db.initSchema() on boot. Reads env var, dispatches.
  * Non-fatal on error — logs and moves on.
  */
@@ -222,4 +342,4 @@ async function runScheduledMaintenance() {
   }
 }
 
-module.exports = { dedupByPhone, runScheduledMaintenance };
+module.exports = { dedupByPhone, dedupByNameAddress, runScheduledMaintenance };

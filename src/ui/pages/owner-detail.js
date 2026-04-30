@@ -42,7 +42,34 @@ function pipelineColor(stage) {
 
 // ─── small reusable bits ────────────────────────────────────────────────────
 
-function phoneRow(ph) {
+// Score a single phone for "best to call". Higher = better. Penalties zero out
+// any phone that's actively un-callable (wrong, dead, DNC). Among callable
+// phones, verified beats unverified, mobile beats landline. Used to surface
+// the recommended number on owner + property detail views (Task 4).
+function scorePhone(ph) {
+  if (!ph || !ph.phone_number) return -Infinity;
+  const status = String(ph.phone_status || '').toLowerCase();
+  const type   = String(ph.phone_type   || '').toLowerCase();
+  if (status === 'wrong' || status === 'dead' || status === 'dead_number' || ph.wrong_number) return -100;
+  if (ph.do_not_call) return -100;
+  let s = 0;
+  if (status === 'correct') s += 50;
+  if (type === 'mobile')   s += 20;
+  if (type === 'landline') s += 10;
+  return s;
+}
+
+function pickBestPhoneIndex(phones) {
+  if (!Array.isArray(phones) || !phones.length) return -1;
+  let bestIdx = -1, bestScore = -Infinity;
+  for (let i = 0; i < phones.length; i++) {
+    const s = scorePhone(phones[i]);
+    if (s > bestScore) { bestScore = s; bestIdx = i; }
+  }
+  return bestScore > 0 ? bestIdx : -1;
+}
+
+function phoneRow(ph, isBest) {
   const type = (ph.phone_type || '').toLowerCase();
   const status = (ph.phone_status || '').toLowerCase();
   const typeBadge = type && type !== 'unknown'
@@ -56,9 +83,12 @@ function phoneRow(ph) {
   const dncBadge = ph.do_not_call
     ? `<span class="ocu-pill ocu-pill-warn">DNC</span>`
     : '';
-  return `<div class="ocu-owner-phone-row">
+  const bestBadge = isBest
+    ? `<span class="ocu-pill ocu-pill-primary" title="Recommended phone — verified and most likely to reach the owner">★ Best</span>`
+    : '';
+  return `<div class="ocu-owner-phone-row"${isBest ? ' style="background:#fff8e1;border-radius:6px;padding:6px 8px"' : ''}>
       <div class="ocu-owner-phone-num">${escHTML(ph.phone_number)}</div>
-      <div class="ocu-owner-phone-badges">${typeBadge}${statusBadge}${dncBadge}</div>
+      <div class="ocu-owner-phone-badges">${bestBadge}${typeBadge}${statusBadge}${dncBadge}</div>
     </div>`;
 }
 
@@ -214,12 +244,13 @@ function ownerDetail(data = {}) {
     : `<div class="ocu-card" style="padding:6px 14px">${activities.map(activityRow).join('')}</div>`;
 
   // ─── Sidebar (phones + email) ─────────────────────────────────────────
+  const bestPhoneIdx = pickBestPhoneIndex(phones);
   const phonesCard = card({
     title: 'Phones',
-    meta:  phones.length ? `${phones.length} on file` : '',
+    meta:  phones.length ? `${phones.length} on file${bestPhoneIdx >= 0 ? ' · best highlighted' : ''}` : '',
     body:  phones.length === 0
       ? `<div class="ocu-text-3" style="font-size:12px;font-style:italic">No phones on file</div>`
-      : phones.map(phoneRow).join(''),
+      : phones.map((p, i) => phoneRow(p, i === bestPhoneIdx)).join(''),
   });
 
   const emailCard = card({

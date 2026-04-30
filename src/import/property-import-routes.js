@@ -3096,11 +3096,13 @@ async function runBackgroundImport(jobId, allRows, mapping, filename, resolvedLi
     // up is right after the rows land. Tenant-scoped so cross-tenant data is
     // never touched. Non-fatal: a dedup failure shouldn't fail the import.
     try {
-      const { dedupByPhone } = require('../maintenance');
+      const { dedupByPhone, dedupByNameAddress } = require('../maintenance');
       const t = Date.now();
-      const stats = await dedupByPhone('confirm', { tenantId });
-      if (stats.losersMerged > 0) {
-        console.log(`[bulk-import] auto-dedup: merged ${stats.losersMerged} duplicate contact(s) across ${stats.groups} shared phone(s) (${Date.now() - t}ms)`);
+      const phoneStats = await dedupByPhone('confirm', { tenantId });
+      const nameStats  = await dedupByNameAddress('confirm', { tenantId });
+      const merged = phoneStats.losersMerged + nameStats.losersMerged;
+      if (merged > 0) {
+        console.log(`[bulk-import] auto-dedup: phone-shared=${phoneStats.losersMerged} name+addr=${nameStats.losersMerged} (${Date.now() - t}ms)`);
       }
     } catch (e) {
       console.error(`[bulk-import] auto-dedup failed (non-fatal):`, e.message);
