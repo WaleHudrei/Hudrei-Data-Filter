@@ -531,17 +531,15 @@ router.get('/', requireAuth, async (req, res) => {
       }).join('');
 
   res.send(shell('Import Properties', `
-    <div class="ocu-page-header">
-      <div>
-        <div style="margin-bottom:6px"><a href="/oculah/upload" class="ocu-text-3" style="font-size:13px;text-decoration:none">← Upload</a></div>
-        <h1 class="ocu-page-title">Import property list</h1>
-        <div class="ocu-page-subtitle">Upload a CSV from any data source. You'll map your columns to Oculah fields on the next step.</div>
-      </div>
-    </div>
+    <!-- Title + subtitle live in the topbar (via shell({topbarTitle,
+         topbarSubtitle})). Body starts directly with a centered column
+         that holds the back-link, the stepper, and the form card. -->
+    <div style="max-width:760px;margin:0 auto">
+      <div style="margin-bottom:14px"><a href="/oculah/upload" class="ocu-text-3" style="font-size:13px;text-decoration:none">← Upload</a></div>
 
-    ${_renderImportStepper('upload')}
+      ${_renderImportStepper('upload')}
 
-    <div class="ocu-card" style="padding:20px 22px;max-width:760px">
+      <div class="ocu-card" style="padding:20px 22px">
 
       <!-- List Assignment -->
       <div style="margin-bottom:18px">
@@ -625,6 +623,7 @@ router.get('/', requireAuth, async (req, res) => {
       </div>
       <div id="error-msg" style="display:none;background:#fdeaea;border:1px solid #f5c5c5;border-radius:8px;padding:10px 14px;font-size:13px;color:#8b1f1f;margin-top:10px"></div>
     </div>
+    </div><!-- end centered wrapper (max-width:760px;margin:0 auto) -->
 
     <script>
     const dz = document.getElementById('drop-zone');
@@ -780,7 +779,10 @@ router.get('/', requireAuth, async (req, res) => {
       el.textContent = msg; el.style.display='block';
     }
     </script>
-  `, 'upload'));
+  `, 'upload', null, {
+    topbarTitle:    'Import property list',
+    topbarSubtitle: 'Upload a CSV from any data source. Map columns next.',
+  }));
 });
 
 // ── PARSE ─────────────────────────────────────────────────────────────────────
@@ -1047,6 +1049,7 @@ router.get('/map', requireAuth, (req, res) => {
   // badges still live below the back-link because they're tied to the
   // import session, not the page identity.
   res.send(shell('Map Columns', `
+    <div class="ocu-import-shell">
     ${_renderImportStepper('map')}
     <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:14px;margin-bottom:14px">
       <div style="flex:1;min-width:0">
@@ -1166,6 +1169,7 @@ router.get('/map', requireAuth, (req, res) => {
       window.location.href = '/import/property/preview';
     }
     </script>
+    </div><!-- end .ocu-import-shell -->
   `, 'upload', null, {
     topbarTitle:    'Map columns',
     topbarSubtitle: 'Match your CSV columns to Oculah fields, then continue to preview.',
@@ -1175,12 +1179,12 @@ router.get('/map', requireAuth, (req, res) => {
 // ── STEP 3: Preview ───────────────────────────────────────────────────────────
 router.get('/preview', requireAuth, (req, res) => {
   res.send(shell('Preview Import', `
+    <div class="ocu-import-shell">
     ${_renderImportStepper('preview')}
-    <div class="ocu-page-header" style="align-items:flex-start">
+    <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:14px;margin-bottom:14px">
       <div style="flex:1;min-width:0">
-        <div style="margin-bottom:6px"><a href="/import/property/map" class="ocu-text-3" style="font-size:13px;text-decoration:none">← Back to mapping</a></div>
-        <h1 class="ocu-page-title">Preview import</h1>
-        <div class="ocu-page-subtitle" id="preview-info">Loading…</div>
+        <div style="margin-bottom:8px"><a href="/import/property/map" class="ocu-text-3" style="font-size:13px;text-decoration:none">← Back to mapping</a></div>
+        <div class="ocu-text-3" id="preview-info" style="font-size:13px">Loading…</div>
         <div id="list-badge" class="ocu-pill ocu-pill-good" style="display:none;align-items:center;gap:6px;margin-top:8px"></div>
       </div>
       <div style="display:flex;gap:8px">
@@ -1350,7 +1354,11 @@ router.get('/preview', requireAuth, (req, res) => {
       }
     }
     </script>
-  `, 'upload'));
+    </div><!-- end .ocu-import-shell -->
+  `, 'upload', null, {
+    topbarTitle:    'Preview import',
+    topbarSubtitle: 'Verify your data, pick the import mode, then start the job.',
+  }));
 });
 
 // ── COMMIT: Save batch to DB ──────────────────────────────────────────────────
