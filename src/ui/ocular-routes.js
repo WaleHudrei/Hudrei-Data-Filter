@@ -135,12 +135,16 @@ router.get('/dashboard', requireAuth, async (req, res) => {
     // was silently invisible in the dashboard activity feed. Accept both.
     // Also pre-fix used `created_at` which doesn't exist on this table —
     // it's `started_at`. Same column-drift issue.
+    // COALESCE both timestamp columns — bulk-import writes started_at,
+    // property-import writes created_at (column-name drift documented in the
+    // ensureJobsTable() comment).
     const recentImportsRes = await query(`
-      SELECT total_rows::int AS n, filename, started_at AS created_at
+      SELECT total_rows::int AS n, filename,
+             COALESCE(started_at, created_at) AS created_at
         FROM bulk_import_jobs
        WHERE tenant_id = $1
          AND status IN ('complete','completed')
-       ORDER BY started_at DESC
+       ORDER BY COALESCE(started_at, created_at) DESC
        LIMIT 3
     `, [t]).catch(() => ({ rows: [] }));
 
@@ -1142,20 +1146,28 @@ async function fetchActivityJobs(tenantId) {
   // columns DON'T exist and this SELECT throws "column does not exist".
   // Tracked as a follow-up: align readers + writers to one column set, with
   // an ALTER TABLE ... RENAME COLUMN pass to migrate existing tables.
+  // bulk_import_jobs has two column conventions:
+  //   property-import-routes.js: processed_rows / inserted / updated / errors
+  //                              / created_at / error_log
+  //   bulk-import-routes.js:     rows_processed / rows_created / rows_updated
+  //                              / rows_errored / started_at / error_message
+  // Both code paths INSERT into the same table, so the row that comes back
+  // can have either set populated. Read both with COALESCE so the activity
+  // page renders progress + results regardless of which writer produced it.
   const r = await query(`
     SELECT j.id, j.tenant_id, j.status, j.filename, j.list_id,
-           COALESCE(j.total_rows, 0)::int     AS total_rows,
-           COALESCE(j.processed_rows, 0)::int AS processed_rows,
-           COALESCE(j.inserted, 0)::int       AS inserted,
-           COALESCE(j.updated, 0)::int        AS updated,
-           COALESCE(j.errors, 0)::int         AS errors,
-           j.error_log,
-           j.created_at,
+           COALESCE(j.total_rows, 0)::int                            AS total_rows,
+           COALESCE(j.processed_rows, j.rows_processed, 0)::int      AS processed_rows,
+           COALESCE(j.inserted,      j.rows_created,   0)::int       AS inserted,
+           COALESCE(j.updated,       j.rows_updated,   0)::int       AS updated,
+           COALESCE(j.errors,        j.rows_errored,   0)::int       AS errors,
+           COALESCE(j.error_log,     j.error_message)                AS error_log,
+           COALESCE(j.created_at,    j.started_at)                   AS created_at,
            l.list_name
       FROM bulk_import_jobs j
       LEFT JOIN lists l ON l.id = j.list_id AND l.tenant_id = j.tenant_id
      WHERE j.tenant_id = $1
-     ORDER BY j.created_at DESC NULLS LAST
+     ORDER BY COALESCE(j.created_at, j.started_at) DESC NULLS LAST
      LIMIT 50
   `, [tenantId]);
   return r.rows;
