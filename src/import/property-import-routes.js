@@ -260,22 +260,26 @@ const LOKI_FIELDS = [
   { key: 'bedrooms',        label: 'Bedrooms',          required: false, group: 'Property' },
   { key: 'bathrooms',       label: 'Bathrooms',         required: false, group: 'Property' },
   { key: 'lot_size',        label: 'Lot Size',          required: false, group: 'Property' },
-  { key: 'assessed_value',  label: 'Assessed Value',    required: false, group: 'Property' },
-  { key: 'estimated_value', label: 'Estimated Value',   required: false, group: 'Property' },
-  { key: 'equity_percent',  label: 'Equity %',          required: false, group: 'Property' },
   { key: 'property_status', label: 'Property Status',   required: false, group: 'Property' },
   { key: 'condition',       label: 'Condition',         required: false, group: 'Property' },
   { key: 'last_sale_date',  label: 'Last Sale Date',    required: false, group: 'Property' },
-  { key: 'last_sale_price', label: 'Last Sale Price',   required: false, group: 'Property' },
   { key: 'vacant',          label: 'Vacant',            required: false, group: 'Property' },
   { key: 'source',          label: 'Source',            required: false, group: 'Property' },
+  // Financial — money + equity columns. Grouped together so operators can
+  // map valuation/equity inputs in one cluster instead of hunting through
+  // the property block.
+  { key: 'assessed_value',         label: 'Assessed Value',         required: false, group: 'Financial' },
+  { key: 'estimated_value',        label: 'Estimated Value',        required: false, group: 'Financial' },
+  { key: 'estimated_equity_value', label: 'Estimated Equity Value', required: false, group: 'Financial' },
+  { key: 'equity_percent',         label: 'Estimated Equity %',     required: false, group: 'Financial' },
+  { key: 'last_sale_price',        label: 'Last Sale Price',        required: false, group: 'Financial' },
+  { key: 'total_tax_owed',         label: 'Total Tax Owed',         required: false, group: 'Financial' },
   // 2026-04-21 Feature 8: the 10 Additional Info fields shipped in Feature 2.
   // These were previously UI-only (edit form); now importable via CSV.
   { key: 'apn',                 label: 'APN / Parcel ID',    required: false, group: 'Additional Info' },
   { key: 'stories',             label: 'Stories',            required: false, group: 'Additional Info' },
   { key: 'structure_type',      label: 'Structure Type',     required: false, group: 'Additional Info' },
   { key: 'legal_description',   label: 'Legal Description',  required: false, group: 'Additional Info' },
-  { key: 'total_tax_owed',      label: 'Total Tax Owed',     required: false, group: 'Additional Info' },
   { key: 'tax_delinquent_year', label: 'Tax Delinquent Year',required: false, group: 'Additional Info' },
   { key: 'tax_auction_date',    label: 'Tax Auction Date',   required: false, group: 'Additional Info' },
   { key: 'deed_type',           label: 'Deed Type',          required: false, group: 'Additional Info' },
@@ -346,7 +350,8 @@ function autoMap(csvColumns) {
     lot_size: ['lotsize','lot','lotarea','lotsqft'],
     assessed_value: ['assessedvalue','assessedval','taxassessedvalue','assessmentvalue','totalassessedvalue'],
     estimated_value: ['estimatedvalue','estvalue','avm','marketvalue','estimatedmarketvalue'],
-    equity_percent: ['equity','equitypercent','equityperc','equitypercentage'],
+    estimated_equity_value: ['estimatedequityvalue','estequityvalue','equitydollar','equityvalue','totalequity','equityamount','equityamt','equitydollars','availableequity'],
+    equity_percent: ['equity','equitypercent','equityperc','equitypercentage','estimatedequitypercent','estequitypercent','estequityperc'],
     property_status: ['propertystatus','status','mlsstatus','liststatus'],
     condition: ['condition','propertycondition'],
     last_sale_date: ['lastsaledate','saledate','lastsoldate','solddate'],
@@ -1023,7 +1028,7 @@ router.get('/map', requireAuth, (req, res) => {
       ${fieldRow({key:`phone_status_${n}`,label:`Phone ${n} Status`, required:false})}
     </div>`).join('');
 
-  const groupHTML = ['Property','Owner'].map(group => `
+  const groupHTML = ['Property','Financial','Owner'].map(group => `
     <div style="margin-bottom:18px">
       <div class="ocu-text-3" style="font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.06em;margin-bottom:12px">${group}</div>
       <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(320px,1fr));gap:10px 32px">
@@ -1270,7 +1275,8 @@ router.get('/preview', requireAuth, (req, res) => {
     // text so junk like "—" or text artifacts don't get formatted into
     // misleading "$0".
     const CURRENCY_KEYS = new Set([
-      'assessed_value', 'estimated_value', 'last_sale_price', 'total_tax_owed',
+      'assessed_value', 'estimated_value', 'estimated_equity_value',
+      'last_sale_price', 'total_tax_owed',
     ]);
     function formatCurrency(raw) {
       if (raw == null || raw === '') return '';
@@ -1716,7 +1722,7 @@ router.post('/commit', requireAuth, async (req, res) => {
     // Build arrays for UNNEST bulk insert
     const streets=[], cities=[], states=[], zips=[], counties=[], mktIds=[], sources=[];
     const propTypes=[], yearBuilts=[], sqfts=[], bedrooms=[], bathrooms=[], lotSizes=[];
-    const assessedVals=[], estVals=[], equityPcts=[], propStatuses=[], conditions=[];
+    const assessedVals=[], estVals=[], estEquityVals=[], equityPcts=[], propStatuses=[], conditions=[];
     const lastSaleDates=[], lastSalePrices=[], vacants=[];
     // 2026-04-21 Feature 8: Additional Info arrays. 10 columns from Feature 2.
     // Numeric columns use the same bounded helpers as the main batch. String
@@ -1743,6 +1749,7 @@ router.post('/commit', requireAuth, async (req, res) => {
       lotSizes.push(toInt(get(row,'lot_size')));
       assessedVals.push(toMoney(get(row,'assessed_value')));
       estVals.push(toMoney(get(row,'estimated_value')));
+      estEquityVals.push(toMoney(get(row,'estimated_equity_value')));
       equityPcts.push(toPercent(get(row,'equity_percent')));
       propStatuses.push(getClip(row,'property_status')||null);
       conditions.push(getClip(row,'condition')||null);
@@ -1770,22 +1777,22 @@ router.post('/commit', requireAuth, async (req, res) => {
         tenant_id,
         street,city,state_code,zip_code,county,market_id,source,
         property_type,year_built,sqft,bedrooms,bathrooms,lot_size,
-        assessed_value,estimated_value,equity_percent,property_status,
+        assessed_value,estimated_value,estimated_equity_value,equity_percent,property_status,
         condition,last_sale_date,last_sale_price,vacant,
         apn,stories,structure_type,legal_description,total_tax_owed,
         tax_delinquent_year,tax_auction_date,deed_type,lien_type,lien_date,
         first_seen_at
       )
-      SELECT $32, * FROM UNNEST(
+      SELECT $33, * FROM UNNEST(
         $1::text[],$2::text[],$3::text[],$4::text[],$5::text[],$6::int[],$7::text[],
         $8::text[],$9::int[],$10::int[],$11::int[],$12::numeric[],$13::int[],
-        $14::numeric[],$15::numeric[],$16::numeric[],$17::text[],
-        $18::text[],$19::date[],$20::numeric[],$21::boolean[],
-        $22::text[],$23::int[],$24::text[],$25::text[],$26::numeric[],
-        $27::int[],$28::date[],$29::text[],$30::text[],$31::date[]
+        $14::numeric[],$15::numeric[],$16::numeric[],$17::numeric[],$18::text[],
+        $19::text[],$20::date[],$21::numeric[],$22::boolean[],
+        $23::text[],$24::int[],$25::text[],$26::text[],$27::numeric[],
+        $28::int[],$29::date[],$30::text[],$31::text[],$32::date[]
       ) AS t(street,city,state_code,zip_code,county,market_id,source,
         property_type,year_built,sqft,bedrooms,bathrooms,lot_size,
-        assessed_value,estimated_value,equity_percent,property_status,
+        assessed_value,estimated_value,estimated_equity_value,equity_percent,property_status,
         condition,last_sale_date,last_sale_price,vacant,
         apn,stories,structure_type,legal_description,total_tax_owed,
         tax_delinquent_year,tax_auction_date,deed_type,lien_type,lien_date),
@@ -1801,6 +1808,7 @@ router.post('/commit', requireAuth, async (req, res) => {
         lot_size        = COALESCE(EXCLUDED.lot_size, properties.lot_size),
         assessed_value  = COALESCE(EXCLUDED.assessed_value, properties.assessed_value),
         estimated_value = COALESCE(EXCLUDED.estimated_value, properties.estimated_value),
+        estimated_equity_value = COALESCE(EXCLUDED.estimated_equity_value, properties.estimated_equity_value),
         equity_percent  = COALESCE(EXCLUDED.equity_percent, properties.equity_percent),
         property_status = COALESCE(EXCLUDED.property_status, properties.property_status),
         condition       = COALESCE(EXCLUDED.condition, properties.condition),
@@ -1825,7 +1833,7 @@ router.post('/commit', requireAuth, async (req, res) => {
       RETURNING id, xmax, street, city, state_code, zip_code
     `, [streets,cities,states,zips,counties,mktIds,sources,
         propTypes,yearBuilts,sqfts,bedrooms,bathrooms,lotSizes,
-        assessedVals,estVals,equityPcts,propStatuses,conditions,
+        assessedVals,estVals,estEquityVals,equityPcts,propStatuses,conditions,
         lastSaleDates,lastSalePrices,vacants,
         apns,stories,structureTypes,legalDescs,totalTaxOwed,
         taxDelinquentYears,taxAuctionDates,deedTypes,lienTypes,lienDates,
@@ -2502,7 +2510,7 @@ async function runBackgroundImport(jobId, allRows, mapping, filename, resolvedLi
         // Bulk upsert properties (using deduped batch)
         const streets=[],cities=[],states=[],zips=[],counties=[],mktIds=[],sources=[];
         const propTypes=[],yearBuilts=[],sqfts=[],beds=[],baths=[],lots=[];
-        const assessed=[],estVals=[],equity=[],propStatus=[],conds=[];
+        const assessed=[],estVals=[],estEquityVals=[],equity=[],propStatus=[],conds=[];
         const lastSaleDates=[],lastSalePrices=[],vacants=[];
         // 2026-04-21 Feature 8: Additional Info arrays for background path.
         // Mirrors the /commit foreground path 1:1 so both code paths accept
@@ -2520,6 +2528,7 @@ async function runBackgroundImport(jobId, allRows, mapping, filename, resolvedLi
           sqfts.push(toInt(get(row,'sqft'))); beds.push(toSmallInt(get(row,'bedrooms')));
           baths.push(toBathrooms(get(row,'bathrooms'))); lots.push(toInt(get(row,'lot_size')));
           assessed.push(toMoney(get(row,'assessed_value'))); estVals.push(toMoney(get(row,'estimated_value')));
+          estEquityVals.push(toMoney(get(row,'estimated_equity_value')));
           equity.push(toPercent(get(row,'equity_percent'))); propStatus.push(getClip(row,'property_status')||null);
           conds.push(getClip(row,'condition')||null); lastSaleDates.push(toDate(get(row,'last_sale_date')));
           lastSalePrices.push(toMoney(get(row,'last_sale_price'))); vacants.push(toBool(get(row,'vacant')));
@@ -2537,15 +2546,16 @@ async function runBackgroundImport(jobId, allRows, mapping, filename, resolvedLi
         }
 
         const propRes = await query(`
-          INSERT INTO properties (tenant_id,street,city,state_code,zip_code,county,market_id,source,property_type,year_built,sqft,bedrooms,bathrooms,lot_size,assessed_value,estimated_value,equity_percent,property_status,condition,last_sale_date,last_sale_price,vacant,apn,stories,structure_type,legal_description,total_tax_owed,tax_delinquent_year,tax_auction_date,deed_type,lien_type,lien_date,first_seen_at)
-          SELECT $32,*,NOW() FROM UNNEST($1::text[],$2::text[],$3::text[],$4::text[],$5::text[],$6::int[],$7::text[],$8::text[],$9::int[],$10::int[],$11::int[],$12::numeric[],$13::int[],$14::numeric[],$15::numeric[],$16::numeric[],$17::text[],$18::text[],$19::date[],$20::numeric[],$21::boolean[],$22::text[],$23::int[],$24::text[],$25::text[],$26::numeric[],$27::int[],$28::date[],$29::text[],$30::text[],$31::date[])
-          AS t(street,city,state_code,zip_code,county,market_id,source,property_type,year_built,sqft,bedrooms,bathrooms,lot_size,assessed_value,estimated_value,equity_percent,property_status,condition,last_sale_date,last_sale_price,vacant,apn,stories,structure_type,legal_description,total_tax_owed,tax_delinquent_year,tax_auction_date,deed_type,lien_type,lien_date)
+          INSERT INTO properties (tenant_id,street,city,state_code,zip_code,county,market_id,source,property_type,year_built,sqft,bedrooms,bathrooms,lot_size,assessed_value,estimated_value,estimated_equity_value,equity_percent,property_status,condition,last_sale_date,last_sale_price,vacant,apn,stories,structure_type,legal_description,total_tax_owed,tax_delinquent_year,tax_auction_date,deed_type,lien_type,lien_date,first_seen_at)
+          SELECT $33,*,NOW() FROM UNNEST($1::text[],$2::text[],$3::text[],$4::text[],$5::text[],$6::int[],$7::text[],$8::text[],$9::int[],$10::int[],$11::int[],$12::numeric[],$13::int[],$14::numeric[],$15::numeric[],$16::numeric[],$17::numeric[],$18::text[],$19::text[],$20::date[],$21::numeric[],$22::boolean[],$23::text[],$24::int[],$25::text[],$26::text[],$27::numeric[],$28::int[],$29::date[],$30::text[],$31::text[],$32::date[])
+          AS t(street,city,state_code,zip_code,county,market_id,source,property_type,year_built,sqft,bedrooms,bathrooms,lot_size,assessed_value,estimated_value,estimated_equity_value,equity_percent,property_status,condition,last_sale_date,last_sale_price,vacant,apn,stories,structure_type,legal_description,total_tax_owed,tax_delinquent_year,tax_auction_date,deed_type,lien_type,lien_date)
           ON CONFLICT (tenant_id, street, city, state_code, zip_code) DO UPDATE SET
             county=COALESCE(EXCLUDED.county,properties.county),source=COALESCE(EXCLUDED.source,properties.source),
             property_type=COALESCE(EXCLUDED.property_type,properties.property_type),year_built=COALESCE(EXCLUDED.year_built,properties.year_built),
             sqft=COALESCE(EXCLUDED.sqft,properties.sqft),bedrooms=COALESCE(EXCLUDED.bedrooms,properties.bedrooms),
             bathrooms=COALESCE(EXCLUDED.bathrooms,properties.bathrooms),lot_size=COALESCE(EXCLUDED.lot_size,properties.lot_size),
             assessed_value=COALESCE(EXCLUDED.assessed_value,properties.assessed_value),estimated_value=COALESCE(EXCLUDED.estimated_value,properties.estimated_value),
+            estimated_equity_value=COALESCE(EXCLUDED.estimated_equity_value,properties.estimated_equity_value),
             equity_percent=COALESCE(EXCLUDED.equity_percent,properties.equity_percent),property_status=COALESCE(EXCLUDED.property_status,properties.property_status),
             condition=COALESCE(EXCLUDED.condition,properties.condition),last_sale_date=COALESCE(EXCLUDED.last_sale_date,properties.last_sale_date),
             last_sale_price=COALESCE(EXCLUDED.last_sale_price,properties.last_sale_price),vacant=COALESCE(EXCLUDED.vacant,properties.vacant),
@@ -2556,7 +2566,7 @@ async function runBackgroundImport(jobId, allRows, mapping, filename, resolvedLi
             lien_type=COALESCE(EXCLUDED.lien_type,properties.lien_type),lien_date=COALESCE(EXCLUDED.lien_date,properties.lien_date),
             updated_at=NOW()
           RETURNING id, xmax, street, city, state_code, zip_code
-        `, [streets,cities,states,zips,counties,mktIds,sources,propTypes,yearBuilts,sqfts,beds,baths,lots,assessed,estVals,equity,propStatus,conds,lastSaleDates,lastSalePrices,vacants,apns,storiesArr,structureTypes,legalDescs,totalTaxOwed,taxDelinquentYears,taxAuctionDates,deedTypes,lienTypes,lienDates,tenantId]);
+        `, [streets,cities,states,zips,counties,mktIds,sources,propTypes,yearBuilts,sqfts,beds,baths,lots,assessed,estVals,estEquityVals,equity,propStatus,conds,lastSaleDates,lastSalePrices,vacants,apns,storiesArr,structureTypes,legalDescs,totalTaxOwed,taxDelinquentYears,taxAuctionDates,deedTypes,lienTypes,lienDates,tenantId]);
 
         const propMap = {};
         const propIds = [];

@@ -387,6 +387,8 @@ router.get('/records', requireAuth, async (req, res) => {
     const max_year       = String(req.query.max_year || '').trim();
     const min_equity     = String(req.query.min_equity || '').trim();
     const max_equity     = String(req.query.max_equity || '').trim();
+    const min_equity_value = String(req.query.min_equity_value || '').trim();
+    const max_equity_value = String(req.query.max_equity_value || '').trim();
     const phone_type     = String(req.query.phone_type || '').trim().toLowerCase();
     // 2026-04-29 filter-parity gap fix: these were already supported by the
     // bulk-export selectAll path (records-routes.js /export) but the list
@@ -545,6 +547,12 @@ router.get('/records', requireAuth, async (req, res) => {
     }
     if (max_equity && /^-?\d+(\.\d+)?$/.test(max_equity)) {
       conditions.push(`p.equity_percent <= $${idx}`); params.push(parseFloat(max_equity)); idx++;
+    }
+    if (min_equity_value && /^-?\d+(\.\d+)?$/.test(min_equity_value)) {
+      conditions.push(`p.estimated_equity_value >= $${idx}`); params.push(parseFloat(min_equity_value)); idx++;
+    }
+    if (max_equity_value && /^-?\d+(\.\d+)?$/.test(max_equity_value)) {
+      conditions.push(`p.estimated_equity_value <= $${idx}`); params.push(parseFloat(max_equity_value)); idx++;
     }
     if (phone_type && ['mobile', 'landline', 'voip'].includes(phone_type)) {
       conditions.push(`EXISTS (SELECT 1 FROM phones ph3 JOIN property_contacts pc3 ON pc3.contact_id = ph3.contact_id WHERE pc3.property_id = p.id AND pc3.tenant_id = p.tenant_id AND ph3.tenant_id = p.tenant_id AND LOWER(ph3.phone_type) = $${idx})`);
@@ -840,7 +848,8 @@ router.get('/records', requireAuth, async (req, res) => {
       querystring,
       filters: {
         q, city, zip, county, pipeline, phones, min_distress, list_id, stateList,
-        owner_type, occupancy, min_year, max_year, min_equity, max_equity, phone_type,
+        owner_type, occupancy, min_year, max_year, min_equity, max_equity,
+        min_equity_value, max_equity_value, phone_type,
         tagIncludeList, tagExcludeList,
         // 2026-04-29 filter-parity gap fix: surface the new filters back to
         // the form so existing filter values stay populated on reload.

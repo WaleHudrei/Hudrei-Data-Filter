@@ -3,6 +3,15 @@
 
 const ENTRIES = [
   {
+    date: 'April 30, 2026 (Financial details on import)',
+    title: 'New "Financial" group on the column-mapping screen',
+    items: [
+      { tag: 'feat', text: 'The Map Columns screen now has a dedicated "Financial" group separate from "Property". Six fields live there: Assessed Value, Estimated Value, Estimated Equity Value (NEW), Estimated Equity %, Last Sale Price, and Total Tax Owed. "Total Tax Owed" used to live under "Additional Info" — it\'s naturally a financial number so it sits with the rest of them now.' },
+      { tag: 'feat', text: 'New importable column: Estimated Equity Value (a dollar amount, e.g. $185,000). Previously we only stored the equity percentage; now you can ingest the absolute equity dollar amount as a separate column. PropStream / DealMachine / county exports that include both will populate both. Aliases auto-detected: estimatedequityvalue, estequityvalue, equitydollar, equityvalue, totalequity, equityamount, availableequity. The records page back-end accepts min_equity_value / max_equity_value query params for filtering by this column (UI input still uses the existing % filter for now).' },
+      { tag: 'fix', text: 'Renamed the "Equity %" field label on the column-mapping screen to "Estimated Equity %" to make it explicit that this is the percentage form (and to pair clearly with the new Estimated Equity Value sibling).' },
+    ],
+  },
+  {
     date: 'April 30, 2026 (visual overhaul + dashboard polish)',
     title: 'Refreshed look across every page, smarter dashboard, cleaner Records filters',
     items: [

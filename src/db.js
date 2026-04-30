@@ -443,6 +443,7 @@ async function initSchema() {
     `ALTER TABLE properties ADD COLUMN IF NOT EXISTS assessed_value NUMERIC(12,2)`,
     `ALTER TABLE properties ADD COLUMN IF NOT EXISTS property_status VARCHAR(50)`,
     `ALTER TABLE properties ADD COLUMN IF NOT EXISTS equity_percent NUMERIC(5,2)`,
+    `ALTER TABLE properties ADD COLUMN IF NOT EXISTS estimated_equity_value NUMERIC(14,2)`,
     `ALTER TABLE properties ADD COLUMN IF NOT EXISTS marketing_result VARCHAR(100)`,
     `ALTER TABLE properties ADD COLUMN IF NOT EXISTS source VARCHAR(100)`,
     `ALTER TABLE properties ADD COLUMN IF NOT EXISTS bedrooms SMALLINT`,
