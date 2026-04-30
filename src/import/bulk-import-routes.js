@@ -273,8 +273,24 @@ async function ensureJobsTable() {
       completed_at TIMESTAMPTZ
     )
   `);
-  // Idempotent backfill for existing tables that pre-date the list_id column.
-  await query(`ALTER TABLE bulk_import_jobs ADD COLUMN IF NOT EXISTS list_id INTEGER REFERENCES lists(id) ON DELETE SET NULL`);
+  // Idempotent backfills. Necessary because two competing CREATE TABLE
+  // definitions used to exist (one in db.js with the old shape, one here
+  // with the new shape). Whichever ran first won, leaving the loser's
+  // columns silently missing. Surfaced by the 2026-04-30 stress test:
+  // staging had the old shape without `source` so /import/bulk/start 500'd
+  // with `column "source" of relation "bulk_import_jobs" does not exist`.
+  // Each ALTER below mirrors the column in the CREATE TABLE above; on a
+  // table created with the new shape they're no-ops.
+  await query(`ALTER TABLE bulk_import_jobs ADD COLUMN IF NOT EXISTS list_id        INTEGER REFERENCES lists(id) ON DELETE SET NULL`);
+  await query(`ALTER TABLE bulk_import_jobs ADD COLUMN IF NOT EXISTS source         VARCHAR(50) DEFAULT 'reisift'`);
+  await query(`ALTER TABLE bulk_import_jobs ADD COLUMN IF NOT EXISTS rows_processed INTEGER DEFAULT 0`);
+  await query(`ALTER TABLE bulk_import_jobs ADD COLUMN IF NOT EXISTS rows_created   INTEGER DEFAULT 0`);
+  await query(`ALTER TABLE bulk_import_jobs ADD COLUMN IF NOT EXISTS rows_updated   INTEGER DEFAULT 0`);
+  await query(`ALTER TABLE bulk_import_jobs ADD COLUMN IF NOT EXISTS rows_errored   INTEGER DEFAULT 0`);
+  await query(`ALTER TABLE bulk_import_jobs ADD COLUMN IF NOT EXISTS error_message  TEXT`);
+  await query(`ALTER TABLE bulk_import_jobs ADD COLUMN IF NOT EXISTS started_at     TIMESTAMPTZ DEFAULT NOW()`);
+  await query(`ALTER TABLE bulk_import_jobs ADD COLUMN IF NOT EXISTS completed_at   TIMESTAMPTZ`);
+  await query(`ALTER TABLE bulk_import_jobs ADD COLUMN IF NOT EXISTS total_rows     INTEGER DEFAULT 0`);
 }
 
 // ── STEP 1: Upload page UI (unchanged) ────────────────────────────────────────
