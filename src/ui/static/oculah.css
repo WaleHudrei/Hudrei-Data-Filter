@@ -1835,10 +1835,326 @@
 .ocu-tr-clickable {
   cursor: pointer;
   border-bottom: 1px solid var(--ocu-border);
-  transition: background 0.08s;
+  transition: background 0.12s, box-shadow 0.12s;
 }
-.ocu-tr-clickable:hover { background: var(--ocu-surface); }
+.ocu-tr-clickable:hover {
+  background: var(--ocu-surface);
+  box-shadow: inset 3px 0 0 var(--ocu-accent);
+}
 .ocu-tr-clickable:last-child { border-bottom: none; }
+/* Records table card-row treatment: the address column reads as the row's
+   primary identity, owner/distress/stage all support it. Slightly more
+   breathing room than the default ocu-td so the row reads as a card. */
+.ocu-records-table .ocu-td { padding: 14px 16px; }
+.ocu-records-table .ocu-td-address-cell { min-width: 220px; }
+.ocu-records-table .ocu-td-address-cell .ocu-td-primary {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--ocu-text-1);
+  letter-spacing: -0.005em;
+}
+.ocu-records-table .ocu-td-address-cell .ocu-td-meta {
+  font-size: 12px;
+  color: var(--ocu-text-3);
+  margin-top: 3px;
+}
+/* Owner card — the visual replacement for the old plain hyperlink.
+   Avatar circle (initial) + name. Whole element is clickable via the JS
+   shim emitted by recordsTable(). Looks like a chip/badge, NOT link text. */
+.ocu-owner-card {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 10px 4px 4px;
+  border-radius: 999px;
+  background: transparent;
+  border: 1px solid transparent;
+  transition: background 0.12s, border-color 0.12s;
+  max-width: 100%;
+}
+.ocu-owner-card[data-owner-id] { cursor: pointer; }
+.ocu-tr-clickable:hover .ocu-owner-card[data-owner-id] {
+  background: var(--ocu-bg);
+  border-color: var(--ocu-border-strong);
+}
+.ocu-owner-card-name {
+  font-weight: 500;
+  color: var(--ocu-text-1);
+  font-size: 13px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* Import-page list picker — replaces the raw <select multiple> that looked
+   like a 1995 OS dropdown. Each option is a clickable row with a
+   checkbox-styled indicator on the right. Hover and checked states are
+   subtle but distinct. */
+.ocu-list-pick-wrap {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  background: var(--ocu-bg);
+  border: 1px solid var(--ocu-border);
+  border-radius: 10px;
+  padding: 6px;
+  max-height: 200px;
+  overflow-y: auto;
+}
+.ocu-list-pick {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 10px;
+  border-radius: 6px;
+  cursor: pointer;
+  transition: background 0.1s;
+  user-select: none;
+}
+.ocu-list-pick:hover { background: var(--ocu-surface); }
+.ocu-list-pick input[type="checkbox"] {
+  position: absolute;
+  opacity: 0;
+  pointer-events: none;
+}
+.ocu-list-pick-name {
+  flex: 1;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--ocu-text-1);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.ocu-list-pick-type {
+  font-size: 11px;
+  color: var(--ocu-text-3);
+  background: var(--ocu-surface);
+  border: 1px solid var(--ocu-border);
+  padding: 2px 6px;
+  border-radius: 4px;
+  flex-shrink: 0;
+}
+.ocu-list-pick-check {
+  width: 18px;
+  height: 18px;
+  border-radius: 4px;
+  border: 1.5px solid var(--ocu-border-strong);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 12px;
+  font-weight: 700;
+  color: transparent;
+  background: var(--ocu-card-bg);
+  flex-shrink: 0;
+  transition: all 0.1s;
+}
+.ocu-list-pick:has(input:checked) {
+  background: var(--ocu-accent-soft, #DBEAFE);
+}
+.ocu-list-pick:has(input:checked) .ocu-list-pick-check {
+  background: var(--ocu-accent, #2563EB);
+  border-color: var(--ocu-accent, #2563EB);
+  color: #fff;
+}
+.ocu-list-pick:has(input:checked) .ocu-list-pick-name {
+  color: var(--ocu-text-1);
+  font-weight: 600;
+}
+
+/* Import-page drop zone — replaces the bare dashed-border box. Soft
+   gradient background, subtle inner shadow, hover lifts the border
+   into the accent color and tints the icon. */
+.ocu-drop-zone {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  padding: 40px 24px;
+  border: 2px dashed var(--ocu-border-strong);
+  border-radius: 14px;
+  background: linear-gradient(180deg, var(--ocu-bg) 0%, var(--ocu-surface) 100%);
+  text-align: center;
+  cursor: pointer;
+  transition: border-color 0.15s, background 0.15s, transform 0.15s;
+}
+.ocu-drop-zone:hover,
+.ocu-drop-zone:focus-visible,
+.ocu-drop-zone.dragover {
+  border-color: var(--ocu-accent, #2563EB);
+  background: linear-gradient(180deg, var(--ocu-accent-soft, #DBEAFE) 0%, var(--ocu-bg) 100%);
+  outline: none;
+}
+.ocu-drop-zone:hover .ocu-drop-zone-icon,
+.ocu-drop-zone.dragover .ocu-drop-zone-icon {
+  color: var(--ocu-accent, #2563EB);
+  transform: translateY(-3px);
+}
+.ocu-drop-zone-icon {
+  width: 56px;
+  height: 56px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 14px;
+  background: var(--ocu-card-bg);
+  border: 1px solid var(--ocu-border);
+  color: var(--ocu-text-3);
+  margin-bottom: 4px;
+  transition: color 0.15s, transform 0.15s;
+}
+.ocu-drop-zone-title {
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--ocu-text-1);
+  letter-spacing: -0.005em;
+}
+.ocu-drop-zone-sub {
+  font-size: 12px;
+  color: var(--ocu-text-3);
+  letter-spacing: 0.02em;
+}
+
+/* ── Activity page polish ───────────────────────────────────────────────── */
+/* The old activity table read like a default Excel sheet. Each row now has
+   tighter visual hierarchy: file gets an icon + name, status reads as a
+   pill, progress uses the accent track + above-grid label, results stack
+   as colored chips. The whole row hovers softly with a left-edge accent
+   marker (inherited from .ocu-tr-clickable). */
+.ocu-activity-table { border-spacing: 0; }
+.ocu-activity-table tbody tr { border-bottom: 1px solid var(--ocu-border); transition: background 0.12s; }
+.ocu-activity-table tbody tr:last-child { border-bottom: 0; }
+.ocu-activity-table tbody tr:hover { background: var(--ocu-surface); }
+.ocu-activity-table .ocu-td { padding: 14px 16px; vertical-align: middle; }
+
+.ocu-activity-file {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+.ocu-activity-file-icon {
+  width: 32px;
+  height: 32px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 8px;
+  background: var(--ocu-surface);
+  border: 1px solid var(--ocu-border);
+  color: var(--ocu-text-3);
+  flex-shrink: 0;
+}
+.ocu-activity-file-name {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--ocu-text-1);
+  font-family: var(--ocu-mono, monospace);
+  letter-spacing: -0.005em;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ocu-td-progress { min-width: 220px; }
+.ocu-activity-progress {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 160px;
+}
+.ocu-activity-progress-track {
+  width: 100%;
+  height: 6px;
+  background: var(--ocu-border);
+  border-radius: 999px;
+  overflow: hidden;
+}
+.ocu-activity-progress-fill {
+  height: 100%;
+  border-radius: 999px;
+  transition: width 0.4s ease;
+}
+.ocu-activity-progress-label {
+  font-size: 11px;
+  font-family: var(--ocu-mono, monospace);
+  font-weight: 600;
+  color: var(--ocu-text-2);
+  letter-spacing: 0.01em;
+}
+
+.ocu-result-stack {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+.ocu-result-chip {
+  display: inline-flex;
+  align-items: center;
+  font-size: 12px;
+  font-weight: 600;
+  padding: 3px 9px;
+  border-radius: 999px;
+  letter-spacing: 0;
+  white-space: nowrap;
+}
+.ocu-result-new { background: #DCFCE7; color: #15803D; }
+.ocu-result-upd { background: #DBEAFE; color: #1D4ED8; }
+.ocu-result-err { background: #FEE2E2; color: #B91C1C; }
+
+/* ── Lists table polish ─────────────────────────────────────────────────── */
+/* Source column reads as a tag instead of plain text so it lines up with
+   the Type pill. Action buttons sit in a right-aligned tight cluster. */
+.ocu-source-tag {
+  display: inline-block;
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--ocu-text-2);
+  background: var(--ocu-surface);
+  border: 1px solid var(--ocu-border);
+  padding: 3px 9px;
+  border-radius: 6px;
+  letter-spacing: 0;
+}
+.ocu-list-row { transition: background 0.12s, box-shadow 0.12s; }
+.ocu-list-row:hover { background: var(--ocu-surface); box-shadow: inset 3px 0 0 var(--ocu-accent); }
+.ocu-list-actions {
+  text-align: right;
+  white-space: nowrap;
+}
+.ocu-list-actions { display: table-cell; padding-right: 16px; }
+.ocu-list-action-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  height: 30px;
+  padding: 0 12px;
+  font-size: 12px;
+  font-weight: 500;
+  border-radius: 6px;
+  margin-left: 6px;
+  border: 1px solid var(--ocu-border-strong);
+  background: var(--ocu-card-bg);
+  color: var(--ocu-text-2);
+  text-decoration: none;
+  cursor: pointer;
+  transition: all 0.1s;
+}
+.ocu-list-action-btn:hover {
+  background: var(--ocu-bg);
+  border-color: var(--ocu-text-2);
+  color: var(--ocu-text-1);
+}
+.ocu-list-action-btn:first-child { margin-left: 0; }
+.ocu-list-action-danger { color: #B91C1C; }
+.ocu-list-action-danger:hover {
+  background: #FEE2E2;
+  border-color: #FCA5A5;
+  color: #991B1B;
+}
 .ocu-td {
   padding: 14px 16px;
   vertical-align: middle;

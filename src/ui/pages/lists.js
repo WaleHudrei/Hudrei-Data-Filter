@@ -5,11 +5,26 @@
 // (delete code required for Delete, same as old Loki).
 // ═══════════════════════════════════════════════════════════════════════════
 const { shell } = require('../layouts/shell');
-const { escHTML, fmtNum, fmtRelative } = require('../_helpers');
+const { escHTML, fmtNum } = require('../_helpers');
+
+// Created column matches the records-table convention: absolute calendar
+// date "Apr 30, 2026", not "10 hr ago". Centralized here so the format
+// stays in sync with records-table.formatDate.
+function fmtCreatedDate(d) {
+  if (!d) return '—';
+  const date = d instanceof Date ? d : new Date(d);
+  if (isNaN(date.getTime())) return '—';
+  return date.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+}
 
 function listTypeBadge(t) {
-  if (!t) return '<span class="ocu-text-3">—</span>';
+  if (!t) return '<span class="ocu-text-3" style="font-size:13px">—</span>';
   return `<span class="ocu-pill" data-list-type="${escHTML(t)}">${escHTML(t)}</span>`;
+}
+
+function sourceBadge(s) {
+  if (!s) return '<span class="ocu-text-3" style="font-size:13px">—</span>';
+  return `<span class="ocu-source-tag">${escHTML(s)}</span>`;
 }
 
 function listRow(l) {
@@ -25,18 +40,18 @@ function listRow(l) {
   const safeName = attr(l.list_name);
   const safeType = attr(l.list_type);
   const safeSrc  = attr(l.source);
-  return `<tr>
+  return `<tr class="ocu-list-row">
     <td class="ocu-td">
       <a href="/oculah/records?list_id=${l.id}" class="ocu-link ocu-td-primary">${escHTML(l.list_name)}</a>
     </td>
     <td class="ocu-td">${listTypeBadge(l.list_type)}</td>
-    <td class="ocu-td ocu-td-text">${l.source ? escHTML(l.source) : '<span class="ocu-text-3">—</span>'}</td>
+    <td class="ocu-td">${sourceBadge(l.source)}</td>
     <td class="ocu-td ocu-td-num"><span class="ocu-mono">${fmtNum(l.property_count)}</span></td>
-    <td class="ocu-td ocu-td-date">${fmtRelative(l.created_at)}</td>
-    <td class="ocu-td ocu-td-num" style="white-space:nowrap">
-      <a href="/oculah/records?list_id=${l.id}" class="ocu-btn ocu-btn-secondary">View</a>
-      <button class="ocu-btn ocu-btn-secondary" onclick="lists_openEdit(${l.id}, ${safeName}, ${safeType}, ${safeSrc})">Edit</button>
-      <button class="ocu-btn ocu-btn-secondary" style="color:#c0392b" onclick="lists_openDelete(${l.id}, ${safeName})">Delete</button>
+    <td class="ocu-td ocu-td-date">${fmtCreatedDate(l.created_at)}</td>
+    <td class="ocu-td ocu-list-actions">
+      <a href="/oculah/records?list_id=${l.id}" class="ocu-btn ocu-btn-ghost ocu-list-action-btn">View</a>
+      <button class="ocu-btn ocu-btn-ghost ocu-list-action-btn" onclick="lists_openEdit(${l.id}, ${safeName}, ${safeType}, ${safeSrc})">Edit</button>
+      <button class="ocu-btn ocu-btn-ghost ocu-list-action-btn ocu-list-action-danger" onclick="lists_openDelete(${l.id}, ${safeName})">Delete</button>
     </td>
   </tr>`;
 }
@@ -112,8 +127,8 @@ function listsPage(data = {}) {
   const tableHTML = rows.length === 0
     ? `<div class="ocu-empty">No lists yet — import a property list to get started.</div>`
     : `
-      <div class="ocu-table-wrap">
-        <table class="ocu-table">
+      <div class="ocu-table-wrap ocu-records-table-wrap">
+        <table class="ocu-table ocu-records-table">
           <thead>
             <tr>
               <th class="ocu-th">List name</th>
@@ -121,7 +136,7 @@ function listsPage(data = {}) {
               <th class="ocu-th">Source</th>
               <th class="ocu-th ocu-th-num">Properties</th>
               <th class="ocu-th ocu-th-date">Created</th>
-              <th class="ocu-th ocu-th-num">Actions</th>
+              <th class="ocu-th" style="text-align:right">Actions</th>
             </tr>
           </thead>
           <tbody>${rows.map(listRow).join('')}</tbody>

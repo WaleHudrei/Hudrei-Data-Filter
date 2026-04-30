@@ -425,9 +425,19 @@ function autoMap(csvColumns) {
 // ── STEP 1: Upload CSV ────────────────────────────────────────────────────────
 router.get('/', requireAuth, async (req, res) => {
   const existingLists = await query(`SELECT id, list_name, list_type FROM lists WHERE tenant_id = $1 ORDER BY list_name ASC`, [req.tenantId]);
-  const listOptions = existingLists.rows.map(l =>
-    `<option value="${l.id}" data-name="${l.list_name}">${l.list_name}${l.list_type ? ' ('+l.list_type+')' : ''}</option>`
-  ).join('');
+  // Render the existing-list picker as a styled checkbox list inside a
+  // scrollable card. Replaces the raw <select multiple> which was rendering
+  // as a 1995-style OS dropdown — gray bar, no styling, ugly.
+  const escAttr = (s) => String(s == null ? '' : s).replace(/&/g,'&amp;').replace(/"/g,'&quot;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+  const existingListChecks = existingLists.rows.length === 0
+    ? `<div style="padding:16px;color:var(--ocu-text-3);font-size:13px;text-align:center">No existing lists yet — create one with the field on the left.</div>`
+    : existingLists.rows.map(l => `
+        <label class="ocu-list-pick">
+          <input type="checkbox" name="existing_list" value="${l.id}" data-name="${escAttr(l.list_name)}">
+          <span class="ocu-list-pick-name">${escAttr(l.list_name)}</span>
+          ${l.list_type ? `<span class="ocu-list-pick-type">${escAttr(l.list_type)}</span>` : ''}
+          <span class="ocu-list-pick-check" aria-hidden="true">✓</span>
+        </label>`).join('');
 
   res.send(shell('Import Properties', `
     <div class="ocu-page-header">
@@ -449,10 +459,10 @@ router.get('/', requireAuth, async (req, res) => {
             <input type="text" id="new-list-name" placeholder="e.g. Code Violation IN — April 2026" class="ocu-input" />
           </div>
           <div style="flex:1.2;min-width:240px">
-            <label class="ocu-form-label">Add to existing list(s) <span class="ocu-text-3" style="font-weight:400">(hold Ctrl/Cmd to pick multiple)</span></label>
-            <select id="existing-list-id" class="ocu-input" multiple size="6" style="height:auto;min-height:140px">
-              ${listOptions}
-            </select>
+            <label class="ocu-form-label">Add to existing list(s) <span class="ocu-text-3" style="font-weight:400">(tick all that apply)</span></label>
+            <div id="existing-list-picker" class="ocu-list-pick-wrap">
+              ${existingListChecks}
+            </div>
           </div>
         </div>
         <div class="ocu-text-3" style="font-size:11px;margin-top:6px">Pick any number of existing lists. Optionally create one new list at the same time. Every imported property is added to every chosen list.</div>
@@ -490,11 +500,18 @@ router.get('/', requireAuth, async (req, res) => {
 
       <div style="border-top:1px solid var(--ocu-border-soft, #f0efe9);margin-bottom:18px"></div>
 
-      <!-- Drop zone -->
-      <div id="drop-zone" style="border:1.5px dashed var(--ocu-border);border-radius:10px;padding:32px;text-align:center;cursor:pointer;background:var(--ocu-surface);transition:all .15s">
-        <svg width="32" height="32" fill="none" stroke="var(--ocu-text-3)" stroke-width="1.5" viewBox="0 0 24 24" style="margin-bottom:10px"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
-        <div style="font-size:15px;font-weight:600;color:var(--ocu-text-1)">Drop CSV here or click to browse</div>
-        <div class="ocu-text-3" style="font-size:12px;margin-top:4px">PropStream, DealMachine, BatchSkipTrace, or any CSV export</div>
+      <!-- Drop zone — large, soft, inviting. Hover/dragover state lifts the
+           border into the accent color and pulls the icon up slightly. -->
+      <div id="drop-zone" class="ocu-drop-zone" tabindex="0" role="button" aria-label="Drop CSV file here or click to browse">
+        <div class="ocu-drop-zone-icon" aria-hidden="true">
+          <svg width="36" height="36" fill="none" stroke="currentColor" stroke-width="1.6" viewBox="0 0 24 24">
+            <path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/>
+            <polyline points="17 8 12 3 7 8"/>
+            <line x1="12" y1="3" x2="12" y2="15"/>
+          </svg>
+        </div>
+        <div class="ocu-drop-zone-title">Drop CSV here or click to browse</div>
+        <div class="ocu-drop-zone-sub">PropStream · DealMachine · BatchSkipTrace · or any CSV export</div>
       </div>
       <input type="file" id="file-input" accept=".csv" style="display:none">
       <div id="upload-spinner" style="display:none;align-items:center;gap:8px;font-size:13px;color:var(--ocu-text-3);padding:10px 0">
@@ -507,21 +524,24 @@ router.get('/', requireAuth, async (req, res) => {
     const dz = document.getElementById('drop-zone');
     const fi = document.getElementById('file-input');
     dz.addEventListener('click', () => fi.click());
-    dz.addEventListener('dragover', e => { e.preventDefault(); dz.style.borderColor='#888'; });
-    dz.addEventListener('dragleave', () => dz.style.borderColor='');
-    dz.addEventListener('drop', e => { e.preventDefault(); dz.style.borderColor=''; if(e.dataTransfer.files[0]) handleFile(e.dataTransfer.files[0]); });
+    dz.addEventListener('keydown', e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); fi.click(); } });
+    dz.addEventListener('dragover', e => { e.preventDefault(); dz.classList.add('dragover'); });
+    dz.addEventListener('dragleave', () => dz.classList.remove('dragover'));
+    dz.addEventListener('drop', e => { e.preventDefault(); dz.classList.remove('dragover'); if(e.dataTransfer.files[0]) handleFile(e.dataTransfer.files[0]); });
     fi.addEventListener('change', e => { if(e.target.files[0]) handleFile(e.target.files[0]); });
 
     // Multi-list selection: read the array of selected option values and the
     // matching display names. The user may also type a new list name; that
     // creates an additional list and includes it in the assignment set.
     function readSelectedListIds() {
-      const sel = document.getElementById('existing-list-id');
-      return Array.from(sel.selectedOptions).map(o => o.value).filter(Boolean);
+      return Array.from(
+        document.querySelectorAll('#existing-list-picker input[name="existing_list"]:checked')
+      ).map(c => c.value).filter(Boolean);
     }
     function readSelectedListNames() {
-      const sel = document.getElementById('existing-list-id');
-      return Array.from(sel.selectedOptions).map(o => o.dataset.name || o.text).filter(Boolean);
+      return Array.from(
+        document.querySelectorAll('#existing-list-picker input[name="existing_list"]:checked')
+      ).map(c => c.dataset.name || '').filter(Boolean);
     }
 
     async function handleFile(file) {

@@ -22,12 +22,37 @@ const OWNER_TYPE_STYLES = {
 
 function distressCell(score) {
   if (score == null) return `<span style="color:var(--ocu-text-3)">—</span>`;
-  let color = '#9CA3AF';
   const s = Number(score) || 0;
-  if (s >= 80)      color = '#DC2626';
-  else if (s >= 60) color = '#D97706';
-  else if (s >= 40) color = '#2563EB';
-  return `<span class="ocu-pill" style="background:${color}15;color:${color};font-family:var(--ocu-mono)">${s}</span>`;
+  let color = '#9CA3AF', label = 'Cold';
+  if (s >= 80)      { color = '#DC2626'; label = 'Burning'; }
+  else if (s >= 60) { color = '#EA580C'; label = 'Hot'; }
+  else if (s >= 40) { color = '#D97706'; label = 'Warm'; }
+  // Distress shown as a colored dot + score, rather than a heavy pill — reads
+  // like a thermometer reading instead of a chunky tag.
+  return `<span style="display:inline-flex;align-items:center;gap:6px;font-family:var(--ocu-mono);font-weight:600;color:${color}" title="${label}">
+    <span style="width:8px;height:8px;border-radius:50%;background:${color};box-shadow:0 0 0 3px ${color}22"></span>
+    ${s}
+  </span>`;
+}
+
+// Initials avatar — first letter of first+last, one of 6 stable colors hashed
+// from the name. Used in the Owner column so the cell reads as an "owner
+// card" instead of generic blue link text.
+const AVATAR_PALETTE = [
+  ['#E0F2FE', '#0369A1'],
+  ['#DCFCE7', '#16A34A'],
+  ['#FEF3C7', '#92400E'],
+  ['#F3E8FF', '#6D28D9'],
+  ['#FFE4E6', '#BE123C'],
+  ['#E0E7FF', '#4338CA'],
+];
+function ownerAvatar(first, last) {
+  const f = String(first || '').trim();
+  const l = String(last  || '').trim();
+  const initials = ((f[0] || '') + (l[0] || '')).toUpperCase() || '?';
+  const seed = (f + l).split('').reduce((a, c) => a + c.charCodeAt(0), 0);
+  const [bg, fg] = AVATAR_PALETTE[seed % AVATAR_PALETTE.length];
+  return `<span style="display:inline-flex;align-items:center;justify-content:center;width:28px;height:28px;border-radius:50%;background:${bg};color:${fg};font-size:11px;font-weight:700;letter-spacing:0;flex-shrink:0">${escHTML(initials)}</span>`;
 }
 function pipelineCell(stage) {
   const s = String(stage || 'prospect').toLowerCase();
@@ -91,36 +116,45 @@ function recordsTable(opts = {}) {
     </tr>`;
 
   const body = rows.map(r => {
-    const ownerName = [r.first_name, r.last_name].filter(Boolean).map(escHTML).join(' ');
-    // 2026-04-29 user request: owner name on a record row clicks through
-    // to the owner detail page. Wrap in <a> only when we have a contact_id
-    // (some properties have no linked contact yet — fall back to plain
-    // dash). stopPropagation on the click so we don't ALSO trigger the
-    // row's own click-through to /oculah/records/:id.
-    // 2026-04-29 Option A: when a property has NO contact, render an
-    // "+ Add owner" link that takes the operator to the property detail
-    // page where the inline create form is. No auto-created placeholder
-    // rows — the operator chooses when to add one.
-    const ownerCell = r.contact_id && ownerName
-      ? `<a href="/oculah/owners/${r.contact_id}" class="ocu-link" onclick="event.stopPropagation()">${ownerName}</a>`
-      : (ownerName
-          ? ownerName
-          : `<a href="/oculah/records/${r.id}" class="ocu-add-owner-link" onclick="event.stopPropagation()">+ Add owner</a>`);
+    const ownerNameRaw = [r.first_name, r.last_name].filter(Boolean).join(' ');
+    const ownerName = escHTML(ownerNameRaw);
+    // Owner cell: non-link "owner card" — colored initial avatar + name.
+    // The whole table row is clickable (ocu-tr-clickable), so navigating
+    // to the owner page still works via the row's own click handler. We
+    // add a 2nd handler that detects clicks INSIDE the owner cell and
+    // routes to /oculah/owners/:contact_id instead of the property page.
+    // No <a> tag, so it doesn't read as link text.
+    let ownerCell;
+    if (r.contact_id && ownerNameRaw) {
+      ownerCell = `
+        <span class="ocu-owner-card" data-owner-id="${r.contact_id}">
+          ${ownerAvatar(r.first_name, r.last_name)}
+          <span class="ocu-owner-card-name">${ownerName}</span>
+        </span>`;
+    } else if (ownerNameRaw) {
+      ownerCell = `
+        <span class="ocu-owner-card">
+          ${ownerAvatar(r.first_name, r.last_name)}
+          <span class="ocu-owner-card-name">${ownerName}</span>
+        </span>`;
+    } else {
+      ownerCell = `<a href="/oculah/records/${r.id}" class="ocu-add-owner-link" onclick="event.stopPropagation()">+ Add owner</a>`;
+    }
     const street = escHTML(r.street || '');
     const city = escHTML(r.city || '');
     const state = escHTML(r.state_code || '');
     const zip = escHTML(r.zip_code || '');
     const propType = escHTML(r.property_type || '—');
     return `
-      <tr class="ocu-tr-clickable" data-row-id="${r.id}">
+      <tr class="ocu-tr-clickable ocu-row-card" data-row-id="${r.id}">
         <td class="ocu-td ocu-td-check" onclick="event.stopPropagation()">
           <input type="checkbox" class="ocu-row-check" data-id="${r.id}" aria-label="Select row">
         </td>
-        <td class="ocu-td">
+        <td class="ocu-td ocu-td-address-cell">
           <div class="ocu-td-primary">${street}</div>
           <div class="ocu-td-meta">${city}${city ? ', ' : ''}${state} ${zip}</div>
         </td>
-        <td class="ocu-td ocu-td-text">${ownerCell}</td>
+        <td class="ocu-td ocu-td-owner-cell">${ownerCell}</td>
         <td class="ocu-td">${ownerTypeCell(r.owner_type)}</td>
         <td class="ocu-td ocu-td-text">${propType}</td>
         <td class="ocu-td ocu-td-num">${fmtCount(r.phone_count)}</td>
@@ -131,13 +165,32 @@ function recordsTable(opts = {}) {
       </tr>`;
   }).join('');
 
+  // Click-through behavior: an inner click on .ocu-owner-card with a
+  // data-owner-id routes to the owner page; otherwise the row's normal
+  // click handler routes to the property page. Inlined once so each
+  // table doesn't ship its own copy.
+  const clickShim = `
+    <script>
+      (function(){
+        var t = document.currentScript.previousElementSibling;
+        if (!t) return;
+        t.addEventListener('click', function(e){
+          var oc = e.target.closest('.ocu-owner-card[data-owner-id]');
+          if (oc) {
+            e.stopPropagation();
+            window.location.href = '/oculah/owners/' + oc.getAttribute('data-owner-id');
+          }
+        });
+      })();
+    </script>`;
+
   return `
-    <div class="ocu-table-wrap">
-      <table class="ocu-table">
+    <div class="ocu-table-wrap ocu-records-table-wrap">
+      <table class="ocu-table ocu-records-table">
         <thead>${headers}</thead>
         <tbody>${body}</tbody>
       </table>
-    </div>`;
+    </div>${clickShim}`;
 }
 
 module.exports = { recordsTable };
