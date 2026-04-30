@@ -393,58 +393,72 @@
 
 /* ─── Dashboard switcher (in-topbar dropdown) ──────────────────────────── */
 .ocu-dsw-wrap { position: relative; display: inline-flex; align-items: center; }
-/* The dashboard switcher trigger is a SECONDARY control next to the page
-   title, not part of the title. Sized like a regular .ocu-btn — small,
-   plain weight — so it doesn't compete with the topbar title for visual
-   weight. (Pre-fix it was 22px/800-weight, matching the title and looked
-   like a giant chunky chip.) */
+/* Whole-title-as-trigger: the title text + a subtle chevron form one
+   button. Reads as the page heading; clicking it opens the view switcher.
+   Hover/focus reveals an underline + accent chevron so users know it's
+   interactive without making it look like a chunky chip. */
 .ocu-dsw-trigger {
   display: inline-flex;
   align-items: center;
-  gap: 4px;
-  background: var(--ocu-card-bg);
-  border: 1px solid var(--ocu-border-strong);
-  border-radius: 6px;
-  padding: 4px 8px 4px 10px;
+  gap: 6px;
+  background: transparent;
+  border: 0;
+  padding: 0;
   font: inherit;
-  font-size: 12px;
-  font-weight: 500;
-  color: var(--ocu-text-2);
-  cursor: pointer;
-  letter-spacing: 0;
-  line-height: 1.2;
-  transition: background .12s, border-color .12s, color .12s;
-}
-.ocu-dsw-trigger:hover { background: var(--ocu-bg); border-color: var(--ocu-text-2); color: var(--ocu-text-1); }
-.ocu-dsw-trigger[aria-expanded="true"] { background: var(--ocu-bg); border-color: var(--ocu-accent); color: var(--ocu-accent); }
-.ocu-dsw-trigger-label { line-height: 1; text-transform: uppercase; letter-spacing: 0.06em; font-size: 11px; }
-.ocu-dsw-chev { color: currentColor; opacity: .8; }
-.ocu-dsw-suffix {
-  /* The active dashboard's name reads as part of the topbar title — same
-     size and weight so "[View] Main Dashboard" feels like one heading with
-     a quiet switcher tucked to its left. */
   font-size: 22px;
   font-weight: 800;
   color: var(--ocu-text-1);
+  cursor: pointer;
   letter-spacing: -0.01em;
-  margin-left: 8px;
+  line-height: 1.15;
+  transition: color .12s;
 }
+.ocu-dsw-trigger:focus { outline: none; }
+.ocu-dsw-trigger:focus-visible { outline: 2px solid var(--ocu-accent); outline-offset: 4px; border-radius: 4px; }
+.ocu-dsw-trigger:hover .ocu-dsw-trigger-label,
+.ocu-dsw-trigger[aria-expanded="true"] .ocu-dsw-trigger-label {
+  text-decoration: underline;
+  text-decoration-color: var(--ocu-border-strong);
+  text-underline-offset: 4px;
+  text-decoration-thickness: 1px;
+}
+.ocu-dsw-trigger:hover .ocu-dsw-chev,
+.ocu-dsw-trigger[aria-expanded="true"] .ocu-dsw-chev {
+  color: var(--ocu-accent);
+  transform: translateY(1px);
+}
+.ocu-dsw-trigger-label { line-height: inherit; }
+.ocu-dsw-chev {
+  color: var(--ocu-text-3);
+  opacity: 0.85;
+  transition: transform .12s, color .12s;
+  flex-shrink: 0;
+}
+.ocu-dsw-trigger[aria-expanded="true"] .ocu-dsw-chev { transform: rotate(180deg); }
 
 .ocu-dsw-popover {
   position: absolute;
-  top: calc(100% + 6px);
-  left: 0;
-  min-width: 240px;
+  top: calc(100% + 8px);
+  left: -8px;
+  min-width: 260px;
   width: max-content;
-  max-width: 360px;
+  max-width: 380px;
   background: var(--ocu-bg);
   border: 1px solid var(--ocu-border-strong);
-  border-radius: 10px;
-  box-shadow: 0 10px 30px rgba(11, 18, 32, 0.12), 0 2px 6px rgba(11, 18, 32, 0.06);
+  border-radius: 12px;
+  box-shadow: 0 12px 32px rgba(11, 18, 32, 0.14), 0 4px 8px rgba(11, 18, 32, 0.06);
   padding: 6px;
   z-index: 50;
 }
 .ocu-dsw-popover[hidden] { display: none; }
+.ocu-dsw-popover-header {
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--ocu-text-3);
+  padding: 8px 10px 6px;
+}
 .ocu-dsw-item {
   display: flex;
   align-items: center;

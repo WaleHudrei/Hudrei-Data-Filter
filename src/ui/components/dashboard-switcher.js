@@ -47,19 +47,25 @@ function dashboardSwitcher({ active = 'main', defaultView = 'main' } = {}) {
       </a>`;
   }).join('');
 
+  // The whole title — "Main Dashboard ⌄" — IS the trigger. One element, one
+  // hit target. Cleaner than a separate "View" chip floating next to the
+  // page title, which read as two competing UI elements at slightly
+  // different sizes.
   return `
     <span class="ocu-dsw-wrap" id="ocu-dsw">
-      <button type="button" class="ocu-dsw-trigger" id="ocu-dsw-trigger" aria-haspopup="true" aria-expanded="false">
-        <span class="ocu-dsw-trigger-label">View</span>
-        <svg class="ocu-dsw-chev" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+      <button type="button" class="ocu-dsw-trigger" id="ocu-dsw-trigger"
+              aria-haspopup="true" aria-expanded="false"
+              title="Switch dashboard view">
+        <span class="ocu-dsw-trigger-label">${escHTML(current.label)} Dashboard</span>
+        <svg class="ocu-dsw-chev" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" aria-hidden="true">
           <polyline points="6 9 12 15 18 9"/>
         </svg>
       </button>
       <div class="ocu-dsw-popover" id="ocu-dsw-popover" hidden>
+        <div class="ocu-dsw-popover-header">Switch dashboard</div>
         ${items}
       </div>
-    </span>
-    <span class="ocu-dsw-suffix">${escHTML(current.label)} Dashboard</span>`;
+    </span>`;
 }
 
 module.exports = { dashboardSwitcher, VIEWS, isValidViewId, getView };
