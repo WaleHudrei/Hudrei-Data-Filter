@@ -169,6 +169,54 @@ async function lookupMappingByFingerprint(tenantId, fingerprint) {
   return r.rows[0] || null;
 }
 
+// Fuzzy template fallback. Exact-fingerprint match fails when even one
+// header is added/removed/renamed (PropStream → DealMachine, or PropStream
+// adding a new column). Operators saw "no saved mapping" and re-mapped from
+// scratch. This walks the tenant's recent templates and returns the one
+// with the highest header-set overlap, provided overlap ≥ MIN_OVERLAP.
+const _FUZZY_MIN_OVERLAP = 0.60;
+function _normHeaderForOverlap(s) {
+  return String(s || '').toLowerCase().replace(/[^a-z0-9]/g, '');
+}
+async function lookupBestFuzzyMatch(tenantId, columns) {
+  if (!columns || !columns.length) return null;
+  await ensureMappingSchema();
+  // Pull the tenant's 25 most-recently-used templates. Bounded so a tenant
+  // with hundreds of saved mappings doesn't slow the parse path.
+  const r = await query(
+    `SELECT id, fingerprint, name, headers, mapping, use_count, last_used_at
+       FROM mapping_templates
+      WHERE tenant_id = $1
+      ORDER BY last_used_at DESC NULLS LAST, use_count DESC
+      LIMIT 25`,
+    [tenantId]
+  );
+  if (!r.rows.length) return null;
+  const currentSet = new Set(columns.map(_normHeaderForOverlap).filter(Boolean));
+  if (!currentSet.size) return null;
+
+  let best = null;
+  for (const t of r.rows) {
+    const headers = Array.isArray(t.headers) ? t.headers : [];
+    if (!headers.length) continue;
+    const tplSet = new Set(headers.map(_normHeaderForOverlap).filter(Boolean));
+    let inter = 0;
+    for (const h of tplSet) if (currentSet.has(h)) inter++;
+    const union = currentSet.size + tplSet.size - inter;
+    const jaccard = union > 0 ? inter / union : 0;
+    // We score by intersection-over-template — "how much of the saved
+    // template applies here" — rather than Jaccard, because a saved 30-col
+    // template applied to a 60-col file is still a useful reuse.
+    const coverage = tplSet.size > 0 ? inter / tplSet.size : 0;
+    const score = Math.max(coverage, jaccard);
+    if (score < _FUZZY_MIN_OVERLAP) continue;
+    if (!best || score > best.score) {
+      best = { template: t, score, matchedCols: inter, templateCols: tplSet.size };
+    }
+  }
+  return best;
+}
+
 /**
  * Generates a friendly name from headers. Picks 2-3 distinctive ones so users
  * can identify "PropStream-style" vs "DealMachine-style" vs "county records"
@@ -337,25 +385,37 @@ function autoMap(csvColumns) {
   const map = {};
   const normalize = s => s.toLowerCase().replace(/[^a-z0-9]/g, '');
   const lookup = {
-    street: ['address','propertyaddress','streetaddress','street','propaddress'],
+    // 2026-04-30: PropStream alias coverage. PropStream's standard export
+    // uses "Total Bathrooms", "Building Sqft", "Lot Size Sqft", "Effective
+    // Year Built", "Last Sale Recording Date", "Last Sale Amount", "Est.
+    // Value", "Est. Equity", "Total Condition" — none of which matched
+    // pre-existing aliases. Operators were re-mapping the same six fields
+    // on every PropStream upload. Extending each list to cover real export
+    // headers from PropStream + DealMachine + REISift in one pass.
+    street: ['address','propertyaddress','streetaddress','street','propaddress','propertystreetaddress'],
     city: ['city','propertycity','propercity'],
     state_code: ['state','statecode','propertystate','st'],
-    zip_code: ['zip','zipcode','postalcode','propertyzip'],
+    zip_code: ['zip','zipcode','postalcode','propertyzip','propertyzipcode'],
     county: ['county','propertycounty'],
     property_type: ['propertytype','type','proptype'],
-    year_built: ['yearbuilt','year','built','yrbuilt'],
-    sqft: ['sqft','squarefeet','sqfeet','livingarea','buildingsize'],
-    bedrooms: ['bedrooms','beds','bd','br'],
-    bathrooms: ['bathrooms','baths','ba'],
-    lot_size: ['lotsize','lot','lotarea','lotsqft'],
+    year_built: ['yearbuilt','year','built','yrbuilt','effectiveyearbuilt'],
+    sqft: ['sqft','squarefeet','sqfeet','livingarea','buildingsize','buildingsqft','buildingsquarefeet','livingsqft','grosslivingarea'],
+    bedrooms: ['bedrooms','beds','bd','br','numberofbedrooms','numbedrooms'],
+    bathrooms: ['bathrooms','baths','ba','totalbathrooms','numberofbathrooms','numbathrooms'],
+    lot_size: ['lotsize','lot','lotarea','lotsqft','lotsizesqft','lotsizesquarefeet','lotacreage'],
     assessed_value: ['assessedvalue','assessedval','taxassessedvalue','assessmentvalue','totalassessedvalue'],
-    estimated_value: ['estimatedvalue','estvalue','avm','marketvalue','estimatedmarketvalue'],
-    estimated_equity_value: ['estimatedequityvalue','estequityvalue','equitydollar','equityvalue','totalequity','equityamount','equityamt','equitydollars','availableequity'],
-    equity_percent: ['equity','equitypercent','equityperc','equitypercentage','estimatedequitypercent','estequitypercent','estequityperc'],
+    estimated_value: ['estimatedvalue','estvalue','estvaluation','avm','marketvalue','estimatedmarketvalue','estmarketvalue'],
+    // PropStream exports "Est. Equity" as a dollar amount. DealMachine uses
+    // "Equity Amount" / "Available Equity". Aliases cover both spellings.
+    estimated_equity_value: ['estimatedequityvalue','estequityvalue','estequity','equitydollar','equityvalue','totalequity','equityamount','equityamt','equitydollars','availableequity'],
+    equity_percent: ['equity','equitypercent','equityperc','equitypercentage','estimatedequitypercent','estequitypercent','estequityperc','equitypct'],
     property_status: ['propertystatus','status','mlsstatus','liststatus'],
-    condition: ['condition','propertycondition'],
-    last_sale_date: ['lastsaledate','saledate','lastsoldate','solddate'],
-    last_sale_price: ['lastsaleprice','saleprice','lastsolprice'],
+    // PropStream "Total Condition" (single rolled-up score) maps to our
+    // single condition column. Interior/Exterior/Bath/Kitchen breakdowns
+    // are not stored — operators picking those will see them as Skip.
+    condition: ['condition','propertycondition','totalcondition','overallcondition'],
+    last_sale_date: ['lastsaledate','saledate','lastsoldate','solddate','lastsalerecordingdate','salerecordingdate'],
+    last_sale_price: ['lastsaleprice','saleprice','lastsolprice','lastsaleamount','saleamount','lastsoldamount'],
     vacant: ['vacant','vacancy','isvacant'],
     source: ['source','leadsource','datasource','listsource'],
     // 2026-04-21 Feature 8: auto-map aliases for Feature 2 Additional Info
@@ -886,7 +946,41 @@ router.post('/parse', requireAuth, upload.single('csvfile'), async (req, res) =>
           console.log(`[mapping matched but stale] fingerprint=${fingerprint} — all saved columns missing from this CSV, falling back to autoMap (${autoMapCount} fields)`);
         }
       } else {
-        console.log(`[mapping not found] fingerprint=${fingerprint} — using autoMap (${autoMapCount} fields); will save if user completes import`);
+        // No exact fingerprint match — try a fuzzy fallback against the
+        // tenant's recent templates. If a previous PropStream/DealMachine
+        // upload's headers overlap ≥60% with this CSV, reuse those mappings
+        // for the columns that match. This is the "I tweaked one column and
+        // suddenly the saved mapping disappeared" fix.
+        try {
+          const fuzzy = await lookupBestFuzzyMatch(req.tenantId, columns);
+          if (fuzzy) {
+            const t = fuzzy.template;
+            const colSet = new Set(columns);
+            const filtered = {};
+            for (const [lokiKey, csvCol] of Object.entries(t.mapping || {})) {
+              if (colSet.has(csvCol)) filtered[lokiKey] = csvCol;
+            }
+            if (Object.keys(filtered).length > 0) {
+              mapping = { ...mapping, ...filtered };
+              savedTemplate = {
+                fingerprint: t.fingerprint,
+                name: t.name,
+                use_count: t.use_count,
+                fuzzy: true,
+                matchedCols: fuzzy.matchedCols,
+                templateCols: fuzzy.templateCols,
+                overlapPct: Math.round(fuzzy.score * 100),
+              };
+              console.log(`[mapping fuzzy-matched] fingerprint=${fingerprint} → reused "${t.name}" (overlap=${Math.round(fuzzy.score * 100)}%, ${Object.keys(filtered).length} columns applied)`);
+            } else {
+              console.log(`[mapping not found] fingerprint=${fingerprint} — using autoMap (${autoMapCount} fields); will save if user completes import`);
+            }
+          } else {
+            console.log(`[mapping not found] fingerprint=${fingerprint} — using autoMap (${autoMapCount} fields); will save if user completes import`);
+          }
+        } catch (e) {
+          console.error('[import/parse] fuzzy lookup failed:', e.message);
+        }
       }
     } catch (e) {
       // Non-fatal — if the lookup fails, we still have autoMap
@@ -1091,7 +1185,11 @@ router.get('/map', requireAuth, (req, res) => {
     if (savedTemplate && savedTemplate.name) {
       const tb = document.getElementById('template-badge');
       const tt = document.getElementById('template-badge-text');
-      tt.textContent = '✨ Using saved mapping: ' + savedTemplate.name + ' (' + savedTemplate.use_count + ' use' + (savedTemplate.use_count===1?'':'s') + ')';
+      if (savedTemplate.fuzzy) {
+        tt.textContent = '✨ Reusing your last mapping: ' + savedTemplate.name + ' (' + savedTemplate.matchedCols + ' of ' + savedTemplate.templateCols + ' columns matched · ' + savedTemplate.overlapPct + '% overlap)';
+      } else {
+        tt.textContent = '✨ Using saved mapping: ' + savedTemplate.name + ' (' + savedTemplate.use_count + ' use' + (savedTemplate.use_count===1?'':'s') + ')';
+      }
       tb.style.display = 'inline-flex';
     }
 

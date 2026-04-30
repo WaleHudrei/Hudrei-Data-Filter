@@ -18,7 +18,6 @@
 // ═══════════════════════════════════════════════════════════════════════════
 const { shell }   = require('../layouts/shell');
 const { card }    = require('../components/card');
-const { kpiCard } = require('../components/kpi-card');
 const { escHTML, fmtNum, fmtRelative } = require('../_helpers');
 
 function statusBadge(s) {
@@ -71,11 +70,157 @@ function uploadRow(u) {
 
 // ── New campaign-detail sections (Loki port) ──────────────────────────────
 //
-// Contact-list management card. Shows the contact-list metrics returned by
-// filtration.getContactStats() and exposes the upload / delete / sync /
-// Readymode-count writes.
+// Local mini-card primitives — match the Loki kpi/ratioCard look.
+// (We don't reuse <kpiCard> from components/kpi-card.js because the legacy
+// Loki layout uses a denser, label/value/sub form with a per-card value
+// color that the shared component doesn't expose.)
+function _kpiCell(label, value, sub, valueColor) {
+  return `
+    <div class="ocu-kpi">
+      <div class="ocu-kpi-label">${escHTML(label)}</div>
+      <div class="ocu-kpi-value"${valueColor ? ` style="color:${valueColor}"` : ''}>${value}</div>
+      ${sub ? `<div class="ocu-kpi-delta">${escHTML(sub)}</div>` : ''}
+    </div>`;
+}
+function _ratioCard(label, value, hint, color) {
+  return `
+    <div class="ocu-card" style="text-align:center;padding:14px 10px">
+      <div style="font-size:22px;font-weight:600;color:${color}">${value}%</div>
+      <div style="font-size:11px;color:var(--ocu-text-2);margin-top:4px;font-weight:600">${escHTML(label)}</div>
+      <div style="font-size:10px;color:var(--ocu-text-3);margin-top:2px">${escHTML(hint)}</div>
+    </div>`;
+}
+
+// Compute the metrics block once and reuse across the strips. Keeps the math
+// in one place so a label tweak doesn't require chasing duplicate calcs.
+function _campaignMetrics(c) {
+  const counts = c.contact_counts || {};
+  const callLogs       = Number(c.total_unique_numbers || 0);
+  const connected      = Number(c.total_connected      || 0);
+  const transfers      = Number(c.total_transfers      || 0);
+  const wrongNums      = Number(c.total_wrong_numbers  || 0);
+  const notInterested  = Number(c.total_not_interested || 0);
+  const filtered       = Number(c.total_filtered       || 0);
+  const uploadCount    = Number(c.upload_count         || 0);
+  const totalContacts  = Number(counts.total_contacts  || 0);
+  const totalPhones    = Number(counts.total_phones    || 0);
+  const correctPhones  = Number(counts.correct_phones  || 0);
+  const wrongPhones    = Number(counts.wrong_phones    || 0);
+  const nisPhones      = Number(counts.nis_phones      || 0);
+  const filteredPhones = Number(counts.filtered_phones || 0);
+  const reached        = Number(counts.reached_contacts || 0);
+  const leadContacts   = Number(counts.lead_contacts   || 0);
+  const manualCount    = Number(c.manual_count         || 0);
+
+  // "Callable" = total phones minus everything that's been pulled out of the
+  // active dialer pool. Filtered + wrong + NIS are excluded from calling, and
+  // we floor at 0 so a stale upload doesn't show a negative number.
+  const callablePhones = Math.max(0, totalPhones - wrongPhones - filteredPhones - nisPhones);
+  const masterCallable = Math.max(0, totalPhones - (filtered + wrongNums) - nisPhones);
+  const callablePct    = totalPhones > 0 ? Math.round((masterCallable / totalPhones) * 100) : 0;
+  const health         = totalPhones > 0 ? ((callablePhones / totalPhones) * 100).toFixed(1) : '0.0';
+
+  const cr    = (callLogs > 0 && connected > 0) ? ((connected / callLogs) * 100).toFixed(2) : '0.00';
+  const clr   = (totalPhones > 0 && callLogs > 0) ? ((callLogs / totalPhones) * 100).toFixed(2) : '0.00';
+  const wPct  = (connected + wrongNums) > 0 ? ((wrongNums / (connected + wrongNums)) * 100).toFixed(2) : '0.00';
+  const niPct = connected > 0 ? ((notInterested / connected) * 100).toFixed(2) : '0.00';
+  const lgr   = connected > 0 ? ((transfers / connected) * 100).toFixed(2) : '0.00';
+  const lcv   = totalContacts > 0 ? ((leadContacts / totalContacts) * 100).toFixed(2) : '0.00';
+
+  return {
+    callLogs, connected, transfers, wrongNums, notInterested, filtered, uploadCount,
+    totalContacts, totalPhones, correctPhones, wrongPhones, nisPhones, reached,
+    leadContacts, manualCount, masterCallable, callablePct, health, cr, clr, wPct, niPct, lgr, lcv,
+  };
+}
+
+// Top filtration KPI strip — 7 cards for cold-call, 5 for SMS.
+function filtrationKpiStrip(c, m) {
+  const isSms = (c.active_channel || 'cold_call') === 'sms';
+  const cards = isSms ? `
+    ${_kpiCell('SMS uploads',     fmtNum(m.uploadCount),  'Uploads')}
+    ${_kpiCell('Wrong numbers',   fmtNum(m.wrongNums),    'Removed', '#c0392b')}
+    ${_kpiCell('Not interested',  fmtNum(m.notInterested),'Total NI', '#9a6800')}
+    ${_kpiCell('Leads generated', fmtNum(m.transfers),    'Transfers', '#1a7a4a')}
+    ${_kpiCell('Callable',        fmtNum(m.masterCallable), `${m.callablePct}% active pool`, '#1a7a4a')}
+  ` : `
+    ${_kpiCell('Call logs',       fmtNum(m.callLogs),     'Logged numbers')}
+    ${_kpiCell('Connected',       fmtNum(m.connected),    'Live pickups', '#2471a3')}
+    ${_kpiCell('Wrong numbers',   fmtNum(m.wrongNums),    'Removed', '#c0392b')}
+    ${_kpiCell('Not interested',  fmtNum(m.notInterested),'Total NI', '#9a6800')}
+    ${_kpiCell('Leads generated', fmtNum(m.transfers),    'Transfers', '#1a7a4a')}
+    ${_kpiCell('Callable',        fmtNum(m.masterCallable), `${m.callablePct}% active pool`, '#1a7a4a')}
+    ${_kpiCell('Filtration runs', fmtNum(m.uploadCount),  'Uploads')}
+  `;
+  return `
+    <div class="ocu-kpi-row" style="grid-template-columns:repeat(auto-fit,minmax(140px,1fr));margin-bottom:18px">
+      ${cards}
+    </div>`;
+}
+
+// Campaign ratio cards — 6 colored % cards (CR/W#%/NI%/LGR/LCV/Health for
+// cold-call; W#%/NI%/LGR/LCV/Health for SMS).
+function ratioCardsBlock(c, m) {
+  const isSms = (c.active_channel || 'cold_call') === 'sms';
+  const healthColor = parseFloat(m.health) > 50 ? '#1a7a4a'
+                    : parseFloat(m.health) > 25 ? '#9a6800' : '#c0392b';
+  const cards = isSms ? `
+    ${_ratioCard('W#%',    m.wPct,   'Wrong ÷ Total contacts',           '#c0392b')}
+    ${_ratioCard('NI%',    m.niPct,  'NI ÷ Total contacts',              '#9a6800')}
+    ${_ratioCard('LGR',    m.lgr,    'Leads ÷ Total contacts',           '#1a7a4a')}
+    ${_ratioCard('LCV',    m.lcv,    'Lead contacts ÷ Total contacts',   '#534AB7')}
+    ${_ratioCard('Health', m.health, 'Callable ÷ Total phones',          healthColor)}
+  ` : `
+    ${_ratioCard('CLR',    m.clr,    'Call logs ÷ Total phones',         '#534AB7')}
+    ${_ratioCard('CR',     m.cr,     'Connected ÷ Call logs',            '#2471a3')}
+    ${_ratioCard('W#%',    m.wPct,   'Wrong ÷ Humans reached',           '#c0392b')}
+    ${_ratioCard('NI%',    m.niPct,  'NI ÷ Connected',                   '#9a6800')}
+    ${_ratioCard('LGR',    m.lgr,    'Leads ÷ Connected',                '#1a7a4a')}
+    ${_ratioCard('LCV',    m.lcv,    'Lead contacts ÷ Total contacts',   '#534AB7')}
+    ${_ratioCard('Health', m.health, 'Callable ÷ Total phones',          healthColor)}
+  `;
+  return `
+    <div class="ocu-card" style="padding:16px 18px;margin-bottom:18px">
+      <div class="ocu-text-3" style="font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.06em;margin-bottom:12px">${isSms ? 'SMS campaign ratios' : 'Campaign KPIs'}</div>
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:10px">
+        ${cards}
+      </div>
+    </div>`;
+}
+
+// Side card mirroring the Loki "Channel status" panel — pills per channel
+// plus the rolling wrong-number / voicemail counters.
+function channelStatusCard(c, m) {
+  const coldActive = c.cold_call_status === 'active';
+  const smsActive  = c.sms_status === 'active';
+  return card({
+    title: 'Channel status',
+    meta:  '',
+    body: `
+      <div style="margin-bottom:10px">
+        <div class="ocu-text-3" style="font-size:11px;margin-bottom:4px">Cold call</div>
+        <span class="ocu-pill ${coldActive ? 'ocu-pill-good' : ''}">${escHTML(c.cold_call_status || '—')}</span>
+      </div>
+      <div>
+        <div class="ocu-text-3" style="font-size:11px;margin-bottom:4px">SMS</div>
+        <span class="ocu-pill ${smsActive ? 'ocu-pill-good' : ''}">${escHTML(c.sms_status || '—')}</span>
+      </div>
+      <div style="margin-top:14px;padding-top:12px;border-top:1px solid var(--ocu-border)">
+        <div class="ocu-text-3" style="font-size:11px;margin-bottom:2px">Wrong numbers removed</div>
+        <div class="ocu-mono" style="font-size:18px;font-weight:600;color:#c0392b">${fmtNum(m.wrongNums)}</div>
+      </div>
+      <div style="margin-top:10px">
+        <div class="ocu-text-3" style="font-size:11px;margin-bottom:2px">Voicemails accumulated</div>
+        <div class="ocu-mono" style="font-size:18px;font-weight:600;color:#9a6800">${fmtNum(c.total_voicemails || 0)}</div>
+      </div>`,
+  });
+}
+
+// Contact list section — Loki layout with 7-card KPI grid + inline edit for
+// "Accepted by Readymode" + upload/sync/delete + clean export. Replaces the
+// old slim contact-list card.
 function contactListCard(c, counts) {
-  const isCold = (c.active_channel || 'cold_call') === 'cold_call';
+  const isCold        = (c.active_channel || 'cold_call') === 'cold_call';
   const totalContacts = Number(counts.total_contacts || 0);
   const totalPhones   = Number(counts.total_phones   || 0);
   const correct       = Number(counts.correct_phones || 0);
@@ -83,72 +228,82 @@ function contactListCard(c, counts) {
   const nis           = Number(counts.nis_phones     || 0);
   const reached       = Number(counts.reached_contacts || 0);
   const manualCount   = Number(c.manual_count || 0);
+  const reachedPct    = totalContacts > 0 ? ((reached / totalContacts) * 100).toFixed(1) : null;
+  const reachedValue  = reachedPct
+    ? `${fmtNum(reached)} <span style="font-size:13px;color:var(--ocu-text-3);font-weight:400">(${reachedPct}%)</span>`
+    : fmtNum(reached);
 
-  const stats = `
-    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:10px;margin-bottom:14px">
-      <div class="ocu-mini-stat"><div class="v ocu-mono">${fmtNum(totalContacts)}</div><div class="l">Contacts</div></div>
-      <div class="ocu-mini-stat"><div class="v ocu-mono">${fmtNum(totalPhones)}</div><div class="l">Total phones</div></div>
-      <div class="ocu-mini-stat"><div class="v ocu-mono">${fmtNum(correct)}</div><div class="l">Confirmed correct</div></div>
-      <div class="ocu-mini-stat"><div class="v ocu-mono">${fmtNum(wrong)}</div><div class="l">Wrong numbers</div></div>
-      <div class="ocu-mini-stat"><div class="v ocu-mono">${fmtNum(nis)}</div><div class="l">NIS flagged</div></div>
-      <div class="ocu-mini-stat"><div class="v ocu-mono">${fmtNum(reached)}</div><div class="l">Reached</div></div>
-      ${isCold ? `<div class="ocu-mini-stat"><div class="v ocu-mono">${fmtNum(manualCount)}</div><div class="l">Accepted by Readymode</div></div>` : ''}
+  const acceptedValue = `${fmtNum(manualCount)} <button type="button" onclick="cd_toggleRm()" style="font-size:11px;color:var(--ocu-text-3);background:none;border:none;cursor:pointer;text-decoration:underline">edit</button>`;
+
+  const kpis = `
+    <div class="ocu-kpi-row" style="grid-template-columns:repeat(auto-fit,minmax(140px,1fr));margin-bottom:14px">
+      ${_kpiCell('Total properties',     fmtNum(totalContacts), 'Contacts uploaded')}
+      ${isCold ? _kpiCell('Accepted by Readymode', acceptedValue, 'Manually entered') : ''}
+      ${_kpiCell('Total phones',         fmtNum(totalPhones),  'Across all contacts')}
+      ${_kpiCell('Wrong numbers',        fmtNum(wrong),        'Permanently excluded', '#c0392b')}
+      ${_kpiCell('NIS flagged',          fmtNum(nis),          'Dead numbers',         '#c0392b')}
+      ${_kpiCell('Confirmed correct',    fmtNum(correct),      'Live person confirmed', '#1a7a4a')}
+      ${_kpiCell('Contacts reached',     reachedValue,         'At least 1 live pickup', '#185fa5')}
+    </div>`;
+
+  const readymodeForm = isCold ? `
+    <div id="cd-rm-form" style="display:none;background:var(--ocu-surface);border-radius:8px;padding:12px;margin-bottom:14px">
+      <form method="POST" action="/oculah/campaigns/${c.id}/readymode-count" style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+        <input type="number" name="count" min="0" step="1" value="${manualCount}" placeholder="e.g. 4163" class="ocu-input" style="width:160px" required />
+        <button type="submit" class="ocu-btn ocu-btn-primary">Save</button>
+        <span class="ocu-text-3" style="font-size:12px">Total contacts Readymode accepted</span>
+      </form>
+    </div>` : '';
+
+  const headerActions = `
+    <div style="display:flex;gap:8px;flex-wrap:wrap">
+      ${totalContacts > 0 ? `
+        <form method="POST" action="/oculah/campaigns/${c.id}/sync-wrong-numbers" style="display:inline" onsubmit="return confirm('Sync all historical wrong numbers to the master contact list? Safe to run anytime.')">
+          <button type="submit" class="ocu-btn ocu-btn-secondary">Sync wrong numbers</button>
+        </form>
+        <a href="/campaigns/${c.id}/export/clean" class="ocu-btn ocu-btn-primary">Download clean export (Readymode)</a>
+      ` : ''}
     </div>`;
 
   const uploadForm = `
-    <form method="POST" action="/oculah/campaigns/${c.id}/contacts/upload"
-          enctype="multipart/form-data"
-          style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
-      <input type="file" name="contactfile" accept=".csv,.txt" required
-             style="flex:1;min-width:200px;font-size:13px" />
-      <button type="submit" class="ocu-btn ocu-btn-primary">Upload contact list</button>
-    </form>`;
+    <div style="border-top:1px solid var(--ocu-border);padding-top:14px">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;flex-wrap:wrap;gap:8px">
+        <div class="ocu-text-3" style="font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.06em">Upload original contact list</div>
+        ${totalContacts > 0 ? `
+          <form method="POST" action="/oculah/campaigns/${c.id}/contacts/delete" onsubmit="return confirm('Delete the master contact list for this campaign? This cannot be undone.')">
+            <button type="submit" class="ocu-btn ocu-btn-ghost" style="color:#c0392b;font-size:12px">Delete master list</button>
+          </form>` : ''}
+      </div>
+      <form method="POST" action="/oculah/campaigns/${c.id}/contacts/upload" enctype="multipart/form-data">
+        <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+          <input type="file" name="contactfile" accept=".csv,.txt" required class="ocu-input" style="padding:6px 10px;flex:1;min-width:240px" />
+          <button type="submit" class="ocu-btn ocu-btn-primary">Upload contact list</button>
+        </div>
+        <div class="ocu-text-3" style="font-size:11px;margin-top:6px">Oculah auto-detects all columns and phone numbers. Re-upload to replace.</div>
+      </form>
+      ${c.sms_status === 'active' ? `
+        <div style="margin-top:16px;padding-top:14px;border-top:1px solid var(--ocu-border)">
+          <div class="ocu-text-3" style="font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.06em;margin-bottom:8px">Upload SmarterContact SMS results</div>
+          <form method="POST" action="/oculah/campaigns/${c.id}/sms/upload" enctype="multipart/form-data">
+            <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+              <input type="file" name="smsfile" accept=".csv,.txt" required class="ocu-input" style="padding:6px 10px;flex:1;min-width:240px" />
+              <button type="submit" class="ocu-btn ocu-btn-primary" style="background:#2563eb">Upload SMS results</button>
+            </div>
+            <div class="ocu-text-3" style="font-size:11px;margin-top:6px">Required columns: Phone, Labels, First name, Last name, Property address, Property city, Property state, Property zip. One label per row.</div>
+          </form>
+        </div>` : ''}
+    </div>`;
 
-  const deleteForm = totalContacts > 0 ? `
-    <form method="POST" action="/oculah/campaigns/${c.id}/contacts/delete"
-          style="display:inline-block"
-          onsubmit="return confirm('Delete the contact list for this campaign? Filtration data on dialed phones will remain.');">
-      <button type="submit" class="ocu-btn ocu-btn-ghost" style="color:#a02222">Delete contact list</button>
-    </form>` : '';
-
-  const syncForm = totalContacts > 0 ? `
-    <form method="POST" action="/oculah/campaigns/${c.id}/sync-wrong-numbers"
-          style="display:inline-block"
-          onsubmit="return confirm('Apply historical wrong-number flags to the master contact list?');">
-      <button type="submit" class="ocu-btn ocu-btn-secondary">Sync wrong numbers</button>
-    </form>` : '';
-
-  const readymodeForm = isCold ? `
-    <form method="POST" action="/oculah/campaigns/${c.id}/readymode-count"
-          style="display:inline-flex;gap:6px;align-items:center">
-      <label class="ocu-text-3" style="font-size:12px">Readymode accepted:</label>
-      <input type="number" name="count" min="0" step="1" value="${manualCount}"
-             class="ocu-input" style="width:90px;padding:5px 8px;font-size:12px" required />
-      <button type="submit" class="ocu-btn ocu-btn-secondary">Update</button>
-    </form>` : '';
-
-  const cleanExportLink = totalContacts > 0
-    ? `<a href="/campaigns/${c.id}/export/clean" class="ocu-btn ocu-btn-secondary">⤓ Clean export (Readymode)</a>`
-    : '';
-
-  const body = `
-    ${stats}
-    <div style="margin-bottom:12px">${uploadForm}</div>
-    <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
-      ${cleanExportLink}
-      ${syncForm}
+  return `
+    <div class="ocu-card" style="padding:18px 20px;margin-bottom:18px">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px;flex-wrap:wrap;gap:10px">
+        <div style="font-size:14px;font-weight:600;color:var(--ocu-text-1)">Contact list</div>
+        ${headerActions}
+      </div>
+      ${kpis}
       ${readymodeForm}
-      ${deleteForm}
-    </div>
-    ${totalContacts === 0
-      ? '<div class="ocu-text-3" style="font-size:12px;margin-top:10px">No contact list uploaded yet. Drop a master CSV above to enable filtration tracking.</div>'
-      : ''}`;
-
-  return card({
-    title: 'Contact list',
-    meta:  totalContacts > 0 ? `${fmtNum(totalContacts)} contacts · ${fmtNum(totalPhones)} phones` : 'Empty',
-    body,
-  });
+      ${uploadForm}
+    </div>`;
 }
 
 function smsResultsCard(c) {
@@ -210,16 +365,12 @@ function campaignDetail(data = {}) {
     ? `<div class="ocu-card" style="margin-bottom:14px;background:#fdeaea;border-color:#f5c5c5;color:#8b1f1f;padding:12px 16px;font-size:13px">${escHTML(flash.err)}</div>`
     : '';
 
-  const kpiStrip = `
-    <div class="ocu-kpi-row" style="grid-template-columns:repeat(auto-fit,minmax(140px,1fr))">
-      ${kpiCard({ label: 'Unique numbers',    value: c.total_unique_numbers || 0, featured: true })}
-      ${kpiCard({ label: 'Callable',          value: c.total_callable || 0 })}
-      ${kpiCard({ label: 'Filtered',          value: c.total_filtered || 0 })}
-      ${kpiCard({ label: 'Connected',         value: c.total_connected || 0 })}
-      ${kpiCard({ label: 'Transfers (leads)', value: c.total_transfers || 0, valueClass: c.total_transfers > 0 ? 'burning' : '' })}
-      ${kpiCard({ label: 'Contacts',          value: counts.total_contacts || 0 })}
-      ${kpiCard({ label: 'Leads (all)',       value: counts.lead_contacts || 0 })}
-    </div>`;
+  // Loki-parity KPI strips: filtration totals on top, then a ratio-cards
+  // panel ("Campaign KPIs" — CR/W#%/NI%/LGR/LCV/Health). Both calc once via
+  // _campaignMetrics so labels and ratios stay in lockstep.
+  const metrics = _campaignMetrics(c);
+  const kpiStrip = filtrationKpiStrip(c, metrics);
+  const ratioStrip = ratioCardsBlock(c, metrics);
 
   // Channel + status controls
   const channelControl = `
@@ -331,6 +482,7 @@ function campaignDetail(data = {}) {
   // New cards (Loki port)
   const isSms = (c.active_channel || 'cold_call') === 'sms';
   const contactCard   = contactListCard(c, counts);
+  const channelCard   = channelStatusCard(c, metrics);
   const smsCard       = isSms ? smsResultsCard(c) : '';
   const quickFilter   = quickFiltrationCard(c);
 
@@ -353,26 +505,29 @@ function campaignDetail(data = {}) {
     ${renameForm}
 
     ${flashHTML}
-    ${kpiStrip}
 
-    <div style="margin-top:18px;display:flex;gap:8px;justify-content:flex-end;flex-wrap:wrap">
+    <div style="margin-bottom:14px;display:flex;gap:8px;justify-content:flex-end;flex-wrap:wrap">
       <a href="/campaigns/${c.id}" class="ocu-btn ocu-btn-primary">Upload list / call log</a>
       ${newRoundBtn}
       ${closeBtn}
     </div>
 
-    <div style="display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-top:18px">
+    ${kpiStrip}
+    ${ratioStrip}
+    ${contactCard}
+
+    <div style="display:grid;grid-template-columns:1fr 280px;gap:14px;margin-bottom:18px">
       ${dispositionsCard}
-      ${contactCard}
+      ${channelCard}
     </div>
 
-    ${smsCard ? `<div style="margin-top:14px">${smsCard}</div>` : ''}
+    ${smsCard ? `<div style="margin-bottom:14px">${smsCard}</div>` : ''}
 
-    <div style="margin-top:14px">${quickFilter}</div>
+    <div style="margin-bottom:14px">${quickFilter}</div>
 
-    <div style="margin-top:14px">${uploadsCard}</div>
+    <div style="margin-bottom:14px">${uploadsCard}</div>
 
-    <div style="display:grid;grid-template-columns:1fr;gap:14px;margin-top:14px">
+    <div style="display:grid;grid-template-columns:1fr;gap:14px;margin-bottom:14px">
       ${filtersCard}
     </div>
 
@@ -405,6 +560,15 @@ function campaignDetail(data = {}) {
       function cd_cancelRename() {
         document.getElementById('cd-name').style.display = '';
         document.getElementById('cd-rename-form').style.display = 'none';
+      }
+      function cd_toggleRm() {
+        var f = document.getElementById('cd-rm-form');
+        if (!f) return;
+        f.style.display = (f.style.display === 'none' || !f.style.display) ? 'block' : 'none';
+        if (f.style.display === 'block') {
+          var inp = f.querySelector('input[name="count"]');
+          if (inp) { inp.focus(); inp.select(); }
+        }
       }
 
       // ── Quick filtration drop zone ──────────────────────────────────────

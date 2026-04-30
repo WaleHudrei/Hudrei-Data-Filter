@@ -3,6 +3,15 @@
 
 const ENTRIES = [
   {
+    date: 'April 30, 2026 (campaign view restored + smarter import mapping)',
+    title: 'Loki-style campaign dashboard is back, and the import remembers your last mapping even when columns change',
+    items: [
+      { tag: 'feat', text: 'Campaign view rebuilt with the full Loki dashboard layout. Three blocks back on the page, in this order: (1) the seven-card filtration KPI row at the top — Call logs, Connected, Wrong numbers, Not interested, Leads generated, Callable (with active-pool %), Filtration runs (or the 5-card SMS variant for SMS campaigns); (2) the Campaign KPIs block — six colored ratio cards CLR / CR / W#% / NI% / LGR / LCV / Health, each with the ÷ formula in the hint line; (3) the Contact list section — Total properties, Accepted by Readymode (with inline edit pencil), Total phones, Wrong numbers, NIS flagged, Confirmed correct, Contacts reached (with %). Disposition breakdown sits next to a new Channel status side card (Cold call/SMS pills, Wrong numbers removed, Voicemails accumulated counters). The thin 7-card strip that was there before is gone — full Loki layout replaces it.' },
+      { tag: 'feat', text: 'Import auto-mapping speaks PropStream now. PropStream\'s exact export headers — "Total Bathrooms", "Building Sqft", "Lot Size Sqft", "Effective Year Built", "Last Sale Recording Date", "Last Sale Amount", "Est. Equity", "Est. Value", "Total Condition" — auto-detect into the right Oculah fields on first upload. No more re-mapping the same six fields every time.' },
+      { tag: 'feat', text: 'Import remembers your last mapping even when one or two columns change between uploads. Before: if your saved-mapping CSV had 75 columns and the next CSV had 76, the saved mapping silently disappeared (different fingerprint = no match) and operators re-mapped from scratch. Now: if there\'s no exact-fingerprint match, Oculah scans your 25 most-recent saved templates, finds the one whose headers overlap ≥60% with the current CSV, and reuses those mappings for the columns that match. The badge says "✨ Reusing your last mapping (12 of 14 columns matched · 86% overlap)" so you know it\'s a fuzzy match, not an exact one.' },
+    ],
+  },
+  {
     date: 'April 30, 2026 (Financial details on import)',
     title: 'New "Financial" group on the column-mapping screen',
     items: [
