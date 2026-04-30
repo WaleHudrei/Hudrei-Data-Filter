@@ -47,7 +47,7 @@ function dashboardSwitcher({ active = 'main', defaultView = 'main' } = {}) {
   return `
     <span class="ocu-dsw-wrap" id="ocu-dsw">
       <button type="button" class="ocu-dsw-trigger" id="ocu-dsw-trigger" aria-haspopup="true" aria-expanded="false">
-        <span class="ocu-dsw-trigger-label">${escHTML(current.label)}</span>
+        <span class="ocu-dsw-trigger-label">View</span>
         <svg class="ocu-dsw-chev" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
           <polyline points="6 9 12 15 18 9"/>
         </svg>
@@ -56,7 +56,7 @@ function dashboardSwitcher({ active = 'main', defaultView = 'main' } = {}) {
         ${items}
       </div>
     </span>
-    <span class="ocu-dsw-suffix">Dashboard</span>`;
+    <span class="ocu-dsw-suffix">${escHTML(current.label)} Dashboard</span>`;
 }
 
 module.exports = { dashboardSwitcher, VIEWS, isValidViewId, getView };
