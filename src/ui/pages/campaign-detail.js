@@ -335,22 +335,22 @@ function campaignDetail(data = {}) {
   const quickFilter   = quickFiltrationCard(c);
 
   const body = `
-    <div class="ocu-page-header" style="align-items:flex-start">
-      <div style="flex:1;min-width:0">
-        <div style="margin-bottom:6px"><a href="/oculah/campaigns" class="ocu-text-3" style="font-size:13px;text-decoration:none">← Campaigns</a></div>
-        <div style="display:flex;align-items:center;gap:10px;margin-bottom:6px">
-          <h1 class="ocu-page-title" id="cd-name" style="margin:0">${escHTML(c.name)}</h1>
-          <button class="ocu-btn ocu-btn-ghost" style="padding:4px 8px;font-size:11px" onclick="cd_startRename()">Rename</button>
-          ${statusBadge(c.status)}
-        </div>
-        ${renameForm}
-        <div class="ocu-page-subtitle">${escHTML(c.list_type || '')} · ${escHTML(c.market_name || '')}${c.state_code ? ' · ' + escHTML(c.state_code) : ''}</div>
+    <!-- Campaign name + subtitle live in the topbar (via shell({topbarTitle,
+         topbarSubtitle})). Body keeps the back-link, the inline rename
+         action + status badge, and the channel/status select controls. -->
+    <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:10px;margin-bottom:14px">
+      <div style="display:flex;align-items:center;gap:10px;flex:1;min-width:0">
+        <a href="/oculah/campaigns" class="ocu-text-3" style="font-size:13px;text-decoration:none">← Campaigns</a>
+        <span class="ocu-text-3" style="opacity:.5">·</span>
+        <button class="ocu-btn ocu-btn-ghost" style="padding:4px 8px;font-size:12px" onclick="cd_startRename()">Rename</button>
+        ${statusBadge(c.status)}
       </div>
       <div style="display:flex;gap:10px;align-items:center">
         ${channelControl}
         ${statusControl}
       </div>
     </div>
+    ${renameForm}
 
     ${flashHTML}
     ${kpiStrip}
@@ -501,10 +501,12 @@ function campaignDetail(data = {}) {
     </script>`;
 
   return shell({
-    title:      c.name || 'Campaign',
-    activePage: 'campaigns',
-    user:       data.user,
-    badges:     data.badges || {},
+    title:          c.name || 'Campaign',
+    topbarTitle:    c.name || 'Campaign',
+    topbarSubtitle: [c.list_type, c.market_name, c.state_code].filter(Boolean).join(' · '),
+    activePage:     'campaigns',
+    user:           data.user,
+    badges:         data.badges || {},
     body,
   });
 }

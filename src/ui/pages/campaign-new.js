@@ -17,13 +17,7 @@ function campaignNewPage(data = {}) {
   const today = new Date().toISOString().split('T')[0];
 
   const body = `
-    <div class="ocu-page-header">
-      <div>
-        <div style="margin-bottom:6px"><a href="/oculah/campaigns" class="ocu-text-3" style="font-size:13px;text-decoration:none">← Campaigns</a></div>
-        <h1 class="ocu-page-title">New campaign</h1>
-        <div class="ocu-page-subtitle">Create a campaign to start tracking filtration activity</div>
-      </div>
-    </div>
+    <div style="margin-bottom:14px"><a href="/oculah/campaigns" class="ocu-text-3" style="font-size:13px;text-decoration:none">← Campaigns</a></div>
 
     ${error ? `<div class="ocu-card" style="margin-bottom:16px;background:#fdeaea;border-color:#f5c5c5;color:#8b1f1f;padding:12px 16px;font-size:13px;max-width:580px">${escHTML(error)}</div>` : ''}
 
@@ -90,10 +84,12 @@ function campaignNewPage(data = {}) {
     </div>`;
 
   return shell({
-    title:      'New campaign',
-    activePage: 'campaigns',
-    user:       data.user,
-    badges:     data.badges || {},
+    title:          'New campaign',
+    topbarTitle:    'New campaign',
+    topbarSubtitle: 'Create a campaign to start tracking filtration activity',
+    activePage:     'campaigns',
+    user:           data.user,
+    badges:         data.badges || {},
     body,
   });
 }

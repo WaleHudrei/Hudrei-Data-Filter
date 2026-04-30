@@ -55,23 +55,19 @@ function uploadChooser(data = {}) {
   ].join('');
 
   const body = `
-    <div class="ocu-page-header">
-      <div>
-        <h1 class="ocu-page-title">Upload</h1>
-        <div class="ocu-page-subtitle">What are you uploading today?</div>
-      </div>
-      <div>
-        <a href="/oculah/activity" class="ocu-btn ocu-btn-secondary">View activity →</a>
-      </div>
+    <div style="display:flex;justify-content:flex-end;margin-bottom:14px">
+      <a href="/oculah/activity" class="ocu-btn ocu-btn-secondary">View activity →</a>
     </div>
 
     <div class="ocu-upload-grid">${cards}</div>`;
 
   return shell({
-    title:      'Upload',
-    activePage: 'upload',
-    user:       data.user,
-    badges:     data.badges || {},
+    title:          'Upload',
+    topbarTitle:    'Upload',
+    topbarSubtitle: 'What are you uploading today?',
+    activePage:     'upload',
+    user:           data.user,
+    badges:         data.badges || {},
     body,
   });
 }

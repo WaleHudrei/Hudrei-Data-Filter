@@ -145,22 +145,17 @@ function ownersList(data = {}) {
       ${buildPager({ page, totalPages, querystring: data.querystring })}`;
 
   const body = `
-    <div class="ocu-page-header">
-      <div>
-        <h1 class="ocu-page-title">Owners</h1>
-        <div class="ocu-page-subtitle">${fmtNum(total)} owner${total === 1 ? '' : 's'} matching your filters</div>
-      </div>
-    </div>
-
     ${kpiStrip}
     ${filterBar}
     ${tableHTML}`;
 
   return shell({
-    title:     'Owners',
-    activePage: 'owners',
-    user:      data.user,
-    badges:    data.badges || {},
+    title:         'Owners',
+    topbarTitle:    'Owners',
+    topbarSubtitle: `${fmtNum(total)} owner${total === 1 ? '' : 's'} matching your filters`,
+    activePage:    'owners',
+    user:          data.user,
+    badges:        data.badges || {},
     body,
   });
 }

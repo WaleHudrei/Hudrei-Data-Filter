@@ -97,14 +97,8 @@ function campaignsList(data = {}) {
       </div>`;
 
   const body = `
-    <div class="ocu-page-header">
-      <div>
-        <h1 class="ocu-page-title">Campaigns</h1>
-        <div class="ocu-page-subtitle">Track call/SMS campaigns and their results</div>
-      </div>
-      <div>
-        <a href="/oculah/campaigns/new" class="ocu-btn ocu-btn-primary">+ New campaign</a>
-      </div>
+    <div style="display:flex;justify-content:flex-end;margin-bottom:14px">
+      <a href="/oculah/campaigns/new" class="ocu-btn ocu-btn-primary">+ New campaign</a>
     </div>
 
     ${kpiStrip}
@@ -118,10 +112,12 @@ function campaignsList(data = {}) {
     ${tableHTML}`;
 
   return shell({
-    title:      'Campaigns',
-    activePage: 'campaigns',
-    user:       data.user,
-    badges:     data.badges || {},
+    title:          'Campaigns',
+    topbarTitle:    'Campaigns',
+    topbarSubtitle: 'Track call/SMS campaigns and their results',
+    activePage:     'campaigns',
+    user:           data.user,
+    badges:         data.badges || {},
     body,
   });
 }

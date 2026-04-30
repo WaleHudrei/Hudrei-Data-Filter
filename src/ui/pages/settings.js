@@ -125,13 +125,6 @@ function settingsPage(data = {}) {
     </div>`;
 
   const body = `
-    <div class="ocu-page-header">
-      <div>
-        <h1 class="ocu-page-title">Settings</h1>
-        <div class="ocu-page-subtitle">Manage security and workspace preferences</div>
-      </div>
-    </div>
-
     <div style="max-width:680px">
       ${pwFlashHTML}
       ${card({
@@ -172,10 +165,12 @@ function settingsPage(data = {}) {
     </div>`;
 
   return shell({
-    title:     'Settings',
-    activePage: 'settings',
-    user:      data.user,
-    badges:    data.badges || {},
+    title:          'Settings',
+    topbarTitle:    'Settings',
+    topbarSubtitle: 'Manage security and workspace preferences',
+    activePage:     'settings',
+    user:           data.user,
+    badges:         data.badges || {},
     body,
   });
 }

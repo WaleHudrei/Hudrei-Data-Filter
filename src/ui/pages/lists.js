@@ -187,14 +187,8 @@ function listsPage(data = {}) {
     </div>`;
 
   const body = `
-    <div class="ocu-page-header">
-      <div>
-        <h1 class="ocu-page-title">Lists</h1>
-        <div class="ocu-page-subtitle">${fmtNum(total)} list${total === 1 ? '' : 's'}</div>
-      </div>
-      <div>
-        <a href="/import/property" class="ocu-btn ocu-btn-primary">+ Import new list</a>
-      </div>
+    <div style="display:flex;justify-content:flex-end;margin-bottom:14px">
+      <a href="/import/property" class="ocu-btn ocu-btn-primary">+ Import new list</a>
     </div>
 
     ${flashHTML}
@@ -227,10 +221,12 @@ function listsPage(data = {}) {
     </script>`;
 
   return shell({
-    title:      'Lists',
-    activePage: 'lists',
-    user:       data.user,
-    badges:     data.badges || {},
+    title:          'Lists',
+    topbarTitle:    'Lists',
+    topbarSubtitle: `${fmtNum(total)} list${total === 1 ? '' : 's'}`,
+    activePage:     'lists',
+    user:           data.user,
+    badges:         data.badges || {},
     body,
   });
 }

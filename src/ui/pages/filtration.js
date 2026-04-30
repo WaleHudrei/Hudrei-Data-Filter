@@ -23,13 +23,6 @@ function filtrationPage(data = {}) {
   const redisOn  = !!data.redisConnected;
 
   const body = `
-    <div class="ocu-page-header">
-      <div>
-        <h1 class="ocu-page-title">List Filtration</h1>
-        <div class="ocu-page-subtitle">Upload a Readymode call log. We filter against memory and produce two CSVs: Filtered → REISift, Clean → Readymode.</div>
-      </div>
-    </div>
-
     <!-- Memory card ─────────────────────────────────────────────────────── -->
     <div class="ocu-card" style="margin-bottom:18px">
       <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:14px">
@@ -174,10 +167,12 @@ function filtrationPage(data = {}) {
   `;
 
   return shell({
-    title:      'List Filtration',
-    activePage: 'filtration',
-    user:       data.user,
-    badges:     data.badges || {},
+    title:          'List Filtration',
+    topbarTitle:    'List Filtration',
+    topbarSubtitle: 'Filter a Readymode call log against memory — outputs Filtered → REISift and Clean → Readymode',
+    activePage:     'filtration',
+    user:           data.user,
+    badges:         data.badges || {},
     body,
   });
 }

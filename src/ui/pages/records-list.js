@@ -102,16 +102,11 @@ function recordsList(data = {}) {
   const actionBar = bulkActionBar();
 
   // Top-bar layout: filters bar full-width on top, then chips, then table.
+  // Title + count moved to the topbar via shell({topbarTitle,topbarSubtitle}).
   const body = `
-    <div class="ocu-records-header" style="display:flex;align-items:flex-start;justify-content:space-between;flex-wrap:wrap;gap:14px">
-      <div>
-        <h1 class="ocu-records-title">Records</h1>
-        <div class="ocu-records-subtitle">${fmtNum(total)} ${total === 1 ? 'property' : 'properties'}</div>
-      </div>
-      <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
-        <a href="/records/_duplicates" class="ocu-btn ocu-btn-secondary">Merge duplicates</a>
-        <a href="/records/_distress" class="ocu-btn ocu-btn-secondary">Recompute distress</a>
-      </div>
+    <div style="display:flex;justify-content:flex-end;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:14px">
+      <a href="/records/_duplicates" class="ocu-btn ocu-btn-secondary">Merge duplicates</a>
+      <a href="/records/_distress" class="ocu-btn ocu-btn-secondary">Recompute distress</a>
     </div>
 
     ${recordsFilters({
@@ -146,6 +141,8 @@ function recordsList(data = {}) {
 
   return shell({
     title: 'Records',
+    topbarTitle:    'Records',
+    topbarSubtitle: `${fmtNum(total)} ${total === 1 ? 'property' : 'properties'}`,
     body,
     activePage: 'records',
     user: data.user || { name: 'User', initials: '?' },

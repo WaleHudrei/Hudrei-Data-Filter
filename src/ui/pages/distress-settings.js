@@ -95,13 +95,7 @@ function distressSettingsPage(data = {}) {
     </div>`;
 
   const body = `
-    <div class="ocu-page-header">
-      <div>
-        <div style="margin-bottom:6px"><a href="/oculah/setup" class="ocu-text-3" style="font-size:13px;text-decoration:none">← Settings</a></div>
-        <h1 class="ocu-page-title">Distress score matrix</h1>
-        <div class="ocu-page-subtitle">Tune how Oculah ranks your leads. Per-workspace.</div>
-      </div>
-    </div>
+    <div style="margin-bottom:14px"><a href="/oculah/setup" class="ocu-text-3" style="font-size:13px;text-decoration:none">← Settings</a></div>
 
     <div style="max-width:780px">
       ${flashHTML}
@@ -179,10 +173,12 @@ function distressSettingsPage(data = {}) {
     </script>`;
 
   return shell({
-    title:      'Distress matrix',
-    activePage: 'settings',
-    user:       data.user,
-    badges:     data.badges || {},
+    title:          'Distress matrix',
+    topbarTitle:    'Distress score matrix',
+    topbarSubtitle: 'Tune how Oculah ranks your leads. Per-workspace.',
+    activePage:     'settings',
+    user:           data.user,
+    badges:         data.badges || {},
     body,
   });
 }

@@ -150,11 +150,7 @@ function listRegistry(data = {}) {
       </div>`;
 
   const body = `
-    <div class="ocu-page-header">
-      <div>
-        <h1 class="ocu-page-title">List Registry</h1>
-        <div class="ocu-page-subtitle">Track every list type you pull — when it was last pulled and when it's due again</div>
-      </div>
+    <div style="display:flex;justify-content:flex-end;margin-bottom:14px">
       <button class="ocu-btn ocu-btn-primary" onclick="lr_addRow()">+ Add row</button>
     </div>
 
@@ -213,10 +209,12 @@ function listRegistry(data = {}) {
     </script>`;
 
   return shell({
-    title:      'List Registry',
-    activePage: 'list-registry',
-    user:       data.user,
-    badges:     data.badges || {},
+    title:          'List Registry',
+    topbarTitle:    'List Registry',
+    topbarSubtitle: 'Track every list type you pull — when it was last pulled and when it\'s due again',
+    activePage:     'list-registry',
+    user:           data.user,
+    badges:         data.badges || {},
     body,
   });
 }

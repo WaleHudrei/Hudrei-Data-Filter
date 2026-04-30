@@ -112,15 +112,9 @@ function activityList(data = {}) {
     : '';
 
   const body = `
-    <div class="ocu-page-header">
-      <div>
-        <h1 class="ocu-page-title">Activity</h1>
-        <div class="ocu-page-subtitle">${fmtNum(jobs.length)} recent import job${jobs.length === 1 ? '' : 's'}</div>
-      </div>
-      <div style="display:flex;gap:8px;align-items:center">
-        ${runningBadge}
-        <a href="/import/property" class="ocu-btn ocu-btn-primary">+ New import</a>
-      </div>
+    <div style="display:flex;justify-content:flex-end;gap:8px;align-items:center;margin-bottom:14px">
+      ${runningBadge}
+      <a href="/import/property" class="ocu-btn ocu-btn-primary">+ New import</a>
     </div>
 
     ${tableHTML}
@@ -141,10 +135,12 @@ function activityList(data = {}) {
     </script>` : ''}`;
 
   return shell({
-    title:      'Activity',
-    activePage: 'activity',
-    user:       data.user,
-    badges:     data.badges || {},
+    title:          'Activity',
+    topbarTitle:    'Activity',
+    topbarSubtitle: `${fmtNum(jobs.length)} recent import job${jobs.length === 1 ? '' : 's'}`,
+    activePage:     'activity',
+    user:           data.user,
+    badges:         data.badges || {},
     body,
   });
 }

@@ -307,11 +307,13 @@ function ownerDetail(data = {}) {
   // ─── Page body ────────────────────────────────────────────────────────
   const body = `
     ${ownerEditDialog}
-    <div class="ocu-page-header" style="display:flex;align-items:flex-start;justify-content:space-between;gap:14px">
-      <div style="flex:1;min-width:0">
-        <div style="margin-bottom:6px"><a href="/oculah/owners" class="ocu-text-3" style="font-size:13px;text-decoration:none">← Owners</a></div>
-        <h1 class="ocu-page-title">${escHTML(ownerName)}</h1>
-        <div class="ocu-page-subtitle" style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">${subtitleBits.join(' ')}</div>
+    <!-- Owner name lives in the topbar (via shell({topbarTitle})). The pill+
+         address subtitle stays in the body because it contains HTML pills
+         that wouldn't survive topbar's HTML-escape. -->
+    <div style="display:flex;align-items:center;justify-content:space-between;gap:14px;margin-bottom:14px">
+      <div style="display:flex;gap:14px;align-items:center;flex:1;min-width:0;flex-wrap:wrap">
+        <a href="/oculah/owners" class="ocu-text-3" style="font-size:13px;text-decoration:none">← Owners</a>
+        ${subtitleBits.length ? `<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">${subtitleBits.join(' ')}</div>` : ''}
       </div>
       ${c.id ? `<button type="button" class="ocu-btn ocu-btn-secondary"
         onclick="document.getElementById('ocu-edit-owner-dialog').showModal()">Edit</button>` : ''}
@@ -353,10 +355,12 @@ function ownerDetail(data = {}) {
     </script>`;
 
   return shell({
-    title:      ownerName,
-    activePage: 'owners',
-    user:       data.user,
-    badges:     data.badges || {},
+    title:        ownerName,
+    topbarTitle:  ownerName,
+    // Subtitle has HTML pills (skipped); stays in body next to the back-link.
+    activePage:   'owners',
+    user:         data.user,
+    badges:       data.badges || {},
     body,
     // 2026-04-29 load detail-actions.js so the ocu_editOwner submit
     // handler is available. Same pattern as the property detail page.

@@ -137,17 +137,13 @@ function execDashboard(data = {}) {
   });
 
   return shell({
-    title:      'Executive dashboard',
-    activePage: 'exec',
-    user:       data.user,
-    badges:     data.badges || {},
+    title:          'Executive dashboard',
+    topbarTitle:    'Executive dashboard',
+    topbarSubtitle: 'One-page health view — pick where to invest next',
+    activePage:     'exec',
+    user:           data.user,
+    badges:         data.badges || {},
     body: `
-      <div class="ocu-page-header">
-        <div>
-          <h1 class="ocu-page-title">Executive dashboard</h1>
-          <div class="ocu-page-subtitle">One-page health view — pick where to invest next</div>
-        </div>
-      </div>
       <div style="display:grid;grid-template-columns:1fr;gap:14px">${scoresCard}</div>
       <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:14px;margin-top:14px">
         ${dataCard}

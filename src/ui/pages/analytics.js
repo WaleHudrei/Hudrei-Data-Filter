@@ -150,17 +150,13 @@ function analytics(data = {}) {
   });
 
   return shell({
-    title:      'Analytics',
-    activePage: 'analytics',
-    user:       data.user,
-    badges:     data.badges || {},
+    title:          'Analytics',
+    topbarTitle:    'Analytics',
+    topbarSubtitle: 'Campaign comparison + 8-week trend',
+    activePage:     'analytics',
+    user:           data.user,
+    badges:         data.badges || {},
     body: `
-      <div class="ocu-page-header">
-        <div>
-          <h1 class="ocu-page-title">Analytics</h1>
-          <div class="ocu-page-subtitle">Campaign comparison + 8-week trend</div>
-        </div>
-      </div>
       ${headerKpis}
       <div style="margin-top:18px">${topCard}</div>
       <div style="margin-top:14px">${tableCard}</div>
