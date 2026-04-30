@@ -1202,11 +1202,14 @@
 
 /* Phones grid — auto-fits multiple columns when there are many numbers.
    A property with 10 phones used to render as a 10-row vertical strip
-   that dwarfed the rest of the page; this grid wraps to 2-3 columns at
-   typical card widths (each phone row stays ≥240px wide). */
+   that dwarfed the rest of the page. The minmax is intentionally
+   small (180px) so even a NARROW owner card (~370px when two owners
+   share a row in a 2fr main column) still gets 2 columns of phones
+   instead of stacking 10 deep. Phone-row content already wraps via
+   .ocu-phone-line {flex-wrap:wrap}, so each cell stays usable. */
 .ocu-phones-block {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
   gap: 8px;
 }
 .ocu-phones-block > .ocu-fact-label { grid-column: 1 / -1; }
@@ -1226,9 +1229,10 @@
 }
 .ocu-phone-num {
   font-family: var(--ocu-mono);
-  font-size: 14px;
+  font-size: 13.5px;
   font-weight: 600;
   color: var(--ocu-text-1);
+  word-break: keep-all;
 }
 .ocu-phone-meta {
   display: inline-flex;
@@ -2196,29 +2200,28 @@
 .ocu-result-err { background: #FEE2E2; color: #B91C1C; }
 
 /* ── Lists table polish ─────────────────────────────────────────────────── */
-/* The lists table uses an explicit <colgroup> so the list-name column
-   gets all remaining width while badges/numbers/dates/actions stay at
-   their natural widths. Without this the auto-layout engine can squeeze
-   the name column to ~50px when adjacent cells have nowrap content. */
-.ocu-lists-table { table-layout: fixed; width: 100%; }
+/* Auto table-layout, but the first column (list name) declares
+   min-width:280px on its <th> so the auto algorithm always reserves
+   that much width for the name. Everything else is short nowrap
+   content — badges, numbers, dates, button cluster — so the name
+   column ends up with all the leftover space. */
+.ocu-lists-table { width: 100%; }
 .ocu-lists-table .ocu-th,
 .ocu-lists-table .ocu-td { vertical-align: middle; }
 
-/* List name cell — primary identity. Wraps cleanly, never to a 1-word
-   column. The link itself is a polished, weight-600 line, NOT the
-   default underlined blue link — same treatment as the address column
-   on /records. Hover reveals an accent underline. */
-.ocu-td-list-name { padding: 14px 16px; min-width: 0; }
+/* List name cell — primary identity. Polished weight-600 line, NOT
+   the default underlined blue link. Hover reveals an accent
+   underline. Plain whitespace wrapping (multi-word names break at
+   spaces only — never per character). */
+.ocu-td-list-name { padding: 14px 16px; }
 .ocu-list-name-link {
-  display: inline-block;
-  max-width: 100%;
+  display: inline;
   font-size: 14px;
   font-weight: 600;
   color: var(--ocu-text-1);
   letter-spacing: -0.005em;
   text-decoration: none;
-  word-break: break-word;
-  line-height: 1.35;
+  line-height: 1.4;
   border-bottom: 1px solid transparent;
   transition: color 0.1s, border-color 0.1s;
 }

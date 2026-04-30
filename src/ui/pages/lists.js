@@ -129,17 +129,9 @@ function listsPage(data = {}) {
     : `
       <div class="ocu-table-wrap ocu-lists-table-wrap">
         <table class="ocu-table ocu-lists-table">
-          <colgroup>
-            <col style="width:auto" />
-            <col style="width:140px" />
-            <col style="width:150px" />
-            <col style="width:120px" />
-            <col style="width:130px" />
-            <col style="width:230px" />
-          </colgroup>
           <thead>
             <tr>
-              <th class="ocu-th">List name</th>
+              <th class="ocu-th" style="min-width:280px">List name</th>
               <th class="ocu-th">Type</th>
               <th class="ocu-th">Source</th>
               <th class="ocu-th ocu-th-num">Properties</th>
