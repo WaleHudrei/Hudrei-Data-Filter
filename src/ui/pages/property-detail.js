@@ -350,7 +350,7 @@ function propertyDetail(data) {
     // pipeline change, etc. The user reported "phone tag is broken" on
     // 2026-04-29; this was the root cause for all of them. Move to extraHead
     // with `defer` so it still runs after the DOM is parsed.
-    extraHead: '<script src="/oculah-static/detail-actions.js?v=6" defer></script>',
+    extraHead: '<script src="/oculah-static/detail-actions.js?v=7" defer></script>',
   });
 }
 

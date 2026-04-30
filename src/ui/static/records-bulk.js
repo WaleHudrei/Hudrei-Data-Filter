@@ -190,6 +190,8 @@
     if (!btn) return;
     const action = btn.dataset.bulkAction;
     if (action === 'add-tag')      return doAddTag();
+    if (action === 'remove-tag')   return doRemoveTag();
+    if (action === 'add-list')     return doAddList();
     if (action === 'remove-list')  return doRemoveList();
     if (action === 'export')       return doExport();
     if (action === 'delete')       return doDelete();
@@ -220,6 +222,56 @@
       setTimeout(() => window.location.reload(), 800);
     } catch (err) {
       toast('Bulk tag failed: ' + err.message, true);
+    }
+  }
+
+  // ─── Bulk: Remove tag ─────────────────────────────────────────────────────
+  // Reuses the same /records/bulk-tag endpoint with mode='remove'. Server
+  // looks up tag by name within the tenant; missing tag is a no-op (returns
+  // affected: 0) which the toast surfaces to the user.
+  async function doRemoveTag() {
+    const name = prompt('Tag name to remove from ' + selectionCount().toLocaleString() + ' properties:');
+    if (!name || !name.trim()) return;
+    try {
+      const data = await jpost('/records/bulk-tag', {
+        ...buildSelectionPayload(),
+        mode: 'remove',
+        tagNames: [name.trim()],
+      });
+      const affected = data.affected || 0;
+      if (affected === 0) {
+        toast('No properties had that tag — nothing changed.', false);
+      } else {
+        toast('Tag removed from ' + affected + ' properties', false);
+      }
+      setTimeout(() => window.location.reload(), 800);
+    } catch (err) {
+      toast('Bulk tag-remove failed: ' + err.message, true);
+    }
+  }
+
+  // ─── Bulk: Add to list ────────────────────────────────────────────────────
+  // Backend already lives at POST /records/add-to-list — this just ports
+  // the prompt+POST path that "Remove from list" already had, so the bulk
+  // bar is symmetrical.
+  async function doAddList() {
+    const listIdStr = prompt('Enter the list ID to add these properties to.\n(Tip: open the Lists page to find the ID.)');
+    if (!listIdStr) return;
+    const listId = parseInt(listIdStr, 10);
+    if (!Number.isFinite(listId) || listId <= 0) {
+      toast('Invalid list ID', true);
+      return;
+    }
+    if (!confirm('Add ' + selectionCount().toLocaleString() + ' properties to list ' + listId + '?')) return;
+    try {
+      const data = await jpost('/records/add-to-list', {
+        ...buildSelectionPayload(),
+        listId,
+      });
+      toast('Added ' + (data.affected || 0) + ' to list', false);
+      setTimeout(() => window.location.reload(), 800);
+    } catch (err) {
+      toast('Add to list failed: ' + err.message, true);
     }
   }
 

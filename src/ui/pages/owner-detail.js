@@ -364,7 +364,7 @@ function ownerDetail(data = {}) {
     body,
     // 2026-04-29 load detail-actions.js so the ocu_editOwner submit
     // handler is available. Same pattern as the property detail page.
-    extraHead:  '<script src="/oculah-static/detail-actions.js?v=5" defer></script>',
+    extraHead:  '<script src="/oculah-static/detail-actions.js?v=7" defer></script>',
   });
 }
 

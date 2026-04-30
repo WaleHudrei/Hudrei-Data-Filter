@@ -115,34 +115,127 @@
     });
   }
 
-  // ─── Inline text input for tag name ───────────────────────────────────────
-  // Replaces a "+ tag" button with an input field. Returns a promise that
-  // resolves to the trimmed name (or null if cancelled).
-  function promptTagName(anchorBtn) {
+  // ─── Inline text input for tag name with autocomplete dropdown ──────────
+  // Replaces a "+ tag" button with an input + suggestions popover. Returns
+  // a promise that resolves to the trimmed name (or null if cancelled).
+  // The autocomplete fetches /records/tags/suggest as the user types and
+  // accepts either a click on a suggestion or Enter on whatever's typed
+  // (so creating a brand-new tag still works — same as before, just less
+  // painful at 100+ tags).
+  function promptTagName(anchorBtn, opts = {}) {
+    const suggestUrl = opts.suggestUrl || '/records/tags/suggest';
     return new Promise(resolve => {
+      const wrap = document.createElement('span');
+      wrap.className = 'ocu-tag-input-wrap';
+      wrap.style.position = 'relative';
+      wrap.style.display = 'inline-block';
+
       const input = document.createElement('input');
       input.type = 'text';
-      input.placeholder = 'Tag name…';
+      input.placeholder = 'Search or create tag…';
       input.className = 'ocu-tag-input';
       input.maxLength = 100;
+      input.autocomplete = 'off';
 
+      const dropdown = document.createElement('div');
+      dropdown.className = 'ocu-tag-suggest';
+      dropdown.style.cssText = 'position:absolute;top:100%;left:0;min-width:200px;background:var(--ocu-bg);border:1px solid var(--ocu-border-strong);border-radius:6px;box-shadow:0 4px 12px rgba(11,18,32,0.08);margin-top:2px;z-index:50;max-height:240px;overflow-y:auto;display:none';
+
+      wrap.appendChild(input);
+      wrap.appendChild(dropdown);
       anchorBtn.style.display = 'none';
-      anchorBtn.parentNode.insertBefore(input, anchorBtn);
+      anchorBtn.parentNode.insertBefore(wrap, anchorBtn);
       input.focus();
 
       let resolved = false;
+      let suggestSeq = 0;
+      let highlight = -1;
+      let lastSuggestions = [];
+
       function done(value) {
         if (resolved) return;
         resolved = true;
-        input.remove();
+        wrap.remove();
         anchorBtn.style.display = '';
         resolve(value);
       }
-      input.addEventListener('keydown', e => {
-        if (e.key === 'Enter')      { e.preventDefault(); const v = input.value.trim(); done(v || null); }
-        else if (e.key === 'Escape') { done(null); }
+
+      function renderSuggestions(rows) {
+        lastSuggestions = rows || [];
+        if (!lastSuggestions.length) {
+          dropdown.style.display = 'none';
+          return;
+        }
+        const typed = input.value.trim().toLowerCase();
+        const exactMatch = lastSuggestions.some(r => r.name.toLowerCase() === typed);
+        dropdown.innerHTML = lastSuggestions.map((r, i) =>
+          '<div class="ocu-tag-suggest-item" data-idx="' + i + '" style="padding:7px 10px;cursor:pointer;font-size:13px;' + (i === highlight ? 'background:var(--ocu-surface)' : '') + '">' +
+          '<span style="font-weight:500;color:var(--ocu-text-1)">' + escapeHTML(r.name) + '</span>' +
+          '</div>'
+        ).join('') + (typed && !exactMatch
+          ? '<div class="ocu-tag-suggest-create" data-idx="-1" style="padding:7px 10px;cursor:pointer;font-size:13px;border-top:1px solid var(--ocu-border);color:var(--ocu-text-3)">+ Create &ldquo;' + escapeHTML(typed) + '&rdquo;</div>'
+          : '');
+        dropdown.style.display = 'block';
+      }
+
+      function fetchSuggestions(q) {
+        const seq = ++suggestSeq;
+        fetch(suggestUrl + (q ? '?q=' + encodeURIComponent(q) : ''), { credentials: 'same-origin' })
+          .then(r => r.ok ? r.json() : [])
+          .then(rows => {
+            if (seq !== suggestSeq) return; // stale request
+            highlight = -1;
+            renderSuggestions(Array.isArray(rows) ? rows : []);
+          })
+          .catch(() => { /* non-fatal */ });
+      }
+
+      function escapeHTML(s) {
+        return String(s == null ? '' : s)
+          .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+          .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+      }
+
+      // Click handler — picks suggestion or creates a new one
+      dropdown.addEventListener('mousedown', e => {
+        // mousedown (not click) so the input's blur handler doesn't fire first
+        const item = e.target.closest('[data-idx]');
+        if (!item) return;
+        e.preventDefault();
+        const idx = parseInt(item.dataset.idx, 10);
+        const value = idx >= 0 ? lastSuggestions[idx].name : input.value.trim();
+        done(value || null);
       });
-      input.addEventListener('blur', () => done(input.value.trim() || null));
+
+      input.addEventListener('input', () => fetchSuggestions(input.value.trim()));
+      input.addEventListener('focus', () => fetchSuggestions(input.value.trim()));
+      input.addEventListener('keydown', e => {
+        if (e.key === 'Enter') {
+          e.preventDefault();
+          if (highlight >= 0 && lastSuggestions[highlight]) {
+            done(lastSuggestions[highlight].name);
+          } else {
+            const v = input.value.trim();
+            done(v || null);
+          }
+        } else if (e.key === 'Escape') {
+          done(null);
+        } else if (e.key === 'ArrowDown' && lastSuggestions.length) {
+          e.preventDefault();
+          highlight = Math.min(highlight + 1, lastSuggestions.length - 1);
+          renderSuggestions(lastSuggestions);
+        } else if (e.key === 'ArrowUp' && lastSuggestions.length) {
+          e.preventDefault();
+          highlight = Math.max(highlight - 1, -1);
+          renderSuggestions(lastSuggestions);
+        }
+      });
+      // Close on blur — but delay so dropdown clicks land first.
+      input.addEventListener('blur', () => {
+        setTimeout(() => done(input.value.trim() || null), 120);
+      });
+
+      fetchSuggestions(''); // prime the dropdown with top-50 on focus
     });
   }
 
@@ -233,7 +326,9 @@
     if (action === 'phone-tag-add') {
       e.stopPropagation();
       const phoneId = target.dataset.phoneId;
-      const name = await promptTagName(target);
+      // Phone tags live in their own pool, so target the phone-tag suggest
+      // endpoint instead of the property-tag one.
+      const name = await promptTagName(target, { suggestUrl: '/records/phone-tags/suggest' });
       if (!name) return;
       try {
         const data = await jpost('/records/phones/' + phoneId + '/tags', { name });

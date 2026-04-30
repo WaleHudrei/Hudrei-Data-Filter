@@ -19,6 +19,8 @@ function bulkActionBar() {
         </div>
         <div class="ocu-bulk-actions">
           <button type="button" class="ocu-btn ocu-btn-secondary" data-bulk-action="add-tag">Add tag</button>
+          <button type="button" class="ocu-btn ocu-btn-secondary" data-bulk-action="remove-tag">Remove tag</button>
+          <button type="button" class="ocu-btn ocu-btn-secondary" data-bulk-action="add-list">Add to list</button>
           <button type="button" class="ocu-btn ocu-btn-secondary" data-bulk-action="remove-list">Remove from list</button>
           <button type="button" class="ocu-btn ocu-btn-secondary" data-bulk-action="export">Export CSV</button>
           <button type="button" class="ocu-btn ocu-btn-danger" data-bulk-action="delete">Delete</button>

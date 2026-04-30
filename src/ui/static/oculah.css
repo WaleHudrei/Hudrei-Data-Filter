@@ -1708,10 +1708,12 @@
   border-radius: 4px;
   font-family: inherit;
   outline: none;
-  width: 140px;
+  width: 200px;
   background: var(--ocu-bg);
   color: var(--ocu-text-1);
 }
+.ocu-tag-suggest-item:hover { background: var(--ocu-surface); }
+.ocu-tag-suggest-create:hover { background: var(--ocu-surface); }
 
 /* Pipeline dropdown in header */
 .ocu-pipeline-wrap {
