@@ -76,12 +76,24 @@ function renderJobRow(j) {
 }
 
 async function fetchJobs(tenantId) {
+  // bulk_import_jobs has two parallel column conventions written by different
+  // import paths (processed_rows/inserted/updated vs rows_processed/rows_created/
+  // rows_updated). Both DEFAULT 0, so use GREATEST to pick whichever writer
+  // populated the row.
   return query(`
-    SELECT j.*, l.list_name
+    SELECT j.id, j.tenant_id, j.status, j.filename, j.list_id,
+           COALESCE(j.total_rows, 0)::int                                              AS total_rows,
+           GREATEST(COALESCE(j.processed_rows, 0), COALESCE(j.rows_processed, 0))::int AS processed_rows,
+           GREATEST(COALESCE(j.inserted, 0),      COALESCE(j.rows_created,   0))::int  AS inserted,
+           GREATEST(COALESCE(j.updated, 0),       COALESCE(j.rows_updated,   0))::int  AS updated,
+           GREATEST(COALESCE(j.errors, 0),        COALESCE(j.rows_errored,   0))::int  AS errors,
+           COALESCE(j.error_log, j.error_message)                                      AS error_log,
+           COALESCE(j.created_at, j.started_at)                                        AS created_at,
+           l.list_name
       FROM bulk_import_jobs j
       LEFT JOIN lists l ON l.id = j.list_id AND l.tenant_id = j.tenant_id
      WHERE j.tenant_id = $1
-     ORDER BY j.created_at DESC
+     ORDER BY COALESCE(j.created_at, j.started_at) DESC NULLS LAST
      LIMIT 50
   `, [tenantId]);
 }
@@ -106,12 +118,22 @@ router.get('/status', requireAuth, async (req, res) => {
 });
 
 // ── Single job status (for polling) ──────────────────────────────────────────
+// Same dual-column-convention dance as fetchJobs above — GREATEST so we read
+// whichever writer (legacy property-import or new bulk-import) populated the row.
 router.get('/job/:id', requireAuth, async (req, res) => {
   try {
-    const result = await query(`SELECT * FROM bulk_import_jobs WHERE id=$1 AND tenant_id=$2`, [req.params.id, req.tenantId]);
+    const result = await query(`
+      SELECT status,
+             COALESCE(total_rows, 0)::int                                          AS total,
+             GREATEST(COALESCE(processed_rows, 0), COALESCE(rows_processed, 0))::int AS processed,
+             GREATEST(COALESCE(inserted, 0),      COALESCE(rows_created,   0))::int  AS inserted,
+             GREATEST(COALESCE(updated, 0),       COALESCE(rows_updated,   0))::int  AS updated,
+             GREATEST(COALESCE(errors, 0),        COALESCE(rows_errored,   0))::int  AS errors
+        FROM bulk_import_jobs
+       WHERE id=$1 AND tenant_id=$2
+    `, [req.params.id, req.tenantId]);
     if (!result.rows.length) return res.status(404).json({ error: 'Job not found' });
-    const j = result.rows[0];
-    res.json({ status: j.status, total: j.total_rows, processed: j.processed_rows, inserted: j.inserted, updated: j.updated, errors: j.errors });
+    res.json(result.rows[0]);
   } catch(e) { res.status(500).json({ error: e.message }); }
 });
 

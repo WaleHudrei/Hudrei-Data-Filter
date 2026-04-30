@@ -1152,17 +1152,18 @@ async function fetchActivityJobs(tenantId) {
   //   bulk-import-routes.js:     rows_processed / rows_created / rows_updated
   //                              / rows_errored / started_at / error_message
   // Both code paths INSERT into the same table, so the row that comes back
-  // can have either set populated. Read both with COALESCE so the activity
-  // page renders progress + results regardless of which writer produced it.
+  // can have either set populated. Both numeric columns DEFAULT 0 in the
+  // table, so COALESCE always picks the first (zero) and never falls through.
+  // GREATEST picks the writer's actual count regardless of which side wrote it.
   const r = await query(`
     SELECT j.id, j.tenant_id, j.status, j.filename, j.list_id,
-           COALESCE(j.total_rows, 0)::int                            AS total_rows,
-           COALESCE(j.processed_rows, j.rows_processed, 0)::int      AS processed_rows,
-           COALESCE(j.inserted,      j.rows_created,   0)::int       AS inserted,
-           COALESCE(j.updated,       j.rows_updated,   0)::int       AS updated,
-           COALESCE(j.errors,        j.rows_errored,   0)::int       AS errors,
-           COALESCE(j.error_log,     j.error_message)                AS error_log,
-           COALESCE(j.created_at,    j.started_at)                   AS created_at,
+           COALESCE(j.total_rows, 0)::int                                              AS total_rows,
+           GREATEST(COALESCE(j.processed_rows, 0), COALESCE(j.rows_processed, 0))::int AS processed_rows,
+           GREATEST(COALESCE(j.inserted, 0),      COALESCE(j.rows_created,   0))::int  AS inserted,
+           GREATEST(COALESCE(j.updated, 0),       COALESCE(j.rows_updated,   0))::int  AS updated,
+           GREATEST(COALESCE(j.errors, 0),        COALESCE(j.rows_errored,   0))::int  AS errors,
+           COALESCE(j.error_log,     j.error_message)                                  AS error_log,
+           COALESCE(j.created_at,    j.started_at)                                     AS created_at,
            l.list_name
       FROM bulk_import_jobs j
       LEFT JOIN lists l ON l.id = j.list_id AND l.tenant_id = j.tenant_id
