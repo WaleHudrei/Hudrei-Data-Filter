@@ -81,6 +81,7 @@ function shell(opts = {}) {
     // Currently used only by the Dashboard — opt-in per page to avoid a
     // wholesale UX change.
     topbarTitle = '',
+    topbarSubtitle = '',     // optional smaller line below topbarTitle
   } = opts;
 
   // Top-bar search is only relevant on Records and Owners — every other page
@@ -127,7 +128,7 @@ function shell(opts = {}) {
        small data-table sizes that dominate Oculah pages. Includes the
        400-700 weight range we use across the design tokens. -->
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="/oculah-static/oculah.css?v=24">
+  <link rel="stylesheet" href="/oculah-static/oculah.css?v=25">
   ${extraHead}
 </head>
 <body class="ocu">
@@ -177,7 +178,10 @@ function shell(opts = {}) {
 
   <main class="ocu-main">
     <div class="ocu-topbar">
-      <div class="ocu-topbar-title">${topbarTitle ? escHTML(topbarTitle) : ''}</div>
+      <div class="ocu-topbar-titlewrap">
+        ${topbarTitle ? `<div class="ocu-topbar-title">${escHTML(topbarTitle)}</div>` : ''}
+        ${topbarSubtitle ? `<div class="ocu-topbar-subtitle">${escHTML(topbarSubtitle)}</div>` : ''}
+      </div>
       <div style="display:flex;align-items:center;gap:8px">
         ${showTopSearch ? `
         <form method="GET" action="${searchAction}" class="ocu-search-form" role="search">

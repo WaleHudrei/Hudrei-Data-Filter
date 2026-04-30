@@ -71,9 +71,10 @@
   /* Sidebar dimensions */
   --ocu-sidebar-w: 240px;
   --ocu-sidebar-w-collapsed: 64px;
-  --ocu-topbar-h: 76px;   /* matches .ocu-sidebar-header min-height so the
-                             topbar title (e.g. "Dashboard") sits on the
-                             same baseline as the OCULAH logo word */
+  --ocu-topbar-h: 88px;   /* enough room for a stacked title + subtitle while
+                             keeping the title baseline near the OCULAH logo
+                             word. Sidebar header min-height bumped to match
+                             so both rows feel like a unified band. */
 }
 
 /* ─── Reset (scoped to .ocu container so old Loki UI isn't affected) ───── */
@@ -131,7 +132,8 @@
   align-items: center;
   justify-content: space-between;
   gap: 8px;
-  min-height: 76px;
+  min-height: 88px;     /* matches --ocu-topbar-h so sidebar logo + topbar
+                           title sit on the same horizontal band */
 }
 .ocu-logo { flex: 1; min-width: 0; }
 
@@ -366,6 +368,12 @@
   top: 0;
   z-index: 10;
 }
+.ocu-topbar-titlewrap {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
 .ocu-topbar-title {
   font-size: 22px;
   font-weight: 800;     /* matches .ocu-logo-text weight so the two words feel
@@ -373,6 +381,15 @@
   color: var(--ocu-text-1);
   letter-spacing: -0.01em;
   line-height: 1.2;
+}
+.ocu-topbar-subtitle {
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--ocu-text-3);
+  line-height: 1.2;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .ocu-search {

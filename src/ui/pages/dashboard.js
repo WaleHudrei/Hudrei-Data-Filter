@@ -139,14 +139,12 @@ function dashboard(data = {}) {
     ? 'Last updated ' + fmtRelative(data.lastUpdatedAt)
     : 'Live';
 
-  // Page heading "Dashboard" is rendered inside the topbar (via shell({topbarTitle}))
-  // so the body just keeps the subtitle + the live-updated indicator. Avoids
-  // duplicating the title and reclaims vertical space the topbar was wasting.
+  // Page heading + subtitle are rendered inside the topbar (via shell({
+  // topbarTitle, topbarSubtitle })) so the body just keeps the live-updated
+  // indicator on its own row. Avoids duplicating the title and reclaims
+  // vertical space the topbar was wasting.
   const body = `
-    <div class="ocu-page-header" style="margin-top:0">
-      <div>
-        <div class="ocu-page-subtitle">Overview of your operations across all markets</div>
-      </div>
+    <div class="ocu-page-header" style="margin-top:0;justify-content:flex-end">
       <div class="ocu-last-updated">${escHTML(lastUpdatedStr)}</div>
     </div>
 
@@ -165,7 +163,8 @@ function dashboard(data = {}) {
 
   return shell({
     title: 'Dashboard',
-    topbarTitle: 'Dashboard',   // moves the page heading into the topbar (dashboard-only for now)
+    topbarTitle:    'Dashboard',
+    topbarSubtitle: 'Overview of your operations across all markets',
     body,
     activePage: 'dashboard',
     user: data.user || { name: 'User', role: '', initials: '?' },
