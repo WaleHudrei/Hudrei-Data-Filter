@@ -1231,6 +1231,32 @@ router.get('/preview', requireAuth, (req, res) => {
       </div>
     </div>
 
+    <!-- Preview-table polish: keep each cell on one line so words don't get
+         shredded into vertical letter columns when the table is squeezed.
+         The wrapper's overflow-x:auto handles the resulting horizontal
+         scroll. Generous padding + minimum cell widths keep things
+         readable while staying compact. Scoped to #preview-table so we
+         don't perturb other .data-table consumers. -->
+    <style>
+      #preview-table { table-layout:auto; }
+      #preview-table th,
+      #preview-table td {
+        white-space: nowrap;
+        padding: 10px 14px;
+        font-size: 13px;
+        max-width: 260px;
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
+      #preview-table th {
+        background: var(--ocu-surface-2);
+        color: var(--ocu-text-2);
+        font-weight: 600;
+        border-bottom: 1px solid var(--ocu-border-strong);
+      }
+      #preview-table tr:hover td { background: var(--ocu-surface); }
+    </style>
+
     <script>
     const importData = JSON.parse(sessionStorage.getItem('loki_import') || '{}');
     const mapping = importData.finalMapping || {};
