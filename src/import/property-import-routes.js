@@ -532,14 +532,13 @@ router.get('/', requireAuth, async (req, res) => {
 
   res.send(shell('Import Properties', `
     <!-- Title + subtitle live in the topbar (via shell({topbarTitle,
-         topbarSubtitle})). Body starts directly with a centered column
-         that holds the back-link, the stepper, and the form card. -->
-    <div style="max-width:760px;margin:0 auto">
-      <div style="margin-bottom:14px"><a href="/oculah/upload" class="ocu-text-3" style="font-size:13px;text-decoration:none">← Upload</a></div>
+         topbarSubtitle})). Body starts with the back-link, then the
+         stepper, then the form card — full width like the other pages. -->
+    <div style="margin-bottom:14px"><a href="/oculah/upload" class="ocu-text-3" style="font-size:13px;text-decoration:none">← Upload</a></div>
 
-      ${_renderImportStepper('upload')}
+    ${_renderImportStepper('upload')}
 
-      <div class="ocu-card" style="padding:20px 22px">
+    <div class="ocu-card" style="padding:20px 22px;max-width:760px">
 
       <!-- List Assignment -->
       <div style="margin-bottom:18px">
@@ -623,7 +622,6 @@ router.get('/', requireAuth, async (req, res) => {
       </div>
       <div id="error-msg" style="display:none;background:#fdeaea;border:1px solid #f5c5c5;border-radius:8px;padding:10px 14px;font-size:13px;color:#8b1f1f;margin-top:10px"></div>
     </div>
-    </div><!-- end centered wrapper (max-width:760px;margin:0 auto) -->
 
     <script>
     const dz = document.getElementById('drop-zone');
@@ -1049,7 +1047,6 @@ router.get('/map', requireAuth, (req, res) => {
   // badges still live below the back-link because they're tied to the
   // import session, not the page identity.
   res.send(shell('Map Columns', `
-    <div class="ocu-import-shell">
     ${_renderImportStepper('map')}
     <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:14px;margin-bottom:14px">
       <div style="flex:1;min-width:0">
@@ -1169,7 +1166,6 @@ router.get('/map', requireAuth, (req, res) => {
       window.location.href = '/import/property/preview';
     }
     </script>
-    </div><!-- end .ocu-import-shell -->
   `, 'upload', null, {
     topbarTitle:    'Map columns',
     topbarSubtitle: 'Match your CSV columns to Oculah fields, then continue to preview.',
@@ -1179,7 +1175,6 @@ router.get('/map', requireAuth, (req, res) => {
 // ── STEP 3: Preview ───────────────────────────────────────────────────────────
 router.get('/preview', requireAuth, (req, res) => {
   res.send(shell('Preview Import', `
-    <div class="ocu-import-shell">
     ${_renderImportStepper('preview')}
     <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:14px;margin-bottom:14px">
       <div style="flex:1;min-width:0">
@@ -1354,7 +1349,6 @@ router.get('/preview', requireAuth, (req, res) => {
       }
     }
     </script>
-    </div><!-- end .ocu-import-shell -->
   `, 'upload', null, {
     topbarTitle:    'Preview import',
     topbarSubtitle: 'Verify your data, pick the import mode, then start the job.',

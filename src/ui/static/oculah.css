@@ -1700,15 +1700,8 @@
   border-color: var(--ocu-accent);
 }
 
-/* ─── Property-import wizard wrapper + stepper ─────────────────────────
-   .ocu-import-shell centers the entire import-wizard column on Map and
-   Preview. Step 1 (/import/property) uses an inline wrapper for the
-   same effect. Wide enough for the form + the preview table. */
-.ocu-import-shell {
-  max-width: 1080px;
-  margin: 0 auto;
-}
-
+/* ─── Property-import wizard stepper ────────────────────────────────────
+   4-step progress band at the top of the property-import pages. */
 .ocu-import-stepper {
   display: flex;
   align-items: center;
@@ -1717,7 +1710,7 @@
   background: var(--ocu-card-bg);
   border: 1px solid var(--ocu-border);
   border-radius: 10px;
-  margin: 0 auto 16px auto;     /* centered horizontally inside the column */
+  margin-bottom: 16px;
   max-width: 760px;
 }
 .ocu-istep {
