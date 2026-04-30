@@ -3,6 +3,20 @@
 
 const ENTRIES = [
   {
+    date: 'April 30, 2026 (visual overhaul + dashboard polish)',
+    title: 'Refreshed look across every page, smarter dashboard, cleaner Records filters',
+    items: [
+      { tag: 'feat', text: 'Dashboard now shows a "Lead count" card instead of "Burning leads". The number pulls from your campaigns (sum of total transfers across every campaign) — the canonical lead definition we landed on back on April 21. The week-over-week % delta is also now wired against this number. (Heads-up: the delta needs about 7 days of dashboard usage post-deploy to start showing percentages — Oculah snapshots the count each time you load the dashboard, so the comparison builds up naturally without a cron job.)' },
+      { tag: 'feat', text: 'Page heading + subtitle moved into the topbar across every page. The empty 60-88px band that used to sit at the top of every page (with just a notification bell) now hosts the page name on the left — same baseline as the OCULAH logo word, so the two read like a unified band. The page subtitle sits right under it in a softer grey. Body content (KPIs, filters, tables) now starts higher up. Pages with right-side actions (+ New campaign, + New import, etc.) have those buttons floating right at the top of the body.' },
+      { tag: 'feat', text: 'Visual overhaul ("High-Contrast Data Scannability" pass). Switched font from Manrope to Inter for higher legibility at the small data-table sizes that dominate Oculah. Darkened secondary text colors so labels don\'t fade into the page (the "grey-out" feeling is gone). Bolstered card and input borders, added subtle shadow on cards and tables for depth. Tables got more breathing room — bigger row padding, slightly larger font, taller line-height so columns of numbers don\'t crowd into each other. Status pills (Lead, Wrong, DNC, etc.) are now more saturated, so you can recognize one by color alone without reading the label.' },
+      { tag: 'feat', text: 'Layered page surface: the right-side content area is a soft cool blue-grey (#EBF0F7) and cards sit on top in a slightly warmer grey (#F4F6FA), with white inputs and tables nested inside. Three clear tiers of "depth" instead of everything-on-white. Easier to tell where one card ends and the next begins.' },
+      { tag: 'fix', text: 'Records page state filter — the typeahead search inside the State dropdown now actually filters the list as you type. Was a CSS bug: the JS was correctly hiding non-matching options but a `display:flex` rule was overriding the browser default `[hidden]{display:none}`, so they stayed visible. Type "indi" → only Indiana shows. (User-spotted; thanks.)' },
+      { tag: 'fix', text: 'Removed the redundant SEARCH input from the Records filter panel. The global search bar in the top right (now: top-right of the topbar) already covers searching by address/city/name. Any deep links with a `?q=` param still apply — we persist it invisibly so it survives a filter form submit.' },
+      { tag: 'note', text: 'Property detail page intentionally left as-is in this sweep — it has a custom address-as-title header with chips for city/county/market/value that doesn\'t fit cleanly into the simple topbar slot. Will revisit separately if it makes sense to migrate.' },
+      { tag: 'note', text: 'Sidebar header height bumped 76px → 88px to match the new topbar height, so the OCULAH word and the page title stay on the same horizontal band. The "Workspace" / "Operations" / "System" group labels in the sidebar nav land slightly lower as a result. Easy nudge tonight if the sidebar feels too tall — say the word.' },
+    ],
+  },
+  {
     date: 'April 30, 2026 (Loki → Oculah feature parity)',
     title: 'Every Loki tool is now in Oculah, plus a super-admin console',
     items: [
