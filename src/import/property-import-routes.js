@@ -1222,39 +1222,31 @@ router.get('/preview', requireAuth, (req, res) => {
 
     <div id="import-result" style="display:none;margin-bottom:14px"></div>
 
-    <div class="ocu-card" style="padding:0;overflow:hidden">
-      <div style="overflow-x:auto;max-height:500px;overflow-y:auto">
-        <table class="data-table" id="preview-table">
-          <thead><tr id="preview-head"></tr></thead>
-          <tbody id="preview-body"></tbody>
-        </table>
-      </div>
+    <!-- Preview table — uses the Oculah table component (.ocu-table-wrap +
+         .ocu-table) so it matches Records / Owners / Campaigns / Lists.
+         Cells get .ocu-td and headers .ocu-th from the JS row builder
+         below, plus a max-width + ellipsis so a 100-char mailing
+         address doesn't blow out the column. -->
+    <div class="ocu-table-wrap" style="max-height:500px;overflow:auto">
+      <table class="ocu-table" id="preview-table">
+        <thead><tr id="preview-head"></tr></thead>
+        <tbody id="preview-body"></tbody>
+      </table>
     </div>
-
-    <!-- Preview-table polish: keep each cell on one line so words don't get
-         shredded into vertical letter columns when the table is squeezed.
-         The wrapper's overflow-x:auto handles the resulting horizontal
-         scroll. Generous padding + minimum cell widths keep things
-         readable while staying compact. Scoped to #preview-table so we
-         don't perturb other .data-table consumers. -->
     <style>
-      #preview-table { table-layout:auto; }
-      #preview-table th,
-      #preview-table td {
-        white-space: nowrap;
-        padding: 10px 14px;
-        font-size: 13px;
+      #preview-table .ocu-td {
         max-width: 260px;
         overflow: hidden;
         text-overflow: ellipsis;
+        white-space: nowrap;
+        font-size: 13.5px;
+        padding: 12px 16px;
+        border-bottom: 1px solid var(--ocu-border);
+        color: var(--ocu-text-1);
+        vertical-align: middle;
       }
-      #preview-table th {
-        background: var(--ocu-surface-2);
-        color: var(--ocu-text-2);
-        font-weight: 600;
-        border-bottom: 1px solid var(--ocu-border-strong);
-      }
-      #preview-table tr:hover td { background: var(--ocu-surface); }
+      #preview-table tr:hover .ocu-td { background: var(--ocu-surface); }
+      #preview-table tr:last-child .ocu-td { border-bottom: none; }
     </style>
 
     <script>
@@ -1271,16 +1263,26 @@ router.get('/preview', requireAuth, (req, res) => {
       badge.style.display = 'inline-flex';
     }
 
-    // Build preview table from previewRows
+    // Build preview table from previewRows. Cells get .ocu-th / .ocu-td
+    // so the Oculah table styling kicks in (border, padding, hover).
     const lokiKeys = Object.keys(mapping);
     const thead = document.getElementById('preview-head');
     const tbody = document.getElementById('preview-body');
-    lokiKeys.forEach(k => { const th=document.createElement('th'); th.textContent=mapping[k]; thead.appendChild(th); });
+    lokiKeys.forEach(k => {
+      const th = document.createElement('th');
+      th.className = 'ocu-th';
+      th.textContent = mapping[k];
+      thead.appendChild(th);
+    });
     previewRows.slice(0,10).forEach(row => {
       const tr = document.createElement('tr');
       lokiKeys.forEach(k => {
         const td = document.createElement('td');
-        td.textContent = row[mapping[k]] || '';
+        td.className = 'ocu-td';
+        const value = row[mapping[k]] || '';
+        td.textContent = value;
+        // Hover-tooltip surfaces truncated values without taking layout space.
+        if (value && value.length > 30) td.title = value;
         tr.appendChild(td);
       });
       tbody.appendChild(tr);
