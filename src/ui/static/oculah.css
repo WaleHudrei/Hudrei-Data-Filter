@@ -514,6 +514,62 @@
   overflow: hidden;
   text-overflow: ellipsis;
 }
+/* ─── Records KPI strip ────────────────────────────────────────────────
+   8 quick-filter cards above the records table. Each is a clickable
+   anchor; the active card gets an accent-tinted border + bold value. */
+.ocu-rkpi-strip {
+  display: grid;
+  grid-template-columns: repeat(8, 1fr);
+  gap: 8px;
+  margin-bottom: 14px;
+}
+@media (max-width: 1100px) {
+  .ocu-rkpi-strip { grid-template-columns: repeat(4, 1fr); }
+}
+@media (max-width: 600px) {
+  .ocu-rkpi-strip { grid-template-columns: repeat(2, 1fr); }
+}
+.ocu-rkpi-card {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 10px 12px;
+  background: var(--ocu-card-bg);
+  border: 1px solid var(--ocu-border);
+  border-radius: 8px;
+  text-decoration: none;
+  color: inherit;
+  cursor: pointer;
+  transition: border-color .12s, background .12s, box-shadow .12s;
+}
+.ocu-rkpi-card:hover {
+  background: var(--ocu-bg);
+  border-color: var(--ocu-border-strong);
+}
+.ocu-rkpi-card.active {
+  background: var(--ocu-bg);
+  border-color: var(--ocu-accent);
+  box-shadow: inset 0 0 0 1px var(--ocu-accent);
+}
+.ocu-rkpi-label {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--ocu-text-3);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.ocu-rkpi-value {
+  font-size: 20px;
+  font-weight: 700;
+  color: var(--ocu-text-1);
+  font-family: var(--ocu-mono);
+  line-height: 1.1;
+}
+.ocu-rkpi-card.active .ocu-rkpi-value { color: var(--ocu-accent); }
+
 /* Back-link variant when topbarTitleHTML hosts a "← Foo" nav link
    (property detail page does this). Override the title's font-weight
    800 so the link reads as navigation, not a heading. */

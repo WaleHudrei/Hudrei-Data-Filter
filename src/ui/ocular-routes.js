@@ -404,6 +404,27 @@ router.get('/records', requireAuth, async (req, res) => {
     const min_years_owned = String(req.query.min_years_owned || '').trim();
     const max_years_owned = String(req.query.max_years_owned || '').trim();
 
+    // Quick-filter params from the KPI strip cards. Each maps to one extra
+    // SQL condition below. Cards toggle by writing/removing these params
+    // in the URL — no other UI surface uses them, so they live alongside
+    // the rich filters but apply on top of any combination.
+    const vacantFilter   = String(req.query.vacant || '') === '1';
+    const soldFilter     = String(req.query.sold   || '') === '1';
+    const equityBand     = String(req.query.equity_band || '').trim().toLowerCase();   // 'high' | 'low' | ''
+    const sourceKind     = String(req.query.source_kind || '').trim().toLowerCase();   // 'third_party' | 'county' | ''
+
+    // Per-tenant equity thresholds (defaults 50/20). Used by the KPI cards
+    // and the equity_band quick-filter so user-customized thresholds apply
+    // everywhere consistently.
+    let highEqThreshold = 50, lowEqThreshold = 20;
+    try {
+      const t = await query('SELECT high_equity_threshold, low_equity_threshold FROM tenants WHERE id = $1', [req.tenantId]);
+      if (t.rows.length) {
+        if (Number.isFinite(Number(t.rows[0].high_equity_threshold))) highEqThreshold = Number(t.rows[0].high_equity_threshold);
+        if (Number.isFinite(Number(t.rows[0].low_equity_threshold)))  lowEqThreshold  = Number(t.rows[0].low_equity_threshold);
+      }
+    } catch (_) { /* defaults */ }
+
     // Multi-arrays — state, tag_include, tag_exclude
     const normArr = (raw) => {
       if (!raw) return [];
@@ -632,6 +653,37 @@ router.get('/records', requireAuth, async (req, res) => {
       params.push(phoneTagExcludeList); idx++;
     }
 
+    // Quick-filter params from the KPI cards. Added LAST so they layer on
+    // top of any other filter the user has set in the panel.
+    if (vacantFilter) {
+      conditions.push(`p.vacant = TRUE`);
+    }
+    if (soldFilter) {
+      conditions.push(`p.last_sale_date IS NOT NULL AND p.last_sale_date >= (CURRENT_DATE - INTERVAL '6 months')`);
+    }
+    if (equityBand === 'high') {
+      conditions.push(`p.equity_percent > $${idx}`);
+      params.push(highEqThreshold); idx++;
+    } else if (equityBand === 'low') {
+      conditions.push(`p.equity_percent < $${idx}`);
+      params.push(lowEqThreshold); idx++;
+    }
+    if (sourceKind === 'third_party') {
+      conditions.push(`EXISTS (
+        SELECT 1 FROM property_lists pl_sk
+        JOIN lists l_sk ON l_sk.id = pl_sk.list_id AND l_sk.tenant_id = pl_sk.tenant_id
+        WHERE pl_sk.property_id = p.id AND pl_sk.tenant_id = p.tenant_id
+          AND l_sk.list_type = 'Third party'
+      )`);
+    } else if (sourceKind === 'county') {
+      conditions.push(`EXISTS (
+        SELECT 1 FROM property_lists pl_sk
+        JOIN lists l_sk ON l_sk.id = pl_sk.list_id AND l_sk.tenant_id = pl_sk.tenant_id
+        WHERE pl_sk.property_id = p.id AND pl_sk.tenant_id = p.tenant_id
+          AND l_sk.list_type = 'Government list'
+      )`);
+    }
+
     const whereSQL = conditions.length ? 'WHERE ' + conditions.join(' AND ') : '';
 
     // ── COUNT ──────────────────────────────────────────────────────────────
@@ -643,6 +695,60 @@ router.get('/records', requireAuth, async (req, res) => {
       ${whereSQL}
     `, params);
     const total = countRes.rows[0].n || 0;
+
+    // ── KPI strip counts ───────────────────────────────────────────────────
+    // Single aggregation query that respects the same WHERE as the rows
+    // query (so each card is "what's the count of X within my current
+    // filtered set?"). Each card uses COUNT FILTER WHERE on its own
+    // condition. Equity thresholds + last-sale window come from the
+    // tenants table (loaded at the top of this handler).
+    let kpiCounts = { total, leads:0, sold:0, vacant:0, high_equity:0, low_equity:0, third_party:0, county:0 };
+    try {
+      const kpiParams = params.slice();
+      const kpiHighIdx = idx;
+      kpiParams.push(highEqThreshold);
+      const kpiLowIdx = idx + 1;
+      kpiParams.push(lowEqThreshold);
+      const kpiRes = await query(`
+        SELECT
+          COUNT(*) FILTER (WHERE p.pipeline_stage = 'lead')::int AS leads,
+          COUNT(*) FILTER (WHERE p.last_sale_date IS NOT NULL
+                              AND p.last_sale_date >= (CURRENT_DATE - INTERVAL '6 months'))::int AS sold,
+          COUNT(*) FILTER (WHERE p.vacant = TRUE)::int AS vacant,
+          COUNT(*) FILTER (WHERE p.equity_percent > $${kpiHighIdx})::int AS high_equity,
+          COUNT(*) FILTER (WHERE p.equity_percent < $${kpiLowIdx})::int  AS low_equity,
+          COUNT(*) FILTER (WHERE EXISTS (
+            SELECT 1 FROM property_lists pl_kpi
+            JOIN lists l_kpi ON l_kpi.id = pl_kpi.list_id AND l_kpi.tenant_id = pl_kpi.tenant_id
+            WHERE pl_kpi.property_id = p.id AND pl_kpi.tenant_id = p.tenant_id
+              AND l_kpi.list_type = 'Third party'
+          ))::int AS third_party,
+          COUNT(*) FILTER (WHERE EXISTS (
+            SELECT 1 FROM property_lists pl_kpi
+            JOIN lists l_kpi ON l_kpi.id = pl_kpi.list_id AND l_kpi.tenant_id = pl_kpi.tenant_id
+            WHERE pl_kpi.property_id = p.id AND pl_kpi.tenant_id = p.tenant_id
+              AND l_kpi.list_type = 'Government list'
+          ))::int AS county
+        FROM properties p
+        LEFT JOIN property_contacts pc ON pc.property_id = p.id AND pc.tenant_id = p.tenant_id AND pc.primary_contact = true
+        LEFT JOIN contacts c ON c.id = pc.contact_id AND c.tenant_id = p.tenant_id
+        ${whereSQL}
+      `, kpiParams);
+      const r = kpiRes.rows[0] || {};
+      kpiCounts = {
+        total,
+        leads:       r.leads       || 0,
+        sold:        r.sold        || 0,
+        vacant:      r.vacant      || 0,
+        high_equity: r.high_equity || 0,
+        low_equity:  r.low_equity  || 0,
+        third_party: r.third_party || 0,
+        county:      r.county      || 0,
+      };
+    } catch (e) {
+      console.error('[records kpi]', e.message);
+      // Defaults already applied; non-fatal so the page still renders.
+    }
 
     // ── ROWS ───────────────────────────────────────────────────────────────
     // 2026-04-29 Tier-3 follow-up: rewrote the per-row correlated subqueries
@@ -729,6 +835,7 @@ router.get('/records', requireAuth, async (req, res) => {
     res.send(recordsList({
       rows: rowsRes.rows,
       total, page, limit,
+      kpiCounts,
       sortBy, sortDir: sortDirLc,
       querystring,
       filters: {

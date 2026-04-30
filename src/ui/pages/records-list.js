@@ -9,6 +9,7 @@ const { recordsTable }       = require('../components/records-table');
 const { recordsFilters }     = require('../components/records-filters');
 const { recordsPagination }  = require('../components/records-pagination');
 const { bulkActionBar }      = require('../components/bulk-action-bar');
+const { recordsKpiStrip }    = require('../components/records-kpi-strip');
 const { fmtNum, escHTML }    = require('../_helpers');
 
 function buildFilterChips(filters, querystring) {
@@ -104,7 +105,11 @@ function recordsList(data = {}) {
   // Top-bar layout: filters bar full-width on top, then chips, then table.
   // Title + count live in the shell topbar; "Recompute distress" moved into
   // the filter bar (records-filters.js); "Merge duplicates" moved to HQ.
+  // KPI strip sits above the filters — 8 quick-filter cards that toggle a
+  // single param each on click.
   const body = `
+    ${recordsKpiStrip({ counts: data.kpiCounts || {}, querystring })}
+
     ${recordsFilters({
       filters,
       allTags:      data.allTags      || [],
