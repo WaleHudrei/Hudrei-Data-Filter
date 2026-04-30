@@ -97,9 +97,14 @@ function rowHTML(r) {
              onchange="lr_save(${r.id}, 'last_pull_date', this.value)" />
     </td>
     <td class="ocu-td ocu-td-date" style="${nextStyle}">${escHTML(nextLabel)}</td>
-    <td class="ocu-td ocu-td-num" style="white-space:nowrap">
-      <button class="ocu-btn ocu-btn-primary" style="padding:4px 10px;font-size:11px" onclick="lr_pull(${r.id})">✓ Pulled</button>
-      <button class="ocu-btn ocu-btn-ghost" style="padding:4px 8px;font-size:14px;color:#c0392b" onclick="lr_delete(${r.id})" title="Delete row">×</button>
+    <td class="ocu-td ocu-lr-actions">
+      <button type="button" class="ocu-lr-action-btn ocu-lr-action-pull" onclick="lr_pull(${r.id})" title="Mark pulled today">
+        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
+        <span>Pulled</span>
+      </button>
+      <button type="button" class="ocu-lr-action-btn ocu-lr-action-delete" onclick="lr_delete(${r.id})" title="Delete row">
+        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/><path d="M10 11v6"/><path d="M14 11v6"/></svg>
+      </button>
     </td>
   </tr>`;
 }
@@ -133,16 +138,16 @@ function listRegistry(data = {}) {
         <table class="ocu-table ocu-list-registry-table">
           <thead>
             <tr>
-              <th class="ocu-th" style="width:90px">Action</th>
-              <th class="ocu-th" style="width:70px">State</th>
-              <th class="ocu-th">List name</th>
-              <th class="ocu-th" style="width:110px">Tier</th>
-              <th class="ocu-th" style="width:120px">Source</th>
-              <th class="ocu-th" style="width:140px">Frequency</th>
-              <th class="ocu-th" style="width:80px">Bot</th>
-              <th class="ocu-th ocu-th-date" style="width:140px">Last pull</th>
-              <th class="ocu-th ocu-th-date" style="width:130px">Next pull</th>
-              <th class="ocu-th ocu-th-num" style="width:130px">Actions</th>
+              <th class="ocu-th" style="min-width:110px">Action</th>
+              <th class="ocu-th" style="min-width:78px">State</th>
+              <th class="ocu-th" style="min-width:240px">List name</th>
+              <th class="ocu-th" style="min-width:120px">Tier</th>
+              <th class="ocu-th" style="min-width:130px">Source</th>
+              <th class="ocu-th" style="min-width:160px">Frequency</th>
+              <th class="ocu-th" style="min-width:90px">Bot</th>
+              <th class="ocu-th ocu-th-date" style="min-width:150px">Last pull</th>
+              <th class="ocu-th ocu-th-date" style="min-width:130px">Next pull</th>
+              <th class="ocu-th" style="min-width:140px;text-align:right">Actions</th>
             </tr>
           </thead>
           <tbody id="lr-tbody">${rows.map(rowHTML).join('')}</tbody>

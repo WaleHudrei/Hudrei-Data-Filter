@@ -31,6 +31,10 @@
                                            the page" look */
   --ocu-surface:        #F7F8FA;
   --ocu-surface-2:      #EEF0F3;
+  --ocu-bg-2:           #EEF0F3;          /* alias of surface-2 — used by
+                                              inline `<code>` chips in the
+                                              recovery-note block on the
+                                              HQ settings page. */
   --ocu-border:         #D7DBE0;        /* was #E5E7EB — bolstered for anchoring */
   --ocu-border-strong:  #B7BDC4;        /* was #D1D5DB */
   --ocu-text-1:         #0A1024;        /* slate-black for primary metrics */
@@ -2578,6 +2582,40 @@ body { padding-bottom: 0; }
 }
 .ocu-textarea { resize: vertical; min-height: 80px; line-height: 1.5; }
 
+/* Native <select> chevron is narrow and clunky on dense forms.
+   Replace with our own SVG chevron everywhere .ocu-input is a select.
+   (.ocu-cell-input gets the same treatment in the list-registry block.) */
+select.ocu-input {
+  appearance: none;
+  -webkit-appearance: none;
+  -moz-appearance: none;
+  padding-right: 36px;
+  background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='14' height='14' viewBox='0 0 24 24' fill='none' stroke='%236B7280' stroke-width='2.5' stroke-linecap='round' stroke-linejoin='round'><polyline points='6 9 12 15 18 9'/></svg>");
+  background-repeat: no-repeat;
+  background-position: right 12px center;
+  text-overflow: ellipsis;
+}
+select.ocu-input:focus {
+  background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='14' height='14' viewBox='0 0 24 24' fill='none' stroke='%232563EB' stroke-width='2.5' stroke-linecap='round' stroke-linejoin='round'><polyline points='6 9 12 15 18 9'/></svg>");
+}
+
+/* Native date-picker indicator — dimmed by default, full opacity on
+   hover/focus. Matches the cell-input treatment so date inputs in
+   dialogs feel like one styling family. */
+input[type="date"].ocu-input {
+  font-family: var(--ocu-mono);
+  font-size: 13px;
+}
+input[type="date"].ocu-input::-webkit-calendar-picker-indicator {
+  opacity: 0.55;
+  cursor: pointer;
+  transition: opacity 0.12s;
+}
+input[type="date"].ocu-input:hover::-webkit-calendar-picker-indicator,
+input[type="date"].ocu-input:focus::-webkit-calendar-picker-indicator {
+  opacity: 1;
+}
+
 /* 2026-04-29 Notes section on property detail */
 .ocu-note-input { min-height: 56px; }
 .ocu-notes-list { display: flex; flex-direction: column; gap: 8px; margin-top: 12px; }
@@ -2982,25 +3020,135 @@ body { padding-bottom: 0; }
 .ocu-pill[data-list-type="Probate"]          { background: #f0e8f5; color: #5a2a8a; }
 
 /* ─── Inline editable cell inputs (List Registry grid) ───────────────────── */
+/* Goal: the table reads as DATA first, FORM second. Inputs are
+   borderless and chrome-less by default — they look like text /
+   labels. On hover the cell hints it's editable; on focus it commits
+   to the form-input look. Replaces the previous treatment that put
+   visible borders + native chevrons on every cell, which made empty
+   rows ("New List", "Untitled list type") look like a maze of empty
+   dropdowns. */
 .ocu-cell-input {
   width: 100%;
   background: transparent;
   border: 1px solid transparent;
-  border-radius: 5px;
-  padding: 4px 6px;
+  border-radius: 6px;
+  padding: 6px 8px;
   font-family: var(--ocu-display);
-  font-size: 12.5px;
+  font-size: 13px;
   color: var(--ocu-text-1);
   box-sizing: border-box;
-  transition: background .15s, border-color .15s;
+  transition: background .12s, border-color .12s, box-shadow .12s;
+  cursor: pointer;
 }
-.ocu-cell-input:hover { background: var(--ocu-surface); }
+.ocu-cell-input:hover {
+  background: var(--ocu-surface);
+  border-color: var(--ocu-border);
+}
 .ocu-cell-input:focus {
   outline: none;
-  background: #fff;
-  border-color: var(--ocu-text-2);
+  background: var(--ocu-bg);
+  border-color: var(--ocu-accent);
+  box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.10);
 }
-.ocu-list-registry-table td { vertical-align: middle; }
+
+/* Native <select> chrome → custom chevron. The browser default chevron
+   is narrow and clunky on dense tables. */
+select.ocu-cell-input {
+  appearance: none;
+  -webkit-appearance: none;
+  -moz-appearance: none;
+  padding-right: 26px;
+  background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%236B7280' stroke-width='2.5' stroke-linecap='round' stroke-linejoin='round'><polyline points='6 9 12 15 18 9'/></svg>");
+  background-repeat: no-repeat;
+  background-position: right 8px center;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  overflow: hidden;
+}
+select.ocu-cell-input:focus {
+  background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%232563EB' stroke-width='2.5' stroke-linecap='round' stroke-linejoin='round'><polyline points='6 9 12 15 18 9'/></svg>");
+}
+
+/* Date inputs — make the native picker icon less intrusive. */
+input[type="date"].ocu-cell-input {
+  font-family: var(--ocu-mono);
+  font-size: 12.5px;
+  color: var(--ocu-text-1);
+}
+input[type="date"].ocu-cell-input::-webkit-calendar-picker-indicator {
+  opacity: 0.5;
+  cursor: pointer;
+  transition: opacity 0.12s;
+}
+input[type="date"].ocu-cell-input:hover::-webkit-calendar-picker-indicator,
+input[type="date"].ocu-cell-input:focus::-webkit-calendar-picker-indicator {
+  opacity: 1;
+}
+
+/* Empty-value dropdowns ("—") render as muted text so they don't
+   compete with filled cells. The cell stays editable — only the color
+   is dimmed. */
+.ocu-cell-input:not(:focus):invalid,
+.ocu-cell-input[data-empty="true"] {
+  color: var(--ocu-text-3);
+}
+
+/* List-registry rows + header polish */
+.ocu-list-registry-table { border-collapse: separate; border-spacing: 0; }
+.ocu-list-registry-table td,
+.ocu-list-registry-table th { vertical-align: middle; }
+.ocu-list-registry-table .ocu-td { padding: 8px 12px; }
+.ocu-list-registry-table .ocu-th { padding: 12px 12px; }
+.ocu-list-registry-table tbody tr { transition: background 0.12s; }
+.ocu-list-registry-table tbody tr:hover { background: var(--ocu-surface); }
+
+/* Actions cell — pull + delete as ghost icon-buttons, right-aligned.
+   Replaces the previous inline-style "small primary button + ×" which
+   read as a form widget cluster. */
+.ocu-lr-actions {
+  text-align: right;
+  white-space: nowrap;
+  padding-right: 14px !important;
+}
+.ocu-lr-action-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  height: 28px;
+  padding: 0 10px;
+  font-size: 11.5px;
+  font-weight: 600;
+  border-radius: 6px;
+  margin-left: 4px;
+  border: 1px solid var(--ocu-border-strong);
+  background: var(--ocu-card-bg);
+  color: var(--ocu-text-2);
+  cursor: pointer;
+  transition: all 0.12s;
+  font-family: inherit;
+}
+.ocu-lr-action-btn:first-child { margin-left: 0; }
+.ocu-lr-action-pull {
+  background: #F0FDF4;
+  border-color: #BBF7D0;
+  color: #15803D;
+}
+.ocu-lr-action-pull:hover {
+  background: #DCFCE7;
+  border-color: #86EFAC;
+  color: #14532D;
+}
+.ocu-lr-action-delete {
+  width: 28px;
+  padding: 0;
+  color: #B91C1C;
+}
+.ocu-lr-action-delete:hover {
+  background: #FEE2E2;
+  border-color: #FCA5A5;
+  color: #991B1B;
+}
 
 /* ─── Upload chooser cards ───────────────────────────────────────────────── */
 .ocu-upload-grid {
