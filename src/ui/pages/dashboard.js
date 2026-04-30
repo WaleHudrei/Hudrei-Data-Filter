@@ -161,9 +161,10 @@ function dashboard(data = {}) {
     </div>
   `;
 
+  const { dashboardSwitcher } = require('../components/dashboard-switcher');
   return shell({
-    title: 'Dashboard',
-    topbarTitle:    'Dashboard',
+    title: 'Main Dashboard',
+    topbarTitleHTML: dashboardSwitcher({ active: 'main', defaultView: data.defaultView || 'main' }),
     topbarSubtitle: 'Overview of your operations across all markets',
     body,
     activePage: 'dashboard',
@@ -172,6 +173,7 @@ function dashboard(data = {}) {
       'records-count':  fmtNum(k.totalRecords || 0),
       'overdue-count':  r.overdue ? String(r.overdue) : '',
     },
+    extraHead: '<script src="/oculah-static/dashboard-switcher.js?v=1" defer></script>',
   });
 }
 

@@ -149,13 +149,15 @@ function analytics(data = {}) {
         </div>`,
   });
 
+  const { dashboardSwitcher } = require('../components/dashboard-switcher');
   return shell({
-    title:          'Analytics',
-    topbarTitle:    'Analytics',
-    topbarSubtitle: 'Campaign comparison + 8-week trend',
-    activePage:     'analytics',
-    user:           data.user,
-    badges:         data.badges || {},
+    title:           'Campaign Analytics Dashboard',
+    topbarTitleHTML: dashboardSwitcher({ active: 'analytics', defaultView: data.defaultView || 'main' }),
+    topbarSubtitle:  'Campaign comparison + 8-week trend',
+    activePage:      'dashboard',
+    user:            data.user,
+    badges:          data.badges || {},
+    extraHead:       '<script src="/oculah-static/dashboard-switcher.js?v=1" defer></script>',
     body: `
       ${headerKpis}
       <div style="margin-top:18px">${topCard}</div>

@@ -136,13 +136,15 @@ function execDashboard(data = {}) {
     `,
   });
 
+  const { dashboardSwitcher } = require('../components/dashboard-switcher');
   return shell({
-    title:          'Executive dashboard',
-    topbarTitle:    'Executive dashboard',
-    topbarSubtitle: 'One-page health view — pick where to invest next',
-    activePage:     'exec',
-    user:           data.user,
-    badges:         data.badges || {},
+    title:           'Executive Dashboard',
+    topbarTitleHTML: dashboardSwitcher({ active: 'executive', defaultView: data.defaultView || 'main' }),
+    topbarSubtitle:  'One-page health view — pick where to invest next',
+    activePage:      'dashboard',
+    user:            data.user,
+    badges:          data.badges || {},
+    extraHead:       '<script src="/oculah-static/dashboard-switcher.js?v=1" defer></script>',
     body: `
       <div style="display:grid;grid-template-columns:1fr;gap:14px">${scoresCard}</div>
       <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:14px;margin-top:14px">

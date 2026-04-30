@@ -12,12 +12,14 @@ const { ROLES } = require('../../auth/roles');
 // (regular workspace members); only tenant_admin and super_admin see it.
 const NAV = [
   { section: 'Workspace', items: [
+    // Analytics + Executive used to live as their own sidebar items. They're
+    // now consolidated under Dashboard and accessed via the in-topbar
+    // dashboard-switcher dropdown. Their old URLs (/oculah/analytics and
+    // /oculah/exec) 301-redirect to /oculah/dashboard/{analytics,executive}.
     { id: 'dashboard',     href: '/oculah/dashboard',  label: 'Dashboard',     icon: 'grid' },
     { id: 'records',       href: '/oculah/records',    label: 'Records',       icon: 'box',   badge: 'records-count' },
     { id: 'owners',        href: '/oculah/owners',     label: 'Owners',        icon: 'users' },
     { id: 'campaigns',     href: '/oculah/campaigns',  label: 'Campaigns',     icon: 'phone' },
-    { id: 'analytics',     href: '/oculah/analytics',  label: 'Analytics',     icon: 'activity' },
-    { id: 'exec',          href: '/oculah/exec',       label: 'Executive',     icon: 'shield' },
     { id: 'lists',         href: '/oculah/lists',      label: 'Lists',         icon: 'list' },
   ]},
   { section: 'Operations', items: [
@@ -81,6 +83,10 @@ function shell(opts = {}) {
     // Currently used only by the Dashboard — opt-in per page to avoid a
     // wholesale UX change.
     topbarTitle = '',
+    topbarTitleHTML = '',     // raw HTML alternative — bypasses escaping; use
+                              // for pages that need an interactive trigger
+                              // (e.g. dashboard switcher dropdown) inline
+                              // with the topbar title.
     topbarSubtitle = '',     // optional smaller line below topbarTitle
   } = opts;
 
@@ -128,7 +134,7 @@ function shell(opts = {}) {
        small data-table sizes that dominate Oculah pages. Includes the
        400-700 weight range we use across the design tokens. -->
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="/oculah-static/oculah.css?v=28">
+  <link rel="stylesheet" href="/oculah-static/oculah.css?v=29">
   ${extraHead}
 </head>
 <body class="ocu">
@@ -179,7 +185,9 @@ function shell(opts = {}) {
   <main class="ocu-main">
     <div class="ocu-topbar">
       <div class="ocu-topbar-titlewrap">
-        ${topbarTitle ? `<div class="ocu-topbar-title">${escHTML(topbarTitle)}</div>` : ''}
+        ${topbarTitleHTML
+          ? `<div class="ocu-topbar-title">${topbarTitleHTML}</div>`
+          : (topbarTitle ? `<div class="ocu-topbar-title">${escHTML(topbarTitle)}</div>` : '')}
         ${topbarSubtitle ? `<div class="ocu-topbar-subtitle">${escHTML(topbarSubtitle)}</div>` : ''}
       </div>
       <div style="display:flex;align-items:center;gap:8px">

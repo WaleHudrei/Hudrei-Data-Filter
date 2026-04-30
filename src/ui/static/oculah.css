@@ -386,7 +386,95 @@
   color: var(--ocu-text-1);
   letter-spacing: -0.01em;
   line-height: 1.2;
+  display: flex;
+  align-items: center;
+  gap: 8px;
 }
+
+/* ─── Dashboard switcher (in-topbar dropdown) ──────────────────────────── */
+.ocu-dsw-wrap { position: relative; display: inline-flex; }
+.ocu-dsw-trigger {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  background: var(--ocu-card-bg);
+  border: 1px solid var(--ocu-border-strong);
+  border-radius: 8px;
+  padding: 4px 10px 4px 12px;
+  font: inherit;
+  font-size: 22px;
+  font-weight: 800;
+  color: var(--ocu-text-1);
+  cursor: pointer;
+  letter-spacing: -0.01em;
+  transition: background .12s, border-color .12s;
+}
+.ocu-dsw-trigger:hover { background: var(--ocu-bg); border-color: var(--ocu-text-2); }
+.ocu-dsw-trigger[aria-expanded="true"] { background: var(--ocu-bg); border-color: var(--ocu-accent); }
+.ocu-dsw-trigger-label { line-height: 1; }
+.ocu-dsw-chev { color: var(--ocu-text-3); margin-top: 2px; }
+.ocu-dsw-suffix {
+  /* Plain "Dashboard" word that sits to the right of the dropdown trigger.
+     Matches the trigger size + weight so reading order is "[Active] Dashboard" */
+  font-size: 22px;
+  font-weight: 800;
+  color: var(--ocu-text-1);
+  letter-spacing: -0.01em;
+}
+
+.ocu-dsw-popover {
+  position: absolute;
+  top: calc(100% + 6px);
+  left: 0;
+  min-width: 320px;
+  background: var(--ocu-bg);
+  border: 1px solid var(--ocu-border-strong);
+  border-radius: 10px;
+  box-shadow: 0 10px 30px rgba(11, 18, 32, 0.12), 0 2px 6px rgba(11, 18, 32, 0.06);
+  padding: 6px;
+  z-index: 50;
+}
+.ocu-dsw-popover[hidden] { display: none; }
+.ocu-dsw-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 12px;
+  border-radius: 6px;
+  text-decoration: none;
+  color: var(--ocu-text-1);
+  font-size: 14px;
+  font-weight: 500;
+  letter-spacing: 0;
+}
+.ocu-dsw-item:hover { background: var(--ocu-surface); }
+.ocu-dsw-item.active { background: var(--ocu-accent-soft); }
+.ocu-dsw-item-label { font-weight: 600; }
+.ocu-dsw-item-meta { display: flex; align-items: center; gap: 8px; }
+.ocu-dsw-default-pill {
+  font-size: 11px;
+  font-weight: 600;
+  background: var(--ocu-accent-soft);
+  color: var(--ocu-accent);
+  padding: 2px 8px;
+  border-radius: 4px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+.ocu-dsw-set-default {
+  background: none;
+  border: 1px solid var(--ocu-border-strong);
+  color: var(--ocu-text-3);
+  font-size: 11px;
+  padding: 3px 8px;
+  border-radius: 4px;
+  cursor: pointer;
+  font-family: inherit;
+}
+.ocu-dsw-set-default:hover { color: var(--ocu-text-1); border-color: var(--ocu-text-2); }
+.ocu-dsw-set-default:disabled { opacity: 0.5; cursor: wait; }
+.ocu-dsw-check { color: var(--ocu-accent); font-weight: 700; }
 .ocu-topbar-subtitle {
   font-size: 13px;
   font-weight: 500;

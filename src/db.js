@@ -91,6 +91,7 @@ async function initSchema() {
   // src/auth-tokens.js. Token strings are 32-byte hex (64 chars).
   await query(`
     ALTER TABLE users ADD COLUMN IF NOT EXISTS email_verified_at TIMESTAMPTZ;
+    ALTER TABLE users ADD COLUMN IF NOT EXISTS default_dashboard_view TEXT NOT NULL DEFAULT 'main';
 
     CREATE TABLE IF NOT EXISTS email_verification_tokens (
       id          SERIAL PRIMARY KEY,

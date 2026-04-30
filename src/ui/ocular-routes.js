@@ -51,7 +51,56 @@ function requireAuth(req, res, next) {
 // (mounted there to avoid double-mount complexity here).
 
 // ─── /oculah/dashboard ─────────────────────────────────────────────────────
+// ─── Dashboard view dispatch ───────────────────────────────────────────────
+// Bare /oculah/dashboard redirects to the user's saved default view (or main
+// if not set). Specific /oculah/dashboard/:view URLs render that view directly
+// so deep-links + bookmarks survive default changes.
+const { isValidViewId, VIEWS: DASHBOARD_VIEWS } = require('./components/dashboard-switcher');
+
 router.get('/dashboard', requireAuth, async (req, res) => {
+  try {
+    const r = await query(`SELECT default_dashboard_view FROM users WHERE id = $1`, [req.userId]);
+    const def = (r.rows[0] && r.rows[0].default_dashboard_view) || 'main';
+    const safe = isValidViewId(def) ? def : 'main';
+    return res.redirect('/oculah/dashboard/' + safe);
+  } catch (e) {
+    console.error('[dashboard default-redirect]', e);
+    return res.redirect('/oculah/dashboard/main');
+  }
+});
+
+// POST /oculah/dashboard/set-default — store the user's preferred default view.
+// Body: view=main|executive|analytics. Returns JSON { ok: true } on success.
+router.post('/dashboard/set-default', requireAuth, async (req, res) => {
+  try {
+    const view = String(req.body.view || '').trim();
+    if (!isValidViewId(view)) return res.status(400).json({ error: 'Invalid view.' });
+    await query(`UPDATE users SET default_dashboard_view = $1 WHERE id = $2`, [view, req.userId]);
+    res.json({ ok: true, view });
+  } catch (e) {
+    console.error('[dashboard/set-default]', e);
+    res.status(500).json({ error: 'Save failed.' });
+  }
+});
+
+// Each /oculah/dashboard/:view delegates to the existing renderer for that
+// view — no logic change to the underlying dashboards, just URL plumbing.
+async function _loadDefaultView(userId) {
+  try {
+    const r = await query(`SELECT default_dashboard_view FROM users WHERE id = $1`, [userId]);
+    const v = r.rows[0] && r.rows[0].default_dashboard_view;
+    return isValidViewId(v) ? v : 'main';
+  } catch (_) { return 'main'; }
+}
+router.get('/dashboard/main',       requireAuth, async (req, res) => { req.defaultView = await _loadDefaultView(req.userId); _renderMainDashboard(req, res); });
+router.get('/dashboard/executive',  requireAuth, async (req, res) => { req.defaultView = await _loadDefaultView(req.userId); _renderExecDashboard(req, res); });
+router.get('/dashboard/analytics',  requireAuth, async (req, res) => { req.defaultView = await _loadDefaultView(req.userId); _renderAnalyticsDashboard(req, res); });
+
+// Legacy URLs kept as redirects so existing bookmarks survive.
+router.get('/exec',      requireAuth, (req, res) => res.redirect(301, '/oculah/dashboard/executive'));
+router.get('/analytics', requireAuth, (req, res) => res.redirect(301, '/oculah/dashboard/analytics'));
+
+async function _renderMainDashboard(req, res) {
   try {
     // Fetch all the data the dashboard needs in parallel.
     // Each query is simple enough to run from this handler; we'll extract
@@ -270,6 +319,7 @@ router.get('/dashboard', requireAuth, async (req, res) => {
     const user = await getUser(req);
 
     res.send(dashboard({
+      defaultView: req.defaultView,
       kpis: {
         totalRecords,
         totalOwners,
@@ -304,7 +354,7 @@ router.get('/dashboard', requireAuth, async (req, res) => {
     console.error('[ocular/dashboard]', e);
     res.status(500).send('Error loading Oculah dashboard: ' + e.message);
   }
-});
+}
 
 // ─── /oculah/records — Records list page ──────────────────────────────────
 // Phase 2 (2026-04-25): full filter set + bulk action support. Param names
@@ -1159,10 +1209,11 @@ router.post('/campaigns/:id(\\d+)/readymode-count', requireAuth, async (req, res
   }
 });
 
-// ─── /oculah/exec — Executive dashboard (Task 13) ──────────────────────────
+// ─── Executive dashboard renderer (Task 13) ────────────────────────────────
+// Wired into /oculah/dashboard/executive via the dashboard dispatch above.
 // One page; one query batch. Aggregations are intentionally tenant-scoped
 // (no cross-tenant peeking even from the super-admin role on this view).
-router.get('/exec', requireAuth, async (req, res) => {
+async function _renderExecDashboard(req, res) {
   try {
     const { execDashboard } = require('./pages/exec-dashboard');
     const tenantId = req.tenantId;
@@ -1186,16 +1237,18 @@ router.get('/exec', requireAuth, async (req, res) => {
     `, [tenantId]);
 
     res.send(execDashboard({
+      defaultView: req.defaultView,
       user:    await getUser(req),
       metrics: r.rows[0] || {},
     }));
   } catch (e) {
-    console.error('[ocular/exec]', e);
+    console.error('[ocular/dashboard/executive]', e);
     res.status(500).send('Error loading executive dashboard: ' + e.message);
   }
-});
+}
 
-// ─── /oculah/analytics — Campaign comparison + trend (Task 5) ──────────────
+// ─── Campaign analytics dashboard renderer (Task 5) ────────────────────────
+// Wired into /oculah/dashboard/analytics via the dashboard dispatch above.
 // Pulls every campaign for the tenant and joins:
 //   - campaign_contacts marketing_result='Lead' for the leads count
 //   - call_logs.disposition_normalized='transfer' grouped by week for the
@@ -1203,7 +1256,7 @@ router.get('/exec', requireAuth, async (req, res) => {
 //     campaign_id isn't propagated into call_logs (the call_log row stores
 //     a free-text campaign_name); the disposition pattern is what makes the
 //     trend meaningful so it's worth the slightly fuzzy join.
-router.get('/analytics', requireAuth, async (req, res) => {
+async function _renderAnalyticsDashboard(req, res) {
   try {
     const { analytics } = require('./pages/analytics');
     const campaigns = require('../campaigns');
@@ -1211,7 +1264,7 @@ router.get('/analytics', requireAuth, async (req, res) => {
     const list = await campaigns.getCampaigns(req.tenantId);
 
     if (list.length === 0) {
-      return res.send(analytics({ user: await getUser(req), campaigns: [] }));
+      return res.send(analytics({ defaultView: req.defaultView, user: await getUser(req), campaigns: [] }));
     }
 
     const ids = list.map(c => c.id);
@@ -1257,14 +1310,15 @@ router.get('/analytics', requireAuth, async (req, res) => {
     }));
 
     res.send(analytics({
-      user:      await getUser(req),
-      campaigns: enriched,
+      defaultView: req.defaultView,
+      user:        await getUser(req),
+      campaigns:   enriched,
     }));
   } catch (e) {
-    console.error('[ocular/analytics]', e);
+    console.error('[ocular/dashboard/analytics]', e);
     res.status(500).send('Error loading analytics: ' + e.message);
   }
-});
+}
 
 router.post('/campaigns/:id(\\d+)/filters', requireAuth, async (req, res) => {
   try {
