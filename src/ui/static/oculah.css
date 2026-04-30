@@ -2112,11 +2112,12 @@
    pill, progress uses the accent track + above-grid label, results stack
    as colored chips. The whole row hovers softly with a left-edge accent
    marker (inherited from .ocu-tr-clickable). */
-.ocu-activity-table { border-spacing: 0; }
+.ocu-activity-table { border-spacing: 0; table-layout: fixed; width: 100%; }
 .ocu-activity-table tbody tr { border-bottom: 1px solid var(--ocu-border); transition: background 0.12s; }
 .ocu-activity-table tbody tr:last-child { border-bottom: 0; }
 .ocu-activity-table tbody tr:hover { background: var(--ocu-surface); }
 .ocu-activity-table .ocu-td { padding: 14px 16px; vertical-align: middle; }
+.ocu-activity-table .ocu-th { vertical-align: middle; }
 
 .ocu-activity-file {
   display: flex;
@@ -2195,8 +2196,39 @@
 .ocu-result-err { background: #FEE2E2; color: #B91C1C; }
 
 /* ── Lists table polish ─────────────────────────────────────────────────── */
-/* Source column reads as a tag instead of plain text so it lines up with
-   the Type pill. Action buttons sit in a right-aligned tight cluster. */
+/* The lists table uses an explicit <colgroup> so the list-name column
+   gets all remaining width while badges/numbers/dates/actions stay at
+   their natural widths. Without this the auto-layout engine can squeeze
+   the name column to ~50px when adjacent cells have nowrap content. */
+.ocu-lists-table { table-layout: fixed; width: 100%; }
+.ocu-lists-table .ocu-th,
+.ocu-lists-table .ocu-td { vertical-align: middle; }
+
+/* List name cell — primary identity. Wraps cleanly, never to a 1-word
+   column. The link itself is a polished, weight-600 line, NOT the
+   default underlined blue link — same treatment as the address column
+   on /records. Hover reveals an accent underline. */
+.ocu-td-list-name { padding: 14px 16px; min-width: 0; }
+.ocu-list-name-link {
+  display: inline-block;
+  max-width: 100%;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--ocu-text-1);
+  letter-spacing: -0.005em;
+  text-decoration: none;
+  word-break: break-word;
+  line-height: 1.35;
+  border-bottom: 1px solid transparent;
+  transition: color 0.1s, border-color 0.1s;
+}
+.ocu-list-name-link:hover {
+  color: var(--ocu-accent);
+  border-bottom-color: var(--ocu-accent);
+}
+
+/* Source column reads as a soft tag so it visually parallels the Type
+   pill — both are short categorical chips. */
 .ocu-source-tag {
   display: inline-block;
   font-size: 12px;
@@ -2207,14 +2239,25 @@
   padding: 3px 9px;
   border-radius: 6px;
   letter-spacing: 0;
+  white-space: nowrap;
 }
+
+/* Row hover — subtle surface fill plus accent left edge, same language
+   as the records table. */
 .ocu-list-row { transition: background 0.12s, box-shadow 0.12s; }
-.ocu-list-row:hover { background: var(--ocu-surface); box-shadow: inset 3px 0 0 var(--ocu-accent); }
+.ocu-list-row:hover {
+  background: var(--ocu-surface);
+  box-shadow: inset 3px 0 0 var(--ocu-accent);
+}
+
+/* Actions cluster — right-aligned, three pill-buttons in one tight
+   horizontal row. Buttons are ghost-style chips, NOT primary buttons,
+   so they never compete with the row's main link. */
 .ocu-list-actions {
   text-align: right;
   white-space: nowrap;
+  padding-right: 16px;
 }
-.ocu-list-actions { display: table-cell; padding-right: 16px; }
 .ocu-list-action-btn {
   display: inline-flex;
   align-items: center;
@@ -2223,14 +2266,15 @@
   padding: 0 12px;
   font-size: 12px;
   font-weight: 500;
-  border-radius: 6px;
+  border-radius: 7px;
   margin-left: 6px;
   border: 1px solid var(--ocu-border-strong);
   background: var(--ocu-card-bg);
   color: var(--ocu-text-2);
   text-decoration: none;
   cursor: pointer;
-  transition: all 0.1s;
+  transition: all 0.12s;
+  font-family: inherit;
 }
 .ocu-list-action-btn:hover {
   background: var(--ocu-bg);

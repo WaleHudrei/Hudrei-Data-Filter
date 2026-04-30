@@ -41,17 +41,17 @@ function listRow(l) {
   const safeType = attr(l.list_type);
   const safeSrc  = attr(l.source);
   return `<tr class="ocu-list-row">
-    <td class="ocu-td">
-      <a href="/oculah/records?list_id=${l.id}" class="ocu-link ocu-td-primary">${escHTML(l.list_name)}</a>
+    <td class="ocu-td ocu-td-list-name">
+      <a href="/oculah/records?list_id=${l.id}" class="ocu-list-name-link">${escHTML(l.list_name)}</a>
     </td>
     <td class="ocu-td">${listTypeBadge(l.list_type)}</td>
     <td class="ocu-td">${sourceBadge(l.source)}</td>
     <td class="ocu-td ocu-td-num"><span class="ocu-mono">${fmtNum(l.property_count)}</span></td>
     <td class="ocu-td ocu-td-date">${fmtCreatedDate(l.created_at)}</td>
     <td class="ocu-td ocu-list-actions">
-      <a href="/oculah/records?list_id=${l.id}" class="ocu-btn ocu-btn-ghost ocu-list-action-btn">View</a>
-      <button class="ocu-btn ocu-btn-ghost ocu-list-action-btn" onclick="lists_openEdit(${l.id}, ${safeName}, ${safeType}, ${safeSrc})">Edit</button>
-      <button class="ocu-btn ocu-btn-ghost ocu-list-action-btn ocu-list-action-danger" onclick="lists_openDelete(${l.id}, ${safeName})">Delete</button>
+      <a href="/oculah/records?list_id=${l.id}" class="ocu-list-action-btn">View</a>
+      <button type="button" class="ocu-list-action-btn" onclick="lists_openEdit(${l.id}, ${safeName}, ${safeType}, ${safeSrc})">Edit</button>
+      <button type="button" class="ocu-list-action-btn ocu-list-action-danger" onclick="lists_openDelete(${l.id}, ${safeName})">Delete</button>
     </td>
   </tr>`;
 }
@@ -127,8 +127,16 @@ function listsPage(data = {}) {
   const tableHTML = rows.length === 0
     ? `<div class="ocu-empty">No lists yet — import a property list to get started.</div>`
     : `
-      <div class="ocu-table-wrap ocu-records-table-wrap">
-        <table class="ocu-table ocu-records-table">
+      <div class="ocu-table-wrap ocu-lists-table-wrap">
+        <table class="ocu-table ocu-lists-table">
+          <colgroup>
+            <col style="width:auto" />
+            <col style="width:140px" />
+            <col style="width:150px" />
+            <col style="width:120px" />
+            <col style="width:130px" />
+            <col style="width:230px" />
+          </colgroup>
           <thead>
             <tr>
               <th class="ocu-th">List name</th>
