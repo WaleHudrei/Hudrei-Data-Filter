@@ -1,0 +1,27 @@
+# Keep the build context tiny — Docker uploads everything in this dir
+# unless excluded here. Faster context = faster cache lookups.
+.git
+.gitignore
+.gitattributes
+.github
+
+node_modules
+npm-debug.log*
+
+.env
+.env.*
+*.log
+.DS_Store
+
+# Docs / dev-only files — not needed in runtime image
+docs/
+*.md
+README*
+
+# Replaced by Dockerfile, but keep file in repo for git history
+nixpacks.toml
+
+# Editor / IDE
+.vscode/
+.idea/
+*.swp
