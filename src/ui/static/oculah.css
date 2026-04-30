@@ -1265,15 +1265,17 @@
   background: var(--ocu-surface);
 }
 
-/* BODY: 2-column grid — mailing | phones. Phones cell can flex wider
-   when there are many phone rows. */
+/* BODY: 2-column grid — mailing | phones. Phones cell gets the
+   majority of the width since it usually has more content. The
+   minmax(0, …) on phones lets it shrink past content min-width so
+   the inner phones-grid can compact into multiple columns. */
 .ocu-owner-body {
   display: grid;
-  grid-template-columns: minmax(240px, 1fr) minmax(0, 1.4fr);
-  gap: 22px;
+  grid-template-columns: minmax(220px, 0.9fr) minmax(0, 2fr);
+  gap: 24px;
   align-items: start;
 }
-@media (max-width: 720px) {
+@media (max-width: 760px) {
   .ocu-owner-body { grid-template-columns: 1fr; gap: 16px; }
 }
 .ocu-owner-section { min-width: 0; }
@@ -1314,14 +1316,20 @@
 }
 
 /* PHONES GRID — responsive, scales gracefully from 1 to 100+ phones.
-   - 1-2 phones: each row gets ~280px (one full-width or two 50/50)
-   - 5-12 phones: 2-3 columns at typical card widths
-   - 12+ phones: cap at 320px tall with internal scroll, so a contact
-     with 50 phones doesn't push the rest of the page out of view */
+   - 1 phone: full width
+   - 2-3 phones: 2 columns
+   - 4+ phones: 2-3 columns depending on container width
+   - 8+ phones (data-many="true"): cap at 320px tall with scroll
+   minmax(0, 1fr) lets columns shrink below their content min-width,
+   so the inner phone-row content can wrap rather than forcing a
+   single 1-column layout when content is wider than the floor. */
 .ocu-phones-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+  grid-template-columns: repeat(auto-fill, minmax(min(170px, 100%), 1fr));
   gap: 8px;
+  min-width: 0;
+}
+.ocu-phones-grid > .ocu-phone-row {
   min-width: 0;
 }
 .ocu-owner-phones-section[data-many="true"] .ocu-phones-grid {
