@@ -2246,9 +2246,12 @@
 }
 
 /* Row hover — subtle surface fill plus accent left edge, same language
-   as the records table. */
-.ocu-list-row { transition: background 0.12s, box-shadow 0.12s; }
-.ocu-list-row:hover {
+   as the records table. NOTE: class is .ocu-lists-row (plural) to
+   avoid colliding with the dashboard widget's .ocu-list-row, which
+   sets display:grid + 24px/1fr/auto columns. That rule turning the
+   <tr> into a 3-col grid was squeezing the list-name cell to 24px. */
+.ocu-lists-row { transition: background 0.12s, box-shadow 0.12s; }
+.ocu-lists-row:hover {
   background: var(--ocu-surface);
   box-shadow: inset 3px 0 0 var(--ocu-accent);
 }

@@ -40,7 +40,7 @@ function listRow(l) {
   const safeName = attr(l.list_name);
   const safeType = attr(l.list_type);
   const safeSrc  = attr(l.source);
-  return `<tr class="ocu-list-row">
+  return `<tr class="ocu-lists-row">
     <td class="ocu-td ocu-td-list-name">
       <a href="/oculah/records?list_id=${l.id}" class="ocu-list-name-link">${escHTML(l.list_name)}</a>
     </td>
