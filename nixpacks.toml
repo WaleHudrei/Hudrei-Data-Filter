@@ -1,0 +1,14 @@
+# Nixpacks build configuration override.
+#
+# Default behavior installs deps with `npm ci`, which requires the lockfile to
+# match package.json exactly. We don't run `npm install` locally as part of
+# normal development (no node toolchain on operator machines), so the lockfile
+# can drift the moment a dependency is added to package.json. `npm install`
+# tolerates that drift and regenerates the lockfile in-build.
+#
+# Trade-off: we lose reproducible installs across deploys (a transitive
+# dependency could resolve to a slightly different version). Acceptable for a
+# project with no automated tests pinning behavior; revisit when we add CI.
+
+[phases.install]
+cmds = ["npm install --no-audit --no-fund"]
