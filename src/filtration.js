@@ -494,6 +494,26 @@ async function generateCleanExport(campaignId, tenantId) {
   if (!Number.isInteger(tenantId)) {
     throw new Error('generateCleanExport: tenantId required (int) — DNC scoping needs it');
   }
+
+  // Per-campaign filter rules (Task 2). Load alongside the contact pull so the
+  // thresholds apply on this export and on every "Start new round" clone.
+  // Defaults to the prior hardcoded behavior if a row is missing the columns.
+  const campRow = await query(
+    `SELECT COALESCE(voicemail_threshold, 99)    AS voicemail_threshold,
+            COALESCE(hangup_threshold,    99)    AS hangup_threshold,
+            COALESCE(exclude_dnc,             true) AS exclude_dnc,
+            COALESCE(exclude_wrong_number,    true) AS exclude_wrong_number,
+            COALESCE(exclude_not_in_service,  true) AS exclude_not_in_service,
+            COALESCE(exclude_already_lead,    true) AS exclude_already_lead
+       FROM campaigns WHERE id = $1 AND tenant_id = $2`,
+    [campaignId, tenantId]
+  );
+  const cfg = campRow.rows[0] || {
+    voicemail_threshold: 99, hangup_threshold: 99,
+    exclude_dnc: true, exclude_wrong_number: true,
+    exclude_not_in_service: true, exclude_already_lead: true,
+  };
+
   const contacts = await query(
     `WITH cc_phones AS (
        -- For each campaign_contact, find the first phone that resolves to
@@ -554,13 +574,39 @@ async function generateCleanExport(campaignId, tenantId) {
        LEFT JOIN cc_props cpr              ON cpr.global_contact_id = cph.global_contact_id
        LEFT JOIN properties gp             ON gp.id = cpr.property_id
       WHERE cc.campaign_id = $1
-        AND (cc.marketing_result IS NULL OR cc.marketing_result != 'Lead')
+        AND ($3::bool = false OR cc.marketing_result IS NULL OR cc.marketing_result != 'Lead')
       GROUP BY cc.id, gc.email_1, gc.email_2, gc.mailing_address, gc.mailing_city,
                gc.mailing_state, gc.mailing_zip, gp.street, gp.city, gp.state_code,
                gp.zip_code, gp.county
       ORDER BY cc.row_index`,
-    [campaignId, tenantId]
+    [campaignId, tenantId, cfg.exclude_already_lead]
   );
+
+  // Per-phone disposition counts across all campaigns for this tenant. Used to
+  // apply the campaign's voicemail/hangup thresholds at export time. Aggregating
+  // globally (not just for THIS campaign) is intentional: a number that's been
+  // voicemailed 4 times across two campaigns should still be filtered out.
+  const phoneNumbers = [];
+  for (const c of contacts.rows) {
+    for (const p of (c.phones || [])) {
+      if (p && p.phone) phoneNumbers.push(p.phone);
+    }
+  }
+  const dispoCounts = new Map();
+  if (phoneNumbers.length > 0) {
+    const dc = await query(
+      `SELECT ph.phone_number,
+              SUM(CASE WHEN cl.disposition_normalized = 'voicemail' THEN 1 ELSE 0 END)::int AS vm,
+              SUM(CASE WHEN cl.disposition_normalized = 'hung_up'   THEN 1 ELSE 0 END)::int AS hu
+         FROM call_logs cl
+         JOIN phones ph ON ph.id = cl.phone_id
+        WHERE cl.tenant_id = $1
+          AND ph.phone_number = ANY($2::text[])
+        GROUP BY ph.phone_number`,
+      [tenantId, Array.from(new Set(phoneNumbers))]
+    );
+    for (const r of dc.rows) dispoCounts.set(r.phone_number, { vm: r.vm, hu: r.hu });
+  }
 
   const rows = [];
   let callable = 0, dead = 0;
@@ -583,9 +629,24 @@ async function generateCleanExport(campaignId, tenantId) {
     return p !== '' ? primary : (fallback == null ? '' : fallback);
   };
 
+  // Per-phone callable predicate honoring the campaign's filter config (Task 2).
+  // exclude_* flags map to the prior hardcoded checks; voicemail/hangup
+  // thresholds knock out phones whose global call_logs counts hit the limit.
+  const isCallable = (p) => {
+    if (!p || !p.phone) return false;
+    if (cfg.exclude_wrong_number   && p.wrong)                   return false;
+    if (p.filtered)                                              return false;
+    if (cfg.exclude_dnc            && p.dnc)                     return false;
+    if (cfg.exclude_not_in_service && p.status === 'dead_number') return false;
+    const dc = dispoCounts.get(p.phone);
+    if (dc && dc.vm >= cfg.voicemail_threshold) return false;
+    if (dc && dc.hu >= cfg.hangup_threshold)    return false;
+    return true;
+  };
+
   for (const c of contacts.rows) {
     const phones = (c.phones || []).filter(p => p && p.phone);
-    const callablePhones = phones.filter(p => !p.wrong && !p.filtered && !p.dnc && p.status !== 'dead_number');
+    const callablePhones = phones.filter(isCallable);
 
     if (callablePhones.length === 0) { dead++; continue; }
     callable++;
@@ -608,7 +669,7 @@ async function generateCleanExport(campaignId, tenantId) {
 
     for (let s = 1; s <= globalMaxSlot; s++) {
       const ph = phones.find(p => p.slot === s);
-      row[`Ph#${s}`] = (ph && !ph.wrong && !ph.filtered && !ph.dnc && ph.status !== 'dead_number') ? ph.phone : '';
+      row[`Ph#${s}`] = (ph && isCallable(ph)) ? ph.phone : '';
     }
 
     rows.push(row);

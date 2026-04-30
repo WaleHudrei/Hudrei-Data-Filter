@@ -181,6 +181,16 @@ async function initCampaignSchema() {
     `ALTER TABLE campaign_contact_phones ADD COLUMN IF NOT EXISTS wrong_number_flagged_at TIMESTAMPTZ`,
     `ALTER TABLE campaign_contact_phones ADD COLUMN IF NOT EXISTS correct_flagged_at TIMESTAMPTZ`,
     `ALTER TABLE campaign_contacts ADD COLUMN IF NOT EXISTS marketing_result VARCHAR(50)`,
+    // Per-campaign filter thresholds (Task 2). Defaults make existing campaigns
+    // behave like before: voicemails/hangups are NOT auto-filtered out at clean-
+    // export time unless the user lowers the threshold. exclude_* defaults match
+    // the prior hardcoded behavior (DNC + wrong + NIS + already-Lead all out).
+    `ALTER TABLE campaigns ADD COLUMN IF NOT EXISTS voicemail_threshold     INT     DEFAULT 99`,
+    `ALTER TABLE campaigns ADD COLUMN IF NOT EXISTS hangup_threshold        INT     DEFAULT 99`,
+    `ALTER TABLE campaigns ADD COLUMN IF NOT EXISTS exclude_dnc             BOOLEAN DEFAULT TRUE`,
+    `ALTER TABLE campaigns ADD COLUMN IF NOT EXISTS exclude_wrong_number    BOOLEAN DEFAULT TRUE`,
+    `ALTER TABLE campaigns ADD COLUMN IF NOT EXISTS exclude_not_in_service  BOOLEAN DEFAULT TRUE`,
+    `ALTER TABLE campaigns ADD COLUMN IF NOT EXISTS exclude_already_lead    BOOLEAN DEFAULT TRUE`,
     // 2026-04-18 audit fix #18: moved from db.js to here (where campaign_contacts
     // is actually created) to eliminate schema-init race condition. Previously
     // db.js::initSchema() ran in parallel with campaigns.initCampaignSchema(),
@@ -428,6 +438,42 @@ async function updateCampaignChannel(tenantId, id, channel) {
   const cold = channel==='cold_call'?'active':'dormant';
   const sms  = channel==='sms'?'active':'dormant';
   await query(`UPDATE campaigns SET active_channel=$1, cold_call_status=$2, sms_status=$3, updated_at=NOW() WHERE id=$4 AND tenant_id=$5`, [channel, cold, sms, id, tenantId]);
+}
+
+// Per-campaign filter thresholds (Task 2). All fields optional in the input —
+// missing keys are left untouched. Numeric thresholds are clamped to [0, 99].
+async function updateCampaignFilters(tenantId, id, body) {
+  if (!Number.isInteger(tenantId)) throw new Error('updateCampaignFilters: tenantId required');
+  const idInt = parseInt(id, 10);
+  if (!Number.isFinite(idInt) || idInt <= 0) return { ok: false, error: 'Invalid campaign id.' };
+  const clampInt = (raw, def) => {
+    const n = parseInt(raw, 10);
+    if (!Number.isFinite(n) || n < 0) return def;
+    return Math.min(99, n);
+  };
+  const asBool = (raw) => raw === '1' || raw === 'on' || raw === 'true' || raw === true;
+  await query(
+    `UPDATE campaigns SET
+       voicemail_threshold    = $1,
+       hangup_threshold       = $2,
+       exclude_dnc            = $3,
+       exclude_wrong_number   = $4,
+       exclude_not_in_service = $5,
+       exclude_already_lead   = $6,
+       updated_at             = NOW()
+     WHERE id = $7 AND tenant_id = $8`,
+    [
+      clampInt(body.voicemail_threshold, 99),
+      clampInt(body.hangup_threshold,    99),
+      asBool(body.exclude_dnc),
+      asBool(body.exclude_wrong_number),
+      asBool(body.exclude_not_in_service),
+      asBool(body.exclude_already_lead),
+      idInt,
+      tenantId,
+    ]
+  );
+  return { ok: true };
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -745,6 +791,7 @@ async function addListType(tenantId, name) {
 module.exports = {
   initCampaignSchema, getCampaigns, getCampaign, createCampaign,
   updateCampaignStatus, updateCampaignChannel, updateCampaignName,
+  updateCampaignFilters,
   closeCampaign, cloneCampaign,
   importContactList, getListTypes, addListType,
   // Re-exported from filtration.js (the authoritative implementations)

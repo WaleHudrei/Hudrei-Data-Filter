@@ -266,6 +266,45 @@ function campaignDetail(data = {}) {
     body:  dispositionBars(dispositions),
   });
 
+  // Per-campaign filter rules (Task 2). These determine which phones survive
+  // the next clean-export. Defaults: voicemail/hangup off (threshold 99 = no
+  // limit); DNC + wrong + NIS + already-Lead all on. Lower the thresholds to
+  // stop calling numbers that ignore you, and toggle each row to override.
+  const num = (k, fallback) => (c[k] != null && c[k] !== '' ? c[k] : fallback);
+  const checked = (k, fallback) => (c[k] === false ? '' : (c[k] === true || fallback ? 'checked' : ''));
+  const filtersCard = card({
+    title: 'Filter rules',
+    meta:  'Applied on every clean export and "Start new round"',
+    body: `
+      <form method="POST" action="/oculah/campaigns/${c.id}/filters" style="display:flex;flex-direction:column;gap:14px;font-size:13px">
+        <div style="display:grid;grid-template-columns:1fr auto;gap:10px;align-items:center">
+          <label for="cd-vm-th">Skip if voicemailed at least</label>
+          <input id="cd-vm-th" type="number" name="voicemail_threshold" min="0" max="99" value="${num('voicemail_threshold', 99)}" class="ocu-input" style="width:70px;text-align:center" />
+        </div>
+        <div style="display:grid;grid-template-columns:1fr auto;gap:10px;align-items:center">
+          <label for="cd-hu-th">Skip if hung up at least</label>
+          <input id="cd-hu-th" type="number" name="hangup_threshold" min="0" max="99" value="${num('hangup_threshold', 99)}" class="ocu-input" style="width:70px;text-align:center" />
+        </div>
+        <div style="display:flex;flex-direction:column;gap:6px;border-top:1px solid var(--ocu-border);padding-top:10px">
+          <label style="display:flex;gap:8px;align-items:center;cursor:pointer">
+            <input type="checkbox" name="exclude_wrong_number" value="1" ${checked('exclude_wrong_number', true)} /> Skip Wrong-Number phones
+          </label>
+          <label style="display:flex;gap:8px;align-items:center;cursor:pointer">
+            <input type="checkbox" name="exclude_dnc" value="1" ${checked('exclude_dnc', true)} /> Skip Do-Not-Call phones
+          </label>
+          <label style="display:flex;gap:8px;align-items:center;cursor:pointer">
+            <input type="checkbox" name="exclude_not_in_service" value="1" ${checked('exclude_not_in_service', true)} /> Skip Not-In-Service phones
+          </label>
+          <label style="display:flex;gap:8px;align-items:center;cursor:pointer">
+            <input type="checkbox" name="exclude_already_lead" value="1" ${checked('exclude_already_lead', true)} /> Skip contacts already converted to Leads
+          </label>
+        </div>
+        <div style="display:flex;justify-content:flex-end;gap:8px">
+          <button type="submit" class="ocu-btn ocu-btn-primary">Save filter rules</button>
+        </div>
+      </form>`,
+  });
+
   const uploadsCard = card({
     title: 'Filtration history',
     meta:  uploads.length ? `${uploads.length} upload${uploads.length === 1 ? '' : 's'}` : '',
@@ -316,6 +355,12 @@ function campaignDetail(data = {}) {
     ${flashHTML}
     ${kpiStrip}
 
+    <div style="margin-top:18px;display:flex;gap:8px;justify-content:flex-end;flex-wrap:wrap">
+      <a href="/campaigns/${c.id}" class="ocu-btn ocu-btn-primary">Upload list / call log</a>
+      ${newRoundBtn}
+      ${closeBtn}
+    </div>
+
     <div style="display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-top:18px">
       ${dispositionsCard}
       ${contactCard}
@@ -326,6 +371,10 @@ function campaignDetail(data = {}) {
     <div style="margin-top:14px">${quickFilter}</div>
 
     <div style="margin-top:14px">${uploadsCard}</div>
+
+    <div style="display:grid;grid-template-columns:1fr;gap:14px;margin-top:14px">
+      ${filtersCard}
+    </div>
 
     <div style="margin-top:18px;display:flex;gap:8px;justify-content:flex-end">
       <a href="/campaigns/${c.id}" class="ocu-btn ocu-btn-ghost">Legacy uploads page →</a>

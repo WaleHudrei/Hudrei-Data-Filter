@@ -1031,14 +1031,14 @@ router.post('/campaigns/:id(\\d+)/new-round', requireAuth, async (req, res) => {
     const campaigns = require('../campaigns');
     await campaigns.closeCampaign(req.tenantId, req.params.id);
     const newCamp = await campaigns.cloneCampaign(req.tenantId, req.params.id);
-    res.redirect('/oculah/campaigns/' + (newCamp ? newCamp.id : req.params.id) + '?msg=' + encodeURIComponent('New round started'));
+    res.redirect('/oculah/campaigns/' + (newCamp ? newCamp.id : req.params.id) + '?msg=' + encodeURIComponent('New round started — same settings, fresh contact list. Upload your next list to begin.'));
   } catch (e) {
     res.redirect('/oculah/campaigns/' + req.params.id + '?err=' + encodeURIComponent('Failed to start new round'));
   }
 });
 
-
-// ─── Campaign upload workflows — thin Oculah wrappers over campaigns.* ───// These mirror the legacy /campaigns/:id/* handlers in server.js byte-for-byte
+// ─── Campaign upload workflows — thin Oculah wrappers over campaigns.* ───
+// These mirror the legacy /campaigns/:id/* handlers in server.js byte-for-byte
 // in terms of business logic. Only difference: redirect target is the Ocular
 // campaign detail page so users stay in the new shell.
 //
@@ -1138,6 +1138,23 @@ router.post('/campaigns/:id(\\d+)/readymode-count', requireAuth, async (req, res
   } catch (e) {
     console.error('[oculah readymode-count]', e.message);
     res.redirect('/oculah/campaigns/' + id + '?err=' + encodeURIComponent('Update failed.'));
+  }
+});
+
+// Per-campaign filter rules (Task 2). Saves voicemail/hangup thresholds and
+// the four exclude_* toggles to the campaigns row. Applied on every clean
+// export and "Start new round" via filtration.generateCleanExport.
+router.post('/campaigns/:id(\\d+)/filters', requireAuth, async (req, res) => {
+  try {
+    const campaigns = require('../campaigns');
+    const r = await campaigns.updateCampaignFilters(req.tenantId, req.params.id, req.body || {});
+    if (!r.ok) {
+      return res.redirect('/oculah/campaigns/' + req.params.id + '?err=' + encodeURIComponent(r.error || 'Could not save filters'));
+    }
+    res.redirect('/oculah/campaigns/' + req.params.id + '?msg=' + encodeURIComponent('Filter rules saved — apply on next clean export'));
+  } catch (e) {
+    console.error('[ocular/campaigns/:id/filters]', e);
+    res.redirect('/oculah/campaigns/' + req.params.id + '?err=' + encodeURIComponent('Failed to save filters'));
   }
 });
 
