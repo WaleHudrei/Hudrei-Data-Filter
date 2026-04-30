@@ -3143,6 +3143,21 @@ async function runBackgroundImport(jobId, allRows, mapping, filename, resolvedLi
       }
     }
 
+    // Refresh pg_stat_user_tables.n_live_tup so /api/dashboard-stats reflects
+    // reality immediately. The dashboard query uses n_live_tup as a fast
+    // approximation of COUNT(*); without an explicit ANALYZE the autovacuum
+    // daemon may not catch up for minutes after a bulk insert, so total_phones
+    // / total_contacts can look flat right after a 5K-row import. Surfaced by
+    // the 2026-04-30 stress test. ANALYZE on these three tables takes <1s
+    // on 200K rows — cheaper than confusing the operator. Non-fatal.
+    try {
+      const t = Date.now();
+      await query('ANALYZE properties; ANALYZE contacts; ANALYZE phones;');
+      console.log(`[bulk-import] ANALYZE refreshed dashboard stats in ${Date.now() - t}ms`);
+    } catch (e) {
+      console.error(`[bulk-import] ANALYZE failed (non-fatal):`, e.message);
+    }
+
   } catch(e) {
     console.error('Background import error:', e.message);
     // Preserve skipped-rows + duplicate-merge context when we crash

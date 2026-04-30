@@ -719,6 +719,47 @@ router.post('/:id(\\d+)/owner', requireAuth, async (req, res) => {
   }
 });
 
+// Remove an owner from a property (2026-04-30, surfaced by stress test).
+// Companion to POST /:id/owner. Deletes the property_contacts link only —
+// the contact row itself stays in case it's linked to other properties; if
+// it's now orphaned (no remaining links) we delete it so the contacts
+// dashboard count doesn't drift upward over time.
+router.delete('/:id(\\d+)/owner/:contactId(\\d+)', requireAuth, async (req, res) => {
+  try {
+    const propertyId = parseInt(req.params.id, 10);
+    const contactId  = parseInt(req.params.contactId, 10);
+    if (!Number.isFinite(propertyId) || !Number.isFinite(contactId)) {
+      return res.status(400).json({ error: 'Invalid property or contact id.' });
+    }
+    const t = req.tenantId;
+    const own = await query(`SELECT 1 FROM properties WHERE id = $1 AND tenant_id = $2`, [propertyId, t]);
+    if (!own.rowCount) return res.status(404).json({ error: 'Property not found.' });
+
+    const link = await query(
+      `DELETE FROM property_contacts WHERE property_id = $1 AND contact_id = $2 AND tenant_id = $3 RETURNING primary_contact`,
+      [propertyId, contactId, t]
+    );
+    if (!link.rowCount) return res.status(404).json({ error: 'This contact is not linked to this property.' });
+
+    // Was this contact's only link? If so, clean up the orphan + their phones.
+    // ON DELETE CASCADE on phones.contact_id handles the phone rows for us.
+    const stillLinked = await query(
+      `SELECT 1 FROM property_contacts WHERE contact_id = $1 AND tenant_id = $2 LIMIT 1`,
+      [contactId, t]
+    );
+    let orphanDeleted = false;
+    if (!stillLinked.rowCount) {
+      const del = await query(`DELETE FROM contacts WHERE id = $1 AND tenant_id = $2`, [contactId, t]);
+      orphanDeleted = del.rowCount > 0;
+    }
+
+    res.json({ ok: true, removed_link: true, orphan_deleted: orphanDeleted, was_primary: !!link.rows[0]?.primary_contact });
+  } catch (e) {
+    console.error('[records/:id/owner DELETE]', e);
+    res.status(500).json({ error: e.message });
+  }
+});
+
 // ═══════════════════════════════════════════════════════════════════════════════
 // 2026-04-21 Feature 7 — Manual property creation
 // GET  /records/_new  → form

@@ -872,6 +872,16 @@ async function processImport(jobId, csvPath, filename, tenantId) {
     } catch (e) {
       console.error(`[bulk] MV refresh failed (non-fatal):`, e.message);
     }
+
+    // ANALYZE so /api/dashboard-stats reflects new row counts immediately —
+    // see property-import-routes.js for the full reason. Non-fatal.
+    try {
+      const t = Date.now();
+      await query('ANALYZE properties; ANALYZE contacts; ANALYZE phones;');
+      console.log(`[bulk] ANALYZE refreshed dashboard stats in ${Date.now() - t}ms`);
+    } catch (e) {
+      console.error(`[bulk] ANALYZE failed (non-fatal):`, e.message);
+    }
   } catch(e) {
     console.error(`[bulk] Job ${jobId} failed:`, e.message);
     await query(
