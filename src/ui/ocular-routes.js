@@ -59,7 +59,7 @@ router.get('/dashboard', requireAuth, async (req, res) => {
     const t = req.tenantId;
 
     // Dashboard-snapshots table — created lazily so older deploys aren't blocked.
-    // Used for week-over-week deltas (e.g. burning-leads %). One row per
+    // Used for week-over-week deltas (e.g. lead count %). One row per
     // (tenant_id, snapshot_date). Today's snapshot is upserted on dashboard
     // load below, so historical comparisons accumulate naturally. No cron
     // required — the dashboard is hit often enough by operators.
@@ -74,6 +74,11 @@ router.get('/dashboard', requireAuth, async (req, res) => {
         PRIMARY KEY (tenant_id, snapshot_date)
       );
     `).catch(() => { /* concurrent CREATE on first hit — harmless */ });
+    // Add lead_count column on existing tables. Idempotent.
+    await query(`
+      ALTER TABLE dashboard_snapshots
+        ADD COLUMN IF NOT EXISTS lead_count INT NOT NULL DEFAULT 0;
+    `).catch(() => { /* harmless on race */ });
 
     const [
       totalRecordsRes,
@@ -86,7 +91,8 @@ router.get('/dashboard', requireAuth, async (req, res) => {
       activeListsRes,
       registryRes,
       topListsRes,
-      historicalBurningRes,
+      historicalLeadsRes,
+      leadCountRes,
     ] = await Promise.all([
       query(`SELECT COUNT(*)::int AS n FROM properties WHERE tenant_id = $1`, [t]),
       query(`SELECT COUNT(DISTINCT contact_id)::int AS n FROM property_contacts WHERE tenant_id = $1 AND primary_contact = true`, [t]),
@@ -161,12 +167,12 @@ router.get('/dashboard', requireAuth, async (req, res) => {
           GROUP BY l.id, l.list_name
           ORDER BY count DESC
           LIMIT 5`, [t]),
-      // Gap-fix #4 (burning-leads delta): pull the snapshot from ~7 days ago.
-      // We pick the snapshot closest to (today - 7 days) within a +/-3-day
-      // window so a missed-day still resolves. Returns an empty rowset if no
-      // historical snapshot exists yet, in which case we render delta = null.
+      // Lead-count delta: pull the snapshot from ~7 days ago. Same window as
+      // before — closest to (today - 7 days) within ±3 days. Returns empty
+      // rowset if no historical snapshot exists yet, in which case the delta
+      // renders as null.
       query(`
-        SELECT burning_count
+        SELECT lead_count
           FROM dashboard_snapshots
          WHERE tenant_id = $1
            AND snapshot_date BETWEEN (CURRENT_DATE - INTERVAL '10 days')::date
@@ -174,6 +180,14 @@ router.get('/dashboard', requireAuth, async (req, res) => {
          ORDER BY ABS(EXTRACT(EPOCH FROM (snapshot_date - (CURRENT_DATE - INTERVAL '7 days')::date)))
          LIMIT 1
       `, [t]).catch(() => ({ rows: [] })),
+      // Lead count: canonical definition is SUM(campaigns.total_transfers).
+      // Same definition that drives /campaigns "Leads (all)" column and
+      // per-campaign detail pages — single source of truth (April 21 changelog).
+      query(`
+        SELECT COALESCE(SUM(total_transfers), 0)::int AS n
+          FROM campaigns
+         WHERE tenant_id = $1
+      `, [t]).catch(() => ({ rows: [{ n: 0 }] })),
     ]);
 
     const totalRecords    = totalRecordsRes.rows[0]?.n || 0;
@@ -189,27 +203,31 @@ router.get('/dashboard', requireAuth, async (req, res) => {
     const phoneCoveragePct = totalRecords > 0 ? Math.round((withPhones / totalRecords) * 100) : 0;
     const multiOwnersPct   = totalOwners  > 0 ? +(multiOwners / totalOwners * 100).toFixed(1) : 0;
 
-    // Burning-leads delta: % change from ~7 days ago.
+    const leadCount = leadCountRes.rows[0]?.n || 0;
+
+    // Lead-count delta: % change from ~7 days ago.
     // Show null when no historical baseline exists yet (first 7 days post-deploy)
     // so the dashboard renders cleanly instead of "+∞%" or "0%" misleading copy.
-    const histBurning = historicalBurningRes.rows[0]?.burning_count;
-    let burningDeltaPct = null;
-    if (histBurning != null && histBurning > 0) {
-      burningDeltaPct = Math.round(((distress.burning - histBurning) / histBurning) * 100);
-    } else if (histBurning === 0 && distress.burning > 0) {
-      burningDeltaPct = 100; // anything from zero is +100%, not +∞
+    const histLeads = historicalLeadsRes.rows[0]?.lead_count;
+    let leadDeltaPct = null;
+    if (histLeads != null && histLeads > 0) {
+      leadDeltaPct = Math.round(((leadCount - histLeads) / histLeads) * 100);
+    } else if (histLeads === 0 && leadCount > 0) {
+      leadDeltaPct = 100; // anything from zero is +100%, not +∞
     }
 
     // Upsert today's snapshot (best-effort — non-fatal if it fails).
     // Done after the SELECTs so today's row never participates in its own delta.
+    // burning_count kept populated for backward-compat / any other consumer.
     query(`
-      INSERT INTO dashboard_snapshots (tenant_id, snapshot_date, burning_count, owners_count, records_count)
-      VALUES ($1, CURRENT_DATE, $2, $3, $4)
+      INSERT INTO dashboard_snapshots (tenant_id, snapshot_date, burning_count, owners_count, records_count, lead_count)
+      VALUES ($1, CURRENT_DATE, $2, $3, $4, $5)
       ON CONFLICT (tenant_id, snapshot_date)
         DO UPDATE SET burning_count = EXCLUDED.burning_count,
                       owners_count  = EXCLUDED.owners_count,
-                      records_count = EXCLUDED.records_count
-    `, [t, distress.burning, totalOwners, totalRecords]).catch(() => { /* best-effort */ });
+                      records_count = EXCLUDED.records_count,
+                      lead_count    = EXCLUDED.lead_count
+    `, [t, distress.burning, totalOwners, totalRecords, leadCount]).catch(() => { /* best-effort */ });
 
     // Activity feed — for now, derive recent rows from properties + import jobs.
     // Will be replaced with a proper activity log later.
@@ -255,13 +273,13 @@ router.get('/dashboard', requireAuth, async (req, res) => {
       kpis: {
         totalRecords,
         totalOwners,
-        burningLeads: distress.burning,
+        leadCount,                              // canonical SUM(campaigns.total_transfers)
         withPhones,
         multiOwners,
         activeLists,
         recordsThisWeek: thisWeek,
-        ownersThisWeek,                         // gap-fix #1
-        burningDeltaPct,                        // gap-fix #4
+        ownersThisWeek,
+        leadDeltaPct,                           // week-over-week % from snapshot table
         phoneCoveragePct,
         multiOwnersPct,
         listsOverdue: reg.overdue,

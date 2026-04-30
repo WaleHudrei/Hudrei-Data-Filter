@@ -135,11 +135,11 @@ function recordsFilters(opts = {}) {
       <form id="ocu-filter-panel" class="ocu-filter-panel" method="GET" action="/oculah/records" hidden>
         <div class="ocu-filter-grid">
 
-          <div class="ocu-filter">
-            <label class="ocu-filter-label">Search</label>
-            <input type="text" name="q" value="${escHTML(f.q || '')}"
-                   placeholder="Address, city, name…" class="ocu-filter-input" autocomplete="off">
-          </div>
+          <!-- Search field intentionally removed — the global search bar at
+               the top right of the page covers this. Persist any incoming q
+               param invisibly so deep links (e.g. /oculah/records?q=foo)
+               keep their search applied even after the user opens filters. -->
+          ${f.q ? `<input type="hidden" name="q" value="${escHTML(f.q)}">` : ''}
 
           <div class="ocu-filter ocu-filter-state">
             <label class="ocu-filter-label">State</label>

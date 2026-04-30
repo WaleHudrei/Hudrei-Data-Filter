@@ -15,7 +15,7 @@ const { escHTML, fmtNum, fmtRelative } = require('../_helpers');
  * Render the dashboard page.
  *
  * @param {Object} data — everything the page needs:
- *   - kpis: { totalRecords, totalOwners, burningLeads, withPhones, multiOwners, activeLists, recordsThisWeek, ownersThisWeek, listsOverdue }
+ *   - kpis: { totalRecords, totalOwners, leadCount, withPhones, multiOwners, activeLists, recordsThisWeek, ownersThisWeek, leadDeltaPct, listsOverdue }
  *   - distress: { burning, hot, warm, cold }
  *   - listRegistry: { overdue, dueWeek, total }
  *   - topListsItems: [{ name, count }]
@@ -47,11 +47,10 @@ function dashboard(data = {}) {
           : null,
       })}
       ${kpiCard({
-        label: 'Burning leads',
-        value: k.burningLeads || 0,
-        valueClass: 'burning',
-        delta: k.burningDeltaPct != null
-          ? { direction: k.burningDeltaPct >= 0 ? 'up' : 'down', label: Math.abs(k.burningDeltaPct) + '% from last week' }
+        label: 'Lead count',
+        value: k.leadCount || 0,
+        delta: k.leadDeltaPct != null
+          ? { direction: k.leadDeltaPct >= 0 ? 'up' : 'down', label: Math.abs(k.leadDeltaPct) + '% from last week' }
           : null,
       })}
       ${kpiCard({

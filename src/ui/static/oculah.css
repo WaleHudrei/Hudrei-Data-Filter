@@ -18,22 +18,26 @@
   --ocu-dark-text-3:    #6B7280;
   --ocu-accent-bright:  #22D3EE;
 
-  /* Light side — main content area */
+  /* Light side — main content area
+     Visual-overhaul pass (April 30, 2026): darker text tokens, stronger
+     borders, more visual anchoring. Typography moved to Inter for higher
+     legibility at data-table sizes. Pills below now use saturated tones. */
   --ocu-bg:             #FFFFFF;
-  --ocu-surface:        #F9FAFB;
-  --ocu-surface-2:      #F3F4F6;
-  --ocu-border:         #E5E7EB;
-  --ocu-border-strong:  #D1D5DB;
-  --ocu-text-1:         #0B1220;
-  --ocu-text-2:         #374151;
-  --ocu-text-3:         #6B7280;
+  --ocu-surface:        #F7F8FA;
+  --ocu-surface-2:      #EEF0F3;
+  --ocu-border:         #D7DBE0;        /* was #E5E7EB — bolstered for anchoring */
+  --ocu-border-strong:  #B7BDC4;        /* was #D1D5DB */
+  --ocu-text-1:         #0A1024;        /* slate-black for primary metrics */
+  --ocu-text-2:         #1F2937;        /* was #374151 — darker mid-tone */
+  --ocu-text-3:         #4B5563;        /* was #6B7280 — secondary now scannable */
   --ocu-accent:         #0891B2;
   --ocu-accent-soft:    rgba(8, 145, 178, 0.08);
+  --ocu-shadow-sm:      0 1px 2px rgba(11, 18, 32, 0.04), 0 1px 1px rgba(11, 18, 32, 0.03);
 
   /* Status — used sparingly */
-  --ocu-success:        #16A34A;
-  --ocu-warn:           #D97706;
-  --ocu-danger:         #DC2626;
+  --ocu-success:        #15803D;
+  --ocu-warn:           #B45309;
+  --ocu-danger:         #B91C1C;
 
   /* Distress bands */
   --ocu-burning:        #DC2626;
@@ -41,8 +45,11 @@
   --ocu-warm:           #2563EB;
   --ocu-cold:           #6B7280;
 
-  /* Type stacks */
-  --ocu-display: 'Manrope', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  /* Type stacks
+     Inter switched in for the visual-overhaul pass: higher legibility at
+     small sizes than Manrope, closer to Vercel/Linear/Stripe density.
+     Inter font file is loaded in src/ui/layouts/shell.js <head>. */
+  --ocu-display: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
   --ocu-mono:    'JetBrains Mono', 'SF Mono', Menlo, monospace;
 
   /* Spacing scale (4px grid) */
@@ -494,10 +501,11 @@
 
 /* ─── Cards ─────────────────────────────────────────────────────────────── */
 .ocu-card {
-  background: var(--ocu-surface);
+  background: var(--ocu-bg);
   border: 1px solid var(--ocu-border);
   border-radius: var(--ocu-radius-lg);
   padding: 22px 24px;
+  box-shadow: var(--ocu-shadow-sm);
 }
 .ocu-card-header {
   display: flex;
@@ -1473,18 +1481,22 @@
 }
 .ocu-filter-input {
   font-family: var(--ocu-display);
-  font-size: 13px;
-  padding: 7px 10px;
-  border: 1px solid var(--ocu-border);
+  font-size: 13.5px;
+  font-weight: 500;
+  padding: 8px 11px;
+  border: 1px solid var(--ocu-border-strong);
   border-radius: 6px;
   background: var(--ocu-bg);
   color: var(--ocu-text-1);
   outline: none;
-  transition: border-color 0.12s;
+  transition: border-color 0.12s, box-shadow 0.12s;
   width: 100%;
   box-sizing: border-box;
 }
-.ocu-filter-input:focus { border-color: var(--ocu-accent); }
+.ocu-filter-input:focus {
+  border-color: var(--ocu-accent);
+  box-shadow: 0 0 0 3px var(--ocu-accent-soft);
+}
 .ocu-filter-input::placeholder { color: var(--ocu-text-3); }
 
 /* ── State multi-select ──────────────────────────────────────────────── */
@@ -1575,6 +1587,12 @@
   cursor: pointer;
   font-size: 13px;
 }
+/* Without this, the explicit display:flex above wins over the browser
+   default `[hidden] { display: none }`, so the filter-as-you-type search
+   in the state popover would set hidden=true on non-matching options
+   but they would still be visible. Bug spotted via screenshot of the
+   typed-"india" dropdown showing AL/AK/AZ/etc. unchanged. */
+.ocu-state-opt[hidden] { display: none; }
 .ocu-state-opt:hover { background: var(--ocu-surface); }
 .ocu-state-opt input { cursor: pointer; }
 .ocu-state-code {
@@ -1634,11 +1652,13 @@
   border-radius: 10px;
   overflow: auto;
   margin-bottom: 14px;
+  box-shadow: var(--ocu-shadow-sm);
 }
 .ocu-table {
   width: 100%;
   border-collapse: collapse;
-  font-size: 13px;
+  font-size: 13.5px;
+  line-height: 1.5;
 }
 .ocu-th {
   text-align: left;
@@ -1646,10 +1666,10 @@
   font-size: 11.5px;
   color: var(--ocu-text-2);
   text-transform: uppercase;
-  letter-spacing: 0.04em;
-  padding: 12px 14px;
-  background: var(--ocu-surface);
-  border-bottom: 1px solid var(--ocu-border);
+  letter-spacing: 0.05em;
+  padding: 14px 16px;
+  background: var(--ocu-surface-2);
+  border-bottom: 1px solid var(--ocu-border-strong);
   white-space: nowrap;
 }
 .ocu-th-num  { text-align: center; }
@@ -1673,7 +1693,7 @@
 .ocu-tr-clickable:hover { background: var(--ocu-surface); }
 .ocu-tr-clickable:last-child { border-bottom: none; }
 .ocu-td {
-  padding: 12px 14px;
+  padding: 14px 16px;
   vertical-align: middle;
 }
 .ocu-td-text { color: var(--ocu-text-1); }
@@ -1937,21 +1957,22 @@ body { padding-bottom: 0; }
 .ocu-input,
 .ocu-textarea {
   width: 100%;
-  background: var(--ocu-surface);
-  border: 1px solid var(--ocu-border);
+  background: var(--ocu-bg);
+  border: 1px solid var(--ocu-border-strong);
   border-radius: 7px;
-  padding: 9px 12px;
+  padding: 10px 12px;
   font-family: var(--ocu-display);
   font-size: 13.5px;
+  font-weight: 500;
   color: var(--ocu-text-1);
   box-sizing: border-box;
-  transition: border-color .15s, background .15s;
+  transition: border-color .15s, box-shadow .15s;
 }
 .ocu-input:focus,
 .ocu-textarea:focus {
   outline: none;
-  border-color: var(--ocu-text-2);
-  background: var(--ocu-surface-2, #fff);
+  border-color: var(--ocu-accent);
+  box-shadow: 0 0 0 3px var(--ocu-accent-soft);
 }
 .ocu-textarea { resize: vertical; min-height: 80px; line-height: 1.5; }
 
@@ -2175,10 +2196,15 @@ body { padding-bottom: 0; }
 .ocu-pill[data-owner-type="Person"]  { background: #f0efe9; color: #555; }
 .ocu-pill[data-owner-type="Company"] { background: #e8f0fc; color: #2a4a8a; }
 .ocu-pill[data-owner-type="Trust"]   { background: #f5f0e8; color: #8a5a2a; }
-.ocu-pill-good    { background: #e8f5ee; color: #1a7a4a; }
-.ocu-pill-bad     { background: #fdeaea; color: #8b1f1f; }
-.ocu-pill-warn    { background: #fef3c7; color: #92400e; }
-.ocu-pill-primary { background: #e8f0fc; color: #2a4a8a; }
+/* Status pills — visual-overhaul pass: more saturated tones so status is
+   recognizable by hue alone (Lead / Burning / DNC / Wrong). The lighter
+   "tint" treatment from before made every pill blur into the surrounding
+   page tone. Border ties them visually to the inked color so they read
+   as deliberate, not floated on top. */
+.ocu-pill-good    { background: #DCFCE7; color: #166534; box-shadow: inset 0 0 0 1px #BBF7D0; }
+.ocu-pill-bad     { background: #FEE2E2; color: #991B1B; box-shadow: inset 0 0 0 1px #FECACA; }
+.ocu-pill-warn    { background: #FEF3C7; color: #92400E; box-shadow: inset 0 0 0 1px #FDE68A; }
+.ocu-pill-primary { background: #DBEAFE; color: #1E40AF; box-shadow: inset 0 0 0 1px #BFDBFE; }
 .ocu-pill[data-kind="call"]     { background: #e8f0fc; color: #2a4a8a; }
 .ocu-pill[data-kind="pipeline"] { background: #f5f0e8; color: #8a5a2a; }
 .ocu-pill[data-kind="edit"]     { background: #f0e8f5; color: #5a2a8a; }
