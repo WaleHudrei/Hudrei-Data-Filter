@@ -72,10 +72,10 @@ function scorePhone(ph) {
 function phoneRow(ph, isBest) {
   const tags = (ph.tags || []).map(t => phoneTagChip(ph.id, t)).join('');
   const bestPill = isBest
-    ? `<span class="ocu-pill ocu-pill-primary" title="Best phone to call — verified and most likely to reach the owner" style="background:#FEF3C7;color:#92400E">★ Best</span>`
+    ? `<span class="ocu-phone-best" title="Best phone to call — verified and most likely to reach the owner">★ Best</span>`
     : '';
   return `
-    <div class="ocu-phone-row" data-phone-id="${ph.id}"${isBest ? ' style="background:#FEFCE8;border-radius:6px;padding:6px 8px"' : ''}>
+    <div class="ocu-phone-row${isBest ? ' is-best' : ''}" data-phone-id="${ph.id}">
       <div class="ocu-phone-line">
         <span class="ocu-phone-num">${escHTML(ph.phone_number || '')}</span>
         <span class="ocu-phone-meta">
@@ -91,6 +91,31 @@ function phoneRow(ph, isBest) {
     </div>`;
 }
 
+// Stable hash-color avatar — same palette/seed as records-table so the
+// same person looks the same color on both pages.
+const AVATAR_PALETTE = [
+  { bg: '#DBEAFE', fg: '#1D4ED8' }, // blue
+  { bg: '#FEF3C7', fg: '#92400E' }, // amber
+  { bg: '#DCFCE7', fg: '#15803D' }, // green
+  { bg: '#FCE7F3', fg: '#BE185D' }, // pink
+  { bg: '#EDE9FE', fg: '#6D28D9' }, // violet
+  { bg: '#FFE4E6', fg: '#9F1239' }, // rose
+];
+function ownerInitials(first, last) {
+  const f = (first || '').trim();
+  const l = (last  || '').trim();
+  const ini = ((f[0] || '') + (l[0] || '')).toUpperCase() || '?';
+  let h = 0;
+  const seed = (f + l).toLowerCase();
+  for (let i = 0; i < seed.length; i++) h = (h * 31 + seed.charCodeAt(i)) >>> 0;
+  const c = AVATAR_PALETTE[h % AVATAR_PALETTE.length];
+  return `<span class="ocu-owner-avatar" style="background:${c.bg};color:${c.fg}">${escHTML(ini)}</span>`;
+}
+
+// Inline currentColor SVGs — pin (mailing) + phone (phones).
+const _ICON_PIN = '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0 1 18 0z"/><circle cx="12" cy="10" r="3"/></svg>';
+const _ICON_PHN = '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6 19.79 19.79 0 0 1-3.07-8.67A2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72 12.84 12.84 0 0 0 .7 2.81 2 2 0 0 1-.45 2.11L8.09 9.91a16 16 0 0 0 6 6l1.27-1.27a2 2 0 0 1 2.11-.45 12.84 12.84 0 0 0 2.81.7A2 2 0 0 1 22 16.92z"/></svg>';
+
 function ownerCard(opts = {}) {
   const {
     contact = null,
@@ -103,37 +128,59 @@ function ownerCard(opts = {}) {
 
   const fullName = [contact.first_name, contact.last_name]
     .filter(Boolean).map(escHTML).join(' ') || '<em style="color:var(--ocu-text-3)">Unnamed</em>';
+  const avatar = ownerInitials(contact.first_name, contact.last_name);
 
-  const mailing = [contact.mailing_address, contact.mailing_city, contact.mailing_state]
+  const mailingParts = [contact.mailing_address, contact.mailing_city, contact.mailing_state]
     .filter(Boolean).map(escHTML).join(', ');
   const mailingZip = contact.mailing_zip ? ` ${escHTML(contact.mailing_zip)}` : '';
+  const mailing = mailingParts ? `${mailingParts}${mailingZip}` : '';
+
+  let bestIdx = -1, bestScore = 0;
+  for (let i = 0; i < phones.length; i++) {
+    const s = scorePhone(phones[i]);
+    if (s > bestScore) { bestScore = s; bestIdx = i; }
+  }
+  const phonesHTML = phones.length
+    ? phones.map((p, i) => phoneRow(p, i === bestIdx)).join('')
+    : `<div class="ocu-phones-empty">No phones on record.</div>`;
+
+  // When a contact has many phones we cap the visible height and scroll.
+  // Threshold tuned to the typical owner-card width (8 rows ≈ 320px tall
+  // — that's the page's single tallest reasonable owner block).
+  const manyPhones = phones.length > 8;
+
+  const profileHref = contact.id ? `/oculah/owners/${escHTML(String(contact.id))}` : '';
+  const profileLink = profileHref
+    ? `<a class="ocu-owner-profile-link" href="${profileHref}" title="Open ${escHTML(contact.first_name || '')} ${escHTML(contact.last_name || '')}'s profile">View profile <span aria-hidden="true">→</span></a>`
+    : '';
 
   return `
     <div class="ocu-card ocu-owner-card">
-      <div class="ocu-owner-card-header">
-        <div>
-          <div class="ocu-owner-label">${escHTML(label)}</div>
+      <div class="ocu-owner-header">
+        ${avatar}
+        <div class="ocu-owner-titles">
+          <div class="ocu-owner-label-row">
+            <span class="ocu-owner-label">${escHTML(label)}</span>
+            ${isPrimary ? '<span class="ocu-owner-primary-tag">Primary</span>' : ''}
+          </div>
           <div class="ocu-owner-name">${fullName}</div>
         </div>
-        ${isPrimary ? '<span class="ocu-pill" style="background:#0891B215;color:#0891B2">Primary</span>' : ''}
+        ${profileLink}
       </div>
-      ${mailing ? `
-        <div class="ocu-owner-mailing">
-          <span class="ocu-fact-label">Mailing</span>
-          <div>${mailing}${mailingZip}</div>
-        </div>` : ''}
-      <div class="ocu-phones-block">
-        <div class="ocu-fact-label">Phones (${phones.length})</div>
-        ${phones.length
-          ? (() => {
-              let bestIdx = -1, bestScore = 0;
-              for (let i = 0; i < phones.length; i++) {
-                const s = scorePhone(phones[i]);
-                if (s > bestScore) { bestScore = s; bestIdx = i; }
-              }
-              return phones.map((p, i) => phoneRow(p, i === bestIdx)).join('');
-            })()
-          : `<div style="color:var(--ocu-text-3);font-size:13px;padding:8px 0">No phones on record.</div>`}
+
+      <div class="ocu-owner-body">
+        <div class="ocu-owner-section">
+          <div class="ocu-owner-section-label"><span class="ocu-owner-section-icon">${_ICON_PIN}</span>Mailing address</div>
+          <div class="ocu-owner-section-value">${mailing || '<span class="ocu-text-3">—</span>'}</div>
+        </div>
+
+        <div class="ocu-owner-section ocu-owner-phones-section"${manyPhones ? ' data-many="true"' : ''}>
+          <div class="ocu-owner-section-label">
+            <span class="ocu-owner-section-icon">${_ICON_PHN}</span>Phones
+            <span class="ocu-owner-count-chip">${phones.length}</span>
+          </div>
+          <div class="ocu-phones-grid">${phonesHTML}</div>
+        </div>
       </div>
     </div>`;
 }
