@@ -5,9 +5,10 @@
 // pending or running, then stops polling.
 // ═══════════════════════════════════════════════════════════════════════════
 const { shell } = require('../layouts/shell');
-const { escHTML, fmtNum, fmtRelative } = require('../_helpers');
+const { escHTML, fmtNum } = require('../_helpers');
 
-// Created column matches records-page formatting: absolute date, not relative.
+// Created/upload column matches records-page formatting: absolute date,
+// not relative. (User request 2026-04-30.)
 function fmtCreatedDate(d) {
   if (!d) return '—';
   const date = d instanceof Date ? d : new Date(d);
@@ -19,15 +20,15 @@ function progressBar(j) {
   const total = j.total_rows || 0;
   const processed = j.processed_rows || 0;
   const pct = total > 0 ? Math.round((processed / total) * 100) : 0;
-  const isComplete = j.status === 'complete' || j.status === 'completed';
-  const isError    = j.status === 'error' || j.status === 'failed';
-  const fillColor = isComplete ? '#16A34A' : isError ? '#DC2626' : 'var(--ocu-accent, #2563EB)';
+  const fillColor = j.status === 'complete' || j.status === 'completed' ? '#1a7a4a'
+                  : j.status === 'error' || j.status === 'failed'       ? '#c0392b'
+                  : 'var(--ocu-text-1)';
   return `
-    <div class="ocu-activity-progress">
-      <div class="ocu-activity-progress-track">
-        <div class="ocu-activity-progress-fill" style="width:${pct}%;background:${fillColor}"></div>
+    <div style="display:flex;align-items:center;gap:8px">
+      <div class="ocu-progress-track" style="flex:1;min-width:80px">
+        <div class="ocu-progress-fill" style="width:${pct}%;background:${fillColor}"></div>
       </div>
-      <span class="ocu-activity-progress-label">${fmtNum(processed)} <span class="ocu-text-3">/ ${fmtNum(total)}</span></span>
+      <span class="ocu-text-3 ocu-mono" style="font-size:11px;white-space:nowrap">${fmtNum(processed)} / ${fmtNum(total)}</span>
     </div>`;
 }
 
@@ -61,35 +62,19 @@ function jobRow(j) {
     errBlock = `<div class="ocu-card" style="margin-top:6px;padding:6px 10px;font-size:11px;line-height:1.4;white-space:pre-wrap;word-break:break-word;max-width:520px"><span class="ocu-pill ${cls}" style="margin-right:6px">${isWarn ? 'Warn' : 'Error'}</span>${escHTML(truncated)}</div>`;
   }
 
-  // Results cell — compact pill stack with deltas. "+N new" only renders
-  // when the import created rows, "U updated" only when it updated rows;
-  // errors get their own danger chip. Cleaner than the old comma-separated
-  // run-on string. Each metric reads as its own affordance.
-  const resultParts = [];
-  if (inserted > 0) resultParts.push(`<span class="ocu-result-chip ocu-result-new">+${fmtNum(inserted)} new</span>`);
-  if (updated > 0)  resultParts.push(`<span class="ocu-result-chip ocu-result-upd">${fmtNum(updated)} updated</span>`);
-  if (errors > 0)   resultParts.push(`<span class="ocu-result-chip ocu-result-err">${fmtNum(errors)} errors</span>`);
-  const resultsCell = resultParts.length === 0
-    ? '<span class="ocu-text-3" style="font-size:13px">—</span>'
-    : `<div class="ocu-result-stack">${resultParts.join('')}</div>`;
+  const resultsCell = (inserted > 0 || updated > 0)
+    ? `<span class="ocu-pill ocu-pill-good">+${fmtNum(inserted)}</span> new, <span class="ocu-pill ocu-pill-primary">${fmtNum(updated)}</span> updated${errors > 0 ? `, <span class="ocu-pill ocu-pill-bad">${fmtNum(errors)}</span> errors` : ''}`
+    : '<span class="ocu-text-3">—</span>';
 
-  return `<tr class="ocu-activity-row">
+  return `<tr>
     <td class="ocu-td">
-      <div class="ocu-activity-file">
-        <span class="ocu-activity-file-icon" aria-hidden="true">
-          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6">
-            <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
-            <polyline points="14 2 14 8 20 8"/>
-          </svg>
-        </span>
-        <span class="ocu-activity-file-name">${escHTML(j.filename || '—')}</span>
-      </div>
+      <div class="ocu-td-primary">${escHTML(j.filename || '—')}</div>
       ${errBlock}
     </td>
-    <td class="ocu-td">${j.list_name ? `<a href="/oculah/records?list_id=${j.list_id}" class="ocu-link">${escHTML(j.list_name)}</a>` : '<span class="ocu-text-3" style="font-size:13px">—</span>'}</td>
+    <td class="ocu-td">${j.list_name ? `<a href="/oculah/records?list_id=${j.list_id}" class="ocu-link">${escHTML(j.list_name)}</a>` : '<span class="ocu-text-3">—</span>'}</td>
     <td class="ocu-td">${statusBadge(j.status)}</td>
-    <td class="ocu-td ocu-td-progress">${progressBar(j)}</td>
-    <td class="ocu-td">${resultsCell}</td>
+    <td class="ocu-td" style="min-width:200px">${progressBar(j)}</td>
+    <td class="ocu-td" style="font-size:12px">${resultsCell}</td>
     <td class="ocu-td ocu-td-date">${fmtCreatedDate(startedAt)}</td>
   </tr>`;
 }
@@ -110,8 +95,8 @@ function activityList(data = {}) {
         <a href="/import/property" class="ocu-link">Start an import →</a>
        </div>`
     : `
-      <div class="ocu-table-wrap ocu-records-table-wrap ocu-activity-wrap">
-        <table class="ocu-table ocu-records-table ocu-activity-table">
+      <div class="ocu-table-wrap">
+        <table class="ocu-table">
           <thead>
             <tr>
               <th class="ocu-th">File</th>

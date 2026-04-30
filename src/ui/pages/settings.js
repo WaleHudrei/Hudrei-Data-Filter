@@ -134,13 +134,15 @@ function settingsPage(data = {}) {
       <a href="/oculah/setup/distress" class="ocu-btn ocu-btn-primary">Open distress matrix →</a>
     </div>`;
 
+  // Same shape as the distress-matrix card: descriptive paragraph, single
+  // primary button right-aligned at the bottom. Form-as-flex so the
+  // button sits flush right exactly like "Open distress matrix →".
   const dedupCard = `
     <div style="font-size:13px;color:var(--ocu-text-2);line-height:1.6;margin-bottom:16px">
-      Find contacts that share a phone number and merge them. Auto-runs after every bulk import — use this button to clean up duplicates that pre-date the auto-merge or accumulated from manual edits.
-      Merging keeps the oldest contact record and re-homes property links, phones, tags, and call history onto it.
+      Find contacts that share a phone number, name, or mailing address and merge them. Auto-runs after every bulk import — use this button to clean up duplicates that pre-date the auto-merge or accumulated from manual edits. Merging keeps the oldest contact and re-homes property links, phones, tags, and call history onto it.
     </div>
-    <form method="POST" action="/oculah/setup/dedup">
-      <button type="submit" class="ocu-btn ocu-btn-primary">Run duplicate cleanup</button>
+    <form method="POST" action="/oculah/setup/dedup" style="display:flex;justify-content:flex-end">
+      <button type="submit" class="ocu-btn ocu-btn-primary">Run duplicate cleanup →</button>
     </form>`;
 
   const recoveryNote = `
@@ -150,9 +152,12 @@ function settingsPage(data = {}) {
       keyed by <code style="background:var(--ocu-bg-2);padding:2px 6px;border-radius:4px;font-size:12px;font-family:'JetBrains Mono',ui-monospace,monospace">(tenant_id, key)</code>.
     </div>`;
 
-  // All sections rendered as the same enriched card style — matches the
-  // distress matrix tab. Colored icon tiles, larger titles, soft hover
-  // shadow, consistent vertical rhythm via .ocu-settings-stack.
+  // Tenant settings tab shows only user-level + workspace tuning cards.
+  // "Delete code" and "Recovery" are super-admin / HQ-side concerns and
+  // were moved off this page on 2026-04-30 user request — security
+  // surface stays minimal here. Each visible card uses the same enriched
+  // settingsCard shape (colored icon tile + title + meta + body) so the
+  // page reads as one consistent stack matching the distress matrix tab.
   const body = `
     <div style="max-width:780px;margin:0 auto" class="ocu-settings-stack">
       ${pwFlashHTML}
@@ -164,13 +169,6 @@ function settingsPage(data = {}) {
       })}
       ${isAdmin ? `
         ${flashHTML}
-        ${defaultBanner}
-        ${settingsCard({
-          icon: 'shield', tone: 'amber',
-          title: 'Delete code',
-          meta:  'Required for any destructive action — record deletion, list deletion, bulk merges.',
-          body:  deleteCodeForm,
-        })}
         ${settingsCard({
           icon: 'target', tone: 'violet',
           title: 'Distress score matrix',
@@ -182,12 +180,6 @@ function settingsPage(data = {}) {
           title: 'Duplicate cleanup',
           meta:  'Auto-runs on import — manual trigger for legacy data.',
           body:  dedupCard,
-        })}
-        ${settingsCard({
-          icon: 'info', tone: 'slate',
-          title: 'Recovery',
-          meta:  'If you forget the delete code, an admin can reset it from the database.',
-          body:  recoveryNote,
         })}
       ` : ''}
     </div>`;

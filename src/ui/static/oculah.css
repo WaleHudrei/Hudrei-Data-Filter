@@ -1893,9 +1893,17 @@
   border-bottom: 1px solid var(--ocu-border);
   transition: background 0.12s, box-shadow 0.12s;
 }
-.ocu-tr-clickable:hover {
+.ocu-tr-clickable:hover,
+.ocu-tr-clickable:has(.ocu-row-check:checked) {
   background: var(--ocu-surface);
   box-shadow: inset 3px 0 0 var(--ocu-accent);
+}
+/* Selected rows also reveal the owner-card chip background, exactly like
+   they would on hover — so the whole row feels "lit up" while it's part
+   of the active selection set, not just on cursor hover. */
+.ocu-tr-clickable:has(.ocu-row-check:checked) .ocu-owner-card[data-owner-id] {
+  background: var(--ocu-bg);
+  border-color: var(--ocu-border-strong);
 }
 .ocu-tr-clickable:last-child { border-bottom: none; }
 /* Records table card-row treatment: the address column reads as the row's
