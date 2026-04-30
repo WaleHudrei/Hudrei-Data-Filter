@@ -14,8 +14,29 @@
 // ═══════════════════════════════════════════════════════════════════════════
 const express = require('express');
 const router  = express.Router();
+const multer  = require('multer');
+const Papa    = require('papaparse');
 const { query } = require('../db');
+const { bufferToCsvText } = require('../csv-utils');
 const { dashboard } = require('./pages/dashboard');
+
+// File-upload guardrails — same fileFilter and 50 MB cap as the other multer
+// instances in the codebase (server.js + routes/upload-routes.js). Audit fix
+// #21/#43 history: non-CSV uploads must be rejected at the boundary so they
+// never reach Papa.parse and silently produce 0 rows.
+const _csvFileFilter = (req, file, cb) => {
+  const name = String(file.originalname || '').toLowerCase();
+  const okExt = /\.(csv|txt)$/.test(name);
+  const okMime = ['text/csv', 'text/plain', 'application/csv', 'application/vnd.ms-excel',
+                  'application/octet-stream'].includes(String(file.mimetype || '').toLowerCase());
+  if (okExt || okMime) return cb(null, true);
+  cb(new Error('Only CSV files are accepted. Convert xlsx/xls to CSV before uploading.'));
+};
+const ocuUpload = multer({
+  storage: multer.memoryStorage(),
+  limits:  { fileSize: 50 * 1024 * 1024 },
+  fileFilter: _csvFileFilter,
+});
 
 function requireAuth(req, res, next) {
   if (!req.session || !req.session.authenticated) return res.redirect('/login');
@@ -908,7 +929,113 @@ router.post('/campaigns/:id(\\d+)/new-round', requireAuth, async (req, res) => {
   }
 });
 
+
+// ─── Campaign upload workflows — thin Oculah wrappers over campaigns.* ───
+// These mirror the legacy /campaigns/:id/* handlers in server.js byte-for-byte
+// in terms of business logic. Only difference: redirect target is the Ocular
+// campaign detail page so users stay in the new shell.
+//
+// Protected modules (NEVER touched, just called):
+//   - campaigns.importContactList()
+//   - campaigns.importSmarterContactFile()
+//   - filtration.getContactStats()
+// SQL writes for delete-contacts / sync-wrong-numbers / readymode-count are
+// copied verbatim from server.js so the column-update semantics match exactly.
+
+router.post('/campaigns/:id(\\d+)/contacts/upload',
+  requireAuth, ocuUpload.single('contactfile'), async (req, res) => {
+    const id = req.params.id;
+    try {
+      if (!req.file) {
+        return res.redirect('/oculah/campaigns/' + id + '?err=' + encodeURIComponent('No file selected.'));
+      }
+      const campaigns = require('../campaigns');
+      await campaigns.initCampaignSchema();
+      const parsed = Papa.parse(bufferToCsvText(req.file.buffer), { header: true, skipEmptyLines: true });
+      console.log('[oculah contacts/upload] file received:', req.file.originalname, 'rows:', parsed.data.length, 'headers:', (parsed.meta.fields || []).length);
+      await campaigns.importContactList(req.tenantId, id, parsed.data, parsed.meta.fields || []);
+      console.log('[oculah contacts/upload] import complete for campaign', id);
+      res.redirect('/oculah/campaigns/' + id + '?msg=' + encodeURIComponent('Contact list uploaded.'));
+    } catch (e) {
+      console.error('[oculah contacts/upload] ERROR:', e.message, 'code:', e.code, 'detail:', e.detail);
+      res.redirect('/oculah/campaigns/' + id + '?err=' + encodeURIComponent('Upload failed: ' + e.message));
+    }
+  });
+
+router.post('/campaigns/:id(\\d+)/contacts/delete', requireAuth, async (req, res) => {
+  const id = req.params.id;
+  try {
+    await query('DELETE FROM campaign_contacts WHERE campaign_id=$1', [id]);
+    await query('UPDATE campaigns SET total_unique_numbers=0, updated_at=NOW() WHERE id=$1', [id]);
+    res.redirect('/oculah/campaigns/' + id + '?msg=' + encodeURIComponent('Contact list deleted.'));
+  } catch (e) {
+    console.error('[oculah contacts/delete]', e.message);
+    res.redirect('/oculah/campaigns/' + id + '?err=' + encodeURIComponent('Delete failed.'));
+  }
+});
+
+router.post('/campaigns/:id(\\d+)/sms/upload',
+  requireAuth, ocuUpload.single('smsfile'), async (req, res) => {
+    const id = req.params.id;
+    try {
+      if (!req.file) {
+        return res.redirect('/oculah/campaigns/' + id + '?err=' + encodeURIComponent('No file selected.'));
+      }
+      const campaigns = require('../campaigns');
+      const parsed = Papa.parse(bufferToCsvText(req.file.buffer), { header: true, skipEmptyLines: true });
+      const result = await campaigns.importSmarterContactFile(
+        req.tenantId, id, parsed.data, parsed.meta.fields || []
+      );
+      if (!result.success) {
+        return res.redirect('/oculah/campaigns/' + id + '?err=' + encodeURIComponent(result.error || 'SMS upload failed.'));
+      }
+      const t = result.tally || {};
+      console.log(`[oculah sms/upload] campaign ${id} — total:${t.total} wrong:${t.wrong} ni:${t.not_interested} leads:${t.leads} dq:${t.disqualified} no_action:${t.no_action} unmatched:${t.unmatched}`);
+      const summary = `SMS results: ${t.total || 0} rows · ${t.leads || 0} leads · ${t.wrong || 0} wrong · ${t.unmatched || 0} unmatched.`;
+      res.redirect('/oculah/campaigns/' + id + '?msg=' + encodeURIComponent(summary));
+    } catch (e) {
+      console.error('[oculah sms/upload] ERROR:', e.message, 'code:', e.code, 'detail:', e.detail);
+      res.redirect('/oculah/campaigns/' + id + '?err=' + encodeURIComponent('SMS upload failed: ' + e.message));
+    }
+  });
+
+router.post('/campaigns/:id(\\d+)/sync-wrong-numbers', requireAuth, async (req, res) => {
+  const id = req.params.id;
+  try {
+    const result = await query(
+      `UPDATE campaign_contact_phones ccp
+       SET wrong_number = true, updated_at = NOW()
+       FROM campaign_numbers cn
+       WHERE cn.phone_number = ccp.phone_number
+         AND cn.campaign_id = ccp.campaign_id
+         AND cn.campaign_id = $1
+         AND cn.last_disposition_normalized = 'wrong_number'
+         AND ccp.wrong_number = false`,
+      [id]
+    );
+    console.log('[oculah sync-wrong-numbers] flagged', result.rowCount, 'phones for campaign', id);
+    res.redirect('/oculah/campaigns/' + id + '?msg=' + encodeURIComponent('Synced ' + (result.rowCount || 0) + ' wrong-number flags.'));
+  } catch (e) {
+    console.error('[oculah sync-wrong-numbers]', e.message);
+    res.redirect('/oculah/campaigns/' + id + '?err=' + encodeURIComponent('Sync failed.'));
+  }
+});
+
+router.post('/campaigns/:id(\\d+)/readymode-count', requireAuth, async (req, res) => {
+  const id = req.params.id;
+  try {
+    const n = parseInt(req.body.count, 10);
+    const safeN = Number.isFinite(n) && n >= 0 ? n : 0;
+    await query('UPDATE campaigns SET manual_count=$1, updated_at=NOW() WHERE id=$2', [safeN, id]);
+    res.redirect('/oculah/campaigns/' + id + '?msg=' + encodeURIComponent('Readymode count updated to ' + safeN + '.'));
+  } catch (e) {
+    console.error('[oculah readymode-count]', e.message);
+    res.redirect('/oculah/campaigns/' + id + '?err=' + encodeURIComponent('Update failed.'));
+  }
+});
+
 // ─── /oculah/lists/types — List Registry ───────────────────────────────────
+
 const ALLOWED_REGISTRY_FIELDS = new Set([
   'action', 'state_code', 'list_name', 'list_tier',
   'source', 'frequency_days', 'require_bot', 'last_pull_date',
