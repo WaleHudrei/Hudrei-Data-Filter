@@ -23,7 +23,10 @@
      borders, more visual anchoring. Typography moved to Inter for higher
      legibility at data-table sizes. Pills below now use saturated tones. */
   --ocu-bg:             #FFFFFF;        /* card / input white — contrast surface */
-  --ocu-page-bg:        #F4F6FA;        /* main content area — soft cool grey */
+  --ocu-page-bg:        #EBF0F7;        /* main content area — soft cool blue-grey,
+                                           slightly more blue than #F4F6FA so the
+                                           page surface feels cooler. Easy nudge
+                                           tonight: +1 blue, -1 green/red */
   --ocu-surface:        #F7F8FA;
   --ocu-surface-2:      #EEF0F3;
   --ocu-border:         #D7DBE0;        /* was #E5E7EB — bolstered for anchoring */
