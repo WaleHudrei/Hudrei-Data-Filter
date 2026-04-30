@@ -519,13 +519,16 @@ router.get('/', requireAuth, async (req, res) => {
   const escAttr = (s) => String(s == null ? '' : s).replace(/&/g,'&amp;').replace(/"/g,'&quot;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
   const existingListChecks = existingLists.rows.length === 0
     ? `<div style="padding:16px;color:var(--ocu-text-3);font-size:13px;text-align:center">No existing lists yet — create one with the field on the left.</div>`
-    : existingLists.rows.map(l => `
-        <label class="ocu-list-pick">
+    : existingLists.rows.map(l => {
+        const haystack = (l.list_name + ' ' + (l.list_type || '')).toLowerCase();
+        return `
+        <label class="ocu-list-pick" data-search="${escAttr(haystack)}">
           <input type="checkbox" name="existing_list" value="${l.id}" data-name="${escAttr(l.list_name)}">
+          <span class="ocu-list-pick-check" aria-hidden="true">✓</span>
           <span class="ocu-list-pick-name">${escAttr(l.list_name)}</span>
           ${l.list_type ? `<span class="ocu-list-pick-type">${escAttr(l.list_type)}</span>` : ''}
-          <span class="ocu-list-pick-check" aria-hidden="true">✓</span>
-        </label>`).join('');
+        </label>`;
+      }).join('');
 
   res.send(shell('Import Properties', `
     <div class="ocu-page-header">
@@ -555,8 +558,15 @@ router.get('/', requireAuth, async (req, res) => {
               <span id="existing-list-trigger-label">Pick lists…</span>
               <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" aria-hidden="true" style="margin-left:auto;color:var(--ocu-text-3)"><polyline points="6 9 12 15 18 9"/></svg>
             </button>
-            <div id="existing-list-picker" class="ocu-list-pick-wrap ocu-existing-list-popover" hidden>
-              ${existingListChecks}
+            <div id="existing-list-popover" class="ocu-existing-list-popover" hidden>
+              <div class="ocu-existing-list-search-wrap">
+                <input type="search" id="existing-list-search" class="ocu-existing-list-search"
+                       placeholder="Search lists…" autocomplete="off"
+                       oninput="filterExistingLists(this.value)">
+              </div>
+              <div id="existing-list-picker" class="ocu-existing-list-list">
+                ${existingListChecks}
+              </div>
             </div>
           </div>
         </div>
@@ -646,12 +656,41 @@ router.get('/', requireAuth, async (req, res) => {
     // chosen name. Selections persist across open/close (same checkboxes).
     function toggleExistingListDropdown(e) {
       if (e) e.stopPropagation();
-      const popover = document.getElementById('existing-list-picker');
+      const popover = document.getElementById('existing-list-popover');
       const trigger = document.getElementById('existing-list-trigger');
       if (!popover || !trigger) return;
       const isOpen = !popover.hidden;
       popover.hidden = isOpen;
       trigger.setAttribute('aria-expanded', isOpen ? 'false' : 'true');
+      if (!isOpen) {
+        // When opening, focus the search input for a "type to filter" feel.
+        setTimeout(() => {
+          const search = document.getElementById('existing-list-search');
+          if (search) search.focus();
+        }, 0);
+      }
+    }
+    function filterExistingLists(query) {
+      const q = String(query || '').trim().toLowerCase();
+      const rows = document.querySelectorAll('#existing-list-picker .ocu-list-pick');
+      let visible = 0;
+      rows.forEach(row => {
+        const hay = (row.dataset.search || '').toLowerCase();
+        const match = !q || hay.indexOf(q) !== -1;
+        row.style.display = match ? '' : 'none';
+        if (match) visible++;
+      });
+      // Empty-state when no rows match the search.
+      let empty = document.getElementById('existing-list-empty');
+      if (visible === 0 && q && !empty) {
+        empty = document.createElement('div');
+        empty.id = 'existing-list-empty';
+        empty.style.cssText = 'padding:14px 12px;color:var(--ocu-text-3);font-size:13px;text-align:center';
+        empty.textContent = 'No lists match.';
+        document.getElementById('existing-list-picker').appendChild(empty);
+      } else if (visible > 0 && empty) {
+        empty.remove();
+      }
     }
     function refreshExistingListLabel() {
       const trigger = document.getElementById('existing-list-trigger-label');
@@ -667,7 +706,7 @@ router.get('/', requireAuth, async (req, res) => {
       }
     });
     document.addEventListener('click', e => {
-      const popover = document.getElementById('existing-list-picker');
+      const popover = document.getElementById('existing-list-popover');
       const trigger = document.getElementById('existing-list-trigger');
       if (!popover || !trigger || popover.hidden) return;
       if (popover.contains(e.target) || trigger.contains(e.target)) return;
@@ -676,7 +715,7 @@ router.get('/', requireAuth, async (req, res) => {
     });
     document.addEventListener('keydown', e => {
       if (e.key === 'Escape') {
-        const popover = document.getElementById('existing-list-picker');
+        const popover = document.getElementById('existing-list-popover');
         const trigger = document.getElementById('existing-list-trigger');
         if (popover && !popover.hidden) {
           popover.hidden = true;
