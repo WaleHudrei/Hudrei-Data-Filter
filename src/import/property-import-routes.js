@@ -454,6 +454,44 @@ async function _persistCustomCatalog(tenantId, listType, listSource) {
   }
 }
 
+// ── Wizard stepper ───────────────────────────────────────────────────────
+// 4-step progress indicator at the top of every property-import page.
+// Shows the user where they are + what's next. Completed steps are
+// clickable links back; current is highlighted; future steps are
+// disabled (greyed) until the user advances. Bulk import (/import/bulk)
+// intentionally does NOT use this — it's a 1-step flow.
+const _IMPORT_STEPS = [
+  { key: 'upload',  label: 'Upload CSV',  href: '/import/property'         },
+  { key: 'map',     label: 'Map columns', href: '/import/property/map'     },
+  { key: 'preview', label: 'Preview',     href: '/import/property/preview' },
+  { key: 'import',  label: 'Import',      href: null                       }, // job — no direct page
+];
+
+function _renderImportStepper(currentKey) {
+  const currentIdx = _IMPORT_STEPS.findIndex(s => s.key === currentKey);
+  return `<div class="ocu-import-stepper" role="navigation" aria-label="Import progress">
+    ${_IMPORT_STEPS.map((s, i) => {
+      const isCurrent  = i === currentIdx;
+      const isComplete = i <  currentIdx;
+      const isFuture   = i >  currentIdx;
+      const cls = 'ocu-istep' + (isCurrent ? ' is-current' : '')
+                              + (isComplete ? ' is-complete' : '')
+                              + (isFuture ? ' is-future' : '');
+      // Completed steps link back; current and future do not.
+      const inner = `
+        <span class="ocu-istep-num" aria-hidden="true">${isComplete ? '✓' : (i + 1)}</span>
+        <span class="ocu-istep-label">${s.label}</span>`;
+      const node = (isComplete && s.href)
+        ? `<a class="${cls}" href="${s.href}" title="Back to ${s.label}">${inner}</a>`
+        : `<span class="${cls}" aria-current="${isCurrent ? 'step' : 'false'}">${inner}</span>`;
+      const connector = i < _IMPORT_STEPS.length - 1
+        ? `<span class="ocu-istep-connector ${isComplete ? 'is-complete' : ''}" aria-hidden="true"></span>`
+        : '';
+      return node + connector;
+    }).join('')}
+  </div>`;
+}
+
 // ── STEP 1: Upload CSV ────────────────────────────────────────────────────────
 router.get('/', requireAuth, async (req, res) => {
   const existingLists = await query(`SELECT id, list_name, list_type FROM lists WHERE tenant_id = $1 ORDER BY list_name ASC`, [req.tenantId]);
@@ -498,6 +536,8 @@ router.get('/', requireAuth, async (req, res) => {
       </div>
     </div>
 
+    ${_renderImportStepper('upload')}
+
     <div class="ocu-card" style="padding:20px 22px;max-width:760px">
 
       <!-- List Assignment -->
@@ -508,9 +548,14 @@ router.get('/', requireAuth, async (req, res) => {
             <label class="ocu-form-label">New list name <span class="ocu-text-3" style="font-weight:400">(optional)</span></label>
             <input type="text" id="new-list-name" placeholder="e.g. Code Violation IN — April 2026" class="ocu-input" />
           </div>
-          <div style="flex:1.2;min-width:240px">
-            <label class="ocu-form-label">Add to existing list(s) <span class="ocu-text-3" style="font-weight:400">(tick all that apply)</span></label>
-            <div id="existing-list-picker" class="ocu-list-pick-wrap">
+          <div style="flex:1.2;min-width:240px;position:relative">
+            <label class="ocu-form-label">Add to existing list(s) <span class="ocu-text-3" style="font-weight:400">(optional)</span></label>
+            <button type="button" id="existing-list-trigger" class="ocu-input ocu-existing-list-trigger" aria-haspopup="true" aria-expanded="false"
+                    onclick="toggleExistingListDropdown(event)">
+              <span id="existing-list-trigger-label">Pick lists…</span>
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" aria-hidden="true" style="margin-left:auto;color:var(--ocu-text-3)"><polyline points="6 9 12 15 18 9"/></svg>
+            </button>
+            <div id="existing-list-picker" class="ocu-list-pick-wrap ocu-existing-list-popover" hidden>
               ${existingListChecks}
             </div>
           </div>
@@ -594,6 +639,53 @@ router.get('/', requireAuth, async (req, res) => {
         document.querySelectorAll('#existing-list-picker input[name="existing_list"]:checked')
       ).map(c => c.dataset.name || '').filter(Boolean);
     }
+
+    // ── Existing-list multi-select dropdown ─────────────────────────────
+    // Dropdown trigger toggles the popover. Outside-click and Escape close
+    // it. The trigger label updates to show "N selected" or the single
+    // chosen name. Selections persist across open/close (same checkboxes).
+    function toggleExistingListDropdown(e) {
+      if (e) e.stopPropagation();
+      const popover = document.getElementById('existing-list-picker');
+      const trigger = document.getElementById('existing-list-trigger');
+      if (!popover || !trigger) return;
+      const isOpen = !popover.hidden;
+      popover.hidden = isOpen;
+      trigger.setAttribute('aria-expanded', isOpen ? 'false' : 'true');
+    }
+    function refreshExistingListLabel() {
+      const trigger = document.getElementById('existing-list-trigger-label');
+      if (!trigger) return;
+      const names = readSelectedListNames();
+      if (names.length === 0)        trigger.textContent = 'Pick lists…';
+      else if (names.length === 1)   trigger.textContent = names[0];
+      else                           trigger.textContent = names.length + ' lists selected';
+    }
+    document.addEventListener('change', e => {
+      if (e.target && e.target.matches('#existing-list-picker input[name="existing_list"]')) {
+        refreshExistingListLabel();
+      }
+    });
+    document.addEventListener('click', e => {
+      const popover = document.getElementById('existing-list-picker');
+      const trigger = document.getElementById('existing-list-trigger');
+      if (!popover || !trigger || popover.hidden) return;
+      if (popover.contains(e.target) || trigger.contains(e.target)) return;
+      popover.hidden = true;
+      trigger.setAttribute('aria-expanded', 'false');
+    });
+    document.addEventListener('keydown', e => {
+      if (e.key === 'Escape') {
+        const popover = document.getElementById('existing-list-picker');
+        const trigger = document.getElementById('existing-list-trigger');
+        if (popover && !popover.hidden) {
+          popover.hidden = true;
+          if (trigger) trigger.setAttribute('aria-expanded', 'false');
+        }
+      }
+    });
+    // Prime the label on first load (in case anything was pre-checked).
+    refreshExistingListLabel();
 
     async function handleFile(file) {
       if (!file.name.endsWith('.csv')) { showError('CSV files only.'); return; }
@@ -916,6 +1008,7 @@ router.get('/map', requireAuth, (req, res) => {
   // badges still live below the back-link because they're tied to the
   // import session, not the page identity.
   res.send(shell('Map Columns', `
+    ${_renderImportStepper('map')}
     <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:14px;margin-bottom:14px">
       <div style="flex:1;min-width:0">
         <div style="margin-bottom:8px"><a href="/import/property" class="ocu-text-3" style="font-size:13px;text-decoration:none">← Back</a></div>
@@ -1043,6 +1136,7 @@ router.get('/map', requireAuth, (req, res) => {
 // ── STEP 3: Preview ───────────────────────────────────────────────────────────
 router.get('/preview', requireAuth, (req, res) => {
   res.send(shell('Preview Import', `
+    ${_renderImportStepper('preview')}
     <div class="ocu-page-header" style="align-items:flex-start">
       <div style="flex:1;min-width:0">
         <div style="margin-bottom:6px"><a href="/import/property/map" class="ocu-text-3" style="font-size:13px;text-decoration:none">← Back to mapping</a></div>

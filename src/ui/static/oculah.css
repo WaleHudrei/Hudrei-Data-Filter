@@ -1700,6 +1700,99 @@
   border-color: var(--ocu-accent);
 }
 
+/* ─── Property-import wizard stepper ────────────────────────────────────
+   4-step progress band at the top of the property-import pages. */
+.ocu-import-stepper {
+  display: flex;
+  align-items: center;
+  gap: 0;
+  padding: 12px 16px;
+  background: var(--ocu-card-bg);
+  border: 1px solid var(--ocu-border);
+  border-radius: 10px;
+  margin-bottom: 16px;
+  max-width: 760px;
+}
+.ocu-istep {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 6px;
+  border-radius: 6px;
+  font-size: 13px;
+  color: var(--ocu-text-3);
+  text-decoration: none;
+  white-space: nowrap;
+}
+.ocu-istep-num {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  background: var(--ocu-surface-2);
+  color: var(--ocu-text-3);
+  font-weight: 700;
+  font-size: 12px;
+  flex-shrink: 0;
+}
+.ocu-istep-label { font-weight: 500; }
+.ocu-istep.is-current { color: var(--ocu-text-1); }
+.ocu-istep.is-current .ocu-istep-num {
+  background: var(--ocu-accent);
+  color: #fff;
+}
+.ocu-istep.is-complete { color: var(--ocu-text-2); }
+.ocu-istep.is-complete .ocu-istep-num {
+  background: var(--ocu-success);
+  color: #fff;
+}
+.ocu-istep.is-complete:hover {
+  color: var(--ocu-text-1);
+  background: var(--ocu-surface);
+  cursor: pointer;
+}
+.ocu-istep.is-future { opacity: .55; }
+.ocu-istep-connector {
+  flex: 1;
+  height: 2px;
+  background: var(--ocu-border);
+  min-width: 16px;
+  margin: 0 6px;
+  border-radius: 2px;
+}
+.ocu-istep-connector.is-complete { background: var(--ocu-success); }
+
+/* ─── Multi-select dropdown trigger (used by Add to existing list[s]) ── */
+.ocu-existing-list-trigger {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  text-align: left;
+  cursor: pointer;
+  font-weight: 500;
+  background: var(--ocu-bg);
+}
+.ocu-existing-list-trigger[aria-expanded="true"] {
+  border-color: var(--ocu-accent);
+  box-shadow: 0 0 0 3px var(--ocu-accent-soft);
+}
+.ocu-existing-list-popover {
+  position: absolute;
+  top: 100%;
+  left: 0;
+  right: 0;
+  margin-top: 6px;
+  z-index: 60;
+  height: auto;
+  max-height: 280px;
+  background: var(--ocu-bg);
+  border: 1px solid var(--ocu-border-strong);
+  box-shadow: 0 8px 24px rgba(11, 18, 32, 0.10), 0 2px 6px rgba(11, 18, 32, 0.05);
+}
+.ocu-existing-list-popover[hidden] { display: none; }
+
 /* Inline tag-name input (replaces "+ tag" while typing) */
 .ocu-tag-input {
   font-size: 12px;
