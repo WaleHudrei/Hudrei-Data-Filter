@@ -14,7 +14,7 @@ const { escHTML, fmtNum } = require('../_helpers');
 const CARDS = [
   { key: null,            value: null,        label: 'Total',          field: 'total'        },
   { key: 'pipeline',      value: 'lead',      label: 'Leads',          field: 'leads'        },
-  { key: 'sold',          value: '1',         label: 'Sold',           field: 'sold'         },
+  { key: 'sold',          value: '1',         label: 'Recently sold',  field: 'sold'         },
   { key: 'vacant',        value: '1',         label: 'Vacant',         field: 'vacant'       },
   { key: 'equity_band',   value: 'high',      label: 'High equity',    field: 'high_equity'  },
   { key: 'equity_band',   value: 'low',       label: 'Low equity',     field: 'low_equity'   },
