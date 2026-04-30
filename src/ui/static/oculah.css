@@ -545,12 +545,16 @@
 
 .ocu-custom-signal-row {
   display: grid;
-  grid-template-columns: 1.2fr 1.2fr auto auto;
+  grid-template-columns: minmax(0, 1.2fr) minmax(0, 1.2fr) auto auto;
   gap: 10px;
   align-items: end;
   padding: 10px 0;
   border-bottom: 1px solid var(--ocu-border);
 }
+/* minmax(0, …) on the input columns prevents 80-char keywords from
+   blowing the row width past the card. Inputs themselves shrink. */
+.ocu-custom-signal-row > div { min-width: 0; }
+.ocu-custom-signal-row input { min-width: 0; width: 100%; }
 .ocu-custom-signal-row:last-child { border-bottom: 0; }
 .ocu-custom-signal-remove {
   width: 32px; height: 32px;
@@ -653,6 +657,10 @@
   border-radius: var(--ocu-radius-lg);
   padding: 22px 24px;
   box-shadow: var(--ocu-shadow-sm);
+  /* Long unbroken tokens (email addresses, machine-generated IDs, urls)
+     wrap inside cards instead of forcing horizontal overflow. */
+  overflow-wrap: anywhere;
+  word-break: break-word;
 }
 .ocu-card-header {
   display: flex;
@@ -1192,12 +1200,22 @@
 }
 .ocu-owner-mailing > div { margin-top: 4px; }
 
-.ocu-phones-block { display: flex; flex-direction: column; gap: 10px; }
+/* Phones grid — auto-fits multiple columns when there are many numbers.
+   A property with 10 phones used to render as a 10-row vertical strip
+   that dwarfed the rest of the page; this grid wraps to 2-3 columns at
+   typical card widths (each phone row stays ≥240px wide). */
+.ocu-phones-block {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  gap: 8px;
+}
+.ocu-phones-block > .ocu-fact-label { grid-column: 1 / -1; }
 .ocu-phone-row {
   background: var(--ocu-bg);
   border: 1px solid var(--ocu-border);
   border-radius: 8px;
   padding: 10px 12px;
+  min-width: 0;
 }
 .ocu-phone-line {
   display: flex;
@@ -1216,6 +1234,7 @@
   display: inline-flex;
   align-items: center;
   gap: 6px;
+  flex-wrap: wrap;
 }
 .ocu-phone-tags {
   display: flex;
@@ -1887,6 +1906,12 @@
   font-family: var(--ocu-mono);
   font-weight: 700;
 }
+
+/* Soft row hover everywhere — the table no longer feels static like a
+   spreadsheet. Records-table extends this with the accent left edge for
+   clickable rows below. */
+.ocu-table tbody tr { transition: background 0.12s; }
+.ocu-table tbody tr:hover { background: var(--ocu-surface); }
 
 .ocu-tr-clickable {
   cursor: pointer;
@@ -2777,10 +2802,13 @@ body { padding-bottom: 0; }
 }
 .ocu-owner-sidebar { /* container only — no extra styling needed */ }
 
-/* Phone rows in the right sidebar */
+/* Phone rows in the owner-detail sidebar. Min-width:0 lets the row shrink
+   inside narrow flex containers (otherwise long phone numbers force the
+   sidebar to overflow). */
 .ocu-owner-phone-row {
   padding: 10px 0;
   border-bottom: 1px solid var(--ocu-border-soft, #f0efe9);
+  min-width: 0;
 }
 .ocu-owner-phone-row:last-child { border-bottom: none; }
 .ocu-owner-phone-num {
@@ -2788,6 +2816,7 @@ body { padding-bottom: 0; }
   font-size: 13px;
   color: var(--ocu-text-1);
   margin-bottom: 6px;
+  word-break: break-all;
 }
 .ocu-owner-phone-badges { display: flex; gap: 4px; flex-wrap: wrap; }
 
