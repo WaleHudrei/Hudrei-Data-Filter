@@ -89,6 +89,41 @@ async function initSchema() {
   // verify-email and forgot-password flows. Both token tables share the
   // same shape (token + expires_at + used_at) so they can be reused via
   // src/auth-tokens.js. Token strings are 32-byte hex (64 chars).
+  // Per-tenant equity thresholds — used by the Records KPI strip's
+  // "High equity" / "Low equity" cards. Defaults match what the cards
+  // assume out of the box (high > 50%, low < 20%) and can be overridden
+  // per workspace from /oculah/setup.
+  await query(`
+    ALTER TABLE tenants ADD COLUMN IF NOT EXISTS high_equity_threshold INT NOT NULL DEFAULT 50;
+    ALTER TABLE tenants ADD COLUMN IF NOT EXISTS low_equity_threshold  INT NOT NULL DEFAULT 20;
+  `).catch(() => { /* harmless on race */ });
+
+  // Per-tenant catalogs the user can extend without code changes:
+  //   - tenant_list_types  — beyond the built-in "Third party" + "Government list"
+  //   - tenant_custom_sources — beyond the built-in PropStream/REISift/etc list
+  // Both are simple tables with a label per tenant. Used on the import
+  // page dropdowns and (for list types) on the distress-matrix scoring.
+  await query(`
+    CREATE TABLE IF NOT EXISTS tenant_list_types (
+      id          SERIAL PRIMARY KEY,
+      tenant_id   INT NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+      label       TEXT NOT NULL,
+      distress_score INT,                                     -- nullable; null = not used in distress
+      created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      UNIQUE (tenant_id, label)
+    );
+    CREATE INDEX IF NOT EXISTS tenant_list_types_tenant_idx ON tenant_list_types(tenant_id);
+
+    CREATE TABLE IF NOT EXISTS tenant_custom_sources (
+      id          SERIAL PRIMARY KEY,
+      tenant_id   INT NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+      label       TEXT NOT NULL,
+      created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      UNIQUE (tenant_id, label)
+    );
+    CREATE INDEX IF NOT EXISTS tenant_custom_sources_tenant_idx ON tenant_custom_sources(tenant_id);
+  `).catch(() => { /* concurrent CREATE on first hit — harmless */ });
+
   await query(`
     ALTER TABLE users ADD COLUMN IF NOT EXISTS email_verified_at TIMESTAMPTZ;
     ALTER TABLE users ADD COLUMN IF NOT EXISTS default_dashboard_view TEXT NOT NULL DEFAULT 'main';

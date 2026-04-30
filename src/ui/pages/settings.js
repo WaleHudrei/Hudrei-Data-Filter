@@ -16,6 +16,7 @@ const ICONS = {
   shield:  '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>',
   target:  '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="6"/><circle cx="12" cy="12" r="2"/></svg>',
   merge:   '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="6" cy="18" r="3"/><circle cx="6" cy="6" r="3"/><circle cx="18" cy="12" r="3"/><path d="M9 6h3a3 3 0 0 1 3 3v3"/><path d="M9 18h3a3 3 0 0 0 3-3v-3"/></svg>',
+  sliders: '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="4" y1="21" x2="4" y2="14"/><line x1="4" y1="10" x2="4" y2="3"/><line x1="12" y1="21" x2="12" y2="12"/><line x1="12" y1="8" x2="12" y2="3"/><line x1="20" y1="21" x2="20" y2="16"/><line x1="20" y1="12" x2="20" y2="3"/><line x1="1" y1="14" x2="7" y2="14"/><line x1="9" y1="8" x2="15" y2="8"/><line x1="17" y1="16" x2="23" y2="16"/></svg>',
   info:    '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/></svg>',
 };
 
@@ -145,6 +146,28 @@ function settingsPage(data = {}) {
       <button type="submit" class="ocu-btn ocu-btn-primary">Run duplicate cleanup →</button>
     </form>`;
 
+  const highEq = Number.isFinite(data.highEquityThreshold) ? data.highEquityThreshold : 50;
+  const lowEq  = Number.isFinite(data.lowEquityThreshold)  ? data.lowEquityThreshold  : 20;
+  const equityCard = `
+    <div style="font-size:13px;color:var(--ocu-text-2);line-height:1.6;margin-bottom:16px">
+      The Records page shows two quick-filter cards — "High equity" and "Low equity" — that count properties whose equity percentage crosses the thresholds you set here. Defaults: high above 50%, low below 20%.
+    </div>
+    <form method="POST" action="/oculah/setup/equity" autocomplete="off" style="display:flex;flex-direction:column;gap:14px">
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:14px">
+        <div>
+          <label class="ocu-form-label">High-equity threshold (%)</label>
+          <input type="number" name="high_equity_threshold" value="${highEq}" min="1" max="100" required class="ocu-input" />
+        </div>
+        <div>
+          <label class="ocu-form-label">Low-equity threshold (%)</label>
+          <input type="number" name="low_equity_threshold" value="${lowEq}" min="0" max="99" required class="ocu-input" />
+        </div>
+      </div>
+      <div style="display:flex;justify-content:flex-end">
+        <button type="submit" class="ocu-btn ocu-btn-primary">Save thresholds</button>
+      </div>
+    </form>`;
+
   const recoveryNote = `
     <div style="font-size:13px;color:var(--ocu-text-2);line-height:1.6">
       <strong style="color:var(--ocu-text-1)">If you forget this code,</strong> an admin with database access
@@ -169,6 +192,12 @@ function settingsPage(data = {}) {
       })}
       ${isAdmin ? `
         ${flashHTML}
+        ${settingsCard({
+          icon: 'sliders', tone: 'amber',
+          title: 'Equity thresholds',
+          meta:  'Defines the High/Low equity quick-filter cards on the Records page.',
+          body:  equityCard,
+        })}
         ${settingsCard({
           icon: 'target', tone: 'violet',
           title: 'Distress score matrix',

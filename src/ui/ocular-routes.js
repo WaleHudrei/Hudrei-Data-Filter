@@ -1960,11 +1960,23 @@ router.get('/setup', requireAuth, async (req, res) => {
       if (r.rows.length) userEmail = r.rows[0].email;
     } catch (e) { /* non-fatal */ }
 
+    // Per-tenant equity thresholds for the High/Low equity cards on Records.
+    let highEq = 50, lowEq = 20;
+    try {
+      const t = await query('SELECT high_equity_threshold, low_equity_threshold FROM tenants WHERE id = $1', [req.tenantId]);
+      if (t.rows.length) {
+        if (Number.isFinite(Number(t.rows[0].high_equity_threshold))) highEq = Number(t.rows[0].high_equity_threshold);
+        if (Number.isFinite(Number(t.rows[0].low_equity_threshold)))  lowEq  = Number(t.rows[0].low_equity_threshold);
+      }
+    } catch (_) { /* defaults applied above */ }
+
     res.send(settingsPage({
       user: await getUser(req),
       lastUpdatedAt: updatedAt,
       usingDefault,
       userEmail,
+      highEquityThreshold: highEq,
+      lowEquityThreshold:  lowEq,
       flash: {
         msg:   req.query.msg   ? String(req.query.msg).slice(0, 500)   : '',
         err:   req.query.err   ? String(req.query.err).slice(0, 500)   : '',
@@ -2069,6 +2081,35 @@ router.post('/setup/dedup', requireAuth, async (req, res) => {
   } catch (e) {
     console.error('[setup/dedup]', e);
     res.redirect('/oculah/setup?err=' + encodeURIComponent('Dedup failed: ' + e.message));
+  }
+});
+
+// Save per-tenant equity thresholds. Both stored on the tenants row.
+// Validates 0–100 range; floors low ≤ high so we don't end up in a state
+// where a property with 30% equity is in BOTH "low" and "high" cards.
+router.post('/setup/equity', requireAuth, async (req, res) => {
+  const { isWorkspaceAdmin } = require('../auth/roles');
+  if (!isWorkspaceAdmin(req)) {
+    return res.redirect('/oculah/setup?err=' + encodeURIComponent('Only workspace admins can change equity thresholds.'));
+  }
+  const high = parseInt(req.body.high_equity_threshold, 10);
+  const low  = parseInt(req.body.low_equity_threshold, 10);
+  if (!Number.isFinite(high) || high < 1 || high > 100 ||
+      !Number.isFinite(low)  || low  < 0 || low  > 99 ||
+      low >= high) {
+    return res.redirect('/oculah/setup?err=' + encodeURIComponent(
+      'Invalid thresholds. High must be 1–100, low must be 0–99, and low must be less than high.'
+    ));
+  }
+  try {
+    await query(
+      'UPDATE tenants SET high_equity_threshold = $1, low_equity_threshold = $2, updated_at = NOW() WHERE id = $3',
+      [high, low, req.tenantId]
+    );
+    res.redirect('/oculah/setup?msg=' + encodeURIComponent(`Equity thresholds saved (high > ${high}%, low < ${low}%).`));
+  } catch (e) {
+    console.error('[setup/equity]', e);
+    res.redirect('/oculah/setup?err=' + encodeURIComponent('Save failed: ' + e.message));
   }
 });
 
