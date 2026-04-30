@@ -368,7 +368,8 @@
 }
 .ocu-topbar-title {
   font-size: 22px;
-  font-weight: 700;
+  font-weight: 800;     /* matches .ocu-logo-text weight so the two words feel
+                           visually paired across the sidebar/topbar divider */
   color: var(--ocu-text-1);
   letter-spacing: -0.01em;
   line-height: 1.2;

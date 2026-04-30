@@ -126,8 +126,8 @@ function shell(opts = {}) {
   <!-- Visual-overhaul: Inter replaces Manrope. Higher legibility at the
        small data-table sizes that dominate Oculah pages. Includes the
        400-700 weight range we use across the design tokens. -->
-  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="/oculah-static/oculah.css?v=23">
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/oculah-static/oculah.css?v=24">
   ${extraHead}
 </head>
 <body class="ocu">
