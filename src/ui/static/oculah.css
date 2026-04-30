@@ -22,7 +22,8 @@
      Visual-overhaul pass (April 30, 2026): darker text tokens, stronger
      borders, more visual anchoring. Typography moved to Inter for higher
      legibility at data-table sizes. Pills below now use saturated tones. */
-  --ocu-bg:             #FFFFFF;
+  --ocu-bg:             #FFFFFF;        /* card / input white — contrast surface */
+  --ocu-page-bg:        #F4F6FA;        /* main content area — soft cool grey */
   --ocu-surface:        #F7F8FA;
   --ocu-surface-2:      #EEF0F3;
   --ocu-border:         #D7DBE0;        /* was #E5E7EB — bolstered for anchoring */
@@ -348,13 +349,13 @@
   display: flex;
   flex-direction: column;
   min-width: 0;
-  background: var(--ocu-bg);
+  background: var(--ocu-page-bg);   /* soft cool grey lifts cards visually */
 }
 
 .ocu-topbar {
   height: var(--ocu-topbar-h);
   border-bottom: 1px solid var(--ocu-border);
-  background: var(--ocu-bg);
+  background: var(--ocu-page-bg);
   padding: 0 32px;
   display: flex;
   align-items: center;
