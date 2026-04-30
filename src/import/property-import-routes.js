@@ -1265,12 +1265,29 @@ router.get('/preview', requireAuth, (req, res) => {
 
     // Build preview table from previewRows. Cells get .ocu-th / .ocu-td
     // so the Oculah table styling kicks in (border, padding, hover).
+    // Money fields render as $1,234,567 with the column right-aligned for
+    // numeric scanning. Empty/non-numeric values fall through to plain
+    // text so junk like "—" or text artifacts don't get formatted into
+    // misleading "$0".
+    const CURRENCY_KEYS = new Set([
+      'assessed_value', 'estimated_value', 'last_sale_price', 'total_tax_owed',
+    ]);
+    function formatCurrency(raw) {
+      if (raw == null || raw === '') return '';
+      // Strip $ , spaces from CSV (PropStream exports with commas, etc.)
+      const cleaned = String(raw).replace(/[\\$,\\s]/g, '');
+      const n = Number(cleaned);
+      if (!Number.isFinite(n)) return String(raw);   // leave unparsed values alone
+      return '$' + n.toLocaleString('en-US', { maximumFractionDigits: 0 });
+    }
+
     const lokiKeys = Object.keys(mapping);
     const thead = document.getElementById('preview-head');
     const tbody = document.getElementById('preview-body');
     lokiKeys.forEach(k => {
       const th = document.createElement('th');
       th.className = 'ocu-th';
+      if (CURRENCY_KEYS.has(k)) th.classList.add('ocu-th-num');
       th.textContent = mapping[k];
       thead.appendChild(th);
     });
@@ -1279,10 +1296,17 @@ router.get('/preview', requireAuth, (req, res) => {
       lokiKeys.forEach(k => {
         const td = document.createElement('td');
         td.className = 'ocu-td';
-        const value = row[mapping[k]] || '';
-        td.textContent = value;
-        // Hover-tooltip surfaces truncated values without taking layout space.
-        if (value && value.length > 30) td.title = value;
+        const raw = row[mapping[k]] || '';
+        if (CURRENCY_KEYS.has(k)) {
+          td.classList.add('ocu-td-num');
+          td.style.textAlign = 'right';
+          td.style.fontFamily = 'var(--ocu-mono)';
+          td.textContent = formatCurrency(raw);
+        } else {
+          td.textContent = raw;
+          // Hover-tooltip surfaces truncated values without taking layout space.
+          if (raw && raw.length > 30) td.title = raw;
+        }
         tr.appendChild(td);
       });
       tbody.appendChild(tr);
