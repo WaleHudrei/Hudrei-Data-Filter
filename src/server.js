@@ -1212,8 +1212,8 @@ app.post('/campaigns/:id/count', requireAuth, async (req, res) => {
     await campaigns.initCampaignSchema();
     const { query: dbQ } = require('./db');
     await dbQ('UPDATE campaigns SET manual_count=$1, updated_at=NOW() WHERE id=$2', [count, req.params.id]);
-    res.redirect('/campaigns/' + req.params.id);
-  } catch(e) { res.redirect('/campaigns/' + req.params.id); }
+    res.redirect('/oculah/campaigns/' + req.params.id);
+  } catch(e) { res.redirect('/oculah/campaigns/' + req.params.id); }
 });
 
 // List all campaigns
@@ -1258,8 +1258,8 @@ app.post('/campaigns/new', requireAuth, async (req, res) => {
 app.post('/campaigns/:id/close', requireAuth, async (req, res) => {
   try {
     await campaigns.closeCampaign(req.tenantId, req.params.id);
-    res.redirect('/campaigns/' + req.params.id);
-  } catch(e) { res.redirect('/campaigns/' + req.params.id); }
+    res.redirect('/oculah/campaigns/' + req.params.id);
+  } catch(e) { res.redirect('/oculah/campaigns/' + req.params.id); }
 });
 
 // Start new round (clone campaign with fresh memory)
@@ -1267,32 +1267,20 @@ app.post('/campaigns/:id/new-round', requireAuth, async (req, res) => {
   try {
     await campaigns.closeCampaign(req.tenantId, req.params.id);
     const newCamp = await campaigns.cloneCampaign(req.tenantId, req.params.id);
-    res.redirect('/campaigns/' + newCamp.id);
-  } catch(e) { res.redirect('/campaigns/' + req.params.id); }
-});
-
-// Campaign detail
-app.get('/campaigns/:id', requireAuth, async (req, res) => {
-  try {
-    const { getUser } = require('./get-user');
-    const c = await campaigns.getCampaign(req.tenantId, req.params.id);
-    if (!c) return res.redirect('/oculah/campaigns');
-    c.contact_counts = await campaigns.getContactStats(req.params.id);
-    const user = await getUser(req);
-    res.send(campaignDetailPage(c, { msg: req.query.msg || '', err: req.query.err || '' }, user));
-  } catch (e) { res.status(500).send('Error: ' + e.message); }
+    res.redirect('/oculah/campaigns/' + newCamp.id);
+  } catch(e) { res.redirect('/oculah/campaigns/' + req.params.id); }
 });
 
 // Update campaign status
 app.post('/campaigns/:id/status', requireAuth, async (req, res) => {
   await campaigns.updateCampaignStatus(req.tenantId, req.params.id, req.body.status);
-  res.redirect('/campaigns/' + req.params.id);
+  res.redirect('/oculah/campaigns/' + req.params.id);
 });
 
 // Update campaign channel
 app.post('/campaigns/:id/channel', requireAuth, async (req, res) => {
   await campaigns.updateCampaignChannel(req.tenantId, req.params.id, req.body.channel);
-  res.redirect('/campaigns/' + req.params.id);
+  res.redirect('/oculah/campaigns/' + req.params.id);
 });
 
 // 2026-04-20 audit fix #B: rename a campaign. Validation lives in
@@ -1301,12 +1289,12 @@ app.post('/campaigns/:id/rename', requireAuth, async (req, res) => {
   try {
     const result = await campaigns.updateCampaignName(req.tenantId, req.params.id, req.body.name);
     if (!result.ok) {
-      return res.redirect('/campaigns/' + req.params.id + '?err=' + encodeURIComponent(result.error));
+      return res.redirect('/oculah/campaigns/' + req.params.id + '?err=' + encodeURIComponent(result.error));
     }
-    res.redirect('/campaigns/' + req.params.id + '?msg=' + encodeURIComponent('Campaign renamed.'));
+    res.redirect('/oculah/campaigns/' + req.params.id + '?msg=' + encodeURIComponent('Campaign renamed.'));
   } catch (e) {
     console.error('[campaigns/rename]', e);
-    res.redirect('/campaigns/' + req.params.id + '?err=' + encodeURIComponent('Rename failed: ' + e.message));
+    res.redirect('/oculah/campaigns/' + req.params.id + '?err=' + encodeURIComponent('Rename failed: ' + e.message));
   }
 });
 
@@ -1334,7 +1322,7 @@ app.post('/campaigns/:id/upload', requireAuth, upload.single('csvfile'), async (
     const newListCount = new Set(Object.keys(result.memory).map(k => k.split('||')[0])).size;
     res.json({
       success: true,
-      redirectTo: '/campaigns/' + req.params.id,
+      redirectTo: '/oculah/campaigns/' + req.params.id,
       stats: { totalRows: result.totalRows, listsCount: Object.keys(result.listsSeen).length, kept: result.cleanRows.length, filtered: result.filteredRows.length, memCaught: result.memCaught },
       listsSeen: result.listsSeen, memSize: newMemSize, listCount: newListCount,
       preview: { filtered: result.filteredRows.slice(0, 50), clean: result.cleanRows.slice(0, 50) }
@@ -1348,13 +1336,13 @@ app.post('/campaigns/:id/upload', requireAuth, upload.single('csvfile'), async (
 // Upload original contact list to campaign
 app.post('/campaigns/:id/contacts/upload', requireAuth, upload.single('contactfile'), async (req, res) => {
   try {
-    if (!req.file) return res.redirect('/campaigns/' + req.params.id);
+    if (!req.file) return res.redirect('/oculah/campaigns/' + req.params.id);
     await campaigns.initCampaignSchema();
     const parsed = Papa.parse(bufferToCsvText(req.file.buffer), { header: true, skipEmptyLines: true });
     console.log('[contacts/upload] file received:', req.file.originalname, 'rows:', parsed.data.length, 'headers:', (parsed.meta.fields||[]).length);
     await campaigns.importContactList(req.tenantId, req.params.id, parsed.data, parsed.meta.fields || []);
     console.log('[contacts/upload] import complete for campaign', req.params.id);
-    res.redirect('/campaigns/' + req.params.id);
+    res.redirect('/oculah/campaigns/' + req.params.id);
   } catch (e) {
     const ref = errRefId();
     // 2026-04-28 audit fix S-4: full Postgres error code/detail and stack are
@@ -1363,7 +1351,7 @@ app.post('/campaigns/:id/contacts/upload', requireAuth, upload.single('contactfi
     console.error(`[contacts/upload] ${ref} ERROR:`, e.message);
     console.error(`[contacts/upload] ${ref} code:`, e.code, 'detail:', e.detail);
     console.error(`[contacts/upload] ${ref} stack:`, e.stack);
-    res.status(500).send(`<h2>Upload failed</h2><p>Something went wrong while processing this upload. Try again, or share this reference with support: <code>${ref}</code></p><p><a href="/campaigns/${req.params.id}">Back to campaign</a></p>`);
+    res.status(500).send(`<h2>Upload failed</h2><p>Something went wrong while processing this upload. Try again, or share this reference with support: <code>${ref}</code></p><p><a href="/oculah/campaigns/${req.params.id}">Back to campaign</a></p>`);
   }
 });
 
@@ -1373,14 +1361,14 @@ app.post('/campaigns/:id/contacts/delete', requireAuth, async (req, res) => {
     const { query: dbQ } = require('./db');
     await dbQ('DELETE FROM campaign_contacts WHERE campaign_id=$1', [req.params.id]);
     await dbQ('UPDATE campaigns SET total_unique_numbers=0, updated_at=NOW() WHERE id=$1', [req.params.id]);
-    res.redirect('/campaigns/' + req.params.id);
-  } catch(e) { res.redirect('/campaigns/' + req.params.id); }
+    res.redirect('/oculah/campaigns/' + req.params.id);
+  } catch(e) { res.redirect('/oculah/campaigns/' + req.params.id); }
 });
 
 // SMS SmarterContact upload
 app.post('/campaigns/:id/sms/upload', requireAuth, upload.single('smsfile'), async (req, res) => {
   try {
-    if (!req.file) return res.redirect('/campaigns/' + req.params.id);
+    if (!req.file) return res.redirect('/oculah/campaigns/' + req.params.id);
     const parsed = Papa.parse(bufferToCsvText(req.file.buffer), { header: true, skipEmptyLines: true });
     const result = await campaigns.importSmarterContactFile(
       req.tenantId,
@@ -1392,19 +1380,19 @@ app.post('/campaigns/:id/sms/upload', requireAuth, upload.single('smsfile'), asy
       return res.status(400).send(`
         <h2>SMS Upload Failed</h2>
         <p style="color:red">${result.error}</p>
-        <p><a href="/campaigns/${req.params.id}">Back to campaign</a></p>
+        <p><a href="/oculah/campaigns/${req.params.id}">Back to campaign</a></p>
       `);
     }
     const t = result.tally;
     console.log(`[sms/upload] campaign ${req.params.id} — total:${t.total} wrong:${t.wrong} ni:${t.not_interested} leads:${t.leads} dq:${t.disqualified} no_action:${t.no_action} unmatched:${t.unmatched}`);
-    res.redirect('/campaigns/' + req.params.id);
+    res.redirect('/oculah/campaigns/' + req.params.id);
   } catch(e) {
     const ref = errRefId();
     // 2026-04-28 audit fix S-4: error details server-side only.
     console.error(`[sms/upload] ${ref} ERROR:`, e.message);
     console.error(`[sms/upload] ${ref} code:`, e.code, 'detail:', e.detail);
     console.error(`[sms/upload] ${ref} stack:`, e.stack);
-    res.status(500).send(`<h2>SMS Upload Error</h2><p>Something went wrong while processing this upload. Try again, or share this reference with support: <code>${ref}</code></p><p><a href="/campaigns/${req.params.id}">Back to campaign</a></p>`);
+    res.status(500).send(`<h2>SMS Upload Error</h2><p>Something went wrong while processing this upload. Try again, or share this reference with support: <code>${ref}</code></p><p><a href="/oculah/campaigns/${req.params.id}">Back to campaign</a></p>`);
   }
 });
 
@@ -1490,10 +1478,10 @@ app.post('/campaigns/:id/sync-wrong-numbers', requireAuth, async (req, res) => {
       [req.params.id]
     );
     console.log('[sync-wrong-numbers] flagged', result.rowCount, 'phones for campaign', req.params.id);
-    res.redirect('/campaigns/' + req.params.id);
+    res.redirect('/oculah/campaigns/' + req.params.id);
   } catch(e) {
     console.error('[sync-wrong-numbers] error:', e.message);
-    res.redirect('/campaigns/' + req.params.id);
+    res.redirect('/oculah/campaigns/' + req.params.id);
   }
 });
 
@@ -1503,8 +1491,8 @@ app.post('/campaigns/:id/readymode-count', requireAuth, async (req, res) => {
     const { query: dbQ } = require('./db');
     await dbQ('UPDATE campaigns SET manual_count=$1, updated_at=NOW() WHERE id=$2',
       [parseInt(req.body.count)||0, req.params.id]);
-    res.redirect('/campaigns/' + req.params.id);
-  } catch(e) { res.redirect('/campaigns/' + req.params.id); }
+    res.redirect('/oculah/campaigns/' + req.params.id);
+  } catch(e) { res.redirect('/oculah/campaigns/' + req.params.id); }
 });
 
 // Download clean export (callable contacts only)
@@ -1609,7 +1597,7 @@ app.post('/campaigns/:id/uploads/:uploadId/delete', requireAuth, async (req, res
     res.redirect('/campaigns/' + campId);
   } catch(e) {
     console.error('Delete upload error:', e.message);
-    res.redirect('/campaigns/' + req.params.id);
+    res.redirect('/oculah/campaigns/' + req.params.id);
   }
 });
 
@@ -1645,7 +1633,7 @@ app.post('/campaigns/:id/reset', requireAuth, async (req, res) => {
     res.redirect('/campaigns/' + campId);
   } catch(e) {
     console.error('Reset campaign error:', e.message);
-    res.redirect('/campaigns/' + req.params.id);
+    res.redirect('/oculah/campaigns/' + req.params.id);
   }
 });
 
@@ -1888,354 +1876,6 @@ function changelogPage(user) {
 }
 
 
-function campaignDetailPage(c, flash, user) {
-  flash = flash || {};
-  const escAttr = (s) => String(s == null ? '' : s)
-    .replace(/&/g, '&amp;').replace(/"/g, '&quot;')
-    .replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/'/g, '&#39;');
-  const fmtNum = (v) => Number(v || 0).toLocaleString('en-US');
-  const n = c.total_unique_numbers || 0;
-  const manualCount = parseInt(c.manual_count) || 0;
-  const connected = c.total_connected || 0;
-  const totalPhones = parseInt(c.contact_counts?.total_phones||0);
-  const callablePhones = totalPhones - parseInt(c.contact_counts?.wrong_phones||0) - parseInt(c.contact_counts?.filtered_phones||0) - parseInt(c.contact_counts?.nis_phones||0);
-  const health = totalPhones > 0 ? ((callablePhones / totalPhones) * 100).toFixed(1) : '0.0';
-  const totalContacts = parseInt(c.contact_counts?.total_contacts||0);
-  const leadContacts = parseInt(c.contact_counts?.lead_contacts||0);
-  const wrongNums = parseInt(c.total_wrong_numbers||0);
-  const nisPhones = parseInt(c.contact_counts?.nis_phones||0);
-  const filteredOutCount = parseInt(c.total_filtered||0) + wrongNums;
-  const masterCallable = Math.max(0, totalPhones - filteredOutCount - nisPhones);
-  const callable_pct = totalPhones > 0 ? Math.round((masterCallable / totalPhones) * 100) : 0;
-  const callLogs = parseInt(n) || 0;
-  const cr    = callLogs > 0 && connected > 0 ? ((connected / callLogs) * 100).toFixed(2) : '0.00';
-  const clr   = totalPhones > 0 && callLogs > 0 ? ((callLogs / totalPhones) * 100).toFixed(2) : '0.00';
-  const wPct  = (connected + wrongNums) > 0 ? ((wrongNums / (connected + wrongNums)) * 100).toFixed(2) : '0.00';
-  const niPct = connected > 0 ? (((c.total_not_interested||0) / connected) * 100).toFixed(2) : '0.00';
-  const lgr   = connected > 0 ? (((c.total_transfers||0) / connected) * 100).toFixed(2) : '0.00';
-  const lcv   = totalContacts > 0 ? ((leadContacts / totalContacts) * 100).toFixed(2) : '0.00';
-
-  const statusPillCls = c.status === 'completed' ? 'ocu-pill ocu-pill-primary'
-                      : c.status === 'paused'    ? 'ocu-pill ocu-pill-warn'
-                      : 'ocu-pill ocu-pill-good';
-
-  const kpi = (label, value, sub, valueColor) => `
-    <div class="ocu-kpi">
-      <div class="ocu-kpi-label">${label}</div>
-      <div class="ocu-kpi-value"${valueColor ? ` style="color:${valueColor}"` : ''}>${value}</div>
-      ${sub ? `<div class="ocu-kpi-delta">${sub}</div>` : ''}
-    </div>`;
-
-  const ratioCard = (label, value, hint, color) => `
-    <div class="ocu-card" style="text-align:center;padding:14px 10px">
-      <div style="font-size:22px;font-weight:600;color:${color}">${value}%</div>
-      <div style="font-size:11px;color:var(--ocu-text-2);margin-top:4px;font-weight:600">${label}</div>
-      <div style="font-size:10px;color:var(--ocu-text-3);margin-top:2px">${hint}</div>
-    </div>`;
-
-  const uploadRows = (c.uploads||[]).map(u => `
-    <tr>
-      <td class="ocu-text-3 ocu-mono" style="font-size:11px;white-space:nowrap">${new Date(u.uploaded_at).toLocaleDateString('en-US',{month:'short',day:'numeric'})} ${new Date(u.uploaded_at).toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'})}</td>
-      <td>${u.filename||'—'}${u.source_list_name ? `<div class="ocu-text-3" style="font-size:11px;margin-top:2px">${u.source_list_name}</div>` : ''}</td>
-      <td><span class="ocu-pill" data-channel="${u.channel||''}">${CHANNEL_LABELS[u.channel]||u.channel}</span></td>
-      <td class="ocu-text-right ocu-mono">${fmtNum(u.total_records)}</td>
-      <td class="ocu-text-right ocu-mono" style="color:#1a7a4a">+${fmtNum(u.records_kept)}</td>
-      <td class="ocu-text-right ocu-mono" style="color:#c0392b">${fmtNum(u.records_filtered)}</td>
-      <td class="ocu-text-3" style="font-size:11px">WN:${u.wrong_numbers} VM:${u.voicemails} NI:${u.not_interested} DNC:${u.do_not_call} Lead:${u.transfers}</td>
-      <td class="ocu-mono" style="color:#2471a3;font-size:11px">${u.caught_by_memory} by memory</td>
-      <td class="ocu-text-right">
-        <form method="POST" action="/campaigns/${c.id}/uploads/${u.id}/delete" onsubmit="return confirm('Remove this upload from the campaign? This will reverse its counts from memory.')">
-          <button type="submit" class="ocu-btn ocu-btn-ghost" style="color:#c0392b;font-size:11px;padding:4px 8px">Remove</button>
-        </form>
-      </td>
-    </tr>`).join('');
-
-  const dispositionRows = (c.disposition_breakdown||[]).map(d => `
-    <tr><td>${d.disposition||'unknown'}</td><td class="ocu-text-right ocu-mono" style="font-weight:600">${fmtNum(d.count)}</td></tr>`).join('');
-
-  return shell(c.name, `
-    <div class="ocu-page-header" style="align-items:flex-start">
-      <div style="flex:1;min-width:0">
-        <div style="margin-bottom:6px"><a href="/oculah/campaigns" class="ocu-text-3" style="font-size:13px;text-decoration:none">← Campaigns</a></div>
-        <div style="display:flex;align-items:center;gap:10px;margin-bottom:4px;flex-wrap:wrap">
-          <h1 class="ocu-page-title" style="margin:0">${escAttr(c.name)}</h1>
-          <button type="button" title="Edit campaign name" class="ocu-btn ocu-btn-ghost" style="padding:4px 8px"
-                  onclick="document.getElementById('rename-campaign-modal').classList.add('open');setTimeout(function(){document.getElementById('rename-campaign-input').focus();document.getElementById('rename-campaign-input').select();},50)">
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
-          </button>
-          <span class="${statusPillCls}">${c.status}</span>
-        </div>
-        <div class="ocu-page-subtitle">${escAttr(c.list_type || '')} · ${escAttr(c.market_name || '')} · ${escAttr(c.state_code || '')} · Started ${c.start_date ? new Date(c.start_date).toLocaleDateString() : '—'}${c.end_date ? ' · Ended ' + new Date(c.end_date).toLocaleDateString() : ''} · ${c.upload_count || 0} uploads</div>
-      </div>
-      <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
-        <form method="POST" action="/campaigns/${c.id}/channel" style="display:inline-flex;align-items:center;gap:6px">
-          <span class="ocu-text-3" style="font-size:11px">Channel:</span>
-          <select name="channel" onchange="this.form.submit()" class="ocu-input" style="padding:5px 8px;font-size:12px;width:auto">
-            <option ${c.active_channel==='cold_call'?'selected':''} value="cold_call">Cold call</option>
-            <option ${c.active_channel==='sms'?'selected':''} value="sms">SMS</option>
-          </select>
-        </form>
-        ${c.status !== 'completed' ? `
-        <form method="POST" action="/campaigns/${c.id}/close" onsubmit="return confirm('Close this campaign? It will be marked completed and no more uploads will be accepted.')" style="display:inline">
-          <button type="submit" class="ocu-btn ocu-btn-secondary">Close</button>
-        </form>
-        <form method="POST" action="/campaigns/${c.id}/reset" onsubmit="return confirm('Reset all campaign stats and memory? This clears all upload history and counts for this campaign. Cannot be undone.')" style="display:inline">
-          <button type="submit" class="ocu-btn ocu-btn-secondary" style="color:#c0392b">Reset stats</button>
-        </form>
-        <form method="POST" action="/campaigns/${c.id}/new-round" onsubmit="return confirm('Close this campaign and start a new round with the same settings and fresh memory?')" style="display:inline">
-          <button type="submit" class="ocu-btn ocu-btn-primary">Start new round</button>
-        </form>` : `
-        <form method="POST" action="/campaigns/${c.id}/delete" onsubmit="return confirm('Permanently delete this campaign and all its data? This cannot be undone.')" style="display:inline">
-          <button type="submit" class="ocu-btn ocu-btn-secondary" style="color:#c0392b">Delete campaign</button>
-        </form>`}
-      </div>
-    </div>
-
-    ${flash.err ? `<div class="ocu-card" style="margin-bottom:14px;background:#fdeaea;border-color:#f5c5c5;color:#8b1f1f;padding:12px 16px;font-size:13px">${escAttr(flash.err)}</div>` : ''}
-    ${flash.msg ? `<div class="ocu-card" style="margin-bottom:14px;background:#e8f5ee;border-color:#9bd0a8;color:#1a5f1a;padding:12px 16px;font-size:13px">${escAttr(flash.msg)}</div>` : ''}
-
-    <div class="ocu-kpi-row" style="grid-template-columns:repeat(auto-fit,minmax(140px,1fr));margin-bottom:18px">
-      ${c.active_channel === 'sms' ? `
-      ${kpi('SMS uploads', fmtNum(c.upload_count||0), 'Uploads')}
-      ${kpi('Wrong numbers', fmtNum(c.total_wrong_numbers||0), 'Removed', '#c0392b')}
-      ${kpi('Not interested', fmtNum(c.total_not_interested||0), 'Total NI', '#9a6800')}
-      ${kpi('Leads generated', fmtNum(c.total_transfers||0), 'Transfers', '#1a7a4a')}
-      ${kpi('Callable', fmtNum(masterCallable), `${callable_pct}% active pool`, '#1a7a4a')}
-      ` : `
-      ${kpi('Call logs', fmtNum(n), 'Logged numbers')}
-      ${kpi('Connected', fmtNum(connected), 'Live pickups', '#2471a3')}
-      ${kpi('Wrong numbers', fmtNum(c.total_wrong_numbers||0), 'Removed', '#c0392b')}
-      ${kpi('Not interested', fmtNum(c.total_not_interested||0), 'Total NI', '#9a6800')}
-      ${kpi('Leads generated', fmtNum(c.total_transfers||0), 'Transfers', '#1a7a4a')}
-      ${kpi('Callable', fmtNum(masterCallable), `${callable_pct}% active pool`, '#1a7a4a')}
-      ${kpi('Filtration runs', fmtNum(c.upload_count||0), 'Uploads')}
-      `}
-    </div>
-
-    <div class="ocu-card" style="padding:16px 18px;margin-bottom:18px">
-      <div class="ocu-text-3" style="font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.06em;margin-bottom:12px">${c.active_channel === 'sms' ? 'SMS campaign ratios' : 'Campaign ratios'}</div>
-      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:10px">
-        ${c.active_channel === 'sms' ? `
-        ${ratioCard('W#%', wPct, 'Wrong ÷ Total contacts', '#c0392b')}
-        ${ratioCard('NI%', niPct, 'NI ÷ Total contacts', '#9a6800')}
-        ${ratioCard('LGR', lgr, 'Leads ÷ Total contacts', '#1a7a4a')}
-        ${ratioCard('LCV', lcv, 'Lead contacts ÷ Total contacts', '#534AB7')}
-        ${ratioCard('Health', health, 'Callable ÷ Total phones', parseFloat(health)>50?'#1a7a4a':parseFloat(health)>25?'#9a6800':'#c0392b')}
-        ` : `
-        ${ratioCard('CLR', clr, 'Call logs ÷ Total phones', '#534AB7')}
-        ${ratioCard('CR', cr, 'Connected ÷ Call logs', '#2471a3')}
-        ${ratioCard('W#%', wPct, 'Wrong ÷ Humans reached', '#c0392b')}
-        ${ratioCard('NI%', niPct, 'NI ÷ Connected', '#9a6800')}
-        ${ratioCard('LGR', lgr, 'Leads ÷ Connected', '#1a7a4a')}
-        ${ratioCard('LCV', lcv, 'Lead contacts ÷ Total contacts', '#534AB7')}
-        ${ratioCard('Health', health, 'Callable ÷ Total phones', parseFloat(health)>50?'#1a7a4a':parseFloat(health)>25?'#9a6800':'#c0392b')}
-        `}
-      </div>
-    </div>
-
-
-
-    <div class="ocu-card" style="padding:18px 20px;margin-bottom:18px">
-      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px;flex-wrap:wrap;gap:10px">
-        <div style="font-size:14px;font-weight:600;color:var(--ocu-text-1)">Contact list</div>
-        <div style="display:flex;gap:8px;flex-wrap:wrap">
-          <form method="POST" action="/campaigns/${c.id}/sync-wrong-numbers" style="display:inline" onsubmit="return confirm('Sync all historical wrong numbers to the master contact list? Safe to run anytime.')">
-            <button type="submit" class="ocu-btn ocu-btn-secondary">Sync wrong numbers</button>
-          </form>
-          <a href="/campaigns/${c.id}/export/clean" class="ocu-btn ocu-btn-primary">Download clean export</a>
-        </div>
-      </div>
-      <div class="ocu-kpi-row" style="grid-template-columns:repeat(auto-fit,minmax(140px,1fr));margin-bottom:14px">
-        ${kpi('Total properties', fmtNum(c.contact_counts?.total_contacts||0), 'Contacts uploaded')}
-        ${kpi('Accepted by Readymode', `${fmtNum(c.manual_count||0)} <button onclick="document.getElementById('rm-count-form').style.display=document.getElementById('rm-count-form').style.display==='none'?'block':'none'" style="font-size:11px;color:var(--ocu-text-3);background:none;border:none;cursor:pointer;text-decoration:underline">edit</button>`, 'Manually entered')}
-        ${kpi('Total phones', fmtNum(c.contact_counts?.total_phones||0), 'Across all contacts')}
-        ${kpi('Wrong numbers', fmtNum(c.contact_counts?.wrong_phones||0), 'Permanently excluded', '#c0392b')}
-        ${kpi('NIS flagged', fmtNum(c.contact_counts?.nis_phones||0), 'Dead numbers', '#c0392b')}
-        ${kpi('Confirmed correct', fmtNum(c.contact_counts?.correct_phones||0), 'Live person confirmed', '#1a7a4a')}
-        ${kpi('Contacts reached', `${fmtNum(c.contact_counts?.reached_contacts||0)}${c.contact_counts?.total_contacts>0?` <span style="font-size:13px;color:var(--ocu-text-3);font-weight:400">(${((c.contact_counts.reached_contacts/c.contact_counts.total_contacts)*100).toFixed(1)}%)</span>`:''}`, 'At least 1 live pickup', '#185fa5')}
-      </div>
-      <div id="rm-count-form" style="display:none;background:var(--ocu-surface);border-radius:8px;padding:12px;margin-bottom:14px">
-        <form method="POST" action="/campaigns/${c.id}/readymode-count" style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
-          <input type="number" name="count" value="${c.manual_count||''}" placeholder="e.g. 4163" class="ocu-input" style="width:160px" />
-          <button type="submit" class="ocu-btn ocu-btn-primary">Save</button>
-          <span class="ocu-text-3" style="font-size:12px">Total contacts Readymode accepted</span>
-        </form>
-      </div>
-      <div style="border-top:1px solid var(--ocu-border-soft, #f0efe9);padding-top:14px">
-        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
-          <div class="ocu-text-3" style="font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.06em">Upload original contact list</div>
-          ${parseInt(c.total_unique_numbers||0) > 0 ? `
-          <form method="POST" action="/campaigns/${c.id}/contacts/delete" onsubmit="return confirm('Delete the master contact list for this campaign? This cannot be undone.')">
-            <button type="submit" class="ocu-btn ocu-btn-ghost" style="color:#c0392b;font-size:12px">Delete master list</button>
-          </form>` : ''}
-        </div>
-        <form method="POST" action="/campaigns/${c.id}/contacts/upload" enctype="multipart/form-data">
-          <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
-            <input type="file" name="contactfile" accept=".csv" required class="ocu-input" style="padding:6px 10px;flex:1;min-width:240px" />
-            <button type="submit" class="ocu-btn ocu-btn-primary">Upload contact list</button>
-          </div>
-          <div class="ocu-text-3" style="font-size:11px;margin-top:6px">Loki will auto-detect all columns and phone numbers. Re-upload to replace.</div>
-        </form>
-        ${c.sms_status === 'active' ? `
-        <div style="margin-top:16px;padding-top:14px;border-top:1px solid var(--ocu-border-soft, #f0efe9)">
-          <div class="ocu-text-3" style="font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.06em;margin-bottom:8px">Upload SmarterContact SMS results</div>
-          <form method="POST" action="/campaigns/${c.id}/sms/upload" enctype="multipart/form-data">
-            <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
-              <input type="file" name="smsfile" accept=".csv" required class="ocu-input" style="padding:6px 10px;flex:1;min-width:240px" />
-              <button type="submit" class="ocu-btn ocu-btn-primary" style="background:#2563eb">Upload SMS results</button>
-            </div>
-            <div class="ocu-text-3" style="font-size:11px;margin-top:6px">Required columns: Phone, Labels, First name, Last name, Property address, Property city, Property state, Property zip. One label per row only.</div>
-          </form>
-        </div>` : ''}
-      </div>
-    </div>
-
-    <div style="display:grid;grid-template-columns:1fr 280px;gap:14px;margin-bottom:18px">
-      <div class="ocu-card" style="padding:16px 18px">
-        <div class="ocu-text-3" style="font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.06em;margin-bottom:12px">Disposition breakdown</div>
-        <div class="ocu-table-wrap">
-          <table class="ocu-table">
-            <thead><tr><th>Disposition</th><th class="ocu-text-right">Count</th></tr></thead>
-            <tbody>${dispositionRows||'<tr><td colspan="2" class="ocu-text-3" style="padding:14px">No data yet</td></tr>'}</tbody>
-          </table>
-        </div>
-      </div>
-      <div class="ocu-card" style="padding:16px 18px">
-        <div class="ocu-text-3" style="font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.06em;margin-bottom:12px">Channel status</div>
-        <div style="margin-bottom:10px">
-          <div class="ocu-text-3" style="font-size:11px;margin-bottom:4px">Cold call</div>
-          <span class="ocu-pill ${c.cold_call_status==='active'?'ocu-pill-good':''}">${c.cold_call_status}</span>
-        </div>
-        <div>
-          <div class="ocu-text-3" style="font-size:11px;margin-bottom:4px">SMS</div>
-          <span class="ocu-pill ${c.sms_status==='active'?'ocu-pill-good':''}">${c.sms_status}</span>
-        </div>
-        <div style="margin-top:14px;padding-top:12px;border-top:1px solid var(--ocu-border-soft, #f0efe9)">
-          <div class="ocu-text-3" style="font-size:11px;margin-bottom:2px">Wrong numbers removed</div>
-          <div class="ocu-mono" style="font-size:18px;font-weight:600;color:#c0392b">${fmtNum(c.total_wrong_numbers||0)}</div>
-        </div>
-        <div style="margin-top:10px">
-          <div class="ocu-text-3" style="font-size:11px;margin-bottom:2px">Voicemails accumulated</div>
-          <div class="ocu-mono" style="font-size:18px;font-weight:600;color:#9a6800">${fmtNum(c.total_voicemails||0)}</div>
-        </div>
-      </div>
-    </div>
-
-    ${c.status === 'completed' ? `
-    <div class="ocu-card" style="padding:18px 20px;margin-bottom:18px;background:var(--ocu-surface);text-align:center">
-      <div style="font-size:13px;color:var(--ocu-text-2)">This campaign is completed — no more uploads accepted. <a href="/oculah/campaigns" class="ocu-link">Start a new round</a> to continue.</div>
-    </div>` : c.active_channel === 'cold_call' ? `
-    <div class="ocu-card" style="padding:18px 20px;margin-bottom:18px">
-      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;flex-wrap:wrap;gap:10px">
-        <div style="font-size:14px;font-weight:600;color:var(--ocu-text-1)">Upload filtration file to this campaign</div>
-        <select id="channel-select" class="ocu-input" style="padding:5px 8px;font-size:12px;width:auto">
-          <option value="cold_call" selected>Cold call</option>
-        </select>
-      </div>
-      <div class="drop-zone" id="drop-zone" style="padding:24px;border:1.5px dashed var(--ocu-border);border-radius:10px;text-align:center;cursor:pointer;background:var(--ocu-surface);transition:all .15s">
-        <div style="font-size:14px;font-weight:600;color:var(--ocu-text-1)">Drop Readymode CSV here or click to browse</div>
-        <div class="ocu-text-3" style="font-size:12px;margin-top:4px">File will be filtered and recorded against this campaign</div>
-      </div>
-      <input type="file" id="file-input" accept=".csv" style="display:none" />
-      <div id="upload-spinner" style="display:none;align-items:center;gap:8px;font-size:13px;color:var(--ocu-text-3);padding:10px 0"><div class="spinner"></div> Processing…</div>
-    </div>` : `
-    <div class="ocu-card" style="padding:18px 20px;margin-bottom:18px;background:var(--ocu-surface);text-align:center">
-      <div style="font-size:13px;color:var(--ocu-text-2)">This is an SMS campaign — upload SMS results in the Contact List section above.</div>
-    </div>`}
-
-    <div id="results" style="display:none">
-      <div class="ocu-kpi-row" id="result-stats" style="grid-template-columns:repeat(auto-fit,minmax(140px,1fr));margin-bottom:18px"></div>
-      <div class="ocu-card" style="padding:16px 18px;margin-bottom:18px">
-        <div class="tabs"><button class="tab active" data-tab="filtered">Filtered → REISift</button><button class="tab" data-tab="clean">Clean → Readymode</button></div>
-        <div id="tab-filtered" class="tab-panel active"><div class="tbl-wrap"><table class="data-table"><thead><tr id="rem-head"></tr></thead><tbody id="rem-body"></tbody></table></div></div>
-        <div id="tab-clean" class="tab-panel"><div class="tbl-wrap"><table class="data-table"><thead><tr id="cln-head"></tr></thead><tbody id="cln-body"></tbody></table></div></div>
-        <div style="display:flex;gap:8px;margin-top:14px">
-          <a class="ocu-btn ocu-btn-primary" href="/download/filtered">Download filtered (REISift)</a>
-          <a href="/download/clean" class="ocu-btn ocu-btn-secondary">Download clean (Readymode)</a>
-        </div>
-      </div>
-    </div>
-
-    <div class="ocu-card" style="padding:0;overflow:hidden;margin-bottom:18px">
-      <div style="padding:14px 18px;border-bottom:1px solid var(--ocu-border-soft, #f0efe9)">
-        <div class="ocu-text-3" style="font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.06em">Filtration history</div>
-      </div>
-      <div class="ocu-table-wrap">
-        <table class="ocu-table">
-          <thead><tr><th>Date</th><th>File / Source list</th><th>Channel</th><th class="ocu-text-right">Total</th><th class="ocu-text-right">Kept</th><th class="ocu-text-right">Filtered</th><th>Breakdown</th><th>Memory</th><th></th></tr></thead>
-          <tbody>${uploadRows||'<tr><td colspan="9" class="ocu-text-3" style="padding:18px;text-align:center">No uploads yet for this campaign</td></tr>'}</tbody>
-        </table>
-      </div>
-    </div>
-
-    <!-- Rename campaign modal -->
-    <div id="rename-campaign-modal" class="ocu-modal-overlay" onclick="if (event.target.id === 'rename-campaign-modal') document.getElementById('rename-campaign-modal').classList.remove('open')">
-      <div class="ocu-modal">
-        <div class="ocu-modal-header">
-          <div class="ocu-modal-title">Rename campaign</div>
-          <button type="button" class="ocu-modal-close" onclick="document.getElementById('rename-campaign-modal').classList.remove('open')">×</button>
-        </div>
-        <form method="POST" action="/campaigns/${c.id}/rename">
-          <div style="margin-bottom:14px">
-            <label class="ocu-form-label">Campaign name</label>
-            <input type="text" id="rename-campaign-input" name="name" value="${escAttr(c.name)}" required maxlength="255" autocomplete="off" class="ocu-input" />
-            <div class="ocu-text-3" style="font-size:11px;margin-top:4px">Duplicate names are allowed — use whatever makes sense for you.</div>
-          </div>
-          <div style="display:flex;gap:6px;justify-content:flex-end">
-            <button type="button" class="ocu-btn ocu-btn-ghost" onclick="document.getElementById('rename-campaign-modal').classList.remove('open')">Cancel</button>
-            <button type="submit" class="ocu-btn ocu-btn-primary">Save</button>
-          </div>
-        </form>
-      </div>
-    </div>
-
-    <script>
-    const CAMPAIGN_ID = '${c.id}';
-    const PREVIEW_COLS = ['List Name (REISift Campaign)','First Name','Last Name','Phone','Disposition','Call Log Count','Action','Phone Tag','Phone Status','Marketing Results'];
-    function showError(msg){alert(msg);}
-    async function handleFile(file){
-      if(!file.name.endsWith('.csv')){showError('CSV files only.');return;}
-      const form=new FormData();
-      form.append('csvfile',file);
-      form.append('channel',document.getElementById('channel-select').value);
-      document.getElementById('upload-spinner').style.display='flex';
-      document.getElementById('drop-zone').style.opacity='0.5';
-      try{
-        const res=await fetch('/campaigns/'+CAMPAIGN_ID+'/upload',{method:'POST',body:form});
-        const data=await res.json();
-        if(!res.ok||data.error){showError(data.error||'Failed.');return;}
-        renderResults(data);
-        setTimeout(()=>location.reload(),3000);
-      }catch(e){showError(e.message);}
-      finally{document.getElementById('upload-spinner').style.display='none';document.getElementById('drop-zone').style.opacity='1';}
-    }
-    function renderResults(data){
-      var s=data.stats;
-      var sg=document.getElementById('result-stats');
-      var card=function(lbl,val,color){return '<div class="ocu-kpi"><div class="ocu-kpi-label">'+lbl+'</div><div class="ocu-kpi-value"'+(color?' style="color:'+color+'"':'')+'>'+val+'</div></div>';};
-      sg.innerHTML=card('Uploaded',s.totalRows)+card('Kept',s.kept,'#1a7a4a')+card('Filtered',s.filtered,'#c0392b')+card('Lists in file',s.listsCount)+card('Caught by memory',s.memCaught,'#2471a3');
-      renderTable('rem-head','rem-body',data.preview.filtered);
-      renderTable('cln-head','cln-body',data.preview.clean);
-      document.getElementById('results').style.display='block';
-    }
-    function renderTable(hId,bId,rows){
-      var cols=PREVIEW_COLS;
-      var thead=document.getElementById(hId),tbody=document.getElementById(bId);
-      thead.innerHTML='';tbody.innerHTML='';
-      if(!rows.length){tbody.innerHTML='<tr><td colspan="99" style="color:#aaa;padding:12px">No records</td></tr>';cols.forEach(function(c){var th=document.createElement('th');th.textContent=c;thead.appendChild(th);});return;}
-      cols.forEach(function(c){var th=document.createElement('th');th.textContent=c;thead.appendChild(th);});
-      rows.forEach(function(r){var tr=document.createElement('tr');cols.forEach(function(c){var td=document.createElement('td');var v=r[c]!==undefined?r[c]:'';if(c==='Action'){var cls=v==='remove'?'b-remove':'b-keep';td.innerHTML='<span class="badge '+cls+'">'+v+'</span>';}else td.textContent=v;tr.appendChild(td);});tbody.appendChild(tr);});
-    }
-    document.getElementById('file-input').addEventListener('change',e=>{if(e.target.files[0])handleFile(e.target.files[0]);});
-    const dz=document.getElementById('drop-zone');
-    dz.addEventListener('click',()=>document.getElementById('file-input').click());
-    dz.addEventListener('dragover',e=>{e.preventDefault();dz.style.borderColor='#888';});
-    dz.addEventListener('dragleave',()=>dz.style.borderColor='');
-    dz.addEventListener('drop',e=>{e.preventDefault();dz.style.borderColor='';if(e.dataTransfer.files[0])handleFile(e.dataTransfer.files[0]);});
-    document.querySelectorAll('.tab').forEach(t=>t.addEventListener('click',()=>{document.querySelectorAll('.tab').forEach(x=>x.classList.remove('active'));document.querySelectorAll('.tab-panel').forEach(x=>x.classList.remove('active'));t.classList.add('active');document.getElementById('tab-'+t.dataset.tab).classList.add('active');}));
-    </script>
-  `, 'campaigns', user);
-}
 
 // ── Shared shell ─────────────────────────────────────────────────────────────
 const { shell } = require('./shared-shell');

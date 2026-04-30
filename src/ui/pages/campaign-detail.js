@@ -507,7 +507,7 @@ function campaignDetail(data = {}) {
     ${flashHTML}
 
     <div style="margin-bottom:14px;display:flex;gap:8px;justify-content:flex-end;flex-wrap:wrap">
-      <a href="/campaigns/${c.id}" class="ocu-btn ocu-btn-primary">Upload list / call log</a>
+      <a href="/oculah/filtration?campaign=${c.id}" class="ocu-btn ocu-btn-primary">Upload list / call log</a>
       ${newRoundBtn}
       ${closeBtn}
     </div>
@@ -532,7 +532,6 @@ function campaignDetail(data = {}) {
     </div>
 
     <div style="margin-top:18px;display:flex;gap:8px;justify-content:flex-end">
-      <a href="/campaigns/${c.id}" class="ocu-btn ocu-btn-ghost">Legacy uploads page →</a>
       ${newRoundBtn}
       ${closeBtn}
     </div>

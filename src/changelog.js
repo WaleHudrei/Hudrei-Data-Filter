@@ -3,6 +3,13 @@
 
 const ENTRIES = [
   {
+    date: 'April 30, 2026 (one campaign URL only)',
+    title: 'Removed the duplicate legacy /campaigns/:id page',
+    items: [
+      { tag: 'note', text: 'Up until today /campaigns/:id (legacy Loki) and /oculah/campaigns/:id (Oculah) both rendered campaign detail pages. Same numbers, two layouts — operators landing on one URL would see one experience, on the other a different one. Now there is one URL only: /oculah/campaigns/:id. The legacy GET handler and its ~350-line render function are deleted from server.js. Every post-action handler that used to redirect back to /campaigns/:id (rename, status, channel, contacts upload, sync, etc.) now redirects to /oculah/campaigns/:id. Any old bookmark to /campaigns/123 will 404 — open it from the Campaigns sidebar item or the Campaigns list to land in the right place. All POST handlers, /campaigns/:id/export/clean, /campaigns/:id/contacts/stats, /campaigns/:id/uploads/:uploadId/delete, /campaigns/new etc. are unchanged — only the duplicate detail render was removed.' },
+    ],
+  },
+  {
     date: 'April 30, 2026 (campaign view restored + smarter import mapping)',
     title: 'Loki-style campaign dashboard is back, and the import remembers your last mapping even when columns change',
     items: [
