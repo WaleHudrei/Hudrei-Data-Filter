@@ -70,24 +70,47 @@ function uploadRow(u) {
 
 // ── New campaign-detail sections (Loki port) ──────────────────────────────
 //
-// Local mini-card primitives — match the Loki kpi/ratioCard look.
-// (We don't reuse <kpiCard> from components/kpi-card.js because the legacy
-// Loki layout uses a denser, label/value/sub form with a per-card value
-// color that the shared component doesn't expose.)
-function _kpiCell(label, value, sub, valueColor) {
+// Local mini-card primitives — match the standardized .ocu-kpi component
+// (oculah.css §"KPI cards"). We don't reuse <kpiCard> from
+// components/kpi-card.js because that helper takes a structured `delta`
+// object, while these cards just want a freeform `sub` line. Same DOM
+// shape under the hood, so the design tokens apply uniformly.
+//
+// 2026-05-01: replaced inline `style="color:#hex"` on .ocu-kpi-value with
+// the .ocu-kpi-value modifier classes (.bad, .good, .burning) so colors
+// are themable from one place and the cards don't drift from the global
+// KPI standard.
+const _KPI_TONE_CLASS = {
+  bad:     'bad',     // red — wrong numbers, NIS flagged
+  warn:    'burning', // amber — not interested
+  good:    'good',    // green — leads, callable, confirmed
+  primary: 'primary', // blue accent — connected
+};
+function _kpiCell(label, value, sub, tone) {
+  const cls = tone ? ` ${_KPI_TONE_CLASS[tone] || ''}` : '';
   return `
     <div class="ocu-kpi">
       <div class="ocu-kpi-label">${escHTML(label)}</div>
-      <div class="ocu-kpi-value"${valueColor ? ` style="color:${valueColor}"` : ''}>${value}</div>
+      <div class="ocu-kpi-value${cls}">${value}</div>
       ${sub ? `<div class="ocu-kpi-delta">${escHTML(sub)}</div>` : ''}
     </div>`;
 }
-function _ratioCard(label, value, hint, color) {
+// Ratio card — small percentage tile used by the "Campaign KPIs" strip.
+// Tone names map to the same value-color classes as _kpiCell, keeping
+// every campaign-page card aligned with the global KPI standard.
+const _RATIO_TONE_VAR = {
+  bad:     'var(--ocu-danger)',
+  warn:    'var(--ocu-warn)',
+  good:    'var(--ocu-success)',
+  primary: 'var(--ocu-accent)',
+};
+function _ratioCard(label, value, hint, tone) {
+  const color = _RATIO_TONE_VAR[tone] || 'var(--ocu-text-1)';
   return `
-    <div class="ocu-card" style="text-align:center;padding:14px 10px">
-      <div style="font-size:22px;font-weight:600;color:${color}">${value}%</div>
-      <div style="font-size:11px;color:var(--ocu-text-2);margin-top:4px;font-weight:600">${escHTML(label)}</div>
-      <div style="font-size:10px;color:var(--ocu-text-3);margin-top:2px">${escHTML(hint)}</div>
+    <div class="ocu-ratio-card">
+      <div class="ocu-ratio-value" style="color:${color}">${value}%</div>
+      <div class="ocu-ratio-label">${escHTML(label)}</div>
+      <div class="ocu-ratio-hint">${escHTML(hint)}</div>
     </div>`;
 }
 
@@ -139,17 +162,17 @@ function filtrationKpiStrip(c, m) {
   const isSms = (c.active_channel || 'cold_call') === 'sms';
   const cards = isSms ? `
     ${_kpiCell('SMS uploads',     fmtNum(m.uploadCount),  'Uploads')}
-    ${_kpiCell('Wrong numbers',   fmtNum(m.wrongNums),    'Removed', '#c0392b')}
-    ${_kpiCell('Not interested',  fmtNum(m.notInterested),'Total NI', '#9a6800')}
-    ${_kpiCell('Leads generated', fmtNum(m.transfers),    'Transfers', '#1a7a4a')}
-    ${_kpiCell('Callable',        fmtNum(m.masterCallable), `${m.callablePct}% active pool`, '#1a7a4a')}
+    ${_kpiCell('Wrong numbers',   fmtNum(m.wrongNums),    'Removed', 'bad')}
+    ${_kpiCell('Not interested',  fmtNum(m.notInterested),'Total NI', 'warn')}
+    ${_kpiCell('Leads generated', fmtNum(m.transfers),    'Transfers', 'good')}
+    ${_kpiCell('Callable',        fmtNum(m.masterCallable), `${m.callablePct}% active pool`, 'good')}
   ` : `
     ${_kpiCell('Call logs',       fmtNum(m.callLogs),     'Logged numbers')}
-    ${_kpiCell('Connected',       fmtNum(m.connected),    'Live pickups', '#2471a3')}
-    ${_kpiCell('Wrong numbers',   fmtNum(m.wrongNums),    'Removed', '#c0392b')}
-    ${_kpiCell('Not interested',  fmtNum(m.notInterested),'Total NI', '#9a6800')}
-    ${_kpiCell('Leads generated', fmtNum(m.transfers),    'Transfers', '#1a7a4a')}
-    ${_kpiCell('Callable',        fmtNum(m.masterCallable), `${m.callablePct}% active pool`, '#1a7a4a')}
+    ${_kpiCell('Connected',       fmtNum(m.connected),    'Live pickups', 'primary')}
+    ${_kpiCell('Wrong numbers',   fmtNum(m.wrongNums),    'Removed', 'bad')}
+    ${_kpiCell('Not interested',  fmtNum(m.notInterested),'Total NI', 'warn')}
+    ${_kpiCell('Leads generated', fmtNum(m.transfers),    'Transfers', 'good')}
+    ${_kpiCell('Callable',        fmtNum(m.masterCallable), `${m.callablePct}% active pool`, 'good')}
     ${_kpiCell('Filtration runs', fmtNum(m.uploadCount),  'Uploads')}
   `;
   return `
@@ -162,20 +185,20 @@ function filtrationKpiStrip(c, m) {
 // cold-call; W#%/NI%/LGR/LCV/Health for SMS).
 function ratioCardsBlock(c, m) {
   const isSms = (c.active_channel || 'cold_call') === 'sms';
-  const healthColor = parseFloat(m.health) > 50 ? '#1a7a4a'
-                    : parseFloat(m.health) > 25 ? '#9a6800' : '#c0392b';
+  const healthColor = parseFloat(m.health) > 50 ? 'good'
+                    : parseFloat(m.health) > 25 ? 'warn' : 'bad';
   const cards = isSms ? `
-    ${_ratioCard('W#%',    m.wPct,   'Wrong ÷ Total contacts',           '#c0392b')}
-    ${_ratioCard('NI%',    m.niPct,  'NI ÷ Total contacts',              '#9a6800')}
-    ${_ratioCard('LGR',    m.lgr,    'Leads ÷ Total contacts',           '#1a7a4a')}
+    ${_ratioCard('W#%',    m.wPct,   'Wrong ÷ Total contacts',           'bad')}
+    ${_ratioCard('NI%',    m.niPct,  'NI ÷ Total contacts',              'warn')}
+    ${_ratioCard('LGR',    m.lgr,    'Leads ÷ Total contacts',           'good')}
     ${_ratioCard('LCV',    m.lcv,    'Lead contacts ÷ Total contacts',   '#534AB7')}
     ${_ratioCard('Health', m.health, 'Callable ÷ Total phones',          healthColor)}
   ` : `
     ${_ratioCard('CLR',    m.clr,    'Call logs ÷ Total phones',         '#534AB7')}
-    ${_ratioCard('CR',     m.cr,     'Connected ÷ Call logs',            '#2471a3')}
-    ${_ratioCard('W#%',    m.wPct,   'Wrong ÷ Humans reached',           '#c0392b')}
-    ${_ratioCard('NI%',    m.niPct,  'NI ÷ Connected',                   '#9a6800')}
-    ${_ratioCard('LGR',    m.lgr,    'Leads ÷ Connected',                '#1a7a4a')}
+    ${_ratioCard('CR',     m.cr,     'Connected ÷ Call logs',            'primary')}
+    ${_ratioCard('W#%',    m.wPct,   'Wrong ÷ Humans reached',           'bad')}
+    ${_ratioCard('NI%',    m.niPct,  'NI ÷ Connected',                   'warn')}
+    ${_ratioCard('LGR',    m.lgr,    'Leads ÷ Connected',                'good')}
     ${_ratioCard('LCV',    m.lcv,    'Lead contacts ÷ Total contacts',   '#534AB7')}
     ${_ratioCard('Health', m.health, 'Callable ÷ Total phones',          healthColor)}
   `;
@@ -240,9 +263,9 @@ function contactListCard(c, counts) {
       ${_kpiCell('Total properties',     fmtNum(totalContacts), 'Contacts uploaded')}
       ${isCold ? _kpiCell('Accepted by Readymode', acceptedValue, 'Manually entered') : ''}
       ${_kpiCell('Total phones',         fmtNum(totalPhones),  'Across all contacts')}
-      ${_kpiCell('Wrong numbers',        fmtNum(wrong),        'Permanently excluded', '#c0392b')}
-      ${_kpiCell('NIS flagged',          fmtNum(nis),          'Dead numbers',         '#c0392b')}
-      ${_kpiCell('Confirmed correct',    fmtNum(correct),      'Live person confirmed', '#1a7a4a')}
+      ${_kpiCell('Wrong numbers',        fmtNum(wrong),        'Permanently excluded', 'bad')}
+      ${_kpiCell('NIS flagged',          fmtNum(nis),          'Dead numbers',         'bad')}
+      ${_kpiCell('Confirmed correct',    fmtNum(correct),      'Live person confirmed', 'good')}
       ${_kpiCell('Contacts reached',     reachedValue,         'At least 1 live pickup', '#185fa5')}
     </div>`;
 

@@ -77,6 +77,21 @@
   --ocu-radius:    8px;
   --ocu-radius-lg: 10px;
 
+  /* Component dimension tokens — single source of truth for the
+     "every button looks like every other button" guarantee. Adding
+     a new size here is a deliberate decision; one-off pixel heights
+     in component CSS should reference one of these instead. */
+  --ocu-btn-h-xs:    28px;   /* table-row inline actions only */
+  --ocu-btn-h-sm:    32px;   /* secondary / ghost buttons */
+  --ocu-btn-h-md:    36px;   /* default & primary CTAs */
+  --ocu-field-h:     38px;   /* inputs/selects — sits 2px taller than md btn so they vertically center together */
+  --ocu-field-px:    12px;
+  --ocu-pill-h-xs:   18px;
+  --ocu-pill-h-sm:   22px;
+  --ocu-pill-h-md:   26px;
+  --ocu-card-pad:        20px;
+  --ocu-card-pad-tight:  14px;
+
   /* Sidebar dimensions */
   --ocu-sidebar-w: 240px;
   --ocu-sidebar-w-collapsed: 64px;
@@ -813,56 +828,137 @@
 .ocu-settings-card-body { padding-left: 0; }
 .ocu-settings-stack { display: flex; flex-direction: column; gap: 16px; }
 
-/* ─── KPI cards ─────────────────────────────────────────────────────────── */
+/* ─── KPI cards (standardized 2026-05-01) ──────────────────────────────────
+   Single component shape across every page: dashboard, records, owner-detail,
+   campaign-detail, list-registry, NIS upload. Three variants by data slot:
+     • label + value                 (counters)
+     • label + value + delta line    (counters with sub-text)
+     • label + value, .featured      (active/highlighted card)
+   Cards are flex-column with space-between so an empty .ocu-kpi-delta slot
+   reserves its line height — every card on the same row reaches the same
+   height regardless of whether each individual card has a delta. This is
+   the "no card jitters when sibling has more text" guarantee. */
 .ocu-kpi-row {
   display: grid;
-  grid-template-columns: repeat(6, 1fr);
-  gap: 12px;
-  margin-bottom: 24px;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: var(--ocu-space-3);
+  margin-bottom: var(--ocu-space-5);
 }
-@media (max-width: 1280px) {
-  .ocu-kpi-row { grid-template-columns: repeat(3, 1fr); }
-}
-@media (max-width: 768px) {
-  .ocu-kpi-row { grid-template-columns: repeat(2, 1fr); }
-}
+/* Legacy fixed-column callsites continue to work — pages that set
+   inline `style="grid-template-columns:..."` override the auto-fit. */
 
 .ocu-kpi {
-  background: var(--ocu-surface);
+  display: flex;
+  flex-direction: column;
+  gap: var(--ocu-space-2);
+  min-height: 96px;
+  padding: var(--ocu-space-3) var(--ocu-space-4);
+  background: var(--ocu-card-bg);
   border: 1px solid var(--ocu-border);
   border-radius: var(--ocu-radius-lg);
-  padding: 18px 20px;
-  transition: border-color 0.15s;
+  transition: border-color 0.12s, box-shadow 0.12s;
 }
 .ocu-kpi:hover { border-color: var(--ocu-border-strong); }
+
 .ocu-kpi-label {
-  font-size: 12px;
-  color: var(--ocu-text-2);
-  margin-bottom: 14px;
-  font-weight: 500;
+  font-size: 11.5px;
+  font-weight: 600;
+  color: var(--ocu-text-3);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  margin: 0;
+  /* Long labels truncate cleanly so card heights stay consistent. */
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 .ocu-kpi-value {
   font-family: var(--ocu-mono);
-  font-size: 26px;
-  font-weight: 600;
+  font-size: 22px;
+  font-weight: 700;
   color: var(--ocu-text-1);
-  line-height: 1;
+  line-height: 1.1;
   letter-spacing: -0.01em;
+  font-variant-numeric: tabular-nums;
 }
 .ocu-kpi-delta {
-  margin-top: 10px;
-  font-size: 12px;
+  font-size: 11.5px;
   color: var(--ocu-text-3);
+  /* Delta sits at the bottom; cards without a delta still reserve the
+     space via .ocu-kpi-delta-spacer (or just the min-height on .ocu-kpi)
+     so a row of mixed cards doesn't jitter. */
+  margin-top: auto;
+  line-height: 1.3;
 }
-.ocu-kpi-delta .up   { color: var(--ocu-success); font-weight: 500; }
-.ocu-kpi-delta .down { color: var(--ocu-danger);  font-weight: 500; }
+.ocu-kpi-delta .up   { color: var(--ocu-success); font-weight: 600; }
+.ocu-kpi-delta .down { color: var(--ocu-danger);  font-weight: 600; }
 .ocu-kpi-delta .num  { font-family: var(--ocu-mono); }
+.ocu-kpi-value.burning { color: var(--ocu-burning); }
+.ocu-kpi-value.bad     { color: var(--ocu-danger); }
+.ocu-kpi-value.good    { color: var(--ocu-success); }
+
+/* Featured card — primary metric on the page (e.g. "Total" on records). */
 .ocu-kpi.featured {
-  border-color: rgba(8, 145, 178, 0.3);
-  box-shadow: 0 0 0 3px rgba(8, 145, 178, 0.04);
+  border-color: rgba(8, 145, 178, 0.35);
+  box-shadow: 0 0 0 3px rgba(8, 145, 178, 0.06);
 }
 .ocu-kpi.featured .ocu-kpi-value { color: var(--ocu-accent); }
-.ocu-kpi-value.burning { color: var(--ocu-burning); }
+
+/* Filterable variant — used by /records quick-filter strip. The card
+   becomes a button; active state uses an accent underline (matches the
+   tabs convention) instead of a border-color swap so the card geometry
+   stays identical between idle and active. */
+button.ocu-kpi,
+.ocu-kpi-filterable {
+  cursor: pointer;
+  text-align: left;
+  font: inherit;
+  border-style: solid;
+}
+.ocu-kpi-filterable:hover { border-color: var(--ocu-border-strong); }
+.ocu-kpi-filterable.is-active,
+.ocu-kpi-filterable[aria-pressed="true"] {
+  border-color: var(--ocu-accent);
+  background: var(--ocu-accent-soft);
+  box-shadow: inset 0 -2px 0 var(--ocu-accent);
+}
+
+/* Ratio card — used by the campaign-detail "Campaign KPIs" strip
+   (CLR / CR / W#% / NI% / LGR / LCV / Health). Centered percentage
+   value with a label and hint, sized to sit alongside .ocu-kpi cards
+   in the same row without height drift. */
+.ocu-ratio-card {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  min-height: 96px;
+  padding: var(--ocu-space-3) var(--ocu-space-3);
+  background: var(--ocu-card-bg);
+  border: 1px solid var(--ocu-border);
+  border-radius: var(--ocu-radius-lg);
+  text-align: center;
+}
+.ocu-ratio-value {
+  font-size: 22px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -0.01em;
+  line-height: 1;
+}
+.ocu-ratio-label {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--ocu-text-2);
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+.ocu-ratio-hint {
+  font-size: 10.5px;
+  color: var(--ocu-text-3);
+  line-height: 1.4;
+}
 
 /* ─── Grids ─────────────────────────────────────────────────────────────── */
 .ocu-grid {
