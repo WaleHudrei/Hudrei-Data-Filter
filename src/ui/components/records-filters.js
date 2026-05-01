@@ -232,10 +232,10 @@ function recordsFilters(opts = {}) {
           </div>
 
           <div class="ocu-filter">
-            <label class="ocu-filter-label">Equity ($)</label>
+            <label class="ocu-filter-label">Equity (%)</label>
             <div class="ocu-filter-pair">
-              <input type="number" name="min_equity" value="${escHTML(f.min_equity || '')}" placeholder="Min" class="ocu-filter-input">
-              <input type="number" name="max_equity" value="${escHTML(f.max_equity || '')}" placeholder="Max" class="ocu-filter-input">
+              <input type="number" name="min_equity" value="${escHTML(f.min_equity || '')}" min="0" max="100" placeholder="Min %" class="ocu-filter-input">
+              <input type="number" name="max_equity" value="${escHTML(f.max_equity || '')}" min="0" max="100" placeholder="Max %" class="ocu-filter-input">
             </div>
           </div>
 

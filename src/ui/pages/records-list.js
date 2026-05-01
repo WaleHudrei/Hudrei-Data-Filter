@@ -40,7 +40,7 @@ function buildFilterChips(filters, querystring) {
     chips.push(`<a class="ocu-filter-chip" href="${escHTML('/oculah/records' + (qs ? '?' + qs : ''))}">${escHTML(lbl)} <span class="ocu-filter-chip-x">×</span></a>`);
   }
   if (filters.min_equity || filters.max_equity) {
-    const lbl = 'Equity: $' + (filters.min_equity || '?') + '–$' + (filters.max_equity || '?');
+    const lbl = 'Equity: ' + (filters.min_equity || '?') + '%–' + (filters.max_equity || '?') + '%';
     const params = new URLSearchParams(querystring);
     params.delete('min_equity'); params.delete('max_equity');
     const qs = params.toString();
