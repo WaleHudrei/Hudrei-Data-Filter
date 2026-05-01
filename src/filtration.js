@@ -685,6 +685,13 @@ async function generateCleanExport(campaignId, tenantId) {
 
 // ── Get contact list stats for a campaign ────────────────────────────────────
 async function getContactStats(campaignId) {
+  // total_phones is unique phone numbers on the master list, NOT raw
+  // contact-phone rows. campaign_contact_phones is keyed (contact_id,
+  // slot_index), so the same phone shared across two contacts produces
+  // two rows; counting ccp.id double-counted. The wrong/nis/filtered
+  // counts stay row-based — those flags are phone-row attributes and
+  // collapsing them by phone_number would lose nuance when the same
+  // number is wrong on one contact but not another.
   const res = await query(`
     SELECT
       COUNT(DISTINCT cc.id) as total_contacts,
@@ -692,7 +699,7 @@ async function getContactStats(campaignId) {
       COUNT(DISTINCT CASE WHEN ccp.phone_status = 'dead_number' THEN ccp.id END) as nis_phones,
       COUNT(DISTINCT CASE WHEN ccp.filtered = true AND ccp.wrong_number = false THEN ccp.id END) as filtered_phones,
       COUNT(DISTINCT CASE WHEN ccp.phone_status = 'Correct' THEN ccp.id END) as correct_phones,
-      COUNT(DISTINCT ccp.id) as total_phones
+      COUNT(DISTINCT ccp.phone_number) as total_phones
     FROM campaign_contacts cc
     LEFT JOIN campaign_contact_phones ccp ON ccp.contact_id = cc.id
     WHERE cc.campaign_id = $1`, [campaignId]);
