@@ -523,27 +523,19 @@ function detectCols(headers) {
   };
 }
 
+// 2026-05-01 (5E): delegated to the canonical normalizer in
+// src/disposition-normalize.js so 'not_interested' / 'not interested' /
+// 'Not Interested' all reduce to the same bucket app-wide. Local function
+// kept as a thin alias because dozens of in-file call sites reference it.
+//
+// Note: the legacy bucket name 'dead_call' is preserved for downstream
+// thresholds that check `dispo === 'dead_call'`. The new helper's canonical
+// name is 'dead_number'; we map back here so server-side state machines
+// don't have to change in this commit.
+const { normalizeDisposition } = require('./disposition-normalize');
 function normDispo(v) {
-  const s = (v||'').toLowerCase().trim();
-  if (s.includes('transfer')||s==='lead') return 'transfer';
-  // 2026-04-18 audit: add cold-call parity for SMS-only outcomes so the
-  // Marketing Result filter values (Potential Lead / Sold / Listed) are
-  // actually reachable from cold-call dispositions too. Match BEFORE the
-  // generic "not interested" check since 'potential lead' could otherwise
-  // be missed.
-  if (s==='potential lead'||s.includes('potential lead')) return 'potential_lead';
-  if (s==='sold'||s.includes('sold')) return 'sold';
-  if (s==='listed'||s.includes('listed')) return 'listed';
-  if (s==='not interested'||s.includes('not interested')||s==='ni') return 'not_interested';
-  if (s.includes('do not call')||s==='dnc') return 'do_not_call';
-  if (s.includes('spanish')) return 'spanish_speaker';
-  if (s.includes('wrong')) return 'wrong_number';
-  if (s==='voicemail'||s.includes('voicemail')||s==='vm') return 'voicemail';
-  if (s.includes('hung up')||s.includes('hang up')||s.includes('hangup')) return 'hung_up';
-  if (s.includes('dead')) return 'dead_call';
-  if (s.includes('not available')||s==='na'||s.includes('not avail')) return 'not_available';
-  if (s.includes('callback')||s.includes('call back')) return 'callback';
-  return 'other';
+  const out = normalizeDisposition(v);
+  return out === 'dead_number' ? 'dead_call' : out;
 }
 function phoneStatus(d) { return {transfer:'Correct',potential_lead:'Correct',sold:'Correct',listed:'Correct',not_interested:'Correct',do_not_call:'Correct',spanish_speaker:'Correct',wrong_number:'Wrong',callback:'Correct',disqualified:'Correct',completed:'Correct',hung_up:'Tentative'}[d]||''; }
 function mktResult(d,l) {

@@ -3,6 +3,13 @@
 
 const ENTRIES = [
   {
+    date: 'May 1, 2026 (5E — disposition normalization)',
+    title: 'Disposition matching is now case- and formatting-insensitive',
+    items: [
+      { tag: 'feat', text: 'New canonical normalizer in src/disposition-normalize.js. Treats "voicemail" and "Voicemail", "not interested" and "not_interested", "hang up" and "hang_up", "wrong number" and "wrong_numbers", "dead call" and "dead number" as the same canonical value. Works on free-text and underscored variants alike — splits on _ - punctuation and whitespace before keyword matching. server.js\'s normDispo() now delegates to it (preserving the legacy "dead_call" bucket name for downstream thresholds that check that exact string). Other call sites can switch to importing { normalizeDisposition } directly as they\'re touched.' },
+    ],
+  },
+  {
     date: 'May 1, 2026 (5D + 5F — KPIs anchored on accepted, call-log labels clearer)',
     title: 'Campaign KPIs now anchor on Accepted by Dialer; Call logs card distinguishes total vs unique',
     items: [
