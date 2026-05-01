@@ -349,6 +349,34 @@
       return;
     }
 
+    // ── Add phone to a contact ─────────────────────────────────────────────
+    // The owner card's "+ Add phone" button. Prompts for the number and
+    // posts to /records/contacts/:id/phones. On success we just reload —
+    // the new phone needs full markup (best-pill scoring, type/status
+    // pills, tag input) which is non-trivial to build client-side; a
+    // page reload is fast and gets the rendering right.
+    if (action === 'add-phone') {
+      e.stopPropagation();
+      const contactId = target.dataset.contactId;
+      if (!contactId) return;
+      const raw = window.prompt('Add a phone number for this contact:\n(US 10-digit, with or without formatting)');
+      if (!raw || !raw.trim()) return;
+      target.disabled = true;
+      try {
+        const data = await jpost('/records/contacts/' + contactId + '/phones', {
+          phone_number: raw.trim(),
+        });
+        if (data && data.ok) {
+          toast('Phone added', false);
+          window.location.reload();
+        }
+      } catch (err) {
+        toast('Failed to add phone: ' + err.message, true);
+        target.disabled = false;
+      }
+      return;
+    }
+
     // ── Property tag remove ────────────────────────────────────────────────
     if (action === 'property-tag-remove') {
       e.stopPropagation();

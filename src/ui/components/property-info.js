@@ -25,7 +25,7 @@ function propertyInfo(p = {}) {
     { label: 'Lot size',      value: or(p.lot_size_sqft, '—') },
     { label: 'Assessed value',     value: fmtMoney(p.assessed_value),     mono: true },
     { label: 'Market value',       value: fmtMoney(p.estimated_market_value), mono: true },
-    { label: 'Equity',             value: fmtMoney(p.equity_percent),     mono: true },
+    { label: 'Equity',             value: fmtPct(p.equity_percent),       mono: true },
     { label: 'Owner occupied',     value: p.owner_occupied === true ? 'Yes' : p.owner_occupied === false ? 'No' : '—' },
     { label: 'Years owned',        value: or(p.years_owned) },
     { label: 'Status',             value: or(p.property_status) },

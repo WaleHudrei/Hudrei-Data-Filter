@@ -1382,6 +1382,34 @@
   text-align: center;
 }
 
+/* "+ Add phone" button on the owner card phones section header.
+   Pushed right via margin-left:auto so it sits at the end of the row. */
+.ocu-owner-add-phone-btn {
+  margin-left: auto;
+  padding: 3px 9px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0;
+  text-transform: none;
+  border-radius: 6px;
+  border: 1px dashed var(--ocu-border-strong);
+  background: transparent;
+  color: var(--ocu-text-2);
+  cursor: pointer;
+  font-family: inherit;
+  transition: all 0.12s;
+}
+.ocu-owner-add-phone-btn:hover {
+  border-style: solid;
+  border-color: var(--ocu-accent);
+  color: var(--ocu-accent);
+  background: var(--ocu-accent-soft);
+}
+.ocu-owner-add-phone-btn:disabled {
+  opacity: 0.5;
+  cursor: wait;
+}
+
 /* PHONES GRID — responsive, scales gracefully from 1 to 100+ phones.
    - 1 phone: full width
    - 2-3 phones: 2 columns

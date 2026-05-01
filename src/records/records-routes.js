@@ -344,6 +344,62 @@ router.post('/phones/:phoneId(\\d+)/status', requireAuth, async (req, res) => {
   }
 });
 
+// Create a new phone for a contact. Body: phone_number (required),
+// phone_type (optional), phone_status (optional). Returns the created
+// row so the client can render the new phone-row immediately. The
+// owner-card "+ Add phone" button posts here.
+router.post('/contacts/:contactId(\\d+)/phones', requireAuth, async (req, res) => {
+  try {
+    const contactId = parseInt(req.params.contactId, 10);
+    const rawPhone = String(req.body.phone_number || '').trim();
+    if (!rawPhone) return res.status(400).json({ error: 'Phone number is required.' });
+
+    const phoneNorm = normalizePhone(rawPhone);
+    if (!phoneNorm || phoneNorm.length !== 10) {
+      return res.status(400).json({ error: 'Could not parse a valid 10-digit US phone number.' });
+    }
+
+    // Verify the contact belongs to this tenant.
+    const own = await query(
+      `SELECT id FROM contacts WHERE id = $1 AND tenant_id = $2`,
+      [contactId, req.tenantId]
+    );
+    if (!own.rowCount) return res.status(404).json({ error: 'Contact not found.' });
+
+    const allowedType   = ['mobile', 'landline', 'voip', 'unknown'];
+    const allowedStatus = ['correct', 'wrong', 'do_not_call', 'unknown'];
+    const phoneType   = allowedType.includes(String(req.body.phone_type   || '').toLowerCase())
+                          ? String(req.body.phone_type).toLowerCase() : 'unknown';
+    const phoneStatus = allowedStatus.includes(String(req.body.phone_status || '').toLowerCase())
+                          ? String(req.body.phone_status).toLowerCase() : 'unknown';
+
+    // Compute next phone_index for this contact (1-based, tightly packed).
+    const nextIdxRes = await query(
+      `SELECT COALESCE(MAX(phone_index), 0) + 1 AS next FROM phones WHERE contact_id = $1 AND tenant_id = $2`,
+      [contactId, req.tenantId]
+    );
+    const nextIdx = nextIdxRes.rows[0]?.next || 1;
+
+    // ON CONFLICT (contact_id, phone_number) DO NOTHING — surfacing the
+    // dupe to the user. The UNIQUE constraint already guards integrity;
+    // this just gives a clean 409 instead of a noisy 500.
+    const ins = await query(
+      `INSERT INTO phones (tenant_id, contact_id, phone_number, phone_index, phone_status, phone_type, wrong_number, do_not_call)
+       VALUES ($1, $2, $3, $4, $5, $6, $5 = 'wrong', $5 = 'do_not_call')
+       ON CONFLICT (contact_id, phone_number) DO NOTHING
+       RETURNING id, contact_id, phone_number, phone_index, phone_status, phone_type, wrong_number, do_not_call`,
+      [req.tenantId, contactId, phoneNorm, nextIdx, phoneStatus, phoneType]
+    );
+    if (!ins.rowCount) {
+      return res.status(409).json({ error: 'This contact already has that phone number.' });
+    }
+    res.json({ ok: true, phone: ins.rows[0] });
+  } catch (e) {
+    console.error('[contacts/:contactId/phones POST]', e);
+    res.status(500).json({ error: e.message });
+  }
+});
+
 // Add tag to a property — creates the tag if it doesn't exist
 router.post('/:id(\\d+)/tags', requireAuth, async (req, res) => {
   try {

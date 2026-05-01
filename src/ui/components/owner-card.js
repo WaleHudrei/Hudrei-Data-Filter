@@ -174,10 +174,11 @@ function ownerCard(opts = {}) {
           <div class="ocu-owner-section-value">${mailing || '<span class="ocu-text-3">—</span>'}</div>
         </div>
 
-        <div class="ocu-owner-section ocu-owner-phones-section"${manyPhones ? ' data-many="true"' : ''}>
+        <div class="ocu-owner-section ocu-owner-phones-section" data-contact-id="${escHTML(String(contact.id || ''))}"${manyPhones ? ' data-many="true"' : ''}>
           <div class="ocu-owner-section-label">
             <span class="ocu-owner-section-icon">${_ICON_PHN}</span>Phones
             <span class="ocu-owner-count-chip">${phones.length}</span>
+            ${contact.id ? `<button type="button" class="ocu-owner-add-phone-btn" data-action="add-phone" data-contact-id="${escHTML(String(contact.id))}" title="Add a new phone for this contact">+ Add phone</button>` : ''}
           </div>
           <div class="ocu-phones-grid">${phonesHTML}</div>
         </div>
