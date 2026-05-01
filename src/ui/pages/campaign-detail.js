@@ -444,40 +444,54 @@ function campaignDetail(data = {}) {
   // the next clean-export. Defaults: voicemail/hangup off (threshold 99 = no
   // limit); DNC + wrong + NIS + already-Lead all on. Lower the thresholds to
   // stop calling numbers that ignore you, and toggle each row to override.
+  //
+  // 2026-05-01 user request: rules are campaign-critical but used to be at
+  // the page bottom past KPIs / contact list / dispositions / quick filter
+  // / filtration history. Now rendered as a collapsible details element
+  // pinned near the top, between the action bar and the KPI strip.
+  // Closed by default so existing readers aren't surprised by content
+  // shift; open after editing rules so the rules card stays in view.
   const num = (k, fallback) => (c[k] != null && c[k] !== '' ? c[k] : fallback);
   const checked = (k, fallback) => (c[k] === false ? '' : (c[k] === true || fallback ? 'checked' : ''));
-  const filtersCard = card({
-    title: 'Filter rules',
-    meta:  'Applied on every clean export and "Start new round"',
-    body: `
-      <form method="POST" action="/oculah/campaigns/${c.id}/filters" style="display:flex;flex-direction:column;gap:14px;font-size:13px">
-        <div style="display:grid;grid-template-columns:1fr auto;gap:10px;align-items:center">
+  const activeRuleCount = [
+    Number(num('voicemail_threshold', 99)) < 99,
+    Number(num('hangup_threshold', 99))    < 99,
+    c.exclude_wrong_number   !== false,
+    c.exclude_dnc            !== false,
+    c.exclude_not_in_service !== false,
+    c.exclude_already_lead   !== false,
+  ].filter(Boolean).length;
+  const filtersCard = `
+    <details class="ocu-card ocu-cd-rules-card"${data.openRules ? ' open' : ''}>
+      <summary class="ocu-cd-rules-summary">
+        <div class="ocu-cd-rules-summary-titles">
+          <div class="ocu-card-title">Filter rules</div>
+          <div class="ocu-card-meta">Applied on every clean export and "Start new round" · ${activeRuleCount} active</div>
+        </div>
+        <span class="ocu-cd-rules-summary-arrow" aria-hidden="true">▾</span>
+      </summary>
+      <form method="POST" action="/oculah/campaigns/${c.id}/filters" class="ocu-cd-rules-form">
+        <div class="ocu-cd-rule-row">
           <label for="cd-vm-th">Skip if voicemailed at least</label>
-          <input id="cd-vm-th" type="number" name="voicemail_threshold" min="0" max="99" value="${num('voicemail_threshold', 99)}" class="ocu-input" style="width:70px;text-align:center" />
+          <input id="cd-vm-th" type="number" name="voicemail_threshold" min="0" max="99" value="${num('voicemail_threshold', 99)}" class="ocu-input ocu-cd-rule-num" />
+          <span class="ocu-text-3">times</span>
         </div>
-        <div style="display:grid;grid-template-columns:1fr auto;gap:10px;align-items:center">
+        <div class="ocu-cd-rule-row">
           <label for="cd-hu-th">Skip if hung up at least</label>
-          <input id="cd-hu-th" type="number" name="hangup_threshold" min="0" max="99" value="${num('hangup_threshold', 99)}" class="ocu-input" style="width:70px;text-align:center" />
+          <input id="cd-hu-th" type="number" name="hangup_threshold" min="0" max="99" value="${num('hangup_threshold', 99)}" class="ocu-input ocu-cd-rule-num" />
+          <span class="ocu-text-3">times</span>
         </div>
-        <div style="display:flex;flex-direction:column;gap:6px;border-top:1px solid var(--ocu-border);padding-top:10px">
-          <label style="display:flex;gap:8px;align-items:center;cursor:pointer">
-            <input type="checkbox" name="exclude_wrong_number" value="1" ${checked('exclude_wrong_number', true)} /> Skip Wrong-Number phones
-          </label>
-          <label style="display:flex;gap:8px;align-items:center;cursor:pointer">
-            <input type="checkbox" name="exclude_dnc" value="1" ${checked('exclude_dnc', true)} /> Skip Do-Not-Call phones
-          </label>
-          <label style="display:flex;gap:8px;align-items:center;cursor:pointer">
-            <input type="checkbox" name="exclude_not_in_service" value="1" ${checked('exclude_not_in_service', true)} /> Skip Not-In-Service phones
-          </label>
-          <label style="display:flex;gap:8px;align-items:center;cursor:pointer">
-            <input type="checkbox" name="exclude_already_lead" value="1" ${checked('exclude_already_lead', true)} /> Skip contacts already converted to Leads
-          </label>
+        <div class="ocu-cd-rule-checks">
+          <label class="ocu-check"><input type="checkbox" name="exclude_wrong_number" value="1" ${checked('exclude_wrong_number', true)}> Skip Wrong-Number phones</label>
+          <label class="ocu-check"><input type="checkbox" name="exclude_dnc" value="1" ${checked('exclude_dnc', true)}> Skip Do-Not-Call phones</label>
+          <label class="ocu-check"><input type="checkbox" name="exclude_not_in_service" value="1" ${checked('exclude_not_in_service', true)}> Skip Not-In-Service phones</label>
+          <label class="ocu-check"><input type="checkbox" name="exclude_already_lead" value="1" ${checked('exclude_already_lead', true)}> Skip contacts already converted to Leads</label>
         </div>
-        <div style="display:flex;justify-content:flex-end;gap:8px">
+        <div class="ocu-cd-rules-actions">
           <button type="submit" class="ocu-btn ocu-btn-primary">Save filter rules</button>
         </div>
-      </form>`,
-  });
+      </form>
+    </details>`;
 
   const uploadsCard = card({
     title: 'Filtration history',
@@ -535,6 +549,8 @@ function campaignDetail(data = {}) {
       ${closeBtn}
     </div>
 
+    <div style="margin-bottom:14px">${filtersCard}</div>
+
     ${kpiStrip}
     ${ratioStrip}
     ${contactCard}
@@ -549,10 +565,6 @@ function campaignDetail(data = {}) {
     <div style="margin-bottom:14px">${quickFilter}</div>
 
     <div style="margin-bottom:14px">${uploadsCard}</div>
-
-    <div style="display:grid;grid-template-columns:1fr;gap:14px;margin-bottom:14px">
-      ${filtersCard}
-    </div>
 
     <div style="margin-top:18px;display:flex;gap:8px;justify-content:flex-end">
       ${newRoundBtn}

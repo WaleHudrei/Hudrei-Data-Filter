@@ -63,10 +63,21 @@ function filtrationPage(data = {}) {
       <div class="ocu-card-body">
         <div style="display:flex;gap:14px;flex-wrap:wrap;margin-bottom:14px">
           <div style="flex:1;min-width:260px">
-            <label class="ocu-label" for="campaignSelect">Campaign</label>
-            <select class="ocu-input" id="campaignSelect">
-              <option value="">Loading campaigns…</option>
-            </select>
+            <label class="ocu-label">Campaign</label>
+            <!-- Searchable combobox. Hidden #campaignSelect input keeps the
+                 same id the existing JS reads (.value on the input still
+                 works exactly like a <select>'s .value). -->
+            <div class="ocu-combobox" id="campaignBox" data-empty-label="— select campaign —">
+              <input type="hidden" id="campaignSelect" value="">
+              <button type="button" class="ocu-combobox-trigger ocu-input" id="campaignBoxTrigger" aria-haspopup="listbox" aria-expanded="false">
+                <span class="ocu-combobox-current">Loading campaigns…</span>
+                <span class="ocu-combobox-arrow" aria-hidden="true">▾</span>
+              </button>
+              <div class="ocu-combobox-popover" id="campaignBoxPopover" hidden>
+                <input type="search" class="ocu-combobox-search ocu-input" id="campaignBoxSearch" placeholder="Search campaigns…" autocomplete="off">
+                <div class="ocu-combobox-list" id="campaignBoxList" role="listbox" tabindex="-1"></div>
+              </div>
+            </div>
             <div class="ocu-hint" style="margin-top:6px">
               The filtration scope is per campaign — memory and list-name dedup is keyed by campaign id.
             </div>
@@ -165,7 +176,7 @@ function filtrationPage(data = {}) {
       .ocu-pill{display:inline-block;padding:2px 8px;border-radius:10px;background:#e6e8ec;color:#3a3f47;font-size:11px;font-weight:600}
     </style>
 
-    <script src="/oculah-static/filtration-app.js?v=1"></script>
+    <script src="/oculah-static/filtration-app.js?v=2"></script>
   `;
 
   return shell({

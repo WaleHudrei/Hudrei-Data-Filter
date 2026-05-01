@@ -91,6 +91,22 @@ function rowHTML(r) {
     ? `<span class="ocu-pill ocu-pill-warn ocu-lr-setup-badge" title="Missing: ${escHTML(missing.join(', '))}">Setup required</span>`
     : '';
 
+  // Reminder window: when the next pull is inside the user-set
+  // remind_days_before window, show a "Due in N days" pill in the name
+  // cell so it's visible without having to read the dates column.
+  const remindDays = (r.remind_days_before != null && r.remind_days_before !== '') ? Number(r.remind_days_before) : null;
+  let remindBadge = '';
+  if (next && !over && remindDays != null && remindDays > 0) {
+    const msPerDay = 86400000;
+    const daysOut = Math.ceil((new Date(next).getTime() - Date.now()) / msPerDay);
+    if (daysOut <= remindDays && daysOut >= 0) {
+      const label = daysOut === 0 ? 'Due today'
+                   : daysOut === 1 ? 'Due tomorrow'
+                   : `Due in ${daysOut} days`;
+      remindBadge = `<span class="ocu-pill ocu-pill-warn ocu-lr-remind-badge" title="Reminder window: ${remindDays} days">${escHTML(label)}</span>`;
+    }
+  }
+
   return `<tr data-id="${r.id}"${missing.length ? ' data-incomplete="true"' : ''}>
     <td class="ocu-td">${selectCell('action', r.action, Object.entries(ACTION_LABELS), r.id)}</td>
     <td class="ocu-td">${selectCell('state_code', r.state_code, STATES.map(s => [s, s || '—']), r.id)}</td>
@@ -99,6 +115,7 @@ function rowHTML(r) {
         <input class="ocu-cell-input" type="text" value="${escHTML(r.list_name)}"
                onblur="lr_save(${r.id}, 'list_name', this.value)"
                onkeydown="if(event.key==='Enter')this.blur()" />
+        ${remindBadge}
         ${setupBadge}
       </div>
     </td>
@@ -117,6 +134,13 @@ function rowHTML(r) {
              onchange="lr_save(${r.id}, 'last_pull_date', this.value)" />
     </td>
     <td class="ocu-td ocu-td-date" style="${nextStyle}">${escHTML(nextLabel)}</td>
+    <td class="ocu-td ocu-td-num">
+      <input class="ocu-cell-input ocu-lr-remind-input" type="number" min="0" max="60"
+             value="${r.remind_days_before != null ? escHTML(String(r.remind_days_before)) : ''}"
+             placeholder="—"
+             onchange="lr_save(${r.id}, 'remind_days_before', this.value)"
+             title="Show 'Due in N days' pill when next pull is within this many days. Leave blank to disable." />
+    </td>
     <td class="ocu-td ocu-lr-actions">
       <button type="button" class="ocu-lr-action-btn ocu-lr-action-pull" onclick="lr_pull(${r.id})" title="Mark pulled today">
         <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
@@ -167,6 +191,7 @@ function listRegistry(data = {}) {
               <th class="ocu-th" style="min-width:90px">Bot</th>
               <th class="ocu-th ocu-th-date" style="min-width:150px">Last pull</th>
               <th class="ocu-th ocu-th-date" style="min-width:130px">Next pull</th>
+              <th class="ocu-th ocu-th-num" style="min-width:90px" title="Show a 'Due in N days' pill when the next pull is within this many days">Remind days</th>
               <th class="ocu-th" style="min-width:140px;text-align:right">Actions</th>
             </tr>
           </thead>

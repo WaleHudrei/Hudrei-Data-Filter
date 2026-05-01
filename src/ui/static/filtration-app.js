@@ -42,23 +42,114 @@
       .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
   }
 
-  // ── Campaigns dropdown ───────────────────────────────────────────────────
+  // ── Campaigns combobox ───────────────────────────────────────────────────
+  // Replaces the native <select> with a searchable dropdown so it stays
+  // usable as the campaign list grows past 10+. Renders into
+  // #campaignBoxList; selecting an option writes the campaign id to the
+  // hidden #campaignSelect input (kept under the same id so the existing
+  // .value reads in runFilter() continue to work without changes).
+  var _allCampaigns = [];
+
   function loadCampaigns() {
     fetch('/api/campaigns', { credentials: 'same-origin' })
       .then(function (r) { return r.json(); })
       .then(function (list) {
-        var sel = $('campaignSelect');
-        if (!sel) return;
-        var opts = ['<option value="">— select campaign —</option>'];
-        (list || []).forEach(function (c) {
-          var name = c.name || ('Campaign ' + c.id);
-          opts.push('<option value="' + escHTML(String(c.id)) + '">' + escHTML(name) + '</option>');
+        _allCampaigns = (list || []).map(function (c) {
+          return { id: String(c.id), name: c.name || ('Campaign ' + c.id) };
         });
-        sel.innerHTML = opts.join('');
+        renderCampaignList('');
+        var current = $('campaignBoxTrigger');
+        if (current) current.querySelector('.ocu-combobox-current').textContent = '— select campaign —';
       })
       .catch(function () {
-        $('campaignSelect').innerHTML = '<option value="">— could not load campaigns —</option>';
+        var current = $('campaignBoxTrigger');
+        if (current) current.querySelector('.ocu-combobox-current').textContent = '— could not load campaigns —';
       });
+  }
+
+  function renderCampaignList(filter) {
+    var listEl = $('campaignBoxList');
+    if (!listEl) return;
+    var q = String(filter || '').trim().toLowerCase();
+    var matches = q
+      ? _allCampaigns.filter(function (c) { return c.name.toLowerCase().indexOf(q) !== -1; })
+      : _allCampaigns;
+    if (!matches.length) {
+      listEl.innerHTML = '<div class="ocu-combobox-empty">No campaigns match "' + escHTML(filter) + '"</div>';
+      return;
+    }
+    listEl.innerHTML = matches.map(function (c) {
+      return '<button type="button" class="ocu-combobox-option" role="option" data-id="' + escHTML(c.id) + '">' + escHTML(c.name) + '</button>';
+    }).join('');
+  }
+
+  function setCampaign(id, name) {
+    var hidden = $('campaignSelect');
+    var trigger = $('campaignBoxTrigger');
+    if (hidden) hidden.value = id;
+    if (trigger) trigger.querySelector('.ocu-combobox-current').textContent = name || '— select campaign —';
+    closeCampaignBox();
+    // Mirror the change event the old <select> emitted so any listener
+    // attached to the hidden input still fires.
+    if (hidden) hidden.dispatchEvent(new Event('change', { bubbles: true }));
+  }
+
+  function openCampaignBox() {
+    var pop = $('campaignBoxPopover');
+    var trigger = $('campaignBoxTrigger');
+    var search = $('campaignBoxSearch');
+    if (!pop || !trigger) return;
+    pop.hidden = false;
+    trigger.setAttribute('aria-expanded', 'true');
+    if (search) {
+      search.value = '';
+      renderCampaignList('');
+      setTimeout(function () { search.focus(); }, 0);
+    }
+  }
+  function closeCampaignBox() {
+    var pop = $('campaignBoxPopover');
+    var trigger = $('campaignBoxTrigger');
+    if (!pop || !trigger) return;
+    pop.hidden = true;
+    trigger.setAttribute('aria-expanded', 'false');
+  }
+
+  function wireCampaignBox() {
+    var box = $('campaignBox');
+    var trigger = $('campaignBoxTrigger');
+    var search = $('campaignBoxSearch');
+    var listEl = $('campaignBoxList');
+    if (!box || !trigger || !search || !listEl) return;
+
+    trigger.addEventListener('click', function (e) {
+      e.stopPropagation();
+      var pop = $('campaignBoxPopover');
+      if (pop && pop.hidden) openCampaignBox(); else closeCampaignBox();
+    });
+
+    search.addEventListener('input', function () { renderCampaignList(search.value); });
+    search.addEventListener('keydown', function (e) {
+      if (e.key === 'Escape') { closeCampaignBox(); trigger.focus(); }
+      else if (e.key === 'Enter') {
+        e.preventDefault();
+        var first = listEl.querySelector('.ocu-combobox-option');
+        if (first) first.click();
+      }
+    });
+
+    listEl.addEventListener('click', function (e) {
+      var opt = e.target.closest && e.target.closest('.ocu-combobox-option');
+      if (!opt) return;
+      var id = opt.dataset.id;
+      var name = opt.textContent;
+      setCampaign(id, name);
+    });
+
+    // Click outside closes the popover.
+    document.addEventListener('click', function (e) {
+      if (!box.contains(e.target)) closeCampaignBox();
+    });
   }
 
   // ── Drop zone wiring ─────────────────────────────────────────────────────
@@ -274,6 +365,7 @@
 
   // ── Boot ─────────────────────────────────────────────────────────────────
   function init() {
+    wireCampaignBox();
     loadCampaigns();
     wireDropZone();
   }

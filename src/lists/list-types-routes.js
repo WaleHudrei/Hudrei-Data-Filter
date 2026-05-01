@@ -121,6 +121,9 @@ router.post('/types/:id(\\d+)', requireAuth, async (req, res) => {
       require_bot:    v => v === 'true' ? true : v === 'false' ? false : null,
       last_pull_date: v => { if (!v || v === '') return null; const d = new Date(v); return isNaN(d) ? null : v; },
       sort_order:     v => { const n = safeInt(v); return n !== null ? n : 0; },
+      // Per-row "remind me X days before next pull". 0–60 inclusive;
+      // empty/invalid clears the reminder.
+      remind_days_before: v => { const n = safeInt(v); return n != null && n >= 0 && n <= 60 ? n : null; },
     };
 
     if (!ALLOWED[field]) return res.status(400).json({ error: 'Invalid field: ' + field });

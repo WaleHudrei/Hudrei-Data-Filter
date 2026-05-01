@@ -868,6 +868,13 @@ async function initSchema() {
   `);
   // next_pull_date is always derived: last_pull_date + frequency_days.
   // Not stored — avoids sync bugs when either field changes.
+  // 2026-05-01: per-row reminder window. When a row is within this many
+  // days of next_pull_date, the registry surfaces a "Due in N days" pill
+  // so ops sees urgency before the row actually goes overdue. NULL = no
+  // explicit reminder (fall through to the global "Due this week" band).
+  try {
+    await query(`ALTER TABLE list_templates ADD COLUMN IF NOT EXISTS remind_days_before INTEGER`);
+  } catch (e) { console.warn('[db] list_templates.remind_days_before add column:', e.message); }
 
   // ── 2026-04-20 audit fix #6: phone-based contact dedup ─────────────────────
   // Dry-run by default. Gated by LOKI_DEDUP_PHONES env var — see

@@ -1615,6 +1615,87 @@ button.ocu-kpi,
   grid-column: 1 / -1;
 }
 
+/* Searchable combobox — currently used by the campaign picker on
+   /list-filtration. Hidden <input> holds the selected id; the visible
+   trigger reads as a regular input field, the popover shows a search
+   input + filterable list of options. Keeps `<input id="campaignSelect">`
+   semantics so existing JS that reads .value works unchanged. */
+.ocu-combobox { position: relative; }
+.ocu-combobox-trigger {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--ocu-space-2);
+  text-align: left;
+  cursor: pointer;
+  font: inherit;
+}
+.ocu-combobox-current {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--ocu-text-1);
+}
+.ocu-combobox-arrow {
+  color: var(--ocu-text-3);
+  font-size: 11px;
+  transition: transform 0.15s;
+  flex-shrink: 0;
+}
+.ocu-combobox-trigger[aria-expanded="true"] .ocu-combobox-arrow {
+  transform: rotate(180deg);
+}
+.ocu-combobox-popover {
+  position: absolute;
+  top: calc(100% + 4px);
+  left: 0;
+  right: 0;
+  z-index: 30;
+  background: var(--ocu-bg);
+  border: 1px solid var(--ocu-border-strong);
+  border-radius: var(--ocu-field-radius);
+  box-shadow: 0 8px 24px rgba(11, 18, 32, 0.10);
+  padding: var(--ocu-space-2);
+  display: flex;
+  flex-direction: column;
+  gap: var(--ocu-space-2);
+  max-height: 320px;
+}
+.ocu-combobox-search { height: 32px; font-size: 13px; flex-shrink: 0; }
+.ocu-combobox-list {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  overflow-y: auto;
+  min-height: 0;
+}
+.ocu-combobox-option {
+  display: block;
+  text-align: left;
+  width: 100%;
+  padding: 8px 10px;
+  border: 0;
+  background: transparent;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 13px;
+  font-family: inherit;
+  color: var(--ocu-text-1);
+}
+.ocu-combobox-option:hover,
+.ocu-combobox-option:focus {
+  background: var(--ocu-surface);
+  outline: none;
+}
+.ocu-combobox-empty {
+  padding: 12px 10px;
+  font-size: 12.5px;
+  color: var(--ocu-text-3);
+  text-align: center;
+}
+
 /* Recent-activity feed: list-name link rendered after a "→" arrow on
    each import row, e.g. "Imported 175 records from warm_leads.csv → Tax
    Delinquent — Stress Q1 2026". Subtle so the row stays readable. */
@@ -1624,6 +1705,59 @@ button.ocu-kpi,
   font-weight: 500;
 }
 .ocu-activity-list-link:hover { text-decoration: underline; }
+
+/* Campaign-detail collapsible "Filter rules" card. Pinned near the top
+   (after the action bar, before the KPI strip) so the rules are
+   discoverable without scrolling past KPIs / contact list / dispositions
+   / quick filtration. Default closed; carries an active-rule count in
+   the meta so users can see at a glance how many guards are on. */
+.ocu-cd-rules-card { padding: 0; cursor: default; }
+.ocu-cd-rules-summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--ocu-space-3);
+  padding: var(--ocu-space-4) var(--ocu-card-pad);
+  cursor: pointer;
+  list-style: none;
+  user-select: none;
+}
+.ocu-cd-rules-summary::-webkit-details-marker { display: none; }
+.ocu-cd-rules-summary-titles { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.ocu-cd-rules-summary-arrow {
+  color: var(--ocu-text-3);
+  font-size: 12px;
+  flex-shrink: 0;
+  transition: transform 0.15s;
+}
+.ocu-cd-rules-card[open] .ocu-cd-rules-summary-arrow { transform: rotate(180deg); }
+.ocu-cd-rules-summary:hover .ocu-cd-rules-summary-arrow { color: var(--ocu-text-1); }
+
+.ocu-cd-rules-form {
+  display: flex; flex-direction: column;
+  gap: var(--ocu-space-3);
+  padding: 0 var(--ocu-card-pad) var(--ocu-card-pad);
+  border-top: 1px solid var(--ocu-border);
+  padding-top: var(--ocu-space-4);
+  font-size: 13px;
+}
+.ocu-cd-rule-row {
+  display: flex; align-items: center; gap: var(--ocu-space-2);
+}
+.ocu-cd-rule-row label { flex: 1; color: var(--ocu-text-1); }
+.ocu-cd-rule-num { width: 72px; text-align: center; }
+.ocu-cd-rule-checks {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: var(--ocu-space-2) var(--ocu-space-4);
+  padding-top: var(--ocu-space-3);
+  border-top: 1px solid var(--ocu-border);
+}
+.ocu-cd-rules-actions {
+  display: flex; justify-content: flex-end;
+  padding-top: var(--ocu-space-3);
+  border-top: 1px solid var(--ocu-border);
+}
 
 /* Distress chip — used in the records-table Distress column. A 3px-wide
    colored bar on the left makes the band scannable at a glance even when
@@ -3868,12 +4002,19 @@ input[type="date"].ocu-cell-input:focus::-webkit-calendar-picker-indicator {
   flex: 1 1 160px;
   min-width: 0;
 }
-.ocu-lr-setup-badge {
+.ocu-lr-setup-badge,
+.ocu-lr-remind-badge {
   flex-shrink: 0;
   font-size: 9.5px;
   letter-spacing: 0.04em;
   height: 18px;
   padding: 0 6px;
+}
+.ocu-lr-remind-input {
+  width: 60px;
+  text-align: center;
+  font-family: var(--ocu-mono);
+  font-size: 12.5px;
 }
 
 /* Actions cell — pull + delete as ghost icon-buttons, right-aligned.
