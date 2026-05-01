@@ -3,6 +3,13 @@
 
 const ENTRIES = [
   {
+    date: 'May 1, 2026 (5A.2 follow-up #3 — auto-populate accepted count)',
+    title: '"Accepted by Dialer" KPI auto-populates from import',
+    items: [
+      { tag: 'fix', text: 'After a master-list import the "Accepted by Dialer" headline on the campaign detail page stayed at 0 because the card was driven by manual_count (operator override), with nothing wiring imported per-row accepted=true rows to it. importContactList now refreshes manual_count to COUNT(accepted=true) on every import — the headline reflects the just-imported list automatically. Operator can still hit "edit" to override; next import overwrites again.' },
+    ],
+  },
+  {
     date: 'May 1, 2026 (5A.2 follow-up #2 — varchar overflow)',
     title: 'Master-list import no longer crashes when one row has a too-long value',
     items: [

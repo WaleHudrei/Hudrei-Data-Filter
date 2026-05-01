@@ -884,6 +884,30 @@ async function importContactList(tenantId, campaignId, rows, headers, customMapp
     console.error('[campaigns/upload] owner-mismatch sweep (non-fatal):', e.message);
   }
 
+  // 2026-05-01 (5A.2 follow-up): auto-populate the campaign's "Accepted by
+  // Dialer" headline from the count of just-imported rows where accepted=true.
+  // The card was previously driven only by the manual_count override; that
+  // override now refreshes on every import. Operator can still hit "edit" to
+  // tweak the number — next import will overwrite it again.
+  try {
+    const ar = await query(
+      `UPDATE campaigns
+          SET manual_count = (
+            SELECT COUNT(*)::int FROM campaign_contacts
+             WHERE campaign_id = $1 AND accepted = true
+          ),
+          updated_at = NOW()
+        WHERE id = $1
+        RETURNING manual_count`,
+      [campaignId]
+    );
+    if (ar.rows[0]) {
+      console.log(`[campaigns/upload] accepted_count refreshed to ${ar.rows[0].manual_count} for campaign ${campaignId}`);
+    }
+  } catch (e) {
+    console.error('[campaigns/upload] accepted_count refresh (non-fatal):', e.message);
+  }
+
   return { total: imported };
 }
 
