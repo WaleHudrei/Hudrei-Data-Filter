@@ -33,193 +33,45 @@ function escHTML(s) {
 }
 
 function authShell(title, bodyHtml, opts = {}) {
-  const width = opts.width || 440;
+  const width = opts.width || 420;
   return `<!DOCTYPE html>
-<html lang="en"><head>
+<html><head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>${escHTML(title)} — Oculah</title>
-<link rel="preconnect" href="https://fonts.googleapis.com">
-<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
 <style>
-  /* 2026-05-01 visual polish — split-panel auth layout.
-     Left: form card. Right: brand panel (hidden on mobile) showing what
-     Oculah does. The brand panel uses a rich green gradient that ties
-     back to the marketing landing page's accent. */
-  :root{
-    --bg:           #f5f5f1;
-    --card:         #ffffff;
-    --border:       #e2e0d6;
-    --text:         #14171a;
-    --text-2:       #4a525e;
-    --text-3:       #8b919a;
-    --accent:       #1a7a4a;
-    --accent-soft:  #e8f5ee;
-    --accent-dark:  #105a37;
-    --danger:       #c0392b;
-    --danger-soft:  #fff0f0;
-    --info:         #2c5cc5;
-    --info-soft:    #f1f5fa;
-    --shadow:       0 1px 2px rgba(15,23,42,.04), 0 8px 24px rgba(15,23,42,.06);
-  }
   *{box-sizing:border-box;margin:0;padding:0}
-  body{
-    font-family:'Inter',-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;
-    background:var(--bg);color:var(--text);min-height:100vh;line-height:1.55;
-    -webkit-font-smoothing:antialiased;
-    font-feature-settings:'cv02','cv03','cv04','cv11';
-  }
-  .auth-page{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);min-height:100vh}
-  @media (max-width:920px){.auth-page{grid-template-columns:1fr}.auth-side{display:none}}
-
-  /* Form side */
-  .auth-form-side{
-    display:flex;align-items:center;justify-content:center;
-    padding:48px 32px;background:var(--bg);
-  }
-  .auth-box{
-    background:var(--card);border:1px solid var(--border);border-radius:16px;
-    padding:40px 36px;width:100%;max-width:${width}px;
-    box-shadow:var(--shadow);
-  }
-  .brand{display:flex;align-items:center;gap:10px;margin-bottom:32px}
-  .brand-mark{
-    width:36px;height:36px;border-radius:9px;
-    background:linear-gradient(135deg,var(--accent),var(--accent-dark));
-    display:inline-flex;align-items:center;justify-content:center;color:#fff;
-    box-shadow:0 1px 0 rgba(255,255,255,.2) inset, 0 2px 6px rgba(26,122,74,.25);
-  }
-  .brand-mark svg{width:20px;height:20px}
-  .brand-name{font-size:18px;font-weight:700;letter-spacing:-.3px;line-height:1.2}
-  .brand-sub{font-size:11.5px;color:var(--text-3);font-weight:500;letter-spacing:.02em;margin-top:1px}
-  h1{font-size:24px;font-weight:700;margin-bottom:6px;letter-spacing:-.5px;line-height:1.2}
-  .lede{font-size:14px;color:var(--text-2);margin-bottom:28px;line-height:1.55}
-
-  label{
-    font-size:12px;color:var(--text-2);display:block;margin-bottom:7px;
-    font-weight:600;letter-spacing:.01em;
-  }
-  input[type=text],input[type=email],input[type=password]{
-    width:100%;padding:12px 14px;border:1px solid var(--border);
-    border-radius:10px;font-size:14px;background:#fafaf6;color:var(--text);
-    font-family:inherit;transition:border-color .12s,box-shadow .12s,background-color .12s;
-  }
-  input:hover{border-color:#cdc9bd}
-  input:focus{
-    outline:none;border-color:var(--accent);background:#fff;
-    box-shadow:0 0 0 3px rgba(26,122,74,.12);
-  }
-  .field{margin-bottom:16px}
-  .hint{font-size:12px;color:var(--text-3);margin-top:6px}
-
-  button{
-    width:100%;padding:13px;background:var(--text);color:#fff;border:none;
-    border-radius:10px;font-size:14px;font-weight:600;cursor:pointer;font-family:inherit;
-    letter-spacing:-.005em;transition:background .12s,transform .05s;
-    box-shadow:0 1px 0 rgba(255,255,255,.1) inset;
-  }
-  button:hover{background:#000}
-  button:active{transform:translateY(1px)}
-  button:disabled{background:var(--text-3);cursor:not-allowed}
-
-  .alt{margin-top:24px;text-align:center;font-size:13.5px;color:var(--text-2)}
-  .alt a{color:var(--text);font-weight:600;text-decoration:none}
-  .alt a:hover{color:var(--accent)}
-  .alt + .alt{margin-top:14px}
-
-  .error{background:var(--danger-soft);border:1px solid #f5c5c5;border-radius:10px;padding:11px 14px;font-size:13px;color:var(--danger);margin-bottom:18px;line-height:1.5}
-  .ok{background:var(--accent-soft);border:1px solid #c5e8d4;border-radius:10px;padding:11px 14px;font-size:13px;color:var(--accent);margin-bottom:18px}
-  .info{background:var(--info-soft);border:1px solid #cdd9ec;border-radius:10px;padding:11px 14px;font-size:13px;color:var(--info);margin-bottom:18px;line-height:1.5}
-  .center-icon{display:flex;justify-content:center;margin-bottom:18px;color:var(--accent)}
-  .center-icon svg{width:56px;height:56px}
-
-  /* Brand side (right panel) */
-  .auth-side{
-    background:linear-gradient(135deg,#0d4528 0%,#1a7a4a 100%);
-    color:#fff;display:flex;flex-direction:column;justify-content:space-between;
-    padding:56px 56px;position:relative;overflow:hidden;
-  }
-  .auth-side::before{
-    content:'';position:absolute;inset:0;
-    background:
-      radial-gradient(800px 400px at 90% 10%, rgba(255,255,255,.08), transparent 60%),
-      radial-gradient(600px 600px at 10% 100%, rgba(255,255,255,.06), transparent 60%);
-    pointer-events:none;
-  }
-  .auth-side-inner{position:relative;z-index:1}
-  .auth-side h2{
-    font-size:34px;font-weight:700;letter-spacing:-1px;line-height:1.1;
-    margin-bottom:16px;max-width:420px;
-  }
-  .auth-side p{font-size:15px;line-height:1.6;color:rgba(255,255,255,.85);max-width:440px}
-  .auth-side .features{margin-top:36px;display:flex;flex-direction:column;gap:14px}
-  .auth-side .feature{display:flex;align-items:flex-start;gap:14px}
-  .auth-side .feature-icon{
-    width:32px;height:32px;flex-shrink:0;border-radius:8px;
-    background:rgba(255,255,255,.12);display:inline-flex;align-items:center;justify-content:center;
-    backdrop-filter:blur(8px);
-  }
-  .auth-side .feature-icon svg{width:16px;height:16px;color:#fff}
-  .auth-side .feature-text strong{display:block;font-weight:600;font-size:14.5px;letter-spacing:-.005em;margin-bottom:2px}
-  .auth-side .feature-text span{font-size:13.5px;color:rgba(255,255,255,.75)}
-  .auth-side-footer{position:relative;z-index:1;font-size:12.5px;color:rgba(255,255,255,.6)}
-  .auth-side-footer a{color:rgba(255,255,255,.85);text-decoration:none}
-  .auth-side-footer a:hover{text-decoration:underline}
+  body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;background:#f5f4f0;display:flex;align-items:center;justify-content:center;min-height:100vh;padding:24px;color:#1a1a1a}
+  .auth-box{background:#fff;border:1px solid #e0dfd8;border-radius:14px;padding:2.25rem 2rem;width:100%;max-width:${width}px}
+  .brand{text-align:center;margin-bottom:1.25rem}
+  .brand-name{font-size:24px;font-weight:600;letter-spacing:-.5px}
+  .brand-sub{font-size:12px;color:#888;margin-top:2px}
+  h1{font-size:22px;font-weight:600;margin-bottom:.25rem;text-align:center}
+  .lede{font-size:13px;color:#888;text-align:center;margin-bottom:1.5rem}
+  label{font-size:12px;color:#555;display:block;margin-bottom:5px;font-weight:500}
+  input[type=text],input[type=email],input[type=password]{width:100%;padding:10px 12px;border:1px solid #ddd;border-radius:8px;font-size:14px;background:#fafaf8;color:#1a1a1a;font-family:inherit}
+  input:focus{outline:none;border-color:#888;background:#fff}
+  .field{margin-bottom:1rem}
+  .hint{font-size:11px;color:#999;margin-top:4px}
+  button{width:100%;padding:11px;background:#1a1a1a;color:#fff;border:none;border-radius:8px;font-size:14px;font-weight:600;cursor:pointer;font-family:inherit}
+  button:hover{background:#333}
+  button:disabled{background:#888;cursor:not-allowed}
+  .alt{margin-top:1.25rem;text-align:center;font-size:13px;color:#666}
+  .alt a{color:#1a1a1a;font-weight:600;text-decoration:none}
+  .alt a:hover{text-decoration:underline}
+  .error{background:#fff0f0;border:1px solid #f5c5c5;border-radius:8px;padding:10px 12px;font-size:13px;color:#c0392b;margin-bottom:1rem}
+  .ok{background:#eef9f1;border:1px solid #c5e8d4;border-radius:8px;padding:10px 12px;font-size:13px;color:#1a7a4a;margin-bottom:1rem}
+  .info{background:#f1f5fa;border:1px solid #cdd9ec;border-radius:8px;padding:10px 12px;font-size:13px;color:#2c5cc5;margin-bottom:1rem}
+  .center-icon{display:flex;justify-content:center;margin-bottom:1rem;color:#1a7a4a}
+  .center-icon svg{width:48px;height:48px}
 </style>
 </head><body>
-<div class="auth-page">
-  <div class="auth-form-side">
-    <div class="auth-box">
-      <a class="brand" href="/" style="text-decoration:none;color:inherit">
-        <span class="brand-mark">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
-            <circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="3" fill="currentColor"/>
-          </svg>
-        </span>
-        <div>
-          <div class="brand-name">Oculah</div>
-          <div class="brand-sub">Real estate data ops</div>
-        </div>
-      </a>
-      ${bodyHtml}
-    </div>
+<div class="auth-box">
+  <div class="brand">
+    <div class="brand-name">Oculah</div>
+    <div class="brand-sub">Real estate data ops</div>
   </div>
-  <aside class="auth-side">
-    <div class="auth-side-inner">
-      <h2>Cleaner data.<br>Closer deals.</h2>
-      <p>Ingest your dialer exports, apply your SOP rules, and get back two CSVs ready to go — one for REISift, one for Readymode. Cumulative memory across uploads.</p>
-      <div class="features">
-        <div class="feature">
-          <span class="feature-icon">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
-          </span>
-          <div class="feature-text"><strong>Three-signal phone filtering</strong><span>Wrong + dead + DNC, scored across every campaign</span></div>
-        </div>
-        <div class="feature">
-          <span class="feature-icon">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
-          </span>
-          <div class="feature-text"><strong>Memory across uploads</strong><span>3-strike rule survives dialer resets</span></div>
-        </div>
-        <div class="feature">
-          <span class="feature-icon">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
-          </span>
-          <div class="feature-text"><strong>Distress scoring</strong><span>Multi-signal weights tuned to your lists</span></div>
-        </div>
-        <div class="feature">
-          <span class="feature-icon">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
-          </span>
-          <div class="feature-text"><strong>Built for wholesalers</strong><span>Indiana-tested, multi-state ready</span></div>
-        </div>
-      </div>
-    </div>
-    <div class="auth-side-footer">
-      © Oculah · <a href="/privacy">Privacy</a> · <a href="/terms">Terms</a>
-    </div>
-  </aside>
+  ${bodyHtml}
 </div>
 </body></html>`;
 }
