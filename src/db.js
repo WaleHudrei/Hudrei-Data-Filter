@@ -760,6 +760,22 @@ async function initSchema() {
     // properties against a popular list.
     `CREATE INDEX IF NOT EXISTS idx_property_lists_list_property
                      ON property_lists(list_id, property_id)`,
+
+    // ── 2026-05-01 audit fix QW#7: missing FK indexes ─────────────────────
+    // Bulk delete from /records hits 7 sequential UPDATE/DELETE statements
+    // keyed off property_id; many of these target columns had no index, so
+    // the operation degraded to a sequential scan per statement. Same gap
+    // for users(email) (login lookup goes through email-only first to
+    // determine tenant; the (tenant_id, email) UNIQUE constraint can't help
+    // a leading-column-missing query).
+    `CREATE INDEX IF NOT EXISTS idx_call_logs_property            ON call_logs(property_id)            WHERE property_id IS NOT NULL`,
+    `CREATE INDEX IF NOT EXISTS idx_sms_logs_property             ON sms_logs(property_id)             WHERE property_id IS NOT NULL`,
+    `CREATE INDEX IF NOT EXISTS idx_marketing_touches_property_id ON marketing_touches(property_id)`,
+    `CREATE INDEX IF NOT EXISTS idx_filtration_results_property   ON filtration_results(property_id)   WHERE property_id IS NOT NULL`,
+    `CREATE INDEX IF NOT EXISTS idx_property_lists_property       ON property_lists(property_id)`,
+    `CREATE INDEX IF NOT EXISTS idx_property_contacts_property    ON property_contacts(property_id)`,
+    `CREATE INDEX IF NOT EXISTS idx_deals_property_id             ON deals(property_id)`,
+    `CREATE INDEX IF NOT EXISTS idx_users_email                   ON users(email)`,
   ];
   for (const sql of extraIndexes) {
     try { await query(sql); }

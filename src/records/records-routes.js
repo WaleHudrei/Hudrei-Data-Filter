@@ -1464,6 +1464,11 @@ router.post('/export', requireAuth, async (req, res) => {
         .filter(n => !isNaN(n) && n > 0)
         .slice(0, EXPORT_MAX_PROPS);
       if (cleanIds.length === 0) return res.status(400).json({ error: 'No valid IDs' });
+      // 2026-05-01 audit fix QW#2: tenant_id scoping. Pre-fix the WHERE was
+      // `p.id = ANY($1::int[])` with no tenant filter — any authenticated
+      // user could POST a list of guessed SERIAL ids and receive properties
+      // belonging to OTHER tenants. The selectAll branch above this had the
+      // tenant filter; this branch was missed. Cross-tenant data exfiltration.
       // Use ANY($1::int[]) — sends a single array parameter rather than
       // expanding into 100k placeholder params that would crash PG.
       props = await query(`
@@ -1485,13 +1490,13 @@ router.post('/export', requireAuth, async (req, res) => {
           c.mailing_address, c.mailing_city, c.mailing_state, c.mailing_zip,
           c.email_1, c.email_2,
           COALESCE(pc.primary_contact, false) AS is_primary,
-          (SELECT COUNT(*) FROM property_lists pl WHERE pl.property_id = p.id) AS list_count
+          (SELECT COUNT(*) FROM property_lists pl WHERE pl.property_id = p.id AND pl.tenant_id = p.tenant_id) AS list_count
         FROM properties p
-        LEFT JOIN property_contacts pc ON pc.property_id = p.id
-        LEFT JOIN contacts c ON c.id = pc.contact_id
-        WHERE p.id = ANY($1::int[])
+        LEFT JOIN property_contacts pc ON pc.property_id = p.id AND pc.tenant_id = p.tenant_id
+        LEFT JOIN contacts c ON c.id = pc.contact_id AND c.tenant_id = p.tenant_id
+        WHERE p.id = ANY($1::int[]) AND p.tenant_id = $2
         ORDER BY p.id DESC, pc.primary_contact DESC NULLS LAST, c.id ASC
-      `, [cleanIds]);
+      `, [cleanIds, req.tenantId]);
     }
 
     // Fetch phones per CONTACT (one-row-per-contact export — each row
@@ -1507,6 +1512,8 @@ router.post('/export', requireAuth, async (req, res) => {
       // LEFT JOIN against nis_numbers so we can mark phones as "dead" even if
       // the master phones.phone_status wasn't synced from the campaign flow.
       // is_nis = true for any phone that appears in the NIS registry (any count).
+      // 2026-05-01 audit fix QW#2: tenant_id scoping on phones + nis to
+      // prevent cross-tenant phone data leak via guessable contact_ids.
       const phoneRes = await query(`
         SELECT
           ph.phone_number,
@@ -1516,10 +1523,10 @@ router.post('/export', requireAuth, async (req, res) => {
           ph.contact_id,
           (nis.phone_number IS NOT NULL) AS is_nis
         FROM phones ph
-        LEFT JOIN nis_numbers nis ON nis.phone_number = ph.phone_number
-        WHERE ph.contact_id = ANY($1::int[])
+        LEFT JOIN nis_numbers nis ON nis.phone_number = ph.phone_number AND nis.tenant_id = ph.tenant_id
+        WHERE ph.contact_id = ANY($1::int[]) AND ph.tenant_id = $2
         ORDER BY ph.phone_index ASC
-      `, [allContactIds]);
+      `, [allContactIds, req.tenantId]);
       phoneRes.rows.forEach(ph => {
         if (!phoneMapByContact[ph.contact_id]) phoneMapByContact[ph.contact_id] = [];
         phoneMapByContact[ph.contact_id].push({

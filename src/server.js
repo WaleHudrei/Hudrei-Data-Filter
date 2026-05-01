@@ -10,6 +10,7 @@ const multer = require('multer');
 const Papa = require('papaparse');
 const Redis = require('ioredis');
 const { normalizeState } = require('./import/state');
+const { normalizePhone } = require('./phone-normalize');
 
 const app = express();
 // 2026-04-18 audit fix #21: previously multer accepted any file up to 50MB
@@ -125,6 +126,16 @@ async function clearMemory() {
 //   - cookie.secure = true to not drop cookies on HTTPS-terminated proxies
 //   - req.ip to identify the actual client (rate limiters key off this)
 app.set('trust proxy', true);
+
+// 2026-05-01 audit fix QW#6: gzip/brotli compression. The HTML pages
+// (Records list, Activity log, Dashboard) easily hit 100KB+ uncompressed;
+// JSON responses (export, /api/dashboard-stats) compress 70-90%. Cloudflare
+// in front compresses outbound, but the Railway-internal hop between
+// Cloudflare and the Node process is uncompressed without this — wasted
+// bandwidth and slower TTFB on big payloads. threshold:1024 skips
+// compression on tiny responses where overhead exceeds savings.
+const compression = require('compression');
+app.use(compression({ threshold: 1024 }));
 
 // 2026-04-29 audit fix L7 + L8: minimal security-headers middleware.
 // Equivalent to a stripped-down `helmet()` — picked the headers that matter
@@ -400,9 +411,14 @@ function processCSV(csvText, memory, campaignId) {
   if(!rows.length) throw new Error('File is empty or could not be parsed.');
   const headers = parsed.meta.fields || [];
   const COLS = detectCols(headers);
+  // 2026-05-01 audit fix QW#3: use normalizePhone() so memory keys match
+  // every other path. Pre-fix this used .replace(/\D/g,'') which preserves
+  // a leading 1, so "5551234567" and "15551234567" became different memory
+  // keys — the cross-upload 3-strike rule never matched the same number
+  // across CSVs that used different phone formats.
   const fileCount={};
   rows.forEach(r=>{
-    const phone=String(r[COLS.phone]||'').replace(/\D/g,'');
+    const phone=normalizePhone(r[COLS.phone]);
     const list=(r[COLS.listname]||'Unknown List').trim();
     if(!phone||phone==='0') return;
     const dRaw=normDispo(r[COLS.dispo]||'');
@@ -415,7 +431,7 @@ function processCSV(csvText, memory, campaignId) {
   let memCaught=0;
   const listsSeen={},processedKeys={};
   rows.forEach(r=>{
-    const phone=String(r[COLS.phone]||'').replace(/\D/g,'');
+    const phone=normalizePhone(r[COLS.phone]);
     const list=(r[COLS.listname]||'Unknown List').trim();
     const dispoRaw=r[COLS.dispo]||'';
     const dispo=normDispo(dispoRaw);
@@ -580,8 +596,21 @@ app.get('/memory/export',requireAuth,async(req,res)=>{
 });
 
 app.post('/memory/import',requireAuth,upload.single('memfile'),async(req,res)=>{
-  try{const data=JSON.parse(bufferToCsvText(req.file.buffer));await saveMemory(data);res.json({success:true,count:Object.keys(data).length});}
-  catch(e){res.status(400).json({error:'Invalid memory file.'});}
+  // 2026-05-01 audit fix QW#9: guard req.file. When multer rejects an
+  // upload via fileFilter (or the user POSTs without a file), req.file is
+  // undefined — pre-fix `req.file.buffer` threw TypeError, swallowed by
+  // the catch and surfaced as the generic "Invalid memory file." error,
+  // masking the actual cause.
+  if (!req.file) return res.status(400).json({ error: 'No file uploaded.' });
+  try{
+    const data=JSON.parse(bufferToCsvText(req.file.buffer));
+    // Defensive shape check — saveMemory expects a plain object map.
+    if (!data || typeof data !== 'object' || Array.isArray(data)) {
+      return res.status(400).json({ error: 'Memory file must be a JSON object.' });
+    }
+    await saveMemory(data);
+    res.json({success:true,count:Object.keys(data).length});
+  } catch(e){res.status(400).json({error:'Invalid memory file.'});}
 });
 
 app.post('/memory/clear',requireAuth,async(req,res)=>{await clearMemory();res.json({success:true});});
@@ -625,16 +654,23 @@ app.use('/admin', adminRoutes);
 // Live-refresh: /dashboard polls this endpoint every 30s to update counters
 // in-place without a full page reload. Single source of truth for "what does
 // a lead mean" — any future change goes in one place.
-async function getDashboardStats() {
+async function getDashboardStats(tenantId) {
+  // 2026-05-01 audit fix QW#8: tenant-scope every COUNT. Pre-fix every
+  // subquery here was unscoped — `(SELECT COUNT(*) FROM properties WHERE
+  // state_code='IN')`, `(SELECT COUNT(*) FROM lists)` etc. — so the
+  // dashboard showed cross-tenant counts AND scanned every tenant's rows on
+  // every poll (every 30s). Required tenantId param. n_live_tup shortcut
+  // can't be tenant-scoped (it's a per-table estimate), so those three
+  // counts now go directly through COUNT(*) WHERE tenant_id = $1.
   const stats = await dbQuery(`SELECT
-    (SELECT COALESCE(NULLIF(n_live_tup, 0), (SELECT COUNT(*) FROM properties)) FROM pg_stat_user_tables WHERE relname = 'properties') AS total_properties,
-    (SELECT COUNT(*) FROM properties WHERE created_at >= date_trunc('month', NOW())) AS new_this_month,
-    (SELECT COALESCE(NULLIF(n_live_tup, 0), (SELECT COUNT(*) FROM contacts)) FROM pg_stat_user_tables WHERE relname = 'contacts') AS total_contacts,
-    (SELECT COALESCE(NULLIF(n_live_tup, 0), (SELECT COUNT(*) FROM phones)) FROM pg_stat_user_tables WHERE relname = 'phones') AS total_phones,
-    (SELECT COUNT(*) FROM phones WHERE LOWER(phone_status) = 'correct') AS correct_phones,
-    (SELECT COUNT(*) FROM phones WHERE LOWER(phone_status) = 'wrong' OR wrong_number = true) AS wrong_phones,
-    (SELECT COUNT(*) FROM phones WHERE LOWER(phone_status) IN ('dead','dead_number')) AS dead_phones,
-    (SELECT COUNT(*) FROM lists) AS total_lists,
+    (SELECT COUNT(*) FROM properties WHERE tenant_id = $1) AS total_properties,
+    (SELECT COUNT(*) FROM properties WHERE tenant_id = $1 AND created_at >= date_trunc('month', NOW())) AS new_this_month,
+    (SELECT COUNT(*) FROM contacts WHERE tenant_id = $1) AS total_contacts,
+    (SELECT COUNT(*) FROM phones WHERE tenant_id = $1) AS total_phones,
+    (SELECT COUNT(*) FROM phones WHERE tenant_id = $1 AND LOWER(phone_status) = 'correct') AS correct_phones,
+    (SELECT COUNT(*) FROM phones WHERE tenant_id = $1 AND (LOWER(phone_status) = 'wrong' OR wrong_number = true)) AS wrong_phones,
+    (SELECT COUNT(*) FROM phones WHERE tenant_id = $1 AND LOWER(phone_status) IN ('dead','dead_number')) AS dead_phones,
+    (SELECT COUNT(*) FROM lists WHERE tenant_id = $1) AS total_lists,
     -- 2026-04-21 PM v3 fix: Leads = SUM(campaigns.total_transfers).
     --
     -- History: this query went through 3 iterations today because Loki had
@@ -653,21 +689,21 @@ async function getDashboardStats() {
     -- and since it's pre-aggregated a simple SUM beats any join-based query
     -- for speed. Same definition also drives the /campaigns list column and
     -- the per-campaign detail page — single source of truth.
-    (SELECT COALESCE(SUM(total_transfers), 0)::int FROM campaigns) AS leads,
-    (SELECT COUNT(*) FROM properties WHERE pipeline_stage = 'contract') AS contracts,
-    (SELECT COUNT(*) FROM properties WHERE pipeline_stage = 'closed') AS closed,
-    (SELECT COUNT(*) FROM properties WHERE state_code = 'IN') AS indiana_props,
-    (SELECT COUNT(*) FROM properties WHERE state_code = 'GA') AS georgia_props,
-    (SELECT COUNT(*) FROM filtration_runs) AS total_filtration_runs,
-    (SELECT COUNT(*) FROM filtration_runs WHERE run_at >= date_trunc('month', NOW())) AS filtration_runs_month
-  `);
+    (SELECT COALESCE(SUM(total_transfers), 0)::int FROM campaigns WHERE tenant_id = $1) AS leads,
+    (SELECT COUNT(*) FROM properties WHERE tenant_id = $1 AND pipeline_stage = 'contract') AS contracts,
+    (SELECT COUNT(*) FROM properties WHERE tenant_id = $1 AND pipeline_stage = 'closed') AS closed,
+    (SELECT COUNT(*) FROM properties WHERE tenant_id = $1 AND state_code = 'IN') AS indiana_props,
+    (SELECT COUNT(*) FROM properties WHERE tenant_id = $1 AND state_code = 'GA') AS georgia_props,
+    (SELECT COUNT(*) FROM filtration_runs WHERE tenant_id = $1) AS total_filtration_runs,
+    (SELECT COUNT(*) FROM filtration_runs WHERE tenant_id = $1 AND run_at >= date_trunc('month', NOW())) AS filtration_runs_month
+  `, [tenantId]);
   return stats.rows[0];
 }
 
 // JSON endpoint for live-refresh. Dashboard polls this every 30s.
 app.get('/api/dashboard-stats', requireAuth, async (req, res) => {
   try {
-    const s = await getDashboardStats();
+    const s = await getDashboardStats(req.tenantId);
     res.json({ ok: true, stats: s, timestamp: Date.now() });
   } catch (e) {
     console.error('[api/dashboard-stats]', e.message);
@@ -803,7 +839,11 @@ async function saveRunToDB(tenantId, filename, stats, listsSeen, allRows) {
       if (!state) {
         // Row keeps a filtration_result entry below (for audit) but won't
         // produce a property/market row.
-        cleaned.push({ _invalidState: true, phone: String(row['Phone'] || '').replace(/\D/g, ''),
+        // 2026-05-01 audit fix QW#3: normalizePhone strips a leading "1"
+        // and is the single source of truth — was raw .replace(/\D/g,'')
+        // which let "1NPANXXXXXX" through unchanged and broke every
+        // cross-path lookup (NIS / dedup / campaign-phones-update).
+        cleaned.push({ _invalidState: true, phone: normalizePhone(row['Phone']),
                        listName: row['List Name (REISift Campaign)'] || '',
                        dispo: row['Disposition'] || '',
                        dispoNorm: normDispo(row['Disposition'] || ''),
@@ -821,7 +861,9 @@ async function saveRunToDB(tenantId, filename, stats, listsSeen, allRows) {
         zip:       (row['Zip Code'] || '').trim(),
         firstName: row['First Name'] || '',
         lastName:  row['Last Name']  || '',
-        phone:     String(row['Phone'] || '').replace(/\D/g, ''),
+        // 2026-05-01 audit fix QW#3: normalizePhone — strips leading "1",
+        // unifies key shape with every other path.
+        phone:     normalizePhone(row['Phone']),
         listName:  row['List Name (REISift Campaign)'] || '',
         dispo:     row['Disposition'] || '',
         dispoNorm: normDispo(row['Disposition'] || ''),
@@ -1371,6 +1413,7 @@ app.post('/campaigns/:id/upload', requireAuth, upload.single('csvfile'), async (
 app.post('/campaigns/:id/contacts/upload', requireAuth, upload.single('contactfile'), async (req, res) => {
   try {
     if (!req.file) return res.redirect('/oculah/campaigns/' + req.params.id);
+    if (!(await _requireOwnedCampaign(req, res))) return;
     await campaigns.initCampaignSchema();
     const parsed = Papa.parse(bufferToCsvText(req.file.buffer), { header: true, skipEmptyLines: true });
     console.log('[contacts/upload] file received:', req.file.originalname, 'rows:', parsed.data.length, 'headers:', (parsed.meta.fields||[]).length);
@@ -1392,9 +1435,10 @@ app.post('/campaigns/:id/contacts/upload', requireAuth, upload.single('contactfi
 // Delete master contact list
 app.post('/campaigns/:id/contacts/delete', requireAuth, async (req, res) => {
   try {
+    if (!(await _requireOwnedCampaign(req, res))) return;
     const { query: dbQ } = require('./db');
-    await dbQ('DELETE FROM campaign_contacts WHERE campaign_id=$1', [req.params.id]);
-    await dbQ('UPDATE campaigns SET total_unique_numbers=0, updated_at=NOW() WHERE id=$1', [req.params.id]);
+    await dbQ('DELETE FROM campaign_contacts WHERE campaign_id=$1 AND tenant_id=$2', [req.params.id, req.tenantId]);
+    await dbQ('UPDATE campaigns SET total_unique_numbers=0, updated_at=NOW() WHERE id=$1 AND tenant_id=$2', [req.params.id, req.tenantId]);
     res.redirect('/oculah/campaigns/' + req.params.id);
   } catch(e) { res.redirect('/oculah/campaigns/' + req.params.id); }
 });
@@ -1403,6 +1447,7 @@ app.post('/campaigns/:id/contacts/delete', requireAuth, async (req, res) => {
 app.post('/campaigns/:id/sms/upload', requireAuth, upload.single('smsfile'), async (req, res) => {
   try {
     if (!req.file) return res.redirect('/oculah/campaigns/' + req.params.id);
+    if (!(await _requireOwnedCampaign(req, res))) return;
     const parsed = Papa.parse(bufferToCsvText(req.file.buffer), { header: true, skipEmptyLines: true });
     const result = await campaigns.importSmarterContactFile(
       req.tenantId,
@@ -1483,7 +1528,10 @@ app.post('/nis/upload', requireAuth, upload.single('nisfile'), async (req, res) 
     await campaigns.initCampaignSchema();
     const csvText = bufferToCsvText(req.file.buffer);
     const parsed = Papa.parse(csvText, { header: true, skipEmptyLines: true });
-    const result = await campaigns.importNisFile(req.tenantId, parsed.data);
+    // 2026-05-01 audit fix QW#5: pass filename so the nis_uploads audit
+    // row records which file produced each entry. Pre-fix every audit row
+    // had filename=null, defeating the /nis history page.
+    const result = await campaigns.importNisFile(req.tenantId, parsed.data, { filename: req.file.originalname });
     const msg = `Processed ${result.totalRows} rows — ${result.uniqueNumbers} unique NIS numbers (${result.inserted} new, ${result.updated} updated). Flagged ${result.flagged} phones across all campaigns.`;
     res.redirect('/nis?msg=' + encodeURIComponent(msg));
   } catch(e) {
@@ -1499,6 +1547,7 @@ app.post('/nis/upload', requireAuth, upload.single('nisfile'), async (req, res) 
 // One-time sync: flag all historical wrong numbers in master contact list for this campaign
 app.post('/campaigns/:id/sync-wrong-numbers', requireAuth, async (req, res) => {
   try {
+    if (!(await _requireOwnedCampaign(req, res))) return;
     const { query: dbQ } = require('./db');
     const result = await dbQ(
       `UPDATE campaign_contact_phones ccp
@@ -1507,9 +1556,11 @@ app.post('/campaigns/:id/sync-wrong-numbers', requireAuth, async (req, res) => {
        WHERE cn.phone_number = ccp.phone_number
          AND cn.campaign_id = ccp.campaign_id
          AND cn.campaign_id = $1
+         AND ccp.tenant_id = $2
+         AND cn.tenant_id = $2
          AND cn.last_disposition_normalized = 'wrong_number'
          AND ccp.wrong_number = false`,
-      [req.params.id]
+      [req.params.id, req.tenantId]
     );
     console.log('[sync-wrong-numbers] flagged', result.rowCount, 'phones for campaign', req.params.id);
     res.redirect('/oculah/campaigns/' + req.params.id);
@@ -1522,9 +1573,10 @@ app.post('/campaigns/:id/sync-wrong-numbers', requireAuth, async (req, res) => {
 // Update Readymode accepted count
 app.post('/campaigns/:id/readymode-count', requireAuth, async (req, res) => {
   try {
+    if (!(await _requireOwnedCampaign(req, res))) return;
     const { query: dbQ } = require('./db');
-    await dbQ('UPDATE campaigns SET manual_count=$1, updated_at=NOW() WHERE id=$2',
-      [parseInt(req.body.count)||0, req.params.id]);
+    await dbQ('UPDATE campaigns SET manual_count=$1, updated_at=NOW() WHERE id=$2 AND tenant_id=$3',
+      [parseInt(req.body.count)||0, req.params.id, req.tenantId]);
     res.redirect('/oculah/campaigns/' + req.params.id);
   } catch(e) { res.redirect('/oculah/campaigns/' + req.params.id); }
 });
@@ -1532,6 +1584,7 @@ app.post('/campaigns/:id/readymode-count', requireAuth, async (req, res) => {
 // Download clean export (callable contacts only)
 app.get('/campaigns/:id/export/clean', requireAuth, async (req, res) => {
   try {
+    if (!(await _requireOwnedCampaign(req, res))) return;
     await campaigns.initCampaignSchema();
     // 2026-04-28 audit fix C-1: pass tenantId so DNC scoping uses the correct
     // tenant's do_not_call list (phones.phone_number is not globally unique).
@@ -1577,13 +1630,15 @@ app.get('/campaigns/:id/contacts/stats', requireAuth, async (req, res) => {
 // Delete campaign upload + reverse memory
 app.post('/campaigns/:id/uploads/:uploadId/delete', requireAuth, async (req, res) => {
   try {
+    if (!(await _requireOwnedCampaign(req, res))) return;
     await campaigns.initCampaignSchema();
     const { query: dbQ } = require('./db');
     const campId = req.params.id;
     const uploadId = req.params.uploadId;
 
-    // Get the upload record first
-    const upRes = await dbQ('SELECT * FROM campaign_uploads WHERE id=$1 AND campaign_id=$2', [uploadId, campId]);
+    // 2026-05-01 audit fix QW#1: tenant_id check on the upload row prevents
+    // cross-tenant deletion via guessable id pairs.
+    const upRes = await dbQ('SELECT * FROM campaign_uploads WHERE id=$1 AND campaign_id=$2 AND tenant_id=$3', [uploadId, campId, req.tenantId]);
     if (!upRes.rows.length) return res.redirect('/campaigns/' + campId);
     const up = upRes.rows[0];
 
@@ -1601,8 +1656,8 @@ app.post('/campaigns/:id/uploads/:uploadId/delete', requireAuth, async (req, res
     });
     await saveMemory(memory);
 
-    // Delete the upload record
-    await dbQ('DELETE FROM campaign_uploads WHERE id=$1', [uploadId]);
+    // Delete the upload record (tenant-scoped — prevents cross-tenant by id)
+    await dbQ('DELETE FROM campaign_uploads WHERE id=$1 AND tenant_id=$2', [uploadId, req.tenantId]);
 
     // Recalculate campaign totals from remaining uploads
     const totals = await dbQ(`
@@ -1617,7 +1672,7 @@ app.post('/campaigns/:id/uploads/:uploadId/delete', requireAuth, async (req, res
         COALESCE(SUM(transfers),0) as transfer,
         COALESCE(SUM(connected),0) as connected,
         COUNT(*) as upload_count
-      FROM campaign_uploads WHERE campaign_id=$1`, [campId]);
+      FROM campaign_uploads WHERE campaign_id=$1 AND tenant_id=$2`, [campId, req.tenantId]);
 
     const t = totals.rows[0];
     await dbQ(`UPDATE campaigns SET
@@ -1625,8 +1680,8 @@ app.post('/campaigns/:id/uploads/:uploadId/delete', requireAuth, async (req, res
       total_wrong_numbers=$4, total_voicemails=$5, total_not_interested=$6,
       total_do_not_call=$7, total_transfers=$8, total_connected=$9,
       upload_count=$10, updated_at=NOW()
-      WHERE id=$11`,
-      [t.total, t.kept, t.filtered, t.wrong, t.vm, t.ni, t.dnc, t.transfer, t.connected, t.upload_count, campId]);
+      WHERE id=$11 AND tenant_id=$12`,
+      [t.total, t.kept, t.filtered, t.wrong, t.vm, t.ni, t.dnc, t.transfer, t.connected, t.upload_count, campId, req.tenantId]);
 
     res.redirect('/campaigns/' + campId);
   } catch(e) {
@@ -1639,12 +1694,13 @@ app.post('/campaigns/:id/uploads/:uploadId/delete', requireAuth, async (req, res
 // Reset campaign stats — clears numbers, uploads, and campaign-scoped Redis keys
 app.post('/campaigns/:id/reset', requireAuth, async (req, res) => {
   try {
+    if (!(await _requireOwnedCampaign(req, res))) return;
     const { query: dbQ } = require('./db');
     const campId = req.params.id;
 
-    // Clear campaign numbers and uploads from DB
-    await dbQ('DELETE FROM campaign_numbers WHERE campaign_id=$1', [campId]);
-    await dbQ('DELETE FROM campaign_uploads WHERE campaign_id=$1', [campId]);
+    // Clear campaign numbers and uploads from DB (tenant-scoped)
+    await dbQ('DELETE FROM campaign_numbers WHERE campaign_id=$1 AND tenant_id=$2', [campId, req.tenantId]);
+    await dbQ('DELETE FROM campaign_uploads WHERE campaign_id=$1 AND tenant_id=$2', [campId, req.tenantId]);
 
     // Reset all campaign totals to zero
     await dbQ(`UPDATE campaigns SET
@@ -1652,7 +1708,7 @@ app.post('/campaigns/:id/reset', requireAuth, async (req, res) => {
       total_wrong_numbers=0, total_voicemails=0, total_not_interested=0,
       total_do_not_call=0, total_transfers=0, total_connected=0,
       upload_count=0, updated_at=NOW()
-      WHERE id=$1`, [campId]);
+      WHERE id=$1 AND tenant_id=$2`, [campId, req.tenantId]);
 
     // Clear campaign-scoped Redis memory keys
     const memory = await loadMemory();
@@ -1676,12 +1732,14 @@ app.post('/campaigns/:id/delete', requireAuth, async (req, res) => {
   try {
     const { query: dbQ } = require('./db');
     const id = req.params.id;
-    // Only allow deleting completed campaigns
-    const campRes = await dbQ('SELECT status FROM campaigns WHERE id=$1', [id]);
+    // Only allow deleting completed campaigns. tenant_id check on both
+    // SELECT and DELETE — prevents cross-tenant cascade-delete via guessed
+    // SERIAL ids.
+    const campRes = await dbQ('SELECT status FROM campaigns WHERE id=$1 AND tenant_id=$2', [id, req.tenantId]);
     if (!campRes.rows.length) return res.redirect('/campaigns');
     if (campRes.rows[0].status !== 'completed') return res.redirect('/campaigns/' + id);
     // Cascade delete — uploads, numbers, contacts, phones all cascade via FK
-    await dbQ('DELETE FROM campaigns WHERE id=$1', [id]);
+    await dbQ('DELETE FROM campaigns WHERE id=$1 AND tenant_id=$2', [id, req.tenantId]);
     res.redirect('/campaigns');
   } catch(e) {
     console.error('Delete campaign error:', e.message);
