@@ -814,15 +814,31 @@ async function getContactStats(campaignId) {
   // same export does not double-count because cumulative_count is overwritten,
   // not added.
   const callLogs = await query(
-    `SELECT COALESCE(SUM(cumulative_count), 0)::bigint AS total_call_logs
+    `SELECT COALESCE(SUM(cumulative_count), 0)::bigint AS total_call_logs,
+            COUNT(DISTINCT phone_number)::int AS unique_call_logs
        FROM campaign_numbers WHERE campaign_id = $1`,
     [campaignId]);
 
+  // 5D: accepted-by-dialer scoped counts. accepted_contacts = COUNT(*) where
+  // accepted=true. accepted_phones = unique phones attached to accepted
+  // contacts (the universe Callable should be derived from). Both fall back
+  // to 0 cleanly for legacy campaigns where accepted is null everywhere.
+  const accepted = await query(`
+    SELECT
+      COUNT(DISTINCT cc.id) FILTER (WHERE cc.accepted = true) AS accepted_contacts,
+      COUNT(DISTINCT ccp.phone_number) FILTER (WHERE cc.accepted = true) AS accepted_phones
+    FROM campaign_contacts cc
+    LEFT JOIN campaign_contact_phones ccp ON ccp.contact_id = cc.id
+    WHERE cc.campaign_id = $1`, [campaignId]);
+
   return {
     ...res.rows[0],
-    reached_contacts: parseInt(reached.rows[0]?.reached_contacts || 0),
-    lead_contacts:    parseInt(leads.rows[0]?.lead_contacts || 0),
-    total_call_logs:  parseInt(callLogs.rows[0]?.total_call_logs || 0),
+    reached_contacts:  parseInt(reached.rows[0]?.reached_contacts || 0),
+    lead_contacts:     parseInt(leads.rows[0]?.lead_contacts || 0),
+    total_call_logs:   parseInt(callLogs.rows[0]?.total_call_logs || 0),
+    unique_call_logs:  parseInt(callLogs.rows[0]?.unique_call_logs || 0),
+    accepted_contacts: parseInt(accepted.rows[0]?.accepted_contacts || 0),
+    accepted_phones:   parseInt(accepted.rows[0]?.accepted_phones   || 0),
   };
 }
 

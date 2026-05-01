@@ -3,6 +3,14 @@
 
 const ENTRIES = [
   {
+    date: 'May 1, 2026 (5D + 5F — KPIs anchored on accepted, call-log labels clearer)',
+    title: 'Campaign KPIs now anchor on Accepted by Dialer; Call logs card distinguishes total vs unique',
+    items: [
+      { tag: 'feat', text: '5D — Re-anchored several campaign KPIs from "all uploaded" to "accepted by the dialer". LCV is now lead_contacts / accepted_contacts (was / total_contacts). Contacts Reached % is now reached / accepted_contacts. CLR uses accepted_phones as the denominator. Callable, Health %, and Active-pool % all derive from accepted_phones rather than total_phones. CR (connected ÷ call_logs) is unchanged. Legacy campaigns with no accepted data fall back to total counts so the page still shows numbers instead of 0% across the board. New columns in getContactStats: accepted_contacts and accepted_phones.' },
+      { tag: 'fix', text: '5F — Call logs KPI subtitle was the misleading "Logged numbers" — sounds like "unique phones" but the number above it is total dial attempts. Now reads "Total dial attempts · Unique: X" so both numbers are visible side-by-side without spawning a second card.' },
+    ],
+  },
+  {
     date: 'May 1, 2026 (5C — required dialer/platform on campaign creation)',
     title: 'New campaigns must specify the dialer/SMS platform they run on',
     items: [

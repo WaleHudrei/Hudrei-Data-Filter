@@ -122,6 +122,7 @@ function _campaignMetrics(c) {
   // Readymode), not unique phones. total_unique_numbers is the unique-phone
   // counter and powers TOTAL PHONES separately.
   const callLogs       = Number(counts.total_call_logs || 0);
+  const uniqueCallLogs = Number(counts.unique_call_logs || 0);
   const connected      = Number(c.total_connected      || 0);
   const transfers      = Number(c.total_transfers      || 0);
   const wrongNums      = Number(c.total_wrong_numbers  || 0);
@@ -138,25 +139,36 @@ function _campaignMetrics(c) {
   const leadContacts   = Number(counts.lead_contacts   || 0);
   const manualCount    = Number(c.manual_count         || 0);
 
-  // "Callable" = total phones minus everything that's been pulled out of the
-  // active dialer pool. Filtered + wrong + NIS are excluded from calling, and
-  // we floor at 0 so a stale upload doesn't show a negative number.
-  const callablePhones = Math.max(0, totalPhones - wrongPhones - filteredPhones - nisPhones);
-  const masterCallable = Math.max(0, totalPhones - (filtered + wrongNums) - nisPhones);
-  const callablePct    = totalPhones > 0 ? Math.round((masterCallable / totalPhones) * 100) : 0;
-  const health         = totalPhones > 0 ? ((callablePhones / totalPhones) * 100).toFixed(1) : '0.0';
+  // 5D: accepted-by-dialer scoped counts. Falls back to total when accepted
+  // data isn't available (legacy campaigns) so the page still shows numbers
+  // instead of 0% across the board.
+  const acceptedContactsRaw = Number(counts.accepted_contacts || 0);
+  const acceptedPhonesRaw   = Number(counts.accepted_phones   || 0);
+  const acceptedContacts    = acceptedContactsRaw > 0 ? acceptedContactsRaw : totalContacts;
+  const acceptedPhones      = acceptedPhonesRaw   > 0 ? acceptedPhonesRaw   : totalPhones;
+
+  // "Callable" = accepted phones minus everything that's been pulled out of
+  // the active dialer pool (wrong / filtered / NIS). Pre-5D this anchored on
+  // total_phones; now anchored on accepted_phones so the denominator matches
+  // what the dialer actually accepted.
+  const callablePhones = Math.max(0, acceptedPhones - wrongPhones - filteredPhones - nisPhones);
+  const masterCallable = Math.max(0, acceptedPhones - (filtered + wrongNums) - nisPhones);
+  const callablePct    = acceptedPhones > 0 ? Math.round((masterCallable / acceptedPhones) * 100) : 0;
+  const health         = acceptedPhones > 0 ? ((callablePhones / acceptedPhones) * 100).toFixed(1) : '0.0';
 
   const cr    = (callLogs > 0 && connected > 0) ? ((connected / callLogs) * 100).toFixed(2) : '0.00';
-  const clr   = (totalPhones > 0 && callLogs > 0) ? ((callLogs / totalPhones) * 100).toFixed(2) : '0.00';
+  const clr   = (acceptedPhones > 0 && callLogs > 0) ? ((callLogs / acceptedPhones) * 100).toFixed(2) : '0.00';
   const wPct  = (connected + wrongNums) > 0 ? ((wrongNums / (connected + wrongNums)) * 100).toFixed(2) : '0.00';
   const niPct = connected > 0 ? ((notInterested / connected) * 100).toFixed(2) : '0.00';
   const lgr   = connected > 0 ? ((transfers / connected) * 100).toFixed(2) : '0.00';
-  const lcv   = totalContacts > 0 ? ((leadContacts / totalContacts) * 100).toFixed(2) : '0.00';
+  // 5D: LCV = lead_contacts / accepted_contacts (was total_contacts).
+  const lcv   = acceptedContacts > 0 ? ((leadContacts / acceptedContacts) * 100).toFixed(2) : '0.00';
 
   return {
-    callLogs, connected, transfers, wrongNums, notInterested, filtered, uploadCount,
+    callLogs, uniqueCallLogs, connected, transfers, wrongNums, notInterested, filtered, uploadCount,
     totalContacts, totalPhones, correctPhones, wrongPhones, nisPhones, reached,
     leadContacts, manualCount, masterCallable, callablePct, health, cr, clr, wPct, niPct, lgr, lcv,
+    acceptedContacts, acceptedPhones,
   };
 }
 
@@ -170,7 +182,7 @@ function filtrationKpiStrip(c, m) {
     ${_kpiCell('Leads generated', fmtNum(m.transfers),    'Transfers', 'good')}
     ${_kpiCell('Callable',        fmtNum(m.masterCallable), `${m.callablePct}% active pool`, 'good')}
   ` : `
-    ${_kpiCell('Call logs',       fmtNum(m.callLogs),     'Logged numbers')}
+    ${_kpiCell('Call logs',       fmtNum(m.callLogs),     `Total dial attempts · Unique: ${fmtNum(m.uniqueCallLogs)}`)}
     ${_kpiCell('Connected',       fmtNum(m.connected),    'Live pickups', 'primary')}
     ${_kpiCell('Wrong numbers',   fmtNum(m.wrongNums),    'Removed', 'bad')}
     ${_kpiCell('Not interested',  fmtNum(m.notInterested),'Total NI', 'warn')}
@@ -254,7 +266,12 @@ function contactListCard(c, counts) {
   const nis           = Number(counts.nis_phones     || 0);
   const reached       = Number(counts.reached_contacts || 0);
   const manualCount   = Number(c.manual_count || 0);
-  const reachedPct    = totalContacts > 0 ? ((reached / totalContacts) * 100).toFixed(1) : null;
+  // 5D: Contacts Reached % is now Connected / accepted_contacts (was
+  // / total_contacts). Falls back to total_contacts when no accepted data
+  // exists (legacy campaigns) so the page still shows a meaningful number.
+  const acceptedContactsRaw = Number(counts.accepted_contacts || 0);
+  const acceptedContacts    = acceptedContactsRaw > 0 ? acceptedContactsRaw : totalContacts;
+  const reachedPct    = acceptedContacts > 0 ? ((reached / acceptedContacts) * 100).toFixed(1) : null;
   const reachedValue  = reachedPct
     ? `${fmtNum(reached)} <span style="font-size:13px;color:var(--ocu-text-3);font-weight:400">(${reachedPct}%)</span>`
     : fmtNum(reached);
