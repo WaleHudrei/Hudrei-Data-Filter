@@ -241,9 +241,121 @@ router.get('/', (req, res, next) => {
 <footer class="footer">
   <a href="/login">Sign in</a> ·
   <a href="/signup">Sign up</a> ·
-  <a href="/forgot-password">Forgot password</a>
+  <a href="/forgot-password">Forgot password</a> ·
+  <a href="/privacy">Privacy</a> ·
+  <a href="/terms">Terms</a>
 </footer>
 </body></html>`);
+});
+
+// 2026-05-01 Phase 2 finalization — Privacy + Terms pages.
+// The plan ("Cross-cutting → GDPR / privacy") requires a privacy policy
+// before public signup goes live. These are PLACEHOLDER pages — real legal
+// review needed before launch. The structure + linking in the landing
+// footer + signup form is what the plan requires; the copy is operational
+// boilerplate that legal can replace in-place without touching the routing.
+const _legalShell = (title, body) => `<!DOCTYPE html>
+<html><head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>${escHTML(title)} — Oculah</title>
+<style>
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;background:#f5f4f0;color:#1a1a1a;line-height:1.6;font-size:15px}
+  .top{display:flex;justify-content:space-between;align-items:center;padding:18px 32px;border-bottom:1px solid #e8e7e1;background:#fff}
+  .brand{font-weight:700;font-size:18px;letter-spacing:-.2px}
+  .brand a{color:inherit;text-decoration:none}
+  .top-actions a{font-size:14px;text-decoration:none;color:#444;margin-left:18px}
+  .wrap{max-width:760px;margin:48px auto;padding:0 32px 96px}
+  h1{font-size:32px;font-weight:700;letter-spacing:-.5px;margin-bottom:6px}
+  .meta{font-size:13px;color:#888;margin-bottom:32px}
+  h2{font-size:18px;font-weight:600;margin:28px 0 8px}
+  p, li{color:#444;margin-bottom:12px}
+  ul{margin:0 0 16px 20px}
+  .placeholder{background:#fffbeb;border:1px solid #fde68a;color:#78350f;padding:14px 18px;border-radius:10px;font-size:13px;margin-bottom:28px}
+  .footer{padding:36px 32px;border-top:1px solid #e8e7e1;text-align:center;font-size:13px;color:#888;background:#fff;margin-top:64px}
+  .footer a{margin:0 10px;color:#666;text-decoration:none}
+</style>
+</head><body>
+<header class="top">
+  <div class="brand"><a href="/">Oculah</a></div>
+  <nav class="top-actions">
+    <a href="/login">Sign in</a>
+    <a href="/signup">Get started</a>
+  </nav>
+</header>
+<main class="wrap">${body}</main>
+<footer class="footer">
+  <a href="/">Home</a> ·
+  <a href="/privacy">Privacy</a> ·
+  <a href="/terms">Terms</a> ·
+  <a href="/login">Sign in</a>
+</footer>
+</body></html>`;
+
+router.get('/privacy', (req, res) => {
+  res.send(_legalShell('Privacy Policy', `
+    <h1>Privacy Policy</h1>
+    <div class="meta">Last updated: May 1, 2026</div>
+    <div class="placeholder"><strong>Placeholder.</strong> This is a working-draft policy. Final copy is pending legal review before public launch.</div>
+
+    <h2>What we collect</h2>
+    <p>When you create an Oculah workspace we store the email address you sign up with, a bcrypt hash of your password, the workspace name you provide, and the data you upload through CSV imports (property addresses, contact names, phone numbers, mailing addresses, and dispositions from your dialer).</p>
+
+    <h2>How we use it</h2>
+    <ul>
+      <li>To run the app — every list, dashboard, export, and filtration pass operates on data you uploaded yourself.</li>
+      <li>To send transactional email — verification, password reset, and (where applicable) billing receipts.</li>
+      <li>To diagnose problems — server logs are kept for 30 days for debugging and abuse investigation.</li>
+    </ul>
+    <p>We do not sell your data. We do not share it with third parties beyond the providers required to operate the service (Postgres host, email sender, payment processor).</p>
+
+    <h2>Data isolation</h2>
+    <p>Every record in Oculah is scoped to a single workspace. Workspaces cannot read each other's data. We use shared-database multi-tenancy with column-level <code>tenant_id</code> scoping enforced on every read and write.</p>
+
+    <h2>Data retention &amp; deletion</h2>
+    <p>You can request deletion of your workspace at any time by emailing the address in our terms. Deletion cascades through every record we hold for your workspace. Backups are retained for up to 30 days for disaster recovery and then purged.</p>
+
+    <h2>Cookies</h2>
+    <p>We set one session cookie (<code>connect.sid</code>) used to keep you logged in. The cookie is HttpOnly, SameSite=Lax, and (in production) Secure. We do not run third-party analytics or advertising trackers.</p>
+
+    <h2>Contact</h2>
+    <p>Questions about this policy or your data: contact the workspace owner who invited you, or reach the platform team via the email listed in our <a href="/terms">terms of service</a>.</p>
+  `));
+});
+
+router.get('/terms', (req, res) => {
+  res.send(_legalShell('Terms of Service', `
+    <h1>Terms of Service</h1>
+    <div class="meta">Last updated: May 1, 2026</div>
+    <div class="placeholder"><strong>Placeholder.</strong> This is a working-draft agreement. Final copy is pending legal review before public launch.</div>
+
+    <h2>Using the service</h2>
+    <p>You agree to use Oculah only for lawful business purposes related to real estate operations. You are responsible for the data you upload and for compliance with applicable telemarketing laws (TCPA, state DNC registries, GDPR, etc.) when you act on it.</p>
+
+    <h2>Your account</h2>
+    <p>You must provide a working email address and keep your password confidential. You're responsible for activity that happens under your login. Tell us immediately if you believe your account has been compromised.</p>
+
+    <h2>Acceptable use</h2>
+    <ul>
+      <li>Don't upload data you don't have the right to use.</li>
+      <li>Don't attempt to access other workspaces' data.</li>
+      <li>Don't probe, fuzz, or otherwise stress-test the platform without prior authorization.</li>
+      <li>Don't use Oculah to send mass email or SMS — it's a CRM, not a messaging tool.</li>
+    </ul>
+
+    <h2>Subscription &amp; billing</h2>
+    <p>Paid plans bill monthly or annually via our payment processor. Cancellation takes effect at the end of the current billing period. Trial workspaces convert to paid at the end of the trial unless cancelled. We don't issue refunds for partial periods.</p>
+
+    <h2>Liability</h2>
+    <p>The service is provided "as is." We make a good-faith effort to keep your data backed up and accurate, but we don't guarantee error-free operation. To the fullest extent permitted by law, our liability for any claim is limited to the amount you've paid us in the prior 12 months.</p>
+
+    <h2>Changes to these terms</h2>
+    <p>We may update these terms as the service evolves. Material changes will be communicated by email at least 14 days before they take effect.</p>
+
+    <h2>Contact</h2>
+    <p>Questions about these terms: reach us at the email address listed on the workspace owner's billing receipt, or via the support form once you're signed in.</p>
+  `));
 });
 
 // ── GET /signup ──────────────────────────────────────────────────────────────
@@ -278,6 +390,7 @@ router.get('/signup', (req, res) => {
       </div>
       <button type="submit">Create account</button>
     </form>
+    <div class="alt" style="font-size:12px;color:#888;margin-top:12px;line-height:1.5">By creating an account you agree to our <a href="/terms" target="_blank">Terms</a> and <a href="/privacy" target="_blank">Privacy Policy</a>.</div>
     <div class="alt">Already have an account? <a href="/login">Sign in</a></div>
   `));
 });
@@ -643,6 +756,15 @@ router.post('/login', _loginRateLimit, async (req, res) => {
     if (!r.rows.length) return fail();
     const u = r.rows[0];
     if (u.status !== 'active') return fail();
+    // 2026-05-01 enumeration fix: verify password BEFORE surfacing the
+    // tenant-suspended message. Pre-fix the suspended-workspace branch ran
+    // before password verification — a probe with any password against a
+    // suspended-tenant email got a different response than a probe with
+    // any password against an active-tenant email, leaking which emails
+    // belong to suspended workspaces. Now: confirm credentials first, then
+    // (and only then) tell the legitimate owner why we're refusing.
+    const ok = await passwords.verify(password, u.password_hash);
+    if (!ok) return fail();
     // 2026-04-28: super-admin can pause an entire tenant from /admin. Block
     // login for suspended/canceled tenants — credentials may be valid but the
     // workspace is offline.
@@ -650,8 +772,6 @@ router.post('/login', _loginRateLimit, async (req, res) => {
       await _bumpLoginFailure(ip, emailAddr);
       return res.redirect('/login?err=' + encodeURIComponent('This workspace has been suspended. Contact your account admin.'));
     }
-    const ok = await passwords.verify(password, u.password_hash);
-    if (!ok) return fail();
 
     // Soft block on unverified email — they can re-trigger the link.
     if (!u.email_verified_at) {

@@ -228,6 +228,61 @@ app.use(session({
 const path = require('path');
 app.use(express.static(path.join(__dirname, 'public')));
 
+// 2026-05-01 Phase 2 finalization — /health endpoint for UptimeRobot /
+// Railway / BetterStack probes. Mounted BEFORE the tenant-status gate so
+// uptime checks don't pay any auth/DB overhead. Returns 200 with a minimal
+// JSON payload + `Cache-Control: no-store` so probers get fresh state.
+//
+// This is intentionally a liveness probe (does the process accept HTTP?),
+// not a deep readiness probe (is the DB reachable? is Redis up?). Adding
+// a DB ping turns a probe failure into a cascading "everything is down"
+// signal when only Postgres is briefly unreachable. Liveness is what the
+// uptime monitor actually wants to alert on.
+app.get('/health', (req, res) => {
+  res.set('Cache-Control', 'no-store');
+  res.json({ ok: true, ts: Date.now() });
+});
+
+// 2026-05-01 Phase 2 finalization — global tenant-status gate. Runs after
+// static so /oculah-static/* + /public/* don't pay the check, but BEFORE
+// every router (auth, ocular, records, owners, lists, imports, admin, hq).
+// The 11 per-router requireAuth functions only validated session +
+// tenantId — never re-checked the tenant's `status`. So a tenant suspended
+// from /admin kept working until cookie expiry. This middleware closes
+// that gap exactly once per request, with a 60s in-memory cache to keep
+// the per-request cost effectively zero.
+app.use(async (req, res, next) => {
+  // Unauthenticated requests fall straight through (login, signup,
+  // verify-email, marketing landing, etc.).
+  if (!req.session || !req.session.authenticated || !req.session.tenantId) {
+    return next();
+  }
+  // Super-admin sessions (HQ portal) carry tenantId of the tenant they're
+  // viewing — but the super-admin's authority isn't gated by that tenant's
+  // status. Skip the gate when the session is the dedicated HQ portal one.
+  if (req.session.superAdmin === true) return next();
+
+  try {
+    const active = await _checkTenantActive(req.session.tenantId);
+    if (!active) {
+      return req.session.destroy(() => {
+        // For JSON / fetch callers, return 401 instead of redirect so the
+        // client-side error handler shows a sensible toast rather than
+        // tripping a CORS preflight on the redirect target.
+        const wantsJson = req.headers.accept && req.headers.accept.includes('application/json');
+        if (wantsJson) return res.status(401).json({ error: 'Workspace inactive — please log in again.' });
+        res.redirect('/login?msg=' + encodeURIComponent('Your workspace is inactive. Please log in again.'));
+      });
+    }
+    next();
+  } catch (e) {
+    // Don't fail-closed on a DB hiccup. _checkTenantActive already catches
+    // and returns true on error; this catch is the belt-and-suspenders layer.
+    console.error('[tenant-status-gate]', e.message);
+    next();
+  }
+});
+
 // 2026-04-29 audit fix H2: proactive 503 when the pg pool is saturated.
 // Pre-fix, requests beyond the pool's cap silently waited up to 5s
 // (`connectionTimeoutMillis`) and then erupted as generic 500s. Under load
@@ -274,11 +329,60 @@ app.use('/', authRoutes);
 const hqRoutes = require('./auth/hq-routes');
 app.use('/', hqRoutes);
 
-function requireAuth(req, res, next) {
+// 2026-05-01 Phase 2 finalization — tenant status gate.
+// Plan + adversarial audit (Section 11 CRITICAL) called this out: when an
+// /admin operator suspends a tenant, the tenant's already-logged-in users
+// keep working until their session cookie expires (8h). Pre-fix the only
+// `status` check happened at POST /login, never per-request. Now: every
+// authed request re-checks `tenants.status`, with a 60-second in-memory
+// cache to amortize the lookup so we don't pay one DB round-trip per
+// request. Suspended/canceled tenants get their session destroyed and
+// redirected to /login. New /admin status flips show within 60s.
+const _tenantStatusCache = new Map();   // tenantId -> { status, t }
+const TENANT_STATUS_TTL_MS = 60_000;
+async function _checkTenantActive(tenantId) {
+  const now = Date.now();
+  const cached = _tenantStatusCache.get(tenantId);
+  if (cached && (now - cached.t) < TENANT_STATUS_TTL_MS) {
+    return cached.status === 'active';
+  }
+  try {
+    const r = await dbQuery('SELECT status FROM tenants WHERE id = $1', [tenantId]);
+    const status = r.rows[0]?.status || null;
+    _tenantStatusCache.set(tenantId, { status, t: now });
+    // Cap the map at ~1000 entries (well above any realistic tenant count
+    // for v1) so a long-running process can't grow it unbounded.
+    if (_tenantStatusCache.size > 1000) {
+      const oldest = _tenantStatusCache.keys().next().value;
+      _tenantStatusCache.delete(oldest);
+    }
+    return status === 'active';
+  } catch (e) {
+    // Don't fail-closed on a DB hiccup — log and let the request through.
+    // Worst case: a suspended tenant gets one extra request through during
+    // a transient DB outage. Better than a tenant-wide outage on top of a
+    // DB outage.
+    console.error('[requireAuth] tenant status check failed (allowing through):', e.message);
+    return true;
+  }
+}
+
+async function requireAuth(req, res, next) {
   if (!req.session || !req.session.authenticated) return res.redirect('/login');
   // Sessions created before Phase 1 don't carry tenant context. Bounce them
   // to /login so they re-authenticate and pick up tenantId/userId/role.
   if (!req.session.tenantId) return res.redirect('/login');
+
+  const active = await _checkTenantActive(req.session.tenantId);
+  if (!active) {
+    // Tenant got suspended/canceled while this user was logged in. Destroy
+    // the session and bounce to /login. Returning a generic /login redirect
+    // (rather than a "your tenant is suspended" page) avoids leaking
+    // workspace status to anyone who just lost access.
+    req.session.destroy(() => res.redirect('/login'));
+    return;
+  }
+
   req.tenantId = req.session.tenantId;
   req.userId = req.session.userId;
   req.role = req.session.role;
