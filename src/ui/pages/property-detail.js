@@ -149,71 +149,105 @@ function propertyDetail(data) {
        ...secondaries.map((sc, i) => ({ ...sc, _isPrimary: false, _label: 'Owner ' + (i + 2) }))]
     : [];
 
+  // 2026-05-01 polish pass + inline edit. Each owner row is now a card with
+  // an avatar, label/name, and three actions: Edit (opens an inline form),
+  // Make primary (if not already), Remove. The Add Another Owner form is
+  // collapsed by default behind a "+ Add another owner" button so the
+  // dialog opens compact instead of dumping a 7-field form on the user.
+  const _ownerInitials = (fn, ln) => {
+    const f = (fn || '').trim();
+    const l = (ln || '').trim();
+    return ((f[0] || '') + (l[0] || '')).toUpperCase() || '?';
+  };
+  const _ownerEditFormFields = (o) => `
+    <div class="ocu-form-grid">
+      <div class="ocu-form-field">
+        <label class="ocu-form-label">First name</label>
+        <input type="text" name="first_name" value="${escHTML(o.first_name || '')}" maxlength="100" class="ocu-input" autocomplete="off">
+      </div>
+      <div class="ocu-form-field">
+        <label class="ocu-form-label">Last name</label>
+        <input type="text" name="last_name" value="${escHTML(o.last_name || '')}" maxlength="100" class="ocu-input" autocomplete="off">
+      </div>
+      <div class="ocu-form-field">
+        <label class="ocu-form-label">Owner type</label>
+        <select name="owner_type" class="ocu-input">
+          <option value=""${!o.owner_type ? ' selected' : ''}>— Auto-detect —</option>
+          <option value="Person"${o.owner_type === 'Person' ? ' selected' : ''}>Person</option>
+          <option value="Company"${o.owner_type === 'Company' ? ' selected' : ''}>Company</option>
+          <option value="Trust"${o.owner_type === 'Trust' ? ' selected' : ''}>Trust</option>
+        </select>
+      </div>
+      <div class="ocu-form-field" style="grid-column: 1 / -1">
+        <label class="ocu-form-label">Mailing address</label>
+        <input type="text" name="mailing_address" value="${escHTML(o.mailing_address || '')}" maxlength="255" class="ocu-input" autocomplete="off">
+      </div>
+      <div class="ocu-form-field">
+        <label class="ocu-form-label">Mailing city</label>
+        <input type="text" name="mailing_city" value="${escHTML(o.mailing_city || '')}" maxlength="100" class="ocu-input">
+      </div>
+      <div class="ocu-form-field">
+        <label class="ocu-form-label">Mailing state</label>
+        <input type="text" name="mailing_state" value="${escHTML(o.mailing_state || '')}" maxlength="10" class="ocu-input" placeholder="2-letter code">
+      </div>
+      <div class="ocu-form-field">
+        <label class="ocu-form-label">Mailing ZIP</label>
+        <input type="text" name="mailing_zip" value="${escHTML(o.mailing_zip || '')}" maxlength="10" class="ocu-input">
+      </div>
+    </div>`;
+
   const editOwnersDialog = `
     <dialog id="ocu-edit-owners-dialog" class="ocu-dialog ocu-dialog-edit-owners">
       <div class="ocu-dialog-header">
-        <div class="ocu-dialog-title">Edit owners</div>
+        <div>
+          <div class="ocu-dialog-title">Edit owners</div>
+          <div class="ocu-dialog-subtitle">${allOwners.length ? `${allOwners.length} owner${allOwners.length === 1 ? '' : 's'} on this property` : 'No owners yet'}</div>
+        </div>
         <button type="button" class="ocu-dialog-close" data-action="close-edit-owners" aria-label="Close">×</button>
       </div>
       <div class="ocu-dialog-body" data-property-id="${escHTML(String(p.id || ''))}">
         <div class="ocu-edit-owners-list" id="ocu-edit-owners-list">
-          ${allOwners.length ? allOwners.map(o => `
+          ${allOwners.length ? allOwners.map(o => {
+            const fullName = ((o.first_name || '') + ' ' + (o.last_name || '')).trim() || 'Unnamed';
+            const cityState = [o.mailing_city, o.mailing_state].filter(Boolean).join(', ');
+            const sub = o.mailing_address ? `${o.mailing_address}${cityState ? ' · ' + cityState : ''}` : (o.owner_type || '—');
+            return `
             <div class="ocu-edit-owner-row" data-contact-id="${escHTML(String(o.id))}">
-              <div class="ocu-edit-owner-info">
-                <div class="ocu-edit-owner-label">
-                  ${escHTML(o._label)}${o._isPrimary ? ' <span class="ocu-owner-primary-tag">Primary</span>' : ''}
+              <div class="ocu-edit-owner-summary">
+                <div class="ocu-edit-owner-avatar">${escHTML(_ownerInitials(o.first_name, o.last_name))}</div>
+                <div class="ocu-edit-owner-info">
+                  <div class="ocu-edit-owner-label">${escHTML(o._label)}${o._isPrimary ? ' <span class="ocu-owner-primary-tag">Primary</span>' : ''}</div>
+                  <div class="ocu-edit-owner-name">${escHTML(fullName)}</div>
+                  <div class="ocu-edit-owner-sub">${escHTML(sub)}</div>
                 </div>
-                <div class="ocu-edit-owner-name">${escHTML(((o.first_name || '') + ' ' + (o.last_name || '')).trim() || 'Unnamed')}</div>
+                <div class="ocu-edit-owner-actions">
+                  <button type="button" class="ocu-btn ocu-btn-secondary ocu-btn-sm" data-action="owner-edit-toggle" data-contact-id="${escHTML(String(o.id))}">Edit</button>
+                  ${!o._isPrimary ? `<button type="button" class="ocu-btn ocu-btn-ghost ocu-btn-sm" data-action="owner-make-primary" data-property-id="${escHTML(String(p.id))}" data-contact-id="${escHTML(String(o.id))}">Make primary</button>` : ''}
+                  <button type="button" class="ocu-btn ocu-btn-danger-ghost ocu-btn-sm" data-action="owner-remove" data-property-id="${escHTML(String(p.id))}" data-contact-id="${escHTML(String(o.id))}" title="Remove this owner">Remove</button>
+                </div>
               </div>
-              <div class="ocu-edit-owner-actions">
-                ${!o._isPrimary ? `<button type="button" class="ocu-btn ocu-btn-ghost ocu-btn-sm" data-action="owner-make-primary" data-property-id="${escHTML(String(p.id))}" data-contact-id="${escHTML(String(o.id))}">Make primary</button>` : ''}
-                <button type="button" class="ocu-btn ocu-btn-danger ocu-btn-sm" data-action="owner-remove" data-property-id="${escHTML(String(p.id))}" data-contact-id="${escHTML(String(o.id))}" title="Remove this owner">Remove</button>
-              </div>
-            </div>
-          `).join('') : '<div class="ocu-text-3" style="font-size:13px;padding:10px 4px;font-style:italic">No owners yet — add one below.</div>'}
+              <form class="ocu-edit-owner-form" hidden data-action="owner-edit-submit" data-property-id="${escHTML(String(p.id || ''))}" data-contact-id="${escHTML(String(o.id))}">
+                ${_ownerEditFormFields(o)}
+                <div class="ocu-edit-owner-form-actions">
+                  <button type="button" class="ocu-btn ocu-btn-ghost ocu-btn-sm" data-action="owner-edit-cancel" data-contact-id="${escHTML(String(o.id))}">Cancel</button>
+                  <button type="submit" class="ocu-btn ocu-btn-primary ocu-btn-sm">Save changes</button>
+                </div>
+              </form>
+            </div>`;
+          }).join('') : '<div class="ocu-edit-owners-empty">No owners on this property yet. Add one below.</div>'}
         </div>
-        <div class="ocu-edit-owners-divider"></div>
-        <div class="ocu-edit-owners-add">
-          <div class="ocu-card-title" style="margin-bottom:10px">Add another owner</div>
+
+        <div class="ocu-edit-owners-add-trigger" id="ocu-edit-owners-add-trigger">
+          <button type="button" class="ocu-btn ocu-btn-secondary" data-action="open-add-owner-form">+ Add another owner</button>
+        </div>
+
+        <div class="ocu-edit-owners-add" id="ocu-edit-owners-add" hidden>
+          <div class="ocu-edit-owners-add-header">Add another owner</div>
           <form id="ocu-edit-owners-add-form" data-property-id="${escHTML(String(p.id || ''))}">
-            <div class="ocu-form-grid">
-              <div class="ocu-form-field">
-                <label class="ocu-form-label">First name</label>
-                <input type="text" name="first_name" maxlength="100" class="ocu-input" autocomplete="off">
-              </div>
-              <div class="ocu-form-field">
-                <label class="ocu-form-label">Last name</label>
-                <input type="text" name="last_name" maxlength="100" class="ocu-input" autocomplete="off">
-              </div>
-              <div class="ocu-form-field">
-                <label class="ocu-form-label">Owner type</label>
-                <select name="owner_type" class="ocu-input">
-                  <option value="">— Auto-detect —</option>
-                  <option value="Person">Person</option>
-                  <option value="Company">Company</option>
-                  <option value="Trust">Trust</option>
-                </select>
-              </div>
-              <div class="ocu-form-field" style="grid-column: 1 / -1">
-                <label class="ocu-form-label">Mailing address</label>
-                <input type="text" name="mailing_address" maxlength="255" class="ocu-input" autocomplete="off">
-              </div>
-              <div class="ocu-form-field">
-                <label class="ocu-form-label">Mailing city</label>
-                <input type="text" name="mailing_city" maxlength="100" class="ocu-input">
-              </div>
-              <div class="ocu-form-field">
-                <label class="ocu-form-label">Mailing state</label>
-                <input type="text" name="mailing_state" maxlength="10" class="ocu-input" placeholder="2-letter code">
-              </div>
-              <div class="ocu-form-field">
-                <label class="ocu-form-label">Mailing ZIP</label>
-                <input type="text" name="mailing_zip" maxlength="10" class="ocu-input">
-              </div>
-            </div>
-            <div style="display:flex;justify-content:flex-end;margin-top:12px;gap:8px">
-              <button type="button" class="ocu-btn ocu-btn-ghost" data-action="close-edit-owners">Cancel</button>
-              <button type="submit" class="ocu-btn ocu-btn-primary">Add owner</button>
+            ${_ownerEditFormFields({})}
+            <div class="ocu-edit-owner-form-actions">
+              <button type="button" class="ocu-btn ocu-btn-ghost ocu-btn-sm" data-action="cancel-add-owner-form">Cancel</button>
+              <button type="submit" class="ocu-btn ocu-btn-primary ocu-btn-sm">Add owner</button>
             </div>
           </form>
         </div>
@@ -437,7 +471,7 @@ function propertyDetail(data) {
     // pipeline change, etc. The user reported "phone tag is broken" on
     // 2026-04-29; this was the root cause for all of them. Move to extraHead
     // with `defer` so it still runs after the DOM is parsed.
-    extraHead: '<script src="/oculah-static/detail-actions.js?v=9" defer></script>',
+    extraHead: '<script src="/oculah-static/detail-actions.js?v=10" defer></script>',
   });
 }
 

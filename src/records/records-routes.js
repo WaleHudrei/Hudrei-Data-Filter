@@ -969,6 +969,86 @@ router.post('/:id(\\d+)/owner/:contactId(\\d+)/primary', requireAuth, async (req
   }
 });
 
+// ── Edit owner fields (2026-05-01) ─────────────────────────────────────
+// Updates a contact's editable fields (first/last name, owner_type, mailing_*).
+// Tenant-scoped on the contacts table, so even though the URL carries a
+// property id (used purely for ownership verification + redirect ergonomics),
+// the actual UPDATE is keyed on (id, tenant_id) — bypassing this route to
+// hit /contacts/:id directly wouldn't be possible without an equivalent
+// guard, but right now there isn't one (the only contact write paths in
+// this file are inside imports + the old auto-merge, both already
+// tenant-scoped). Validates required field shape (at least a first or
+// last name remains) and normalizes state via the shared helper.
+router.post('/:id(\\d+)/owner/:contactId(\\d+)/edit', requireAuth, async (req, res) => {
+  try {
+    const propertyId = parseInt(req.params.id, 10);
+    const contactId  = parseInt(req.params.contactId, 10);
+    if (!Number.isFinite(propertyId) || !Number.isFinite(contactId)) {
+      return res.status(400).json({ error: 'Invalid property or contact id.' });
+    }
+    const t = req.tenantId;
+
+    // Verify the contact is actually linked to this property (and both
+    // belong to the tenant). Prevents drive-by edits via guessable contact
+    // ids that don't belong to the property the operator is viewing.
+    const link = await query(
+      `SELECT 1 FROM property_contacts pc
+        JOIN properties p ON p.id = pc.property_id AND p.tenant_id = pc.tenant_id
+        WHERE pc.property_id = $1 AND pc.contact_id = $2 AND pc.tenant_id = $3`,
+      [propertyId, contactId, t]
+    );
+    if (!link.rowCount) return res.status(404).json({ error: 'Owner not linked to this property.' });
+
+    const fn = String(req.body.first_name || '').trim().slice(0, 100);
+    const ln = String(req.body.last_name  || '').trim().slice(0, 100);
+    if (!fn && !ln) return res.status(400).json({ error: 'Provide at least a first or last name.' });
+
+    const mAddr = String(req.body.mailing_address || '').trim().slice(0, 255) || null;
+    const mCity = String(req.body.mailing_city    || '').trim().slice(0, 100) || null;
+    const rawState = String(req.body.mailing_state || '').trim();
+    let mState = null;
+    if (rawState) {
+      try {
+        const { normalizeState } = require('../import/state');
+        mState = normalizeState(rawState) || null;
+      } catch (_) { mState = rawState.slice(0, 2).toUpperCase(); }
+    }
+    const mZip = String(req.body.mailing_zip || '').trim().slice(0, 10) || null;
+
+    let ownerType = String(req.body.owner_type || '').trim();
+    if (ownerType && !['Person','Company','Trust'].includes(ownerType)) {
+      ownerType = null;  // unknown value — clear it rather than guess
+    } else if (!ownerType) {
+      // empty input means re-infer from the (possibly new) name pair
+      try {
+        const { inferOwnerType } = require('../owner-type');
+        ownerType = inferOwnerType(fn, ln) || 'Person';
+      } catch (_) { ownerType = 'Person'; }
+    }
+
+    const upd = await query(
+      `UPDATE contacts
+          SET first_name      = NULLIF($2, ''),
+              last_name       = NULLIF($3, ''),
+              owner_type      = $4,
+              mailing_address = $5,
+              mailing_city    = $6,
+              mailing_state   = $7,
+              mailing_zip     = $8,
+              updated_at      = NOW()
+        WHERE id = $1 AND tenant_id = $9
+       RETURNING id, first_name, last_name, owner_type,
+                 mailing_address, mailing_city, mailing_state, mailing_zip`,
+      [contactId, fn, ln, ownerType, mAddr, mCity, mState, mZip, t]
+    );
+    if (!upd.rowCount) return res.status(404).json({ error: 'Owner not found.' });
+    res.json({ ok: true, contact: upd.rows[0] });
+  } catch (e) {
+    console.error('[records/:id/owner/:contactId/edit]', e);
+    res.status(500).json({ error: e.message });
+  }
+});
+
 // ═══════════════════════════════════════════════════════════════════════════════
 // 2026-04-21 Feature 7 — Manual property creation
 // GET  /records/_new  → form

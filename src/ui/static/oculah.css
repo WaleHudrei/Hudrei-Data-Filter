@@ -1430,27 +1430,90 @@ button.ocu-kpi,
   letter-spacing: -0.005em;
 }
 
-/* EDIT OWNERS DIALOG — list of existing owners with Make-primary +
-   Remove per row, plus an Add-owner form below a divider. */
-.ocu-dialog-edit-owners { width: min(640px, 92vw); }
+/* EDIT OWNERS DIALOG (2026-05-01 polish pass).
+   Each owner is a card-like row with avatar + label/name/sub + actions.
+   Click "Edit" to expand the inline edit form below the summary; click
+   "Cancel" to collapse. The Add Another Owner form is collapsed behind
+   a "+ Add another owner" trigger so the dialog opens compact. */
+.ocu-dialog-edit-owners { width: min(720px, 94vw); padding: 0; }
+.ocu-dialog-edit-owners .ocu-dialog-header {
+  padding: 18px 22px 14px;
+  border-bottom: 1px solid var(--ocu-border);
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+}
+.ocu-dialog-edit-owners .ocu-dialog-title {
+  font-size: 17px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+}
+.ocu-dialog-edit-owners .ocu-dialog-subtitle {
+  font-size: 12.5px;
+  color: var(--ocu-text-3);
+  margin-top: 2px;
+}
+.ocu-dialog-edit-owners .ocu-dialog-close {
+  border: none;
+  background: transparent;
+  font-size: 22px;
+  line-height: 1;
+  color: var(--ocu-text-3);
+  cursor: pointer;
+  padding: 4px 8px;
+  border-radius: 6px;
+  transition: background 0.12s, color 0.12s;
+}
+.ocu-dialog-edit-owners .ocu-dialog-close:hover { background: var(--ocu-surface); color: var(--ocu-text-1); }
+.ocu-dialog-edit-owners .ocu-dialog-body {
+  padding: 16px 22px 22px;
+  max-height: calc(90vh - 80px);
+  overflow-y: auto;
+}
+
 .ocu-edit-owners-list {
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: 10px;
 }
 .ocu-edit-owner-row {
+  background: var(--ocu-bg);
+  border: 1px solid var(--ocu-border);
+  border-radius: 10px;
+  overflow: hidden;
+  transition: border-color 0.12s, box-shadow 0.12s;
+}
+.ocu-edit-owner-row:hover {
+  border-color: var(--ocu-border-strong);
+}
+.ocu-edit-owner-row.is-editing {
+  border-color: var(--ocu-accent);
+  box-shadow: 0 0 0 3px var(--ocu-accent-soft);
+}
+.ocu-edit-owner-summary {
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  gap: 16px;
-  padding: 10px 14px;
-  background: var(--ocu-surface);
-  border: 1px solid var(--ocu-border);
-  border-radius: 8px;
+  gap: 14px;
+  padding: 14px 16px;
 }
-.ocu-edit-owner-info { min-width: 0; }
+.ocu-edit-owner-avatar {
+  flex-shrink: 0;
+  width: 38px;
+  height: 38px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 50%;
+  background: var(--ocu-accent-soft);
+  color: var(--ocu-accent);
+  font-weight: 600;
+  font-size: 13px;
+  letter-spacing: -0.01em;
+}
+.ocu-edit-owner-info { flex: 1; min-width: 0; }
 .ocu-edit-owner-label {
-  font-size: 11px;
+  font-size: 10.5px;
   color: var(--ocu-text-3);
   text-transform: uppercase;
   letter-spacing: 0.06em;
@@ -1461,9 +1524,18 @@ button.ocu-kpi,
   gap: 6px;
 }
 .ocu-edit-owner-name {
-  font-size: 14px;
+  font-size: 15px;
   font-weight: 600;
   color: var(--ocu-text-1);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  line-height: 1.3;
+}
+.ocu-edit-owner-sub {
+  font-size: 12px;
+  color: var(--ocu-text-3);
+  margin-top: 2px;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -1473,10 +1545,71 @@ button.ocu-kpi,
   gap: 6px;
   flex-shrink: 0;
 }
-.ocu-edit-owners-divider {
-  height: 1px;
-  background: var(--ocu-border);
-  margin: 16px 0;
+
+/* Inline edit form, hidden behind the [hidden] attribute until Edit is
+   clicked. Lives inside the same row card so the visual link between
+   the summary and the form stays clear. */
+.ocu-edit-owner-form {
+  display: block;
+  padding: 4px 16px 16px;
+  border-top: 1px dashed var(--ocu-border);
+  margin-top: 0;
+}
+.ocu-edit-owner-form[hidden] { display: none; }
+.ocu-edit-owner-form .ocu-form-grid {
+  margin-top: 14px;
+}
+.ocu-edit-owner-form-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 14px;
+}
+
+.ocu-edit-owners-empty {
+  font-size: 13px;
+  color: var(--ocu-text-3);
+  font-style: italic;
+  padding: 18px;
+  background: var(--ocu-surface);
+  border: 1px dashed var(--ocu-border);
+  border-radius: 8px;
+  text-align: center;
+}
+
+.ocu-edit-owners-add-trigger {
+  margin-top: 14px;
+  display: flex;
+  justify-content: center;
+}
+.ocu-edit-owners-add {
+  margin-top: 16px;
+  padding: 16px;
+  background: var(--ocu-surface);
+  border: 1px solid var(--ocu-border);
+  border-radius: 10px;
+}
+.ocu-edit-owners-add[hidden] { display: none; }
+.ocu-edit-owners-add-header {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--ocu-text-1);
+  margin-bottom: 12px;
+}
+.ocu-edit-owners-divider { display: none; }
+
+/* Subtle danger button variant for Remove — less aggressive than the
+   solid danger button, used when the action is reversible-with-effort
+   rather than catastrophic. */
+.ocu-btn-danger-ghost {
+  background: transparent;
+  border: 1px solid var(--ocu-border);
+  color: #b91c1c;
+}
+.ocu-btn-danger-ghost:hover {
+  background: #fee2e2;
+  border-color: #fecaca;
+  color: #991b1b;
 }
 
 /* OWNER CARDS — final spec 2026-05-01.

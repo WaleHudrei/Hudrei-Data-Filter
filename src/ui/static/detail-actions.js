@@ -493,33 +493,127 @@
       }
       return;
     }
+
+    // ── Inline owner edit toggle ──────────────────────────────────────────
+    // Click "Edit" on a row → expand the inline form. Click "Cancel" or
+    // submit → collapse. Multiple rows can be expanded simultaneously
+    // (each operates on its own contact id) but typically only one is.
+    if (action === 'owner-edit-toggle') {
+      e.stopPropagation();
+      const contactId = target.dataset.contactId;
+      const row = target.closest('.ocu-edit-owner-row');
+      if (!row) return;
+      const form = row.querySelector('.ocu-edit-owner-form');
+      if (!form) return;
+      const open = form.hasAttribute('hidden');
+      if (open) {
+        form.removeAttribute('hidden');
+        row.classList.add('is-editing');
+        target.textContent = 'Close';
+        const firstInput = form.querySelector('input[name="first_name"]');
+        if (firstInput) firstInput.focus();
+      } else {
+        form.setAttribute('hidden', '');
+        row.classList.remove('is-editing');
+        target.textContent = 'Edit';
+      }
+      return;
+    }
+    if (action === 'owner-edit-cancel') {
+      e.stopPropagation();
+      const row = target.closest('.ocu-edit-owner-row');
+      if (!row) return;
+      const form = row.querySelector('.ocu-edit-owner-form');
+      const toggleBtn = row.querySelector('[data-action="owner-edit-toggle"]');
+      if (form) form.setAttribute('hidden', '');
+      row.classList.remove('is-editing');
+      if (toggleBtn) toggleBtn.textContent = 'Edit';
+      return;
+    }
+
+    // ── Add-owner form open / close (collapsed by default) ────────────────
+    if (action === 'open-add-owner-form') {
+      e.stopPropagation();
+      const trigger = document.getElementById('ocu-edit-owners-add-trigger');
+      const panel   = document.getElementById('ocu-edit-owners-add');
+      if (trigger) trigger.style.display = 'none';
+      if (panel) {
+        panel.removeAttribute('hidden');
+        const firstInput = panel.querySelector('input[name="first_name"]');
+        if (firstInput) firstInput.focus();
+      }
+      return;
+    }
+    if (action === 'cancel-add-owner-form') {
+      e.stopPropagation();
+      const trigger = document.getElementById('ocu-edit-owners-add-trigger');
+      const panel   = document.getElementById('ocu-edit-owners-add');
+      if (panel) panel.setAttribute('hidden', '');
+      if (trigger) trigger.style.display = '';
+      return;
+    }
   }, false);
 
-  // ─── Edit owners — Add owner form submit ────────────────────────────────
-  // Wired here (not via delegation) so we can preventDefault and read the
-  // form via .elements without ambiguity. Posts to /records/:id/owner and
-  // reloads on success.
+  // ─── Edit owners — submit handlers ──────────────────────────────────────
+  // Two forms inside the Edit Owners dialog handled via one submit listener
+  // dispatching on data-action / form id:
+  //   #ocu-edit-owners-add-form           → add new (POST /records/:id/owner)
+  //   .ocu-edit-owner-form (per-owner)    → save edit (POST /records/:id/owner/:cid/edit)
   document.addEventListener('submit', async function(e) {
     const form = e.target;
-    if (!form || form.id !== 'ocu-edit-owners-add-form') return;
-    e.preventDefault();
-    const propertyId = form.dataset.propertyId;
-    const data = {};
-    form.querySelectorAll('input, select').forEach(el => {
-      if (el.name) data[el.name] = el.value;
-    });
-    const fn = (data.first_name || '').trim();
-    const ln = (data.last_name  || '').trim();
-    if (!fn && !ln) { toast('Provide at least a first or last name', true); return; }
-    const submitBtn = form.querySelector('button[type="submit"]');
-    if (submitBtn) { submitBtn.disabled = true; submitBtn.textContent = 'Adding…'; }
-    try {
-      await jpost('/records/' + propertyId + '/owner', data);
-      toast('Owner added', false);
-      setTimeout(() => window.location.reload(), 300);
-    } catch (err) {
-      if (submitBtn) { submitBtn.disabled = false; submitBtn.textContent = 'Add owner'; }
-      toast('Failed to add owner: ' + err.message, true);
+    if (!form) return;
+
+    // Add new owner
+    if (form.id === 'ocu-edit-owners-add-form') {
+      e.preventDefault();
+      const propertyId = form.dataset.propertyId;
+      const data = {};
+      form.querySelectorAll('input, select').forEach(el => {
+        if (el.name) data[el.name] = el.value;
+      });
+      const fn = (data.first_name || '').trim();
+      const ln = (data.last_name  || '').trim();
+      if (!fn && !ln) { toast('Provide at least a first or last name', true); return; }
+      const submitBtn = form.querySelector('button[type="submit"]');
+      if (submitBtn) { submitBtn.disabled = true; submitBtn.textContent = 'Adding…'; }
+      try {
+        await jpost('/records/' + propertyId + '/owner', data);
+        toast('Owner added', false);
+        setTimeout(() => window.location.reload(), 300);
+      } catch (err) {
+        if (submitBtn) { submitBtn.disabled = false; submitBtn.textContent = 'Add owner'; }
+        toast('Failed to add owner: ' + err.message, true);
+      }
+      return;
+    }
+
+    // Save edits to an existing owner
+    if (form.dataset.action === 'owner-edit-submit') {
+      e.preventDefault();
+      const propertyId = form.dataset.propertyId;
+      const contactId  = form.dataset.contactId;
+      if (!propertyId || !contactId) return;
+      const data = {};
+      form.querySelectorAll('input, select').forEach(el => {
+        if (el.name) data[el.name] = el.value;
+      });
+      const fn = (data.first_name || '').trim();
+      const ln = (data.last_name  || '').trim();
+      if (!fn && !ln) { toast('Provide at least a first or last name', true); return; }
+      const submitBtn = form.querySelector('button[type="submit"]');
+      if (submitBtn) { submitBtn.disabled = true; submitBtn.textContent = 'Saving…'; }
+      try {
+        await jpost('/records/' + propertyId + '/owner/' + contactId + '/edit', data);
+        toast('Owner updated', false);
+        // Reload so every dependent surface (owner card, /owners profile,
+        // owner_portfolio_counts MV, mailing-key dedup keys) reflects the
+        // edits. Trying to patch the DOM in-place would risk drift.
+        setTimeout(() => window.location.reload(), 300);
+      } catch (err) {
+        if (submitBtn) { submitBtn.disabled = false; submitBtn.textContent = 'Save changes'; }
+        toast('Failed to save: ' + err.message, true);
+      }
+      return;
     }
   });
 
