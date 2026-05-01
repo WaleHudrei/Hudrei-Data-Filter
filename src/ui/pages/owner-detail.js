@@ -86,7 +86,7 @@ function phoneRow(ph, isBest) {
   const bestBadge = isBest
     ? `<span class="ocu-pill ocu-pill-primary" title="Recommended phone — verified and most likely to reach the owner">★ Best</span>`
     : '';
-  return `<div class="ocu-owner-phone-row"${isBest ? ' style="background:#fff8e1;border-radius:6px;padding:6px 8px"' : ''}>
+  return `<div class="ocu-owner-phone-row${isBest ? ' is-best' : ''}">
       <div class="ocu-owner-phone-num">${escHTML(ph.phone_number)}</div>
       <div class="ocu-owner-phone-badges">${bestBadge}${typeBadge}${statusBadge}${dncBadge}</div>
     </div>`;
@@ -223,14 +223,15 @@ function ownerDetail(data = {}) {
       </div>`;
 
   // ─── Message board tab ────────────────────────────────────────────────
+  // Form was previously a 200px-fixed-grid with an empty <div> next to the
+  // author input — left a confusing white gap and broke on mobile. Now a
+  // simple stacked layout: author full-width, textarea below, button on
+  // the right.
   const messagesTab = `
-    <form method="POST" action="/oculah/owners/${c.id}/message" class="ocu-card" style="padding:14px;margin-bottom:14px">
-      <div style="display:grid;grid-template-columns:200px 1fr;gap:10px;margin-bottom:10px">
-        <input type="text" name="author" placeholder="Your name" maxlength="100" required class="ocu-input" />
-        <div></div>
-      </div>
+    <form method="POST" action="/oculah/owners/${c.id}/message" class="ocu-card ocu-owner-message-form">
+      <input type="text" name="author" placeholder="Your name" maxlength="100" required class="ocu-input ocu-owner-message-author-input" />
       <textarea name="body" placeholder="Add a note about this owner…" maxlength="4000" required class="ocu-textarea" rows="3"></textarea>
-      <div style="display:flex;justify-content:flex-end;margin-top:10px">
+      <div class="ocu-owner-message-actions">
         <button type="submit" class="ocu-btn ocu-btn-primary">Post note</button>
       </div>
     </form>
@@ -256,8 +257,8 @@ function ownerDetail(data = {}) {
   const emailCard = card({
     title: 'Email',
     body:  c.email
-      ? `<a href="mailto:${escHTML(c.email)}" class="ocu-link" style="word-break:break-all">${escHTML(c.email)}</a>`
-      : `<div class="ocu-text-3" style="font-size:12px;font-style:italic">No email on file</div>`,
+      ? `<a href="mailto:${escHTML(c.email)}" class="ocu-link ocu-break-anywhere">${escHTML(c.email)}</a>`
+      : `<div class="ocu-text-3 ocu-empty-line">No email on file</div>`,
   });
 
   // 2026-04-29 user request: Edit button on owner detail. Native <dialog>
@@ -364,7 +365,7 @@ function ownerDetail(data = {}) {
     body,
     // 2026-04-29 load detail-actions.js so the ocu_editOwner submit
     // handler is available. Same pattern as the property detail page.
-    extraHead:  '<script src="/oculah-static/detail-actions.js?v=7" defer></script>',
+    extraHead:  '<script src="/oculah-static/detail-actions.js?v=8" defer></script>',
   });
 }
 

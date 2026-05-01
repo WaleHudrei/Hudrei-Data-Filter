@@ -3333,6 +3333,13 @@ input[type="date"].ocu-input:focus::-webkit-calendar-picker-indicator {
   border-bottom: 1px solid var(--ocu-border-soft, #f0efe9);
   min-width: 0;
 }
+.ocu-owner-phone-row.is-best {
+  background: #FEFCE8;
+  border-bottom-color: #FDE68A;
+  border-radius: 6px;
+  padding: 8px 10px;
+  margin: 4px -4px;
+}
 .ocu-owner-phone-row:last-child { border-bottom: none; }
 .ocu-owner-phone-num {
   font-family: 'JetBrains Mono', ui-monospace, monospace;
@@ -3366,6 +3373,36 @@ input[type="date"].ocu-input:focus::-webkit-calendar-picker-indicator {
   color: var(--ocu-text-1);
   line-height: 1.5;
   white-space: pre-wrap;
+}
+
+/* Message-board form (post a note). Stacked layout — author input on top,
+   textarea below, primary button right-aligned. Replaces the old broken
+   200px-fixed grid that left an empty <div> next to the author input. */
+.ocu-owner-message-form {
+  padding: 14px;
+  margin-bottom: 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.ocu-owner-message-author-input {
+  max-width: 280px;
+}
+.ocu-owner-message-actions {
+  display: flex;
+  justify-content: flex-end;
+}
+
+/* Utility — used by the email link (long emails wrap mid-string) and the
+   "no email on file" italicized empty state. Replaces inline word-break /
+   font-style attributes scattered through owner-detail. */
+.ocu-break-anywhere {
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+.ocu-empty-line {
+  font-size: 12px;
+  font-style: italic;
 }
 
 /* Activity log rows */
