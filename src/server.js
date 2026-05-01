@@ -1,4 +1,4 @@
-const { query: dbQuery, initSchema } = require('./db');
+const { query: dbQuery, initSchema, runWithTenant } = require('./db');
 const campaigns = require('./campaigns');
 const changelogModule = require('./changelog');
 const uploadRoutes = require('./routes/upload-routes');
@@ -297,6 +297,28 @@ app.use(async (req, res, next) => {
     console.error('[tenant-status-gate]', e.message);
     next();
   }
+});
+
+// 2026-05-01 Phase 1 closure — RLS context middleware. Pushes the
+// authenticated user's tenantId into AsyncLocalStorage for the rest of the
+// request. db.js's query() then wraps every DB call in BEGIN/SET LOCAL
+// app.tenant_id/COMMIT, and the RLS policies on every tenant-owned table
+// enforce isolation. Super-admin (HQ portal) sessions explicitly bypass
+// so /admin can see across tenants. Unauthenticated requests don't push
+// either — they hit RLS-bypass paths (login, signup, verify-email,
+// landing).
+app.use((req, res, next) => {
+  // Super-admin / unauthenticated → no tenant context, RLS short-circuits
+  // to "all rows visible" (admin/HQ ops + boot/scheduler paths).
+  if (!req.session || !req.session.authenticated || !req.session.tenantId
+      || req.session.superAdmin === true) {
+    return next();
+  }
+  // runWithTenant returns the result of next() — but Express middleware
+  // expects us to call next() and return undefined. So we ignore the
+  // return value; the AsyncLocalStorage context flows through next()'s
+  // synchronous call and into all the async work that follows it.
+  runWithTenant(req.session.tenantId, () => next());
 });
 
 // 2026-04-29 audit fix H2: proactive 503 when the pg pool is saturated.

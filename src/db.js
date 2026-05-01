@@ -1,4 +1,5 @@
 const { Pool } = require('pg');
+const { AsyncLocalStorage } = require('async_hooks');
 const { allValidStates } = require('./import/state');
 
 const pool = new Pool({
@@ -18,10 +19,65 @@ const pool = new Pool({
   connectionTimeoutMillis: 5_000,
 });
 
+// 2026-05-01 Phase 1 closure — Row-Level Security plumbing.
+// AsyncLocalStorage carries the current request's tenantId through async
+// chains so query() can attach it to every DB call without every caller
+// having to thread the value manually. The RLS policies in initSchema
+// gate every tenant-owned table on `current_setting('app.tenant_id')` —
+// when the GUC is unset (boot maintenance, admin /admin operations,
+// scheduled jobs), policies short-circuit and all rows are visible. When
+// set, only matching tenant_id rows are visible. So the AsyncLocalStorage
+// is the conduit: middleware pushes req.session.tenantId in for tenant
+// requests; everything else operates without it.
+const _rlsStore = new AsyncLocalStorage();
+
+/**
+ * Run `fn` with the given tenantId attached to AsyncLocalStorage. Every
+ * `query()` call made inside (and inside any async chain it spawns) will
+ * wrap itself in a transaction with `SET LOCAL app.tenant_id = $tenantId`
+ * so RLS policies kick in. Pass null/undefined to explicitly bypass RLS
+ * (admin / superuser / boot work).
+ */
+function runWithTenant(tenantId, fn) {
+  return _rlsStore.run({ tenantId: tenantId == null ? null : Number(tenantId) }, fn);
+}
+
+function getTenantContext() {
+  return _rlsStore.getStore() || {};
+}
+
 async function query(text, params) {
+  const ctx = _rlsStore.getStore();
+  const tenantId = ctx && Number.isInteger(ctx.tenantId) && ctx.tenantId > 0 ? ctx.tenantId : null;
+
+  if (tenantId == null) {
+    // No tenant context — boot, admin, scheduler, etc. RLS policies
+    // short-circuit to "all rows visible" when app.tenant_id is unset,
+    // so this path keeps the existing single-round-trip behavior.
+    const client = await pool.connect();
+    try {
+      return await client.query(text, params);
+    } finally {
+      client.release();
+    }
+  }
+
+  // Tenant request — wrap in BEGIN/SET LOCAL/COMMIT so the GUC is bound
+  // to this connection for the duration of the actual query and reset on
+  // release. SET LOCAL doesn't accept parameters, so we coerce tenantId
+  // through Number() above and interpolate as an integer literal — no
+  // SQL injection vector since the value comes from an authenticated
+  // session that just passed the integer-PK lookup in /login.
   const client = await pool.connect();
   try {
-    return await client.query(text, params);
+    await client.query('BEGIN');
+    await client.query(`SET LOCAL app.tenant_id = '${tenantId}'`);
+    const result = await client.query(text, params);
+    await client.query('COMMIT');
+    return result;
+  } catch (e) {
+    try { await client.query('ROLLBACK'); } catch (_) {}
+    throw e;
   } finally {
     client.release();
   }
@@ -856,6 +912,74 @@ async function initSchema() {
     }
   }
 
+  // ── 2026-05-01 Phase 1 closure — Row-Level Security policies ─────────────
+  // Saas-conversion-plan Decision 1's documented tradeoff: shared-DB
+  // multi-tenancy means a forgotten WHERE tenant_id = $X leaks data.
+  // Application-level filters are the primary defense; RLS is the
+  // defense-in-depth layer. Policy logic:
+  //   * When app.tenant_id GUC is unset → all rows visible (boot,
+  //     admin/HQ ops, scheduled jobs).
+  //   * When set → only rows matching that tenant_id are visible.
+  // db.js's query() pushes the GUC via SET LOCAL inside a transaction
+  // when AsyncLocalStorage carries a tenantId; otherwise queries run
+  // unwrapped and the policies short-circuit.
+  // FORCE ROW LEVEL SECURITY makes the policies apply even when the
+  // app's DB role owns the tables (which is typical on Railway).
+  //
+  // Tables NOT included intentionally: tenants (the auth-layer table —
+  // /login looks it up before any tenant context exists), users (same
+  // reason — login lookup is by email globally), session (Express
+  // session store, no tenant_id column).
+  const RLS_TABLES = [
+    'properties', 'contacts', 'phones', 'property_contacts', 'property_lists',
+    'lists', 'markets', 'call_logs', 'sms_logs', 'marketing_touches', 'deals',
+    'filtration_runs', 'filtration_results', 'import_history',
+    'list_templates', 'tenant_list_types', 'tenant_custom_sources',
+    'campaigns', 'campaign_uploads', 'campaign_contacts', 'campaign_numbers',
+    'campaign_contact_phones', 'custom_list_types',
+    'nis_numbers', 'app_settings',
+    'email_verification_tokens', 'password_reset_tokens',
+    'phone_intelligence',
+  ];
+  for (const t of RLS_TABLES) {
+    try {
+      // Probe — skip tables that don't exist on this database (lazy-created
+      // tables, optional schemas). Cheap one-off lookup; the whole RLS
+      // block runs once at boot.
+      const exists = await query(
+        `SELECT 1 FROM information_schema.tables
+          WHERE table_schema = 'public' AND table_name = $1 LIMIT 1`,
+        [t]
+      );
+      if (!exists.rowCount) continue;
+
+      await query(`ALTER TABLE ${t} ENABLE ROW LEVEL SECURITY`);
+      await query(`ALTER TABLE ${t} FORCE ROW LEVEL SECURITY`);
+      // Drop any pre-existing policy so re-runs don't accumulate. Idempotent.
+      await query(`DROP POLICY IF EXISTS tenant_isolation ON ${t}`);
+      await query(`
+        CREATE POLICY tenant_isolation ON ${t}
+          FOR ALL
+          USING (
+            current_setting('app.tenant_id', true) IS NULL
+            OR current_setting('app.tenant_id', true) = ''
+            OR tenant_id = current_setting('app.tenant_id', true)::int
+          )
+          WITH CHECK (
+            current_setting('app.tenant_id', true) IS NULL
+            OR current_setting('app.tenant_id', true) = ''
+            OR tenant_id = current_setting('app.tenant_id', true)::int
+          )
+      `);
+    } catch (e) {
+      // Most likely cause: the table has no tenant_id column (lazy-created
+      // table whose Phase 1 migration hasn't run yet). Log and continue —
+      // RLS on the rest of the tables is what matters.
+      console.warn(`[rls] ${t}: ${e.message}`);
+    }
+  }
+  console.log(`[rls] policies applied to ${RLS_TABLES.length} tenant-owned tables`);
+
   _schemaReady = true;
   console.log('Database schema initialized + migrations applied');
 
@@ -976,4 +1100,4 @@ async function refreshOwnerPortfolioMv() {
   }
 }
 
-module.exports = { query, initSchema, refreshOwnerPortfolioMv, pool };
+module.exports = { query, initSchema, refreshOwnerPortfolioMv, pool, runWithTenant, getTenantContext };
