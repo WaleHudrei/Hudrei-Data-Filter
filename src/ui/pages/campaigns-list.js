@@ -27,7 +27,32 @@ function channelBadge(ch) {
 function row(c) {
   const counts = c.contact_counts || {};
   const callable = (counts.total_phones || 0) - (counts.wrong_phones || 0) - (counts.nis_phones || 0);
-  return `<tr>
+
+  // Triage stats stamped on the row for the hover popover. Mirrors the
+  // metrics that drive the campaign detail page's KPI strip — call-log
+  // ratio, connect ratio, wrong-number count, callable remaining, last
+  // round timestamp. Computed once per row, escaped as data-* attributes
+  // so the popover JS can render without re-fetching.
+  const callLogs    = Number(c.total_unique_numbers || 0);
+  const connected   = Number(c.total_connected     || 0);
+  const wrongNums   = Number(c.total_wrong_numbers || 0);
+  const totalPhones = Number(counts.total_phones   || 0);
+  const totalCt     = Number(counts.total_contacts || 0);
+  const clr = totalPhones > 0 ? ((callLogs / totalPhones) * 100).toFixed(1) : '0.0';
+  const cr  = callLogs    > 0 ? ((connected / callLogs)  * 100).toFixed(1) : '0.0';
+  const lastRound = c.last_round_at || c.last_round_date || c.updated_at || c.start_date || c.created_at;
+
+  return `<tr class="ocu-campaign-row" tabindex="0"
+              data-campaign-id="${c.id}"
+              data-campaign-name="${escHTML(c.name)}"
+              data-stat-clr="${clr}"
+              data-stat-cr="${cr}"
+              data-stat-callable="${Math.max(0, callable)}"
+              data-stat-wrong="${wrongNums}"
+              data-stat-leads="${counts.lead_contacts || 0}"
+              data-stat-contacts="${totalCt}"
+              data-stat-last-round="${lastRound ? escHTML(fmtRelative(lastRound)) : '—'}"
+              onclick="window.location='/oculah/campaigns/${c.id}'">
     <td class="ocu-td">
       <a href="/oculah/campaigns/${c.id}" class="ocu-link ocu-td-primary">${escHTML(c.name)}</a>
       ${c.market_name || c.state_code ? `<div class="ocu-td-meta">${escHTML(c.market_name || '')}${c.state_code ? ' · ' + escHTML(c.state_code) : ''}</div>` : ''}
@@ -65,8 +90,12 @@ function campaignsList(data = {}) {
 
   const filtered = tab === 'all' ? all : all.filter(c => c.status === tab);
 
-  const totalContactsAcross = all.reduce((sum, c) => sum + ((c.contact_counts && c.contact_counts.total_contacts) || 0), 0);
-  const totalLeadsAcross    = all.reduce((sum, c) => sum + ((c.contact_counts && c.contact_counts.lead_contacts)  || 0), 0);
+  // total_contacts / lead_contacts come back from the SQL aggregate as
+  // strings on some pg builds (no explicit ::int cast on the SUM); the
+  // raw `+` was string-concatenating "0" + "5149" + "1277" + "5149" =
+  // "0514912775149". Number() forces coercion before addition.
+  const totalContactsAcross = all.reduce((sum, c) => sum + Number((c.contact_counts && c.contact_counts.total_contacts) || 0), 0);
+  const totalLeadsAcross    = all.reduce((sum, c) => sum + Number((c.contact_counts && c.contact_counts.lead_contacts)  || 0), 0);
 
   const kpiStrip = `
     <div class="ocu-kpi-row" style="grid-template-columns:repeat(auto-fit,minmax(180px,1fr));margin-bottom:18px">
@@ -110,7 +139,66 @@ function campaignsList(data = {}) {
       <a href="/oculah/campaigns/new" class="ocu-btn ocu-btn-primary" style="margin-left:auto">+ New campaign</a>
     </div>
 
-    ${tableHTML}`;
+    ${tableHTML}
+
+    <!-- Campaign quick-stats popover. One shared element appended once;
+         JS below populates from data-* attributes on the hovered row and
+         positions it over the row. Uses pointer-events:none on the popover
+         itself so moving the mouse onto it doesn't dismiss the row hover. -->
+    <div id="ocu-campaign-popover" class="ocu-campaign-popover" hidden role="status" aria-live="polite">
+      <div class="ocu-campaign-popover-title" data-pop-name></div>
+      <div class="ocu-campaign-popover-grid">
+        <div class="ocu-campaign-popover-stat"><div class="lbl">CLR</div><div class="val" data-pop-clr></div></div>
+        <div class="ocu-campaign-popover-stat"><div class="lbl">CR</div><div class="val" data-pop-cr></div></div>
+        <div class="ocu-campaign-popover-stat"><div class="lbl">Wrong #</div><div class="val" data-pop-wrong></div></div>
+        <div class="ocu-campaign-popover-stat"><div class="lbl">Callable</div><div class="val" data-pop-callable></div></div>
+        <div class="ocu-campaign-popover-stat"><div class="lbl">Leads</div><div class="val" data-pop-leads></div></div>
+        <div class="ocu-campaign-popover-stat"><div class="lbl">Last round</div><div class="val" data-pop-last></div></div>
+      </div>
+    </div>
+
+    <script>
+      (function() {
+        var pop = document.getElementById('ocu-campaign-popover');
+        if (!pop) return;
+        var setText = function(sel, val) { var el = pop.querySelector(sel); if (el) el.textContent = val; };
+
+        function show(row) {
+          setText('[data-pop-name]',     row.dataset.campaignName || '');
+          setText('[data-pop-clr]',      (row.dataset.statClr || '0') + '%');
+          setText('[data-pop-cr]',       (row.dataset.statCr  || '0') + '%');
+          setText('[data-pop-wrong]',    row.dataset.statWrong    || '0');
+          setText('[data-pop-callable]', row.dataset.statCallable || '0');
+          setText('[data-pop-leads]',    row.dataset.statLeads    || '0');
+          setText('[data-pop-last]',     row.dataset.statLastRound || '—');
+
+          var rect = row.getBoundingClientRect();
+          pop.hidden = false;
+          // Render once to measure, then position below the row, clamped to
+          // the viewport so it never clips off-screen at the right edge.
+          var pw = pop.offsetWidth, ph = pop.offsetHeight;
+          var top = window.scrollY + rect.bottom + 6;
+          var left = window.scrollX + rect.left;
+          if (left + pw > window.scrollX + window.innerWidth - 16) {
+            left = window.scrollX + window.innerWidth - pw - 16;
+          }
+          // If there's no room below, flip above the row.
+          if (rect.bottom + ph + 12 > window.innerHeight) {
+            top = window.scrollY + rect.top - ph - 6;
+          }
+          pop.style.top  = top  + 'px';
+          pop.style.left = left + 'px';
+        }
+        function hide() { pop.hidden = true; }
+
+        document.querySelectorAll('.ocu-campaign-row').forEach(function(row) {
+          row.addEventListener('mouseenter', function() { show(row); });
+          row.addEventListener('focus',      function() { show(row); });
+          row.addEventListener('mouseleave', hide);
+          row.addEventListener('blur',       hide);
+        });
+      })();
+    </script>`;
 
   return shell({
     title:          'Campaigns',

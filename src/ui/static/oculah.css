@@ -1404,10 +1404,16 @@ button.ocu-kpi,
    collapses to one column on narrow viewports. Phones grid auto-fits
    2-N columns inside the phones cell so a contact with 1 phone or
    100 phones both look clean. */
+/* Owner cards stack vertically — one per row — so each owner gets the
+   full card width for its 3-column layout (identity | mailing | phones).
+   Pre-2026-05-01 used auto-fit minmax(420px) which side-by-sided two
+   owners on wide viewports; that squeezed each into half-width and
+   forced the phones column to collapse to a single phone-card column.
+   User feedback: "one up and one down, not right and left". */
 .ocu-owner-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(420px, 1fr));
-  gap: 14px;
+  grid-template-columns: 1fr;
+  gap: var(--ocu-space-3);
 }
 .ocu-owner-card {
   /* inherits .ocu-card base */
@@ -1615,6 +1621,142 @@ button.ocu-kpi,
   grid-column: 1 / -1;
 }
 
+/* Upload landing page — full-page drag overlay. Activates whenever a
+   file is dragged onto the document; on drop we sniff the filename and
+   suggest the right uploader via the route-confirm dialog below. */
+.ocu-upload-dragover {
+  position: fixed;
+  inset: 0;
+  z-index: 80;
+  background: rgba(8, 145, 178, 0.10);
+  backdrop-filter: blur(2px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  pointer-events: none; /* clicks pass through; only the drop event matters */
+}
+.ocu-upload-dragover-inner {
+  width: 480px;
+  max-width: 80vw;
+  padding: var(--ocu-space-8) var(--ocu-space-6);
+  background: var(--ocu-bg);
+  border: 3px dashed var(--ocu-accent);
+  border-radius: 14px;
+  text-align: center;
+  box-shadow: 0 16px 48px rgba(11, 18, 32, 0.18);
+}
+.ocu-upload-dragover-icon {
+  display: inline-flex;
+  width: 64px; height: 64px;
+  align-items: center; justify-content: center;
+  border-radius: 50%;
+  background: var(--ocu-accent-soft);
+  color: var(--ocu-accent);
+  margin-bottom: var(--ocu-space-3);
+}
+.ocu-upload-dragover-title {
+  font-size: 18px;
+  font-weight: 700;
+  color: var(--ocu-text-1);
+  margin-bottom: 4px;
+}
+.ocu-upload-dragover-desc {
+  font-size: 13px;
+  color: var(--ocu-text-3);
+}
+
+.ocu-upload-route-choices {
+  display: flex;
+  flex-direction: column;
+  gap: var(--ocu-space-2);
+  margin-top: var(--ocu-space-3);
+}
+.ocu-upload-route-choice {
+  display: flex;
+  align-items: center;
+  height: var(--ocu-btn-h-md, 36px);
+  padding: 0 14px;
+  border: 1px solid var(--ocu-border-strong);
+  border-radius: var(--ocu-radius);
+  background: var(--ocu-bg);
+  color: var(--ocu-text-1);
+  cursor: pointer;
+  font: inherit;
+  font-size: 13px;
+  font-weight: 500;
+  text-align: left;
+  transition: all 0.12s;
+}
+.ocu-upload-route-choice:hover {
+  border-color: var(--ocu-text-2);
+  background: var(--ocu-surface);
+}
+.ocu-upload-route-choice.is-suggested {
+  border-color: var(--ocu-accent);
+  background: var(--ocu-accent-soft);
+  color: var(--ocu-accent);
+  font-weight: 600;
+}
+.ocu-upload-route-choice.is-suggested::after {
+  content: 'suggested';
+  margin-left: auto;
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+/* Campaigns list — row hover popover with quick stats. Appears beneath
+   the hovered row, clamped to the viewport. Pointer-events:none so the
+   mouse can't drift onto the popover itself and dismiss the row hover. */
+.ocu-campaign-row { cursor: pointer; }
+.ocu-campaign-row:hover { background: var(--ocu-surface); }
+.ocu-campaign-row:focus { outline: 2px solid var(--ocu-accent); outline-offset: -2px; }
+
+.ocu-campaign-popover {
+  position: absolute;
+  z-index: 50;
+  pointer-events: none;
+  min-width: 320px;
+  max-width: 420px;
+  background: var(--ocu-bg);
+  border: 1px solid var(--ocu-border-strong);
+  border-radius: var(--ocu-radius-lg);
+  box-shadow: 0 12px 32px rgba(11, 18, 32, 0.14);
+  padding: var(--ocu-space-3);
+}
+.ocu-campaign-popover-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--ocu-text-1);
+  margin-bottom: var(--ocu-space-2);
+  padding-bottom: var(--ocu-space-2);
+  border-bottom: 1px solid var(--ocu-border);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.ocu-campaign-popover-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: var(--ocu-space-2) var(--ocu-space-3);
+}
+.ocu-campaign-popover-stat .lbl {
+  font-size: 10px;
+  font-weight: 600;
+  color: var(--ocu-text-3);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+.ocu-campaign-popover-stat .val {
+  font-family: var(--ocu-mono);
+  font-size: 14px;
+  font-weight: 700;
+  color: var(--ocu-text-1);
+  font-variant-numeric: tabular-nums;
+  margin-top: 2px;
+}
+
 /* Searchable combobox — currently used by the campaign picker on
    /list-filtration. Hidden <input> holds the selected id; the visible
    trigger reads as a regular input field, the popover shows a search
@@ -1663,6 +1805,12 @@ button.ocu-kpi,
   gap: var(--ocu-space-2);
   max-height: 320px;
 }
+/* The [hidden] HTML attribute applies display:none, but our class above
+   sets display:flex which has equal specificity AND comes later — so the
+   popover renders open by default. Explicit override here forces hidden
+   to win. Same fix would apply to any other class that sets display on
+   a [hidden]-toggleable element. */
+.ocu-combobox-popover[hidden] { display: none; }
 .ocu-combobox-search { height: 32px; font-size: 13px; flex-shrink: 0; }
 .ocu-combobox-list {
   display: flex;
@@ -3920,13 +4068,18 @@ input[type="date"].ocu-input:focus::-webkit-calendar-picker-indicator {
   transition: background .12s, border-color .12s, box-shadow .12s;
   cursor: pointer;
 }
+/* Use background-COLOR longhand here so we don't reset background-image /
+   background-repeat / background-position. The select.ocu-cell-input
+   rules below set those for the chevron — and previously the shorthand
+   here was wiping background-repeat, causing the chevron to tile across
+   the cell ("vvvvv" pattern) when a select cell was focused/hovered. */
 .ocu-cell-input:hover {
-  background: var(--ocu-surface);
+  background-color: var(--ocu-surface);
   border-color: var(--ocu-border);
 }
 .ocu-cell-input:focus {
   outline: none;
-  background: var(--ocu-bg);
+  background-color: var(--ocu-bg);
   border-color: var(--ocu-accent);
   box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.10);
 }
