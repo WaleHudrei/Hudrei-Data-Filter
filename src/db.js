@@ -859,6 +859,66 @@ async function initSchema() {
   _schemaReady = true;
   console.log('Database schema initialized + migrations applied');
 
+  // 2026-05-01 Spec Section 3 + 4 — phone_intelligence (Layer 1 + 1.5).
+  // Tenant-scoped global phone-flag store with timestamps so the 6-month
+  // decay sweep (Layer 1) and the never-expiring lead flag (Layer 1.5) can
+  // be enforced consistently across every campaign and channel. One row
+  // per (tenant_id, phone_number). The legacy boolean flags on `phones`
+  // and `campaign_contact_phones` are still the per-row source of truth
+  // for the owner-card UI; this table is the GLOBAL aggregate that drives
+  // future-campaign gating, owner-mismatch detection, and decay.
+  await query(`
+    CREATE TABLE IF NOT EXISTS phone_intelligence (
+      tenant_id          INT  NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+      phone_number       VARCHAR(10) NOT NULL,
+      is_wrong           BOOLEAN NOT NULL DEFAULT false,
+      wrong_flagged_at   TIMESTAMPTZ,
+      is_dead            BOOLEAN NOT NULL DEFAULT false,
+      dead_flagged_at    TIMESTAMPTZ,
+      is_correct         BOOLEAN NOT NULL DEFAULT false,
+      correct_flagged_at TIMESTAMPTZ,
+      is_lead            BOOLEAN NOT NULL DEFAULT false,
+      lead_flagged_at    TIMESTAMPTZ,
+      last_owner_name    TEXT,
+      created_at         TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at         TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      PRIMARY KEY (tenant_id, phone_number)
+    );
+    CREATE INDEX IF NOT EXISTS idx_phintel_lead       ON phone_intelligence(tenant_id) WHERE is_lead = true;
+    CREATE INDEX IF NOT EXISTS idx_phintel_wrong_old  ON phone_intelligence(tenant_id, wrong_flagged_at)   WHERE is_wrong   = true;
+    CREATE INDEX IF NOT EXISTS idx_phintel_dead_old   ON phone_intelligence(tenant_id, dead_flagged_at)    WHERE is_dead    = true;
+    CREATE INDEX IF NOT EXISTS idx_phintel_correct_old ON phone_intelligence(tenant_id, correct_flagged_at) WHERE is_correct = true;
+  `).catch((e) => { console.warn('[schema] phone_intelligence:', e.message); });
+
+  // 2026-05-01 Spec Section 3 — Layer 1 6-month decay sweep. Carriers
+  // recycle phone numbers; a wrong/dead/correct flag from 6+ months ago
+  // is effectively stale. Layer 1.5 (is_lead) NEVER expires by design.
+  // Gate on env so the sweep doesn't fire aggressively on every boot —
+  // set LOKI_PHONE_INTEL_DECAY=on to enable the periodic clear. Idempotent
+  // so re-running has no side-effect once decayed flags are already false.
+  try {
+    if ((process.env.LOKI_PHONE_INTEL_DECAY || '').toLowerCase() === 'on') {
+      const six = `INTERVAL '180 days'`;
+      const dr = await query(`
+        WITH decayed AS (
+          UPDATE phone_intelligence
+             SET is_wrong   = CASE WHEN is_wrong   AND wrong_flagged_at   < NOW() - ${six} THEN false ELSE is_wrong END,
+                 is_dead    = CASE WHEN is_dead    AND dead_flagged_at    < NOW() - ${six} THEN false ELSE is_dead END,
+                 is_correct = CASE WHEN is_correct AND correct_flagged_at < NOW() - ${six} THEN false ELSE is_correct END,
+                 updated_at = NOW()
+           WHERE (is_wrong   AND wrong_flagged_at   < NOW() - ${six})
+              OR (is_dead    AND dead_flagged_at    < NOW() - ${six})
+              OR (is_correct AND correct_flagged_at < NOW() - ${six})
+          RETURNING 1
+        )
+        SELECT COUNT(*)::int AS n FROM decayed`);
+      const n = dr.rows[0]?.n || 0;
+      if (n > 0) console.log(`[db] phone_intelligence Layer-1 decay: cleared stale flags on ${n} row(s)`);
+    }
+  } catch (e) {
+    console.error('[db] phone_intelligence decay (non-fatal):', e.message);
+  }
+
   // 2026-04-23 list_templates — the List Registry feature. Stores each
   // recurring list type (Tax Sale, Probate, etc.) with its pull cadence,
   // source, tier, and when it was last/next pulled. Separate from the

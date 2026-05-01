@@ -21,6 +21,11 @@ const { query } = require('./db');
 const { normalizePhone: _normalizePhone } = require('./phone-normalize');
 function normalizePhone(raw) { return _normalizePhone(raw); }
 
+// 2026-05-01 Spec Section 3 — global Layer 1/1.5 phone-intel writes.
+// Lazy-required to keep the existing module import order stable; helpers
+// are tiny so the require cost is negligible.
+const _phintel = require('./phone-intelligence');
+
 // ── Detect phone columns from CSV headers ─────────────────────────────────────
 function detectPhoneColumns(headers) {
   const phones = [];
@@ -226,6 +231,15 @@ async function applyFiltrationToContacts(campaignId, allRows) {
 }
 
 async function applyFiltrationToContactsPerRow(campaignId, allRows) {
+  // 2026-05-01 Spec Section 3 — collect Layer 1/1.5 writes for the global
+  // phone_intelligence store. Same shape as the bulk path so the two
+  // surfaces don't drift. Wrote at the end of the loop (single bulk
+  // upsert per layer) instead of inline so the per-row path doesn't pay
+  // an extra query per row.
+  const _piWrong   = [];
+  const _piCorrect = [];
+  const _piLeads   = [];
+
   for (const row of allRows) {
     const phone = normalizePhone(row.Phone);
     if (!phone) continue;
@@ -240,6 +254,14 @@ async function applyFiltrationToContactsPerRow(campaignId, allRows) {
     // Determine if this is a "Correct" confirmation (live pickup dispositions)
     const isCorrect = ['not_interested', 'transfer', 'callback', 'do_not_call',
                        'spanish_speaker', 'hung_up', 'completed', 'disqualified'].includes(dispo);
+
+    // Owner name passed to phone_intelligence as last_owner_name so future
+    // contact-list re-uploads can detect an owner-mismatch and clear the
+    // Layer 1 wrong/correct memory.
+    const _ownerName = ((row['First Name'] || '') + ' ' + (row['Last Name'] || '')).trim() || null;
+    if (isWrong)   _piWrong.push({   phone, ownerName: _ownerName });
+    if (isCorrect) _piCorrect.push({ phone, ownerName: _ownerName });
+    if (dispo === 'transfer') _piLeads.push({ phone });
 
     await query(
       `UPDATE campaign_contact_phones SET
@@ -319,6 +341,25 @@ async function applyFiltrationToContactsPerRow(campaignId, allRows) {
         [campaignId, phone]
       );
     }
+  }
+
+  // 2026-05-01 Spec Section 3 — flush Layer 1/1.5 writes to phone_intelligence.
+  // One bulk upsert per layer, after the per-row loop. Best-effort: a phintel
+  // hiccup must not undo the campaign-level writes that already committed.
+  try {
+    if (_piWrong.length || _piCorrect.length || _piLeads.length) {
+      const tenantRes = await query(
+        `SELECT tenant_id FROM campaigns WHERE id = $1`, [campaignId]
+      );
+      const tenantId = tenantRes.rows[0]?.tenant_id;
+      if (Number.isInteger(tenantId)) {
+        if (_piWrong.length)   await _phintel.setLayerFlag(tenantId, _piWrong,   'wrong');
+        if (_piCorrect.length) await _phintel.setLayerFlag(tenantId, _piCorrect, 'correct');
+        if (_piLeads.length)   await _phintel.setLayerFlag(tenantId, _piLeads,   'lead');
+      }
+    }
+  } catch (e) {
+    console.error('[filtration:per-row] phone_intelligence write (non-fatal):', e.message);
   }
 }
 
@@ -402,6 +443,43 @@ async function applyFiltrationToContactsBulk(campaignId, allRows) {
        AND ccp.phone_number = t.phone`,
     [campaignId, phones, statuses, tags, wrongs, removes, counts, dispositions, corrects]
   );
+
+  // ── Step 2.5: Spec Section 3 Layer 1/1.5 writes to phone_intelligence ─────
+  // The legacy per-row flags above stay authoritative for the per-card UI.
+  // This block layers in the GLOBAL store so future campaigns inherit the
+  // wrong/correct memory and Layer 1.5 leads stay permanently excluded.
+  // Best-effort — wrapped in try so a phone_intelligence schema hiccup
+  // can't break the campaign-level filtration write that already committed.
+  try {
+    const tenantRes = await query(
+      `SELECT tenant_id FROM campaigns WHERE id = $1`, [campaignId]
+    );
+    const tenantId = tenantRes.rows[0]?.tenant_id;
+    if (Number.isInteger(tenantId)) {
+      // Build per-phone item lists. Owner name comes from the row's First
+      // Name + Last Name when available — used both as the audit value on
+      // last_owner_name and as a future trip-wire for owner-mismatch on
+      // contact-list re-uploads.
+      const wrongItems = [];
+      const correctItems = [];
+      const leadPhones = new Set();
+      for (let i = 0; i < phones.length; i++) {
+        const ph = phones[i];
+        const ownerName = (() => {
+          const r = allRows[i] || {};
+          return ((r['First Name'] || '') + ' ' + (r['Last Name'] || '')).trim() || null;
+        })();
+        if (wrongs[i]) wrongItems.push({ phone: ph, ownerName });
+        if (corrects[i]) correctItems.push({ phone: ph, ownerName });
+      }
+      for (const ph of transferPhones) leadPhones.add(ph);
+      if (wrongItems.length)   await _phintel.setLayerFlag(tenantId, wrongItems,   'wrong');
+      if (correctItems.length) await _phintel.setLayerFlag(tenantId, correctItems, 'correct');
+      if (leadPhones.size)     await _phintel.setLayerFlag(tenantId, Array.from(leadPhones).map(p => ({ phone: p })), 'lead');
+    }
+  } catch (e) {
+    console.error('[filtration] phone_intelligence write (non-fatal):', e.message);
+  }
 
   // ── Step 3: Transfer-specific follow-ups, bulked by phone array ──────────
   // Only run if there were any transfers in this upload. Each of these
@@ -578,8 +656,15 @@ async function generateCleanExport(campaignId, tenantId) {
       GROUP BY cc.id, gc.email_1, gc.email_2, gc.mailing_address, gc.mailing_city,
                gc.mailing_state, gc.mailing_zip, gp.street, gp.city, gp.state_code,
                gp.zip_code, gp.county
-      ORDER BY cc.row_index`,
-    [campaignId, tenantId, cfg.exclude_already_lead]
+      ORDER BY cc.row_index
+      LIMIT $4`,
+    // 2026-05-01 Spec Section 8 — hard upper bound on row count. Even
+    // with 10 phones × hundreds of MB CSVs, no single dialer-import
+    // pass needs more than 250k rows; anything beyond that is almost
+    // certainly a mistake (an unintended cross-join, a campaign with
+    // a polluted contact list, or a forgotten filter). Cap protects
+    // memory + the Express response timeout.
+    [campaignId, tenantId, cfg.exclude_already_lead, 250000]
   );
 
   // Per-phone disposition counts across all campaigns for this tenant. Used to
@@ -944,6 +1029,23 @@ async function importNisFile(tenantId, rows, opts = {}) {
 
   if (duplicateEvents > 0) {
     console.log(`[nis] skipped ${duplicateEvents} duplicate (phone, day) event(s) — likely a re-upload of a previously processed file`);
+  }
+
+  // 2026-05-01 Spec Section 3 — write the global Layer 1 "is_dead" flag
+  // for every NIS number to phone_intelligence so the dead-everywhere-
+  // within-the-tenant semantics applies even on phones that aren't yet
+  // attached to any campaign. Best-effort; the legacy
+  // campaign_contact_phones flag below stays the per-row source of truth.
+  try {
+    if (entries.length) {
+      await _phintel.setLayerFlag(
+        tenantId,
+        entries.map(e => ({ phone: e.phone })),
+        'dead'
+      );
+    }
+  } catch (e) {
+    console.error('[nis] phone_intelligence dead-flag write (non-fatal):', e.message);
   }
 
   // Retroactively flag matching phones — scoped to ACTIVE campaigns only.

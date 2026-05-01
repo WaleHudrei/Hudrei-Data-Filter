@@ -591,6 +591,15 @@ async function importContactList(tenantId, campaignId, rows, headers, customMapp
   let imported = 0;
   const BATCH = 500;   // was 20. 500 × 13 params = 6500, well under PG's 64k limit.
 
+  // 2026-05-01 Spec Section 3 — owner-mismatch detection. Collect every
+  // (phone, ownerName) pair we see across all batches, then after the
+  // import is committed, call clearLayer1OnOwnerMismatch so any phone
+  // whose stored last_owner_name in phone_intelligence differs from the
+  // newly-imported owner name has its Layer 1 wrong/correct memory
+  // wiped (Layer 1.5 lead is preserved — once-a-lead-always-a-lead).
+  // Map keyed by phone so re-imports of the same phone don't double-track.
+  const _ownerMismatchPairs = new Map();
+
   for (let i = 0; i < rows.length; i += BATCH) {
     const batch = rows.slice(i, i + BATCH);
 
@@ -668,6 +677,10 @@ async function importContactList(tenantId, campaignId, rows, headers, customMapp
     for (const cRow of contactRes.rows) {
       const r = batch[cRow.row_index - i];
       if (!r) continue;
+      // Owner name for THIS row — fed into phone_intelligence so the
+      // owner-mismatch check at the end of the import knows what name
+      // each phone is currently associated with.
+      const _rowOwner = ((r[COL.fname] || '') + ' ' + (r[COL.lname] || '')).trim();
       for (let s = 0; s < phoneCols.length; s++) {
         // 2026-04-20 pass 12: route through shared normalizePhone so a contact
         // file with "1-555-123-4567" stores the same 10-digit canonical key
@@ -679,6 +692,12 @@ async function importContactList(tenantId, campaignId, rows, headers, customMapp
         const k = `${cRow.id}|${phone}`;
         if (phoneBucket.has(k)) { phoneDupesCollapsed++; continue; }
         phoneBucket.set(k, { contactId: cRow.id, phone, slot: s + 1 });
+        // Track for owner-mismatch sweep. First occurrence within the
+        // import wins (rare to have one phone on multiple distinct owner
+        // rows in the same upload; if it happens we keep the first).
+        if (_rowOwner && !_ownerMismatchPairs.has(phone)) {
+          _ownerMismatchPairs.set(phone, _rowOwner);
+        }
       }
     }
 
@@ -745,6 +764,27 @@ async function importContactList(tenantId, campaignId, rows, headers, customMapp
     WHERE id = $1 AND tenant_id = $2`,
     [campaignId, tenantId]
   );
+
+  // 2026-05-01 Spec Section 3 — owner-mismatch sweep. For every phone in
+  // this upload, compare the new owner name against the stored
+  // last_owner_name in phone_intelligence; when they differ, clear the
+  // Layer 1 wrong/correct flags so the new owner gets a fresh shot at
+  // being marketed. Layer 1.5 (is_lead) is intentionally preserved —
+  // a transferred number stays excluded across owner changes.
+  // Best-effort: a phintel hiccup can't undo the import that just
+  // committed. Empty pair list -> noop.
+  try {
+    if (_ownerMismatchPairs.size > 0) {
+      const _phintel = require('./phone-intelligence');
+      const items = Array.from(_ownerMismatchPairs, ([phone, ownerName]) => ({ phone, ownerName }));
+      const r = await _phintel.clearLayer1OnOwnerMismatch(tenantId, items);
+      if (r.cleared > 0) {
+        console.log(`[campaigns/upload] owner-mismatch: cleared Layer-1 flags on ${r.cleared} phone(s) — owner changed since last sighting`);
+      }
+    }
+  } catch (e) {
+    console.error('[campaigns/upload] owner-mismatch sweep (non-fatal):', e.message);
+  }
 
   return { total: imported };
 }
