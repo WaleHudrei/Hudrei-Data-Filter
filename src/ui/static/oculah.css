@@ -1578,22 +1578,18 @@ button.ocu-kpi,
 }
 
 /* "+ Add phone" button on the owner card phones section header.
-   2026-05-01: pinned absolute to the card's top-right corner so every
-   owner card has its button at the SAME Y-offset, regardless of how
-   tall the mailing column or identity column happens to be. Pre-fix the
-   button lived inside the section-label flex row, so its position drifted
-   with the content above it — Owner 1 (with PRIMARY tag + 2-line address)
-   and Owner 2 (no PRIMARY tag, "—" address) showed visibly different
-   button positions. Top:14px / right:18px sits inside the card padding
-   (18px 20px) with a slight optical lift so the button visually clears
-   the section labels. */
+   2026-05-01 (revised): in-flow with margin-left:auto so it sits at the
+   end of the phones-section-label row. Earlier revision pinned absolute
+   to the card top-right, but with multi-phone owners the phones grid
+   extends to the column's right edge and the absolute button overlapped
+   the phone cards (covering the WRONG/UNKNOWN pills on the first row).
+   In-flow placement naturally clears the phones grid below it.
+   align-items:center on the parent section-label keeps the button vertically
+   centered with the "PHONES" label + count chip. flex-shrink:0 stops it
+   from collapsing on narrow viewports. */
 .ocu-owner-add-phone-btn {
-  position: absolute;
-  /* Tracks the card's 22/24 padding so the button sits a small inset away
-     from the top-right inner edge. Bump in lockstep if the card padding
-     changes. */
-  top: 18px;
-  right: 22px;
+  margin-left: auto;
+  flex-shrink: 0;
   padding: 3px 9px;
   font-size: 11px;
   font-weight: 600;
@@ -1606,7 +1602,6 @@ button.ocu-kpi,
   cursor: pointer;
   font-family: inherit;
   transition: all 0.12s;
-  z-index: 1;
 }
 .ocu-owner-add-phone-btn:hover {
   border-style: solid;
@@ -1635,11 +1630,13 @@ button.ocu-kpi,
 /* PHONES GRID — fills the right (phones) column of the 3-col owner
    layout. minmax(min(180px, 100%), 1fr) packs 2-3 columns inside the
    ~600px phones column, and degrades gracefully when the column
-   collapses on narrow viewports. */
+   collapses on narrow viewports.
+   2026-05-01: gap bumped --ocu-space-2 (8px) -> --ocu-space-3 (12px)
+   so adjacent phone cards have visible separation, not a thin line. */
 .ocu-phones-grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(min(180px, 100%), 1fr));
-  gap: var(--ocu-space-2);
+  gap: var(--ocu-space-3);
   min-width: 0;
 }
 .ocu-phones-grid > .ocu-phone-row {
