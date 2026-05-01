@@ -611,7 +611,16 @@ async function importContactList(tenantId, campaignId, rows, headers, customMapp
     dnc:      customMapping.dnc      || autoDetect.dnc,
   } : autoDetect;
 
-  const phoneCols = detectPhoneColumns(headers);
+  // 2026-05-01 (5A.2): when the operator goes through the mapping wizard,
+  // customMapping.phones is an ordered array of source-CSV header names
+  // (Ph#1 first, Ph#10 last; empty slots filtered out). That overrides the
+  // pattern-based auto-detection so multi-dialer CSVs don't need to match
+  // any particular header convention.
+  const phoneCols = (customMapping && Array.isArray(customMapping.phones) && customMapping.phones.length)
+    ? customMapping.phones
+        .map((col, i) => col ? { col, idx: headers.indexOf(col) } : null)
+        .filter(x => x && x.idx > -1)
+    : detectPhoneColumns(headers);
 
   // ──────────────────────────────────────────────────────────────────────────
   // MERGE: no DELETE FROM campaign_contacts. Every row is UPSERTed by

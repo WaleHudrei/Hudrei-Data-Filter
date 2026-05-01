@@ -3,6 +3,14 @@
 
 const ENTRIES = [
   {
+    date: 'May 1, 2026 (5A.2 — master-list import wizard)',
+    title: 'Master-list import is a two-step flow now: upload → map → import',
+    items: [
+      { tag: 'feat', text: 'The "Upload contact list" file picker on the campaign detail page now goes through a mapping wizard. Step 1: pick the CSV; the file is parsed server-side and stashed in session. Step 2 (new page at /oculah/campaigns/:id/contacts/map): the operator confirms which source column maps to which Oculah field. Required mappings (server-enforced): First name, Last name, Mailing address/city/state/zip/county, Property address/city/state/zip, Phone 1, and Accepted by Dialer. Optional: Phone 2..10, DNC. Dropdowns come pre-filled from auto-detect. Submit → /contacts/commit calls importContactList with the explicit mapping (no header pattern guessing) and accepted/dnc flow into the per-row columns added in 5A.1. Sample rows from the CSV render below the form so the operator can sanity-check their picks before importing.' },
+      { tag: 'note', text: 'The legacy POST /campaigns/:id/contacts/upload (single-step) is still wired but no UI surfaces it anymore — only direct programmatic posts hit it.' },
+    ],
+  },
+  {
     date: 'May 1, 2026 (5A.1 — accepted-by-dialer per row)',
     title: 'Per-row Accepted by Dialer + DNC columns flow through master-list import',
     items: [

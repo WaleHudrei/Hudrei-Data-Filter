@@ -300,12 +300,12 @@ function contactListCard(c, counts) {
             <button type="submit" class="ocu-btn ocu-btn-ghost" style="color:#c0392b;font-size:12px">Delete master list</button>
           </form>` : ''}
       </div>
-      <form method="POST" action="/oculah/campaigns/${c.id}/contacts/upload" enctype="multipart/form-data">
+      <form method="POST" action="/oculah/campaigns/${c.id}/contacts/parse" enctype="multipart/form-data">
         <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
           <input type="file" name="contactfile" accept=".csv,.txt" required class="ocu-input" style="padding:6px 10px;flex:1;min-width:240px" />
-          <button type="submit" class="ocu-btn ocu-btn-primary">Upload contact list</button>
+          <button type="submit" class="ocu-btn ocu-btn-primary">Continue to mapping →</button>
         </div>
-        <div class="ocu-text-3" style="font-size:11px;margin-top:6px">Oculah auto-detects all columns and phone numbers. Re-upload to replace.</div>
+        <div class="ocu-text-3" style="font-size:11px;margin-top:6px">Pick the CSV; on the next step you'll map your columns to Oculah fields. "Accepted by Dialer" is required.</div>
       </form>
       ${c.sms_status === 'active' ? `
         <div style="margin-top:16px;padding-top:14px;border-top:1px solid var(--ocu-border)">

@@ -1371,6 +1371,152 @@ router.post('/campaigns/:id(\\d+)/sync-wrong-numbers', requireAuth, async (req, 
   }
 });
 
+// ─── Master-list import wizard (5A.2) ─────────────────────────────────────
+// Step 1: parse — multipart upload, parse CSV, stash rows in session,
+// redirect to step 2.
+router.post('/campaigns/:id(\\d+)/contacts/parse',
+  requireAuth, ocuUpload.single('contactfile'),
+  async (req, res) => {
+    const id = req.params.id;
+    try {
+      if (!req.file) return res.redirect('/oculah/campaigns/' + id + '?err=' + encodeURIComponent('Pick a CSV file first.'));
+      const parsed = Papa.parse(bufferToCsvText(req.file.buffer), { header: true, skipEmptyLines: true });
+      const headers = parsed.meta.fields || [];
+      const rows = parsed.data || [];
+      if (!rows.length) {
+        return res.redirect('/oculah/campaigns/' + id + '?err=' + encodeURIComponent('CSV had 0 data rows.'));
+      }
+      // Auto-detect: reuse the same heuristics importContactList uses so the
+      // mapping page comes pre-filled. Pattern matchers are intentionally
+      // duplicated here (small, kept simple) rather than imported — the
+      // canonical detection runs server-side at commit time anyway.
+      const h = headers.map(x => x.toLowerCase().trim());
+      const find = (opts) => {
+        for (const o of opts) {
+          const i = h.findIndex(x => x.includes(o.toLowerCase()));
+          if (i > -1) return headers[i];
+        }
+        return null;
+      };
+      // Phone-column heuristic mirrors campaigns.detectPhoneColumns. Up to 10.
+      const phoneExclude = [/type/i, /status/i, /tag/i, /connected/i, /score/i, /dnc/i, /do\s*not\s*call/i, /carrier/i, /line\s*type/i, /last\s*call/i, /call\s*count/i, /disposition/i];
+      const phoneInclude = [/^(owner\s+)?(alt\.?\s+)?ph(one)?[\s_#]*\d*(\s+number)?$/i, /^phone\s+number\s*\d*$/i, /^(wireless|mobile|cell|landline|home|work)[\s_#]*\d*(\s+phone)?$/i, /^phone[\s_#]*\d+[\s_]*(number|#)?$/i];
+      const detectedPhones = headers.filter(col => {
+        const lower = String(col || '').toLowerCase().trim();
+        if (!lower) return false;
+        if (phoneExclude.some(rx => rx.test(lower))) return false;
+        return phoneInclude.some(rx => rx.test(lower));
+      }).slice(0, 10);
+
+      const autoMap = {
+        fname:    find(['first name', 'firstname']),
+        lname:    find(['last name', 'lastname']),
+        maddr:    find(['mailing address', 'mailing addr', 'owner street']),
+        mcity:    find(['mailing city', 'owner city']),
+        mstate:   find(['mailing state', 'owner state']),
+        mzip:     find(['mailing zip', 'mailing zip5', 'owner zip']),
+        mcounty:  find(['mailing county', 'county']),
+        paddr:    find(['property address', 'property street']),
+        pcity:    find(['property city']),
+        pstate:   find(['property state']),
+        pzip:     find(['property zip', 'property zip code']),
+        accepted: find(['accepted by dialer', 'accepted', 'lead accepted', 'accepted_lead']),
+        dnc:      find(['dnc', 'do not call']),
+        phones:   detectedPhones,
+      };
+
+      // Stash full parsed rows in session so the commit handler can replay
+      // them. Keyed by campaign id so two open tabs on different campaigns
+      // don't clobber each other. 5A.2 — same pattern as filtration's
+      // session.lastResult. Cleared on commit.
+      req.session.contactsImport = req.session.contactsImport || {};
+      req.session.contactsImport[id] = {
+        rows, headers, autoMap,
+        originalname: req.file.originalname || 'upload.csv',
+        parsedAt: Date.now(),
+      };
+      res.redirect('/oculah/campaigns/' + id + '/contacts/map');
+    } catch (e) {
+      console.error('[oculah contacts/parse]', e.message);
+      res.redirect('/oculah/campaigns/' + id + '?err=' + encodeURIComponent('Could not parse CSV: ' + e.message));
+    }
+  }
+);
+
+// Step 2: map — render the mapping form using session data.
+router.get('/campaigns/:id(\\d+)/contacts/map', requireAuth, async (req, res) => {
+  const id = req.params.id;
+  try {
+    const stash = req.session.contactsImport && req.session.contactsImport[id];
+    if (!stash) {
+      return res.redirect('/oculah/campaigns/' + id + '?err=' + encodeURIComponent('Upload session expired — pick the CSV again.'));
+    }
+    const c = await query('SELECT id, name FROM campaigns WHERE id = $1 AND tenant_id = $2',
+      [id, req.tenantId]);
+    if (!c.rows.length) return res.status(404).send('Campaign not found.');
+    const { contactsMapPage } = require('./pages/contacts-map');
+    res.send(contactsMapPage({
+      campaign:     c.rows[0],
+      headers:      stash.headers,
+      autoMap:      stash.autoMap,
+      totalRows:    stash.rows.length,
+      originalname: stash.originalname,
+      sampleRows:   stash.rows.slice(0, 5),
+    }));
+  } catch (e) {
+    console.error('[oculah contacts/map]', e.message);
+    res.redirect('/oculah/campaigns/' + id + '?err=' + encodeURIComponent('Mapping page failed.'));
+  }
+});
+
+// Step 3: commit — apply submitted mapping, run importContactList.
+router.post('/campaigns/:id(\\d+)/contacts/commit', requireAuth, async (req, res) => {
+  const id = req.params.id;
+  try {
+    const stash = req.session.contactsImport && req.session.contactsImport[id];
+    if (!stash) {
+      return res.redirect('/oculah/campaigns/' + id + '?err=' + encodeURIComponent('Upload session expired — pick the CSV again.'));
+    }
+    const REQUIRED = ['fname','lname','maddr','mcity','mstate','mzip','mcounty','paddr','pcity','pstate','pzip','accepted','phone1'];
+    for (const f of REQUIRED) {
+      if (!req.body[f] || !String(req.body[f]).trim()) {
+        return res.redirect('/oculah/campaigns/' + id + '/contacts/map?err=' + encodeURIComponent(`Missing required mapping: ${f}`));
+      }
+    }
+    // Collect the 10 phone slots in order; drop empties so importContactList
+    // doesn't end up with sparse holes that break slot_index alignment.
+    const phones = [];
+    for (let i = 1; i <= 10; i++) {
+      const v = String(req.body['phone' + i] || '').trim();
+      if (v) phones.push(v);
+    }
+    const customMapping = {
+      fname:    req.body.fname,
+      lname:    req.body.lname,
+      maddr:    req.body.maddr,
+      mcity:    req.body.mcity,
+      mstate:   req.body.mstate,
+      mzip:     req.body.mzip,
+      mcounty:  req.body.mcounty,
+      paddr:    req.body.paddr,
+      pcity:    req.body.pcity,
+      pstate:   req.body.pstate,
+      pzip:     req.body.pzip,
+      accepted: req.body.accepted,
+      dnc:      req.body.dnc || null,
+      phones,
+    };
+    const campaigns = require('../campaigns');
+    await campaigns.initCampaignSchema();
+    await campaigns.importContactList(req.tenantId, parseInt(id, 10), stash.rows, stash.headers, customMapping);
+    delete req.session.contactsImport[id];
+    res.redirect('/oculah/campaigns/' + id + '?msg=' + encodeURIComponent(`Imported ${stash.rows.length} contacts.`));
+  } catch (e) {
+    console.error('[oculah contacts/commit]', e.message, e.stack);
+    res.redirect('/oculah/campaigns/' + id + '?err=' + encodeURIComponent('Import failed: ' + e.message));
+  }
+});
+
 router.post('/campaigns/:id(\\d+)/accepted-count', requireAuth, async (req, res) => {
   const id = req.params.id;
   try {
