@@ -463,6 +463,19 @@ function campaignDetail(data = {}) {
        </form>`
     : '';
 
+  // 5G: only completed campaigns can be deleted. The form posts the
+  // operator-typed campaign name; the server compares strict-equal with
+  // the campaign's actual name. cd_confirmDelete() reads the expected
+  // name from a data attribute to keep the inline onsubmit short.
+  const deleteBtn = c.status === 'completed'
+    ? `<form method="POST" action="/oculah/campaigns/${c.id}/delete" style="display:inline-block"
+            data-name="${escHTML(c.name || '')}"
+            onsubmit="return cd_confirmDelete(this)">
+        <input type="hidden" name="confirm_name" value="" />
+        <button type="submit" class="ocu-btn ocu-btn-ghost" style="color:#c0392b">Delete campaign</button>
+       </form>`
+    : '';
+
   const newRoundBtn = `
     <form method="POST" action="/oculah/campaigns/${c.id}/new-round" style="display:inline-block" onsubmit="return confirm('Close this campaign and start a fresh round with the same settings?')">
       <button type="submit" class="ocu-btn ocu-btn-secondary">Start new round</button>
@@ -582,6 +595,7 @@ function campaignDetail(data = {}) {
       <a href="/oculah/filtration?campaign=${c.id}" class="ocu-btn ocu-btn-primary">Upload list / call log</a>
       ${newRoundBtn}
       ${closeBtn}
+      ${deleteBtn}
     </div>
 
     <div style="margin-bottom:14px">${filtersCard}</div>
@@ -604,6 +618,7 @@ function campaignDetail(data = {}) {
     <div style="margin-top:18px;display:flex;gap:8px;justify-content:flex-end">
       ${newRoundBtn}
       ${closeBtn}
+      ${deleteBtn}
     </div>
 
     <style>
@@ -645,6 +660,16 @@ function campaignDetail(data = {}) {
           var inp = f.querySelector('input[name="count"]');
           if (inp) { inp.focus(); inp.select(); }
         }
+      }
+      function cd_confirmDelete(form) {
+        var name = form.getAttribute('data-name') || '';
+        var msg = 'Type the campaign name to confirm deletion:\n\n'
+                + name
+                + '\n\nThis cascades into all contacts, phones, uploads, and call logs for this campaign. Cannot be undone.';
+        var typed = window.prompt(msg);
+        if (typed == null) return false;
+        form.elements['confirm_name'].value = typed;
+        return true;
       }
 
       // ── Quick filtration drop zone ──────────────────────────────────────

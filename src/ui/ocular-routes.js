@@ -1284,6 +1284,37 @@ router.post('/campaigns/:id(\\d+)/close', requireAuth, async (req, res) => {
   }
 });
 
+// 5G: delete a completed campaign — guards against accidental deletes by
+// requiring status='completed', tenant-scoped, and the operator typing the
+// campaign name as a confirm token. Cascades take care of campaign_contacts,
+// campaign_contact_phones, campaign_numbers, campaign_uploads via the
+// existing ON DELETE CASCADE FKs in campaigns init schema.
+router.post('/campaigns/:id(\\d+)/delete', requireAuth, async (req, res) => {
+  const id = req.params.id;
+  try {
+    const cur = await query(
+      'SELECT id, name, status FROM campaigns WHERE id = $1 AND tenant_id = $2',
+      [id, req.tenantId]
+    );
+    if (!cur.rows.length) {
+      return res.redirect('/oculah/campaigns?err=' + encodeURIComponent('Campaign not found.'));
+    }
+    const c = cur.rows[0];
+    if (c.status !== 'completed') {
+      return res.redirect('/oculah/campaigns/' + id + '?err=' + encodeURIComponent('Only completed campaigns can be deleted. Close the campaign first.'));
+    }
+    const typed = String(req.body.confirm_name || '').trim();
+    if (typed !== String(c.name || '').trim()) {
+      return res.redirect('/oculah/campaigns/' + id + '?err=' + encodeURIComponent('Type the campaign name exactly to confirm deletion.'));
+    }
+    await query('DELETE FROM campaigns WHERE id = $1 AND tenant_id = $2', [id, req.tenantId]);
+    res.redirect('/oculah/campaigns?msg=' + encodeURIComponent(`Deleted campaign "${c.name}".`));
+  } catch (e) {
+    console.error('[oculah/campaigns/:id/delete]', e.message);
+    res.redirect('/oculah/campaigns/' + id + '?err=' + encodeURIComponent('Delete failed: ' + e.message));
+  }
+});
+
 router.post('/campaigns/:id(\\d+)/new-round', requireAuth, async (req, res) => {
   try {
     const campaigns = require('../campaigns');

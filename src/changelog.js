@@ -3,6 +3,13 @@
 
 const ENTRIES = [
   {
+    date: 'May 1, 2026 (5G — delete completed campaigns)',
+    title: 'Completed campaigns can now be deleted from the detail page',
+    items: [
+      { tag: 'feat', text: 'New "Delete campaign" button on the detail page action bar — only renders when status="completed". Clicking prompts for the exact campaign name as a confirmation token (server validates strict-equal against campaigns.name). Cascade FKs already in place handle the dependent rows: campaign_contacts, campaign_contact_phones, campaign_numbers, campaign_uploads. nis_numbers stays (cross-campaign data).' },
+    ],
+  },
+  {
     date: 'May 1, 2026 (5E — disposition normalization)',
     title: 'Disposition matching is now case- and formatting-insensitive',
     items: [
