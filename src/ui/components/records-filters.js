@@ -102,19 +102,34 @@ function recordsFilters(opts = {}) {
   const sortPassthroughHTML = (opts.sortPassthrough || []).map(([k, v]) =>
     `<input type="hidden" name="${escHTML(k)}" value="${escHTML(v)}">`
   ).join('');
-  // 2026-04-29: removed redundant "Default" option — when dir="" the
-  // server falls back to desc anyway, so it was visually identical to
-  // High → Low.
+  // "Any" = default state: no sort/dir on the URL, server falls through
+  // to ORDER BY p.id DESC. Picking it disables the hidden `sort` and
+  // the `dir` select before submit so neither param leaves the form,
+  // resetting the records page to its default order.
   const sortControl = `
-    <form method="GET" action="/oculah/records" class="ocu-sort-form">
+    <form method="GET" action="/oculah/records" class="ocu-sort-form" id="ocu-sort-form">
       ${sortPassthroughHTML}
-      <input type="hidden" name="sort" value="distress_score">
+      <input type="hidden" name="sort" value="distress_score" id="ocu-sort-field"${!sortingByDistress ? ' disabled' : ''}>
       <label class="ocu-sort-label" for="ocu-sort-distress">Distress</label>
-      <select name="dir" id="ocu-sort-distress" class="ocu-sort-select" onchange="this.form.submit()">
-        <option value="desc" ${currentDir !== 'asc' ? 'selected' : ''}>High → Low</option>
-        <option value="asc"  ${currentDir === 'asc' ? 'selected' : ''}>Low → High</option>
+      <select name="dir" id="ocu-sort-distress" class="ocu-sort-select" onchange="ocu_sortDistress(this)">
+        <option value=""     ${!sortingByDistress ? 'selected' : ''}>Any</option>
+        <option value="desc" ${sortingByDistress && currentDir !== 'asc' ? 'selected' : ''}>High → Low</option>
+        <option value="asc"  ${sortingByDistress && currentDir === 'asc' ? 'selected' : ''}>Low → High</option>
       </select>
-    </form>`;
+    </form>
+    <script>
+      function ocu_sortDistress(sel) {
+        var sortField = document.getElementById('ocu-sort-field');
+        if (!sel.value) {
+          // "Any" — drop both sort + dir so the URL has neither.
+          if (sortField) sortField.disabled = true;
+          sel.disabled = true;
+        } else if (sortField) {
+          sortField.disabled = false;
+        }
+        sel.form.submit();
+      }
+    </script>`;
 
   // ── The bar itself ─────────────────────────────────────────────────────
   // Recompute Distress lives in the same row as Filters + the distress sort
