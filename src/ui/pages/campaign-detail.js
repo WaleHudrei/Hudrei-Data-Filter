@@ -418,9 +418,15 @@ function campaignDetail(data = {}) {
       </select>
     </form>`;
 
-  // Rename — inline form, only shown when user clicks pencil
+  // Rename — inline form, only shown when user clicks pencil.
+  // 2026-05-01: added vertical margin and align-items:center so the input
+  // and Save/Cancel buttons sit on a comfortable own row, with breathing
+  // room above (separates from the back-link/Rename header) and below
+  // (separates from the Upload list / Start new round / Close campaign
+  // action row). Pre-fix the form had no margins, so it crashed into the
+  // action buttons when expanded.
   const renameForm = `
-    <form method="POST" action="/oculah/campaigns/${c.id}/rename" id="cd-rename-form" style="display:none;flex:1;gap:6px">
+    <form method="POST" action="/oculah/campaigns/${c.id}/rename" id="cd-rename-form" style="display:none;align-items:center;gap:8px;margin:8px 0 16px">
       <input type="text" name="name" value="${escHTML(c.name)}" maxlength="255" required class="ocu-input" style="flex:1" />
       <button type="submit" class="ocu-btn ocu-btn-primary">Save</button>
       <button type="button" class="ocu-btn ocu-btn-ghost" onclick="cd_cancelRename()">Cancel</button>
