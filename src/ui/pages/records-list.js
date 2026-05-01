@@ -27,7 +27,13 @@ function buildFilterChips(filters, querystring) {
   if (filters.county)       chip('County: ' + filters.county, 'county');
   if (filters.pipeline)     chip('Stage: ' + filters.pipeline, 'pipeline');
   if (filters.phones)       chip('Phones: ' + filters.phones, 'phones');
-  if (filters.min_distress) chip('Distress ≥ ' + filters.min_distress, 'min_distress');
+  if (filters.min_distress) {
+    const bandLabel = String(filters.min_distress) === '75' ? 'Burning'
+                    : String(filters.min_distress) === '55' ? 'Hot+'
+                    : String(filters.min_distress) === '30' ? 'Warm+'
+                    : '≥ ' + filters.min_distress;
+    chip('Distress: ' + bandLabel, 'min_distress');
+  }
   if (filters.list_id)      chip('On list', 'list_id');
   if (filters.owner_type)   chip('Owner: ' + filters.owner_type, 'owner_type');
   if (filters.occupancy)    chip('Occupancy: ' + filters.occupancy.replace('_', ' '), 'occupancy');

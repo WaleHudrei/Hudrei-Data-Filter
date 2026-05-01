@@ -226,9 +226,13 @@ function recordsFilters(opts = {}) {
           </div>
 
           <div class="ocu-filter">
-            <label class="ocu-filter-label">Min distress</label>
-            <input type="number" name="min_distress" value="${escHTML(f.min_distress || '')}"
-                   min="0" max="100" placeholder="0–100" class="ocu-filter-input">
+            <label class="ocu-filter-label">Distress</label>
+            <select name="min_distress" class="ocu-filter-input">
+              <option value="" ${!f.min_distress ? 'selected' : ''}>Any</option>
+              <option value="30" ${String(f.min_distress) === '30' ? 'selected' : ''}>Warm or higher (≥ 30)</option>
+              <option value="55" ${String(f.min_distress) === '55' ? 'selected' : ''}>Hot or higher (≥ 55)</option>
+              <option value="75" ${String(f.min_distress) === '75' ? 'selected' : ''}>Burning only (≥ 75)</option>
+            </select>
           </div>
 
           <div class="ocu-filter">
