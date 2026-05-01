@@ -1289,7 +1289,7 @@ router.post('/campaigns/:id(\\d+)/new-round', requireAuth, async (req, res) => {
 //   - campaigns.importContactList()
 //   - campaigns.importSmarterContactFile()
 //   - filtration.getContactStats()
-// SQL writes for delete-contacts / sync-wrong-numbers / readymode-count are
+// SQL writes for delete-contacts / sync-wrong-numbers / accepted-count are
 // copied verbatim from server.js so the column-update semantics match exactly.
 
 router.post('/campaigns/:id(\\d+)/contacts/upload',
@@ -1371,15 +1371,15 @@ router.post('/campaigns/:id(\\d+)/sync-wrong-numbers', requireAuth, async (req, 
   }
 });
 
-router.post('/campaigns/:id(\\d+)/readymode-count', requireAuth, async (req, res) => {
+router.post('/campaigns/:id(\\d+)/accepted-count', requireAuth, async (req, res) => {
   const id = req.params.id;
   try {
     const n = parseInt(req.body.count, 10);
     const safeN = Number.isFinite(n) && n >= 0 ? n : 0;
     await query('UPDATE campaigns SET manual_count=$1, updated_at=NOW() WHERE id=$2', [safeN, id]);
-    res.redirect('/oculah/campaigns/' + id + '?msg=' + encodeURIComponent('Readymode count updated to ' + safeN + '.'));
+    res.redirect('/oculah/campaigns/' + id + '?msg=' + encodeURIComponent('Accepted-by-dialer count updated to ' + safeN + '.'));
   } catch (e) {
-    console.error('[oculah readymode-count]', e.message);
+    console.error('[oculah accepted-count]', e.message);
     res.redirect('/oculah/campaigns/' + id + '?err=' + encodeURIComponent('Update failed.'));
   }
 });

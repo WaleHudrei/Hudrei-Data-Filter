@@ -10,7 +10,7 @@
 //   - Rename, status, channel, close, new-round (POST /oculah/campaigns/:id/{rename,status,channel,close,new-round})
 //   - Contact list upload + delete + sync-wrong-numbers (POST /oculah/campaigns/:id/contacts/*)
 //   - SMS results upload (POST /oculah/campaigns/:id/sms/upload — SMS campaigns only)
-//   - Readymode-count override (POST /oculah/campaigns/:id/readymode-count)
+//   - Dialer-accepted count override (POST /oculah/campaigns/:id/accepted-count)
 //
 // Per-campaign drop zone reuses POST /upload/filter/parse + /upload/filter/process
 // with this campaign's id pre-filled, so memory dedup is correctly scoped.
@@ -243,7 +243,7 @@ function channelStatusCard(c, m) {
 }
 
 // Contact list section — Loki layout with 7-card KPI grid + inline edit for
-// "Accepted by Readymode" + upload/sync/delete + clean export. Replaces the
+// "Accepted by Dialer" + upload/sync/delete + clean export. Replaces the
 // old slim contact-list card.
 function contactListCard(c, counts) {
   const isCold        = (c.active_channel || 'cold_call') === 'cold_call';
@@ -264,7 +264,7 @@ function contactListCard(c, counts) {
   const kpis = `
     <div class="ocu-kpi-row" style="grid-template-columns:repeat(auto-fit,minmax(140px,1fr));margin-bottom:14px">
       ${_kpiCell('Total properties',     fmtNum(totalContacts), 'Contacts uploaded')}
-      ${isCold ? _kpiCell('Accepted by Readymode', acceptedValue, 'Manually entered') : ''}
+      ${isCold ? _kpiCell('Accepted by dialer', acceptedValue, 'Manually entered') : ''}
       ${_kpiCell('Total phones',         fmtNum(totalPhones),  'Across all contacts')}
       ${_kpiCell('Wrong numbers',        fmtNum(wrong),        'Permanently excluded', 'bad')}
       ${_kpiCell('NIS flagged',          fmtNum(nis),          'Dead numbers',         'bad')}
@@ -272,12 +272,12 @@ function contactListCard(c, counts) {
       ${_kpiCell('Contacts reached',     reachedValue,         'At least 1 live pickup', '#185fa5')}
     </div>`;
 
-  const readymodeForm = isCold ? `
+  const acceptedCountForm = isCold ? `
     <div id="cd-rm-form" style="display:none;background:var(--ocu-surface);border-radius:8px;padding:12px;margin-bottom:14px">
-      <form method="POST" action="/oculah/campaigns/${c.id}/readymode-count" style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+      <form method="POST" action="/oculah/campaigns/${c.id}/accepted-count" style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
         <input type="number" name="count" min="0" step="1" value="${manualCount}" placeholder="e.g. 4163" class="ocu-input" style="width:160px" required />
         <button type="submit" class="ocu-btn ocu-btn-primary">Save</button>
-        <span class="ocu-text-3" style="font-size:12px">Total contacts Readymode accepted</span>
+        <span class="ocu-text-3" style="font-size:12px">Total contacts the dialer accepted</span>
       </form>
     </div>` : '';
 
@@ -327,7 +327,7 @@ function contactListCard(c, counts) {
         ${headerActions}
       </div>
       ${kpis}
-      ${readymodeForm}
+      ${acceptedCountForm}
       ${uploadForm}
     </div>`;
 }

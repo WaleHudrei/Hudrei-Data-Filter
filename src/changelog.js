@@ -3,6 +3,13 @@
 
 const ENTRIES = [
   {
+    date: 'May 1, 2026 (rename — accepted by dialer)',
+    title: '"Accepted by Readymode" → "Accepted by Dialer"',
+    items: [
+      { tag: 'note', text: 'Step 1 of the multi-dialer support work. The campaign-detail KPI card and its inline edit form are renamed from "Accepted by Readymode" to "Accepted by Dialer" — Readymode is no longer hard-coded in the label since the platform will support CallTools, Batch Dialer, and custom dialers next. POST /oculah/campaigns/:id/readymode-count is now /accepted-count; the legacy URL stays alive in server.js as a safety alias for any in-flight session/bookmark, redirecting to the same handler. The DB column (manual_count) and the existing per-campaign value are unchanged — purely a UI/route rename.' },
+    ],
+  },
+  {
     date: 'May 1, 2026 (phone-dedup boot crash)',
     title: 'dedupByPhone() no longer aborts when two losers held primary on the same property',
     items: [

@@ -1589,8 +1589,8 @@ app.post('/campaigns/:id/sync-wrong-numbers', requireAuth, async (req, res) => {
   }
 });
 
-// Update Readymode accepted count
-app.post('/campaigns/:id/readymode-count', requireAuth, async (req, res) => {
+// Update dialer-accepted count (legacy /readymode-count alias for in-flight bookmarks)
+app.post(['/campaigns/:id/accepted-count', '/campaigns/:id/readymode-count'], requireAuth, async (req, res) => {
   try {
     if (!(await _requireOwnedCampaign(req, res))) return;
     const { query: dbQ } = require('./db');
