@@ -262,10 +262,18 @@ function ownerDetail(data = {}) {
     body:  phonesBody,
   });
 
+  // 2026-05-01: render up to 3 email slots (email, email_1, email_2). Each
+  // becomes a clickable mailto link. Empty slots are skipped. The user
+  // adds/edits/removes via the same Edit dialog (which now exposes all
+  // 3 slots) so this card stays read-only.
+  const _emails = [c.email, c.email_1, c.email_2].filter(e => e && String(e).trim());
   const emailCard = card({
     title: 'Email',
-    body:  c.email
-      ? `<a href="mailto:${escHTML(c.email)}" class="ocu-link ocu-break-anywhere">${escHTML(c.email)}</a>`
+    meta:  _emails.length ? `${_emails.length} on file` : '',
+    body:  _emails.length
+      ? '<div style="display:flex;flex-direction:column;gap:6px">'
+        + _emails.map(e => `<a href="mailto:${escHTML(e)}" class="ocu-link ocu-break-anywhere">${escHTML(e)}</a>`).join('')
+        + '</div>'
       : `<div class="ocu-text-3 ocu-empty-line">No email on file</div>`,
   });
 
@@ -302,8 +310,12 @@ function ownerDetail(data = {}) {
             <input type="text" name="mailing_state" value="${escHTML(c.mailing_state || '')}" class="ocu-input" maxlength="10"></div>
           <div class="ocu-form-field"><label class="ocu-form-label">Mailing ZIP</label>
             <input type="text" name="mailing_zip" value="${escHTML(c.mailing_zip || '')}" class="ocu-input" maxlength="10"></div>
-          <div class="ocu-form-field" style="grid-column:1 / -1"><label class="ocu-form-label">Email</label>
+          <div class="ocu-form-field" style="grid-column:1 / -1"><label class="ocu-form-label">Email 1</label>
             <input type="email" name="email" value="${escHTML(c.email || '')}" class="ocu-input" maxlength="255"></div>
+          <div class="ocu-form-field"><label class="ocu-form-label">Email 2</label>
+            <input type="email" name="email_1" value="${escHTML(c.email_1 || '')}" class="ocu-input" maxlength="255"></div>
+          <div class="ocu-form-field"><label class="ocu-form-label">Email 3</label>
+            <input type="email" name="email_2" value="${escHTML(c.email_2 || '')}" class="ocu-input" maxlength="255"></div>
         </div>
         <div class="ocu-dialog-footer">
           <button type="button" class="ocu-btn ocu-btn-ghost"

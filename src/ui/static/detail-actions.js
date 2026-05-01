@@ -531,6 +531,113 @@
       return;
     }
 
+    // ── Phones expand toggle (show/hide hidden group) ─────────────────────
+    if (action === 'phones-toggle') {
+      e.stopPropagation();
+      const phonesCol = target.closest('.ocu-owner-col-phones');
+      if (!phonesCol) return;
+      const hidden = phonesCol.querySelector('[data-phones-hidden]');
+      const textEl = target.querySelector('.ocu-phones-expand-text');
+      if (!hidden) return;
+      const isOpen = !hidden.hasAttribute('hidden');
+      if (isOpen) {
+        hidden.setAttribute('hidden', '');
+        target.classList.remove('is-open');
+        target.setAttribute('aria-expanded', 'false');
+        if (textEl) {
+          // Restore "+N more" — derive N from the hidden group's child count.
+          const n = hidden.querySelectorAll('.ocu-phone-row').length;
+          textEl.textContent = '+' + n + ' more';
+        }
+      } else {
+        hidden.removeAttribute('hidden');
+        target.classList.add('is-open');
+        target.setAttribute('aria-expanded', 'true');
+        if (textEl) textEl.textContent = 'Show less';
+      }
+      return;
+    }
+
+    // ── Per-phone-row Edit / Remove ────────────────────────────────────────
+    if (action === 'phone-edit') {
+      e.stopPropagation();
+      const row = target.closest('.ocu-phone-row');
+      if (!row) return;
+      const form = row.querySelector('.ocu-phone-edit-form');
+      const display = row.querySelector('[data-phone-num-display]');
+      if (!form) return;
+      form.removeAttribute('hidden');
+      if (display) display.style.visibility = 'hidden';
+      const input = form.querySelector('input[type="tel"]');
+      if (input) { input.focus(); input.select(); }
+      return;
+    }
+    if (action === 'phone-edit-cancel') {
+      e.stopPropagation();
+      const row = target.closest('.ocu-phone-row');
+      if (!row) return;
+      const form = row.querySelector('.ocu-phone-edit-form');
+      const display = row.querySelector('[data-phone-num-display]');
+      const input = form && form.querySelector('input[type="tel"]');
+      if (input) input.value = row.dataset.phoneNumber || input.value;
+      if (form) form.setAttribute('hidden', '');
+      if (display) display.style.visibility = '';
+      return;
+    }
+    if (action === 'phone-edit-save') {
+      e.stopPropagation();
+      const phoneId = target.dataset.phoneId;
+      const row = target.closest('.ocu-phone-row');
+      if (!row || !phoneId) return;
+      const input = row.querySelector('input[type="tel"]');
+      const newNumber = (input && input.value || '').trim();
+      if (!newNumber) { toast('Phone number required', true); return; }
+      target.disabled = true;
+      target.textContent = 'Saving…';
+      try {
+        const r = await jpost('/records/phones/' + phoneId + '/edit', { phone_number: newNumber });
+        const display = row.querySelector('[data-phone-num-display]');
+        const stored = (r && r.phone && r.phone.phone_number) || newNumber;
+        if (display) {
+          display.textContent = stored;
+          display.style.visibility = '';
+        }
+        row.dataset.phoneNumber = stored;
+        const form = row.querySelector('.ocu-phone-edit-form');
+        if (form) form.setAttribute('hidden', '');
+        target.disabled = false;
+        target.textContent = 'Save';
+        toast('Phone updated', false);
+      } catch (err) {
+        target.disabled = false;
+        target.textContent = 'Save';
+        toast('Failed to update phone: ' + err.message, true);
+      }
+      return;
+    }
+    if (action === 'phone-delete') {
+      e.stopPropagation();
+      const phoneId = target.dataset.phoneId;
+      const row = target.closest('.ocu-phone-row');
+      if (!row || !phoneId) return;
+      if (!window.confirm('Remove this phone? This action can\'t be undone.')) return;
+      target.disabled = true;
+      try {
+        await jpost('/records/phones/' + phoneId + '/delete');
+        // Animate out then remove from DOM. Reload happens after a short
+        // delay so the count chip + best-phone fallback all rerender from
+        // server state — keeps the UI consistent without a full DOM patch.
+        row.style.transition = 'opacity 0.18s, transform 0.18s';
+        row.style.opacity = '0';
+        row.style.transform = 'translateX(8px)';
+        setTimeout(() => window.location.reload(), 250);
+      } catch (err) {
+        target.disabled = false;
+        toast('Failed to remove phone: ' + err.message, true);
+      }
+      return;
+    }
+
     // ── Add-owner form open / close (collapsed by default) ────────────────
     if (action === 'open-add-owner-form') {
       e.stopPropagation();

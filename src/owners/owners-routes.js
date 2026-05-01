@@ -125,6 +125,14 @@ router.post('/:id(\\d+)/edit', requireAuth, async (req, res) => {
     // column entirely when the value can't be normalized so we don't
     // overwrite a previously-good value with garbage.
     const { normalizeState } = require('../import/state');
+    // 2026-05-01: email_1 / email_2 added so the dialog can manage all 3
+    // slots. nullable:true on emails means an empty string clears the
+    // column (so the user can remove an email by blanking the input);
+    // non-email fields keep the original "skip if empty" behavior so
+    // partial form submits don't accidentally null out names/addresses.
+    // emailCheck rejects values that obviously aren't email addresses.
+    const emailRe = /^[^@\s]+@[^@\s]+\.[^@\s]+$/;
+    const emailCheck = (v) => emailRe.test(v);
     const map = {
       first_name:      { col: 'first_name',      max: 100 },
       last_name:       { col: 'last_name',       max: 100 },
@@ -133,7 +141,9 @@ router.post('/:id(\\d+)/edit', requireAuth, async (req, res) => {
       mailing_city:    { col: 'mailing_city',    max: 100 },
       mailing_state:   { col: 'mailing_state',   max: 2, normalize: normalizeState },
       mailing_zip:     { col: 'mailing_zip',     max: 10 },
-      email:           { col: 'email',           max: 255 },
+      email:           { col: 'email',           max: 255, nullable: true, validate: emailCheck },
+      email_1:         { col: 'email_1',         max: 255, nullable: true, validate: emailCheck },
+      email_2:         { col: 'email_2',         max: 255, nullable: true, validate: emailCheck },
     };
     const sets = [];
     const params = [];
@@ -141,14 +151,23 @@ router.post('/:id(\\d+)/edit', requireAuth, async (req, res) => {
     for (const [key, def] of Object.entries(map)) {
       if (!(key in req.body)) continue;
       let raw = req.body[key];
-      if (raw == null) continue;
+      if (raw == null) raw = '';
       raw = String(raw).trim();
-      if (!raw) continue;
+      if (!raw) {
+        if (def.nullable) {
+          sets.push(`${def.col} = NULL`);
+          continue;  // no param; column literal-set to NULL
+        }
+        continue;
+      }
       if (def.enum && !def.enum.includes(raw)) continue;
       if (def.normalize) {
         const normed = def.normalize(raw);
         if (!normed) continue;  // unrecognized state — leave column alone
         raw = normed;
+      }
+      if (def.validate && !def.validate(raw)) {
+        return res.status(400).json({ error: `"${raw}" doesn't look like a valid ${key.replace('_', ' ')}.` });
       }
       if (def.max && raw.length > def.max) raw = raw.slice(0, def.max);
       sets.push(`${def.col} = $${idx}`); params.push(raw); idx++;

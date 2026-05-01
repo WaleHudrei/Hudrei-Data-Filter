@@ -344,6 +344,117 @@ router.post('/phones/:phoneId(\\d+)/status', requireAuth, async (req, res) => {
   }
 });
 
+// 2026-05-01: contact email management. The contacts table has 3 email
+// slots (`email`, `email_1`, `email_2`) — keep that schema as-is and let
+// callers manage which slot a value lives in. POSTing an empty string to
+// any slot clears it. Returns the updated contact with all 3 slots so
+// the caller can re-render the email list. Tenant-scoped on contacts.id.
+router.post('/contacts/:contactId(\\d+)/emails', requireAuth, async (req, res) => {
+  try {
+    const contactId = parseInt(req.params.contactId, 10);
+    if (!Number.isFinite(contactId)) return res.status(400).json({ error: 'Invalid contact id.' });
+    const t = req.tenantId;
+
+    const own = await query(`SELECT id FROM contacts WHERE id = $1 AND tenant_id = $2`, [contactId, t]);
+    if (!own.rowCount) return res.status(404).json({ error: 'Contact not found.' });
+
+    const trim = (k) => {
+      const raw = req.body[k];
+      if (raw === undefined) return undefined;  // not sent — leave existing value
+      const s = String(raw).trim().slice(0, 255);
+      return s || null;
+    };
+    // Cheap email-ish validation. Skips empty / null. Anything that doesn't
+    // contain `@` followed by at least one char and a dot is rejected — we
+    // don't want full RFC 5322 here, just protection against typos / pasted
+    // text that obviously isn't an email.
+    const emailRe = /^[^@\s]+@[^@\s]+\.[^@\s]+$/;
+    const slots = ['email', 'email_1', 'email_2'];
+    const updates = [];
+    const params = [];
+    let pIdx = 1;
+    for (const slot of slots) {
+      const v = trim(slot);
+      if (v === undefined) continue;  // not in request body — preserve
+      if (v && !emailRe.test(v)) {
+        return res.status(400).json({ error: `"${v}" doesn't look like an email address.` });
+      }
+      updates.push(`${slot} = $${pIdx++}`);
+      params.push(v);
+    }
+    if (!updates.length) return res.status(400).json({ error: 'No email fields provided.' });
+    params.push(contactId, t);
+    const upd = await query(
+      `UPDATE contacts SET ${updates.join(', ')}, updated_at = NOW()
+        WHERE id = $${pIdx++} AND tenant_id = $${pIdx++}
+       RETURNING id, email, email_1, email_2`,
+      params
+    );
+    if (!upd.rowCount) return res.status(404).json({ error: 'Contact not found.' });
+    res.json({ ok: true, contact: upd.rows[0] });
+  } catch (e) {
+    console.error('[contacts/:id/emails POST]', e);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// 2026-05-01: edit a phone's number. Same UNIQUE(contact_id, phone_number)
+// constraint applies — collisions surface as 409 instead of 500. Re-validates
+// the new number through normalizePhone so the canonical 10-digit form is
+// stored regardless of how the operator typed it.
+router.post('/phones/:phoneId(\\d+)/edit', requireAuth, async (req, res) => {
+  try {
+    const phoneId = parseInt(req.params.phoneId, 10);
+    if (!Number.isFinite(phoneId)) return res.status(400).json({ error: 'Invalid phone id.' });
+    const rawPhone = String(req.body.phone_number || '').trim();
+    if (!rawPhone) return res.status(400).json({ error: 'Phone number is required.' });
+    const phoneNorm = normalizePhone(rawPhone);
+    if (!phoneNorm || phoneNorm.length !== 10) {
+      return res.status(400).json({ error: 'Could not parse a valid 10-digit US phone number.' });
+    }
+    try {
+      const r = await query(
+        `UPDATE phones SET phone_number = $1, updated_at = NOW()
+          WHERE id = $2 AND tenant_id = $3
+         RETURNING id, contact_id, phone_number, phone_index, phone_status, phone_type`,
+        [phoneNorm, phoneId, req.tenantId]
+      );
+      if (!r.rowCount) return res.status(404).json({ error: 'Phone not found.' });
+      res.json({ ok: true, phone: r.rows[0] });
+    } catch (e) {
+      // Postgres unique-violation code 23505 -> "this contact already has
+      // that number" (the UNIQUE(contact_id, phone_number) constraint).
+      if (e.code === '23505') {
+        return res.status(409).json({ error: 'This contact already has that phone number.' });
+      }
+      throw e;
+    }
+  } catch (e) {
+    console.error('[phones/:id/edit POST]', e);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// 2026-05-01: delete a phone outright. Tenant-scoped DELETE. Cascade on
+// phone_tag_links handles related rows; call_logs / sms_logs / etc. have
+// phone_id ON DELETE CASCADE per the schema, so removing here cleans up
+// downstream rows that reference this phone.
+router.post('/phones/:phoneId(\\d+)/delete', requireAuth, async (req, res) => {
+  try {
+    const phoneId = parseInt(req.params.phoneId, 10);
+    if (!Number.isFinite(phoneId)) return res.status(400).json({ error: 'Invalid phone id.' });
+    const r = await query(
+      `DELETE FROM phones WHERE id = $1 AND tenant_id = $2 RETURNING id, contact_id`,
+      [phoneId, req.tenantId]
+    );
+    if (!r.rowCount) return res.status(404).json({ error: 'Phone not found.' });
+    res.json({ ok: true, phone_id: r.rows[0].id, contact_id: r.rows[0].contact_id });
+  } catch (e) {
+    console.error('[phones/:id/delete POST]', e);
+    res.status(500).json({ error: e.message });
+  }
+});
+
 // Create a new phone for a contact. Body: phone_number (required),
 // phone_type (optional), phone_status (optional). Returns the created
 // row so the client can render the new phone-row immediately. The
@@ -805,6 +916,23 @@ router.post('/:id(\\d+)/owner', requireAuth, async (req, res) => {
       } catch (_) { ownerType = 'Person'; }
     }
 
+    // 2026-05-01: optional email slots on add. Same slot mapping + cheap
+    // shape check as the edit route. Empty / missing -> NULL.
+    const emailRe = /^[^@\s]+@[^@\s]+\.[^@\s]+$/;
+    const cleanEmail = (raw) => {
+      if (raw === undefined || raw === null) return null;
+      const s = String(raw).trim().slice(0, 255);
+      return s || null;
+    };
+    const e0 = cleanEmail(req.body.email);
+    const e1 = cleanEmail(req.body.email_1);
+    const e2 = cleanEmail(req.body.email_2);
+    for (const v of [e0, e1, e2]) {
+      if (v && !emailRe.test(v)) {
+        return res.status(400).json({ error: `"${v}" doesn't look like an email address.` });
+      }
+    }
+
     // Insert contact + link in a single client transaction so a partial
     // failure doesn't leave a dangling unlinked contact behind.
     const client = await pool.connect();
@@ -813,10 +941,11 @@ router.post('/:id(\\d+)/owner', requireAuth, async (req, res) => {
       const cRes = await client.query(
         `INSERT INTO contacts
            (tenant_id, first_name, last_name, owner_type,
-            mailing_address, mailing_city, mailing_state, mailing_zip)
-         VALUES ($1, NULLIF($2,''), NULLIF($3,''), $4, $5, $6, $7, $8)
+            mailing_address, mailing_city, mailing_state, mailing_zip,
+            email, email_1, email_2)
+         VALUES ($1, NULLIF($2,''), NULLIF($3,''), $4, $5, $6, $7, $8, $9, $10, $11)
          RETURNING id, first_name, last_name, owner_type`,
-        [t, fn, ln, ownerType, mAddr, mCity, mState, mZip]
+        [t, fn, ln, ownerType, mAddr, mCity, mState, mZip, e0, e1, e2]
       );
       const contact = cRes.rows[0];
       await client.query(
@@ -1026,6 +1155,29 @@ router.post('/:id(\\d+)/owner/:contactId(\\d+)/edit', requireAuth, async (req, r
       } catch (_) { ownerType = 'Person'; }
     }
 
+    // 2026-05-01: emails are sent inline with the rest of the edit form so
+    // the user updates name + mailing + emails in one save. Slot mapping:
+    //   email   -> "Email 1"
+    //   email_1 -> "Email 2"
+    //   email_2 -> "Email 3"
+    // Empty string clears a slot. Validate cheap email shape; reject if a
+    // non-empty slot doesn't look like an email so the operator catches
+    // typos before we persist garbage.
+    const emailRe = /^[^@\s]+@[^@\s]+\.[^@\s]+$/;
+    const cleanEmail = (raw) => {
+      if (raw === undefined || raw === null) return null;
+      const s = String(raw).trim().slice(0, 255);
+      return s || null;
+    };
+    const e0 = cleanEmail(req.body.email);
+    const e1 = cleanEmail(req.body.email_1);
+    const e2 = cleanEmail(req.body.email_2);
+    for (const v of [e0, e1, e2]) {
+      if (v && !emailRe.test(v)) {
+        return res.status(400).json({ error: `"${v}" doesn't look like an email address.` });
+      }
+    }
+
     const upd = await query(
       `UPDATE contacts
           SET first_name      = NULLIF($2, ''),
@@ -1035,11 +1187,15 @@ router.post('/:id(\\d+)/owner/:contactId(\\d+)/edit', requireAuth, async (req, r
               mailing_city    = $6,
               mailing_state   = $7,
               mailing_zip     = $8,
+              email           = $10,
+              email_1         = $11,
+              email_2         = $12,
               updated_at      = NOW()
         WHERE id = $1 AND tenant_id = $9
        RETURNING id, first_name, last_name, owner_type,
-                 mailing_address, mailing_city, mailing_state, mailing_zip`,
-      [contactId, fn, ln, ownerType, mAddr, mCity, mState, mZip, t]
+                 mailing_address, mailing_city, mailing_state, mailing_zip,
+                 email, email_1, email_2`,
+      [contactId, fn, ln, ownerType, mAddr, mCity, mState, mZip, t, e0, e1, e2]
     );
     if (!upd.rowCount) return res.status(404).json({ error: 'Owner not found.' });
     res.json({ ok: true, contact: upd.rows[0] });

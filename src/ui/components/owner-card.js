@@ -69,20 +69,37 @@ function scorePhone(ph) {
   return s;
 }
 
+// Pencil + trash icons for the per-phone-row Edit / Remove affordances.
+const _ICON_PENCIL = '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4 12.5-12.5z"/></svg>';
+const _ICON_TRASH  = '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/><path d="M10 11v6"/><path d="M14 11v6"/></svg>';
+
 function phoneRow(ph, isBest) {
   const tags = (ph.tags || []).map(t => phoneTagChip(ph.id, t)).join('');
   const bestPill = isBest
     ? `<span class="ocu-phone-best" title="Best phone to call — verified and most likely to reach the owner">★ Best</span>`
     : '';
+  // 2026-05-01: per-row Edit + Remove icon-buttons. Sit at the top-right
+  // of the phone card. Clicking Edit toggles an inline input over the
+  // number; clicking Remove confirms and DELETEs the phone via
+  // /records/phones/:id/delete.
   return `
-    <div class="ocu-phone-row${isBest ? ' is-best' : ''}" data-phone-id="${ph.id}">
+    <div class="ocu-phone-row${isBest ? ' is-best' : ''}" data-phone-id="${ph.id}" data-phone-number="${escHTML(ph.phone_number || '')}">
       <div class="ocu-phone-line">
-        <span class="ocu-phone-num">${escHTML(ph.phone_number || '')}</span>
+        <span class="ocu-phone-num" data-phone-num-display>${escHTML(ph.phone_number || '')}</span>
         <span class="ocu-phone-meta">
           ${bestPill}
           ${typeChip(ph.id, ph.phone_type)}
           ${statusPill(ph.id, ph.phone_status)}
         </span>
+        <span class="ocu-phone-row-actions">
+          <button type="button" class="ocu-phone-icon-btn" data-action="phone-edit" data-phone-id="${ph.id}" title="Edit phone number" aria-label="Edit phone number">${_ICON_PENCIL}</button>
+          <button type="button" class="ocu-phone-icon-btn ocu-phone-icon-btn-danger" data-action="phone-delete" data-phone-id="${ph.id}" title="Remove phone" aria-label="Remove phone">${_ICON_TRASH}</button>
+        </span>
+      </div>
+      <div class="ocu-phone-edit-form" hidden data-phone-id="${ph.id}">
+        <input type="tel" inputmode="tel" autocomplete="off" maxlength="20" class="ocu-input ocu-phone-edit-input" value="${escHTML(ph.phone_number || '')}" />
+        <button type="button" class="ocu-btn ocu-btn-primary ocu-btn-sm" data-action="phone-edit-save" data-phone-id="${ph.id}">Save</button>
+        <button type="button" class="ocu-btn ocu-btn-ghost ocu-btn-sm" data-action="phone-edit-cancel" data-phone-id="${ph.id}">Cancel</button>
       </div>
       <div class="ocu-phone-tags" data-phone-tags-for="${ph.id}">
         ${tags}
@@ -135,61 +152,61 @@ function ownerCard(opts = {}) {
   const mailingZip = contact.mailing_zip ? ` ${escHTML(contact.mailing_zip)}` : '';
   const mailing = mailingParts ? `${mailingParts}${mailingZip}` : '';
 
-  // 2026-05-01 user request: cap visible phones at 4 per owner card. The
-  // best-scoring phone is ALWAYS shown (pinned at index 0 of the cap) so
-  // the operator never has to scroll/expand to see the recommended dial.
-  // Remaining slots fill in original order. Hidden phones get a
-  // "View all N phones →" link to the owner profile where the full list
-  // lives.
-  const PHONE_CAP = 4;
+  // 2026-05-01 user request: show 2 phones visible by default. If more
+  // exist, an expand chevron next to the count chip reveals the rest
+  // INSIDE the same card (no link-out to a separate page). Best-scoring
+  // phone is always pinned to position 0 of the visible group.
+  const PHONE_VISIBLE = 2;
   let bestIdxAll = -1, bestScore = 0;
   for (let i = 0; i < phones.length; i++) {
     const s = scorePhone(phones[i]);
     if (s > bestScore) { bestScore = s; bestIdxAll = i; }
   }
-  let visiblePhones;
-  if (phones.length <= PHONE_CAP) {
-    visiblePhones = phones.slice();
+  // Reorder phones so the best phone is first, then fill the rest in
+  // original order. The first PHONE_VISIBLE entries become the visible
+  // group; the remainder are hidden behind the expand toggle.
+  let orderedPhones;
+  if (phones.length <= PHONE_VISIBLE || bestIdxAll < 0 || bestIdxAll < PHONE_VISIBLE) {
+    orderedPhones = phones.slice();
   } else {
-    // Always include the best phone, then fill the remaining slots in order
-    // (skipping best since we already added it).
-    visiblePhones = [];
-    if (bestIdxAll >= 0) visiblePhones.push(phones[bestIdxAll]);
-    for (let i = 0; i < phones.length && visiblePhones.length < PHONE_CAP; i++) {
+    orderedPhones = [phones[bestIdxAll]];
+    for (let i = 0; i < phones.length; i++) {
       if (i === bestIdxAll) continue;
-      visiblePhones.push(phones[i]);
+      orderedPhones.push(phones[i]);
     }
   }
-  const bestVisibleIdx = bestIdxAll >= 0
-    ? visiblePhones.findIndex(p => p === phones[bestIdxAll])
-    : -1;
-  const moreCount = Math.max(0, phones.length - visiblePhones.length);
-  const moreLink = moreCount > 0 && contact.id
-    ? `<a class="ocu-phones-more-link" href="/oculah/owners/${escHTML(String(contact.id))}">View all ${phones.length} phones →</a>`
-    : '';
-  const phonesHTML = visiblePhones.length
-    ? visiblePhones.map((p, i) => phoneRow(p, i === bestVisibleIdx)).join('')
-    : `<div class="ocu-phones-empty">No phones on record.</div>`;
+  const visibleGroup = orderedPhones.slice(0, PHONE_VISIBLE);
+  const hiddenGroup  = orderedPhones.slice(PHONE_VISIBLE);
+  const bestInOrdered = orderedPhones.findIndex(p => p === phones[bestIdxAll]);
 
-  // With the 4-phone cap the per-card phone area is bounded — drop the
-  // overflow scroll cap (manyPhones gate). Keep the data-many attribute
-  // off; CSS no longer needs to special-case tall owner cards.
-  const manyPhones = false;
+  const visibleHTML = visibleGroup.length
+    ? visibleGroup.map((p, i) => phoneRow(p, i === bestInOrdered)).join('')
+    : `<div class="ocu-phones-empty">No phones on record.</div>`;
+  const hiddenHTML = hiddenGroup.length
+    ? hiddenGroup.map((p, i) => phoneRow(p, (i + PHONE_VISIBLE) === bestInOrdered)).join('')
+    : '';
 
   const profileHref = contact.id ? `/oculah/owners/${escHTML(String(contact.id))}` : '';
   const profileLink = profileHref
     ? `<a class="ocu-owner-profile-link" href="${profileHref}" title="Open ${escHTML(contact.first_name || '')} ${escHTML(contact.last_name || '')}'s profile">View profile <span aria-hidden="true">→</span></a>`
     : '';
 
-  // 2026-05-01 redesign per user spec: 4-column horizontal layout with
-  // FIXED column widths so cards line up vertically across N owners.
+  // 2026-05-01 latest spec: 3-column row — Owner | Mailing | Phones.
+  // The +Add phone button + expand-more chevron live INSIDE the phones
+  // section header (right side) instead of being their own column. This
+  // simplifies the visual hierarchy ("phones" is one bounded section) and
+  // means the chevron is always adjacent to the phones it reveals.
   //   Col 1 (200px): owner number + PRIMARY + name + View profile
   //   Col 2 (220px): mailing label + address (or "—")
-  //   Col 3 (1fr) : phones label + count + phone list
-  //   Col 4 (auto): "+ Add phone" button pinned right
-  // align-items:start so all four columns top-align even when mailing
-  // wraps or phone list is long. Caller passes label dynamically (Owner 1,
-  // Owner 2, Owner N+1) so any number of owners renders correctly.
+  //   Col 3 (1fr) : phones header (label + count + expand + Add phone)
+  //                 + visible phones (max 2) + collapsible hidden phones
+  const expandToggle = hiddenGroup.length
+    ? `<button type="button" class="ocu-phones-expand" data-action="phones-toggle" aria-expanded="false" title="Show ${hiddenGroup.length} more phone${hiddenGroup.length === 1 ? '' : 's'}"><span class="ocu-phones-expand-text">+${hiddenGroup.length} more</span><span class="ocu-phones-expand-icon" aria-hidden="true"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"/></svg></span></button>`
+    : '';
+  const addPhoneBtn = contact.id
+    ? `<button type="button" class="ocu-owner-add-phone-btn" data-action="add-phone" data-contact-id="${escHTML(String(contact.id))}" title="Add a new phone for this contact">+ Add phone</button>`
+    : '';
+
   return `
     <div class="ocu-card ocu-owner-card">
       <div class="ocu-owner-row">
@@ -210,17 +227,17 @@ function ownerCard(opts = {}) {
           <div class="ocu-owner-section-value">${mailing || '<span class="ocu-text-3">—</span>'}</div>
         </div>
 
-        <div class="ocu-owner-col-phones" data-contact-id="${escHTML(String(contact.id || ''))}"${manyPhones ? ' data-many="true"' : ''}>
+        <div class="ocu-owner-col-phones" data-contact-id="${escHTML(String(contact.id || ''))}">
           <div class="ocu-owner-section-label">
             <span class="ocu-owner-section-icon">${_ICON_PHN}</span>Phones
             <span class="ocu-owner-count-chip">${phones.length}</span>
+            <span class="ocu-phones-header-actions">
+              ${expandToggle}
+              ${addPhoneBtn}
+            </span>
           </div>
-          <div class="ocu-phones-grid">${phonesHTML}</div>
-          ${moreLink}
-        </div>
-
-        <div class="ocu-owner-col-actions">
-          ${contact.id ? `<button type="button" class="ocu-owner-add-phone-btn" data-action="add-phone" data-contact-id="${escHTML(String(contact.id))}" title="Add a new phone for this contact">+ Add phone</button>` : ''}
+          <div class="ocu-phones-grid">${visibleHTML}</div>
+          ${hiddenHTML ? `<div class="ocu-phones-grid ocu-phones-hidden" hidden data-phones-hidden>${hiddenHTML}</div>` : ''}
         </div>
       </div>
     </div>`;

@@ -1630,21 +1630,21 @@ button.ocu-kpi,
   padding: 24px 28px;
 }
 
-/* 4-column row inside each card.
-   Col 1 fixed 200px (identity), Col 2 fixed 220px (mailing), Col 3 1fr
-   (phones — takes remaining width), Col 4 auto (+Add phone button).
-   align-items:start so every column anchors to the top — Col 1 and Col 4
-   never visually drift down when Col 2 wraps to 2 lines or Col 3 has many
-   phones. 24px horizontal gap between columns. */
+/* 3-column row inside each card (latest spec 2026-05-01).
+   Col 1 fixed 200px (Owner identity), Col 2 fixed 220px (mailing),
+   Col 3 1fr (phones — takes remaining width). The +Add phone button +
+   expand-more chevron live INSIDE the phones header, not as a 4th column.
+   align-items:start so identity and mailing anchor to the top — neither
+   drifts down when phones grows tall. 24px horizontal gap between columns. */
 .ocu-owner-row {
   display: grid;
-  grid-template-columns: 200px 220px 1fr auto;
+  grid-template-columns: 200px 220px 1fr;
   gap: 24px;
   align-items: start;
 }
 @media (max-width: 1024px) {
   .ocu-owner-row {
-    grid-template-columns: 200px 1fr auto;
+    grid-template-columns: 200px 1fr;
   }
   .ocu-owner-col-mailing { grid-column: 1 / -1; order: 3; padding-top: 8px; border-top: 1px solid var(--ocu-border); margin-top: 4px; }
 }
@@ -1652,7 +1652,6 @@ button.ocu-kpi,
   .ocu-owner-row {
     grid-template-columns: 1fr;
   }
-  .ocu-owner-col-actions { justify-self: start; }
 }
 
 /* Col 1: identity — avatar + label/name/link stacked vertically next to it */
@@ -1742,15 +1741,54 @@ button.ocu-kpi,
 /* Mailing + phones columns share the same min-width:0 + label styling */
 .ocu-owner-col-mailing,
 .ocu-owner-col-phones { min-width: 0; }
-.ocu-owner-col-actions {
-  /* Col 4 — the +Add phone button sits flush to the right edge of the
-     row. justify-self:end isn't needed (auto column already shrinks to
-     content) but a small top offset visually centers the button against
-     the section label rows in cols 2 + 3. */
-  display: flex;
-  align-items: flex-start;
-  padding-top: 2px;
+
+/* Phones-section header: label/icon/count on the left, expand toggle +
+   +Add phone button on the right. .ocu-phones-header-actions wraps the
+   right-side controls so they stay together when the label wraps. */
+.ocu-phones-header-actions {
+  margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
 }
+
+/* "+N more" expand toggle next to the count chip. Reveals .ocu-phones-hidden
+   on click. Chevron rotates 180deg when expanded (.is-open). */
+.ocu-phones-expand {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 8px;
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: none;
+  letter-spacing: 0;
+  border-radius: 6px;
+  border: 1px solid var(--ocu-border);
+  background: var(--ocu-surface);
+  color: var(--ocu-text-2);
+  cursor: pointer;
+  font-family: inherit;
+  transition: background 0.12s, border-color 0.12s, color 0.12s;
+}
+.ocu-phones-expand:hover {
+  background: var(--ocu-bg);
+  border-color: var(--ocu-border-strong);
+  color: var(--ocu-text-1);
+}
+.ocu-phones-expand-icon {
+  display: inline-flex;
+  transition: transform 0.18s ease;
+}
+.ocu-phones-expand.is-open .ocu-phones-expand-icon { transform: rotate(180deg); }
+.ocu-phones-expand-text { white-space: nowrap; }
+
+/* The collapsible second-half phones grid. When .is-open is added by JS
+   the [hidden] attribute is removed and the grid renders; CSS just needs
+   to give it a small top margin so it visually hangs off the visible
+   group rather than abutting it. */
+.ocu-phones-hidden { margin-top: var(--ocu-space-3); }
 /* Legacy alias kept for any in-flight HTML still referencing the old class */
 .ocu-owner-section { min-width: 0; }
 .ocu-owner-section-label {
@@ -2341,6 +2379,59 @@ input.ocu-cd-rule-num { flex: 0 0 72px; width: 72px; text-align: center; }
   align-items: center;
   gap: 6px;
   flex-wrap: wrap;
+}
+
+/* Edit/Remove icon-buttons on each phone row. Sit at the end of the
+   .ocu-phone-line and stay invisible until the row is hovered (they
+   don't compete with the number/pills for visual weight in the resting
+   state). */
+.ocu-phone-row-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  margin-left: auto;
+  opacity: 0;
+  transition: opacity 0.12s;
+}
+.ocu-phone-row:hover .ocu-phone-row-actions,
+.ocu-phone-row:focus-within .ocu-phone-row-actions { opacity: 1; }
+.ocu-phone-icon-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border: none;
+  background: transparent;
+  color: var(--ocu-text-3);
+  border-radius: 5px;
+  cursor: pointer;
+  transition: background 0.12s, color 0.12s;
+}
+.ocu-phone-icon-btn:hover {
+  background: var(--ocu-surface);
+  color: var(--ocu-text-1);
+}
+.ocu-phone-icon-btn-danger:hover {
+  background: #fee2e2;
+  color: #b91c1c;
+}
+
+/* Inline edit form per phone row — toggled by .ocu-phone-icon-btn[data-action=phone-edit]. */
+.ocu-phone-edit-form {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 4px 0 6px;
+}
+.ocu-phone-edit-form[hidden] { display: none; }
+.ocu-phone-edit-input {
+  flex: 1;
+  min-width: 0;
+  padding: 6px 10px !important;
+  font-size: 13px !important;
+  font-family: var(--ocu-mono) !important;
 }
 .ocu-phone-tags {
   display: flex;

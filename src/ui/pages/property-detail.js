@@ -194,6 +194,18 @@ function propertyDetail(data) {
         <label class="ocu-form-label">Mailing ZIP</label>
         <input type="text" name="mailing_zip" value="${escHTML(o.mailing_zip || '')}" maxlength="10" class="ocu-input">
       </div>
+      <div class="ocu-form-field" style="grid-column: 1 / -1">
+        <label class="ocu-form-label">Email 1</label>
+        <input type="email" name="email" value="${escHTML(o.email || '')}" maxlength="255" class="ocu-input" autocomplete="off">
+      </div>
+      <div class="ocu-form-field">
+        <label class="ocu-form-label">Email 2</label>
+        <input type="email" name="email_1" value="${escHTML(o.email_1 || '')}" maxlength="255" class="ocu-input" autocomplete="off">
+      </div>
+      <div class="ocu-form-field">
+        <label class="ocu-form-label">Email 3</label>
+        <input type="email" name="email_2" value="${escHTML(o.email_2 || '')}" maxlength="255" class="ocu-input" autocomplete="off">
+      </div>
     </div>`;
 
   const editOwnersDialog = `
@@ -471,7 +483,7 @@ function propertyDetail(data) {
     // pipeline change, etc. The user reported "phone tag is broken" on
     // 2026-04-29; this was the root cause for all of them. Move to extraHead
     // with `defer` so it still runs after the DOM is parsed.
-    extraHead: '<script src="/oculah-static/detail-actions.js?v=10" defer></script>',
+    extraHead: '<script src="/oculah-static/detail-actions.js?v=11" defer></script>',
   });
 }
 
