@@ -137,20 +137,53 @@ async function dedupByPhone(mode = 'report', opts = {}) {
 
   // Step 1: insert "merged" links first. If a loser had primary_contact=true
   // for a property and the keeper didn't have a link at all, we want the
-  // keeper to inherit that primary flag. We route through a stage query:
-  //   for each (loser_id, property_id, primary) link, if keeper has no link
-  //   to this property, insert one carrying the loser's flags; otherwise
-  //   leave alone (ON CONFLICT DO NOTHING).
+  // keeper to inherit that primary flag.
+  //
+  // The partial unique index idx_property_contacts_single_primary enforces
+  // "at most one primary per property". Two losers that both held primary
+  // on the same property — mapping to two different keepers — would each
+  // insert a primary row and trip the index. Resolve by demoting:
+  //   • if multiple rows in this batch claim primary on the same property,
+  //     the older keeper (lowest contact_id) wins; the rest insert as
+  //     primary_contact=false
+  //   • if the property already has a non-loser primary, every batch row
+  //     for that property demotes to false
   const insertRes = await query(`
+    WITH src AS (
+      SELECT pc.tenant_id, pc.property_id,
+             (CASE pc.contact_id ${caseSql} END)::int AS keeper_id,
+             pc.role, pc.primary_contact, pc.created_at
+        FROM property_contacts pc
+       WHERE pc.contact_id = ANY($1::int[])
+    ),
+    collapsed AS (
+      SELECT tenant_id, property_id, keeper_id,
+             MIN(role) AS role,
+             BOOL_OR(primary_contact) AS primary_contact,
+             MIN(created_at) AS created_at
+        FROM src
+       GROUP BY tenant_id, property_id, keeper_id
+    ),
+    ranked AS (
+      SELECT c.*,
+             ROW_NUMBER() OVER (
+               PARTITION BY property_id
+               ORDER BY primary_contact DESC, keeper_id ASC
+             ) AS rn,
+             EXISTS (
+               SELECT 1 FROM property_contacts ep
+                WHERE ep.property_id = c.property_id
+                  AND ep.primary_contact = true
+                  AND ep.contact_id <> c.keeper_id
+                  AND NOT (ep.contact_id = ANY($1::int[]))
+             ) AS existing_primary
+        FROM collapsed c
+    )
     INSERT INTO property_contacts (tenant_id, property_id, contact_id, role, primary_contact, created_at)
-    SELECT pc.tenant_id,
-           pc.property_id,
-           (CASE pc.contact_id ${caseSql} END)::int AS keeper_id,
-           pc.role,
-           pc.primary_contact,
-           pc.created_at
-      FROM property_contacts pc
-     WHERE pc.contact_id = ANY($1::int[])
+    SELECT tenant_id, property_id, keeper_id, role,
+           (primary_contact AND rn = 1 AND NOT existing_primary) AS primary_contact,
+           created_at
+      FROM ranked
     ON CONFLICT (property_id, contact_id) DO NOTHING
   `, [losers]);
   stats.linksMoved = insertRes.rowCount;
@@ -278,16 +311,46 @@ async function dedupByNameAddress(mode = 'report', opts = {}) {
     .map(([loser, keeper]) => `WHEN ${loser} THEN ${keeper}`)
     .join(' ');
 
+  // Same demote-on-collision logic as the phone-dedup merge above —
+  // see that comment block for the why. Without it the partial unique
+  // index idx_property_contacts_single_primary trips when two losers both
+  // held primary on the same property.
   const insertRes = await query(`
+    WITH src AS (
+      SELECT pc.tenant_id, pc.property_id,
+             (CASE pc.contact_id ${caseSql} END)::int AS keeper_id,
+             pc.role, pc.primary_contact, pc.created_at
+        FROM property_contacts pc
+       WHERE pc.contact_id = ANY($1::int[])
+    ),
+    collapsed AS (
+      SELECT tenant_id, property_id, keeper_id,
+             MIN(role) AS role,
+             BOOL_OR(primary_contact) AS primary_contact,
+             MIN(created_at) AS created_at
+        FROM src
+       GROUP BY tenant_id, property_id, keeper_id
+    ),
+    ranked AS (
+      SELECT c.*,
+             ROW_NUMBER() OVER (
+               PARTITION BY property_id
+               ORDER BY primary_contact DESC, keeper_id ASC
+             ) AS rn,
+             EXISTS (
+               SELECT 1 FROM property_contacts ep
+                WHERE ep.property_id = c.property_id
+                  AND ep.primary_contact = true
+                  AND ep.contact_id <> c.keeper_id
+                  AND NOT (ep.contact_id = ANY($1::int[]))
+             ) AS existing_primary
+        FROM collapsed c
+    )
     INSERT INTO property_contacts (tenant_id, property_id, contact_id, role, primary_contact, created_at)
-    SELECT pc.tenant_id,
-           pc.property_id,
-           (CASE pc.contact_id ${caseSql} END)::int AS keeper_id,
-           pc.role,
-           pc.primary_contact,
-           pc.created_at
-      FROM property_contacts pc
-     WHERE pc.contact_id = ANY($1::int[])
+    SELECT tenant_id, property_id, keeper_id, role,
+           (primary_contact AND rn = 1 AND NOT existing_primary) AS primary_contact,
+           created_at
+      FROM ranked
     ON CONFLICT (property_id, contact_id) DO NOTHING
   `, [losers]);
   stats.linksMoved = insertRes.rowCount;

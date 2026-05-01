@@ -3,6 +3,13 @@
 
 const ENTRIES = [
   {
+    date: 'May 1, 2026 (phone-dedup boot crash)',
+    title: 'dedupByPhone() no longer aborts when two losers held primary on the same property',
+    items: [
+      { tag: 'fix', text: 'The boot-time phone dedup (and the parallel name+address dedup) was tripping the partial unique index idx_property_contacts_single_primary with "duplicate key value violates ... Key (property_id)=(841) already exists." whenever two duplicate contacts both flagged primary_contact=true for the same property and got merged onto two different keepers. The merge INSERT now wraps in a CTE that demotes per-property: among rows in the same merge batch, the older keeper (lowest contact_id) keeps primary; if the property already has a non-loser primary, every new row demotes to primary_contact=false. The originally-aborted merges complete on the next boot.' },
+    ],
+  },
+  {
     date: 'May 1, 2026 (dashboard lead-count delta)',
     title: 'Dashboard "leads vs last week" delta now actually computes',
     items: [
