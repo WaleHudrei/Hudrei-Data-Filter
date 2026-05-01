@@ -135,19 +135,46 @@ function ownerCard(opts = {}) {
   const mailingZip = contact.mailing_zip ? ` ${escHTML(contact.mailing_zip)}` : '';
   const mailing = mailingParts ? `${mailingParts}${mailingZip}` : '';
 
-  let bestIdx = -1, bestScore = 0;
+  // 2026-05-01 user request: cap visible phones at 4 per owner card. The
+  // best-scoring phone is ALWAYS shown (pinned at index 0 of the cap) so
+  // the operator never has to scroll/expand to see the recommended dial.
+  // Remaining slots fill in original order. Hidden phones get a
+  // "View all N phones →" link to the owner profile where the full list
+  // lives.
+  const PHONE_CAP = 4;
+  let bestIdxAll = -1, bestScore = 0;
   for (let i = 0; i < phones.length; i++) {
     const s = scorePhone(phones[i]);
-    if (s > bestScore) { bestScore = s; bestIdx = i; }
+    if (s > bestScore) { bestScore = s; bestIdxAll = i; }
   }
-  const phonesHTML = phones.length
-    ? phones.map((p, i) => phoneRow(p, i === bestIdx)).join('')
+  let visiblePhones;
+  if (phones.length <= PHONE_CAP) {
+    visiblePhones = phones.slice();
+  } else {
+    // Always include the best phone, then fill the remaining slots in order
+    // (skipping best since we already added it).
+    visiblePhones = [];
+    if (bestIdxAll >= 0) visiblePhones.push(phones[bestIdxAll]);
+    for (let i = 0; i < phones.length && visiblePhones.length < PHONE_CAP; i++) {
+      if (i === bestIdxAll) continue;
+      visiblePhones.push(phones[i]);
+    }
+  }
+  const bestVisibleIdx = bestIdxAll >= 0
+    ? visiblePhones.findIndex(p => p === phones[bestIdxAll])
+    : -1;
+  const moreCount = Math.max(0, phones.length - visiblePhones.length);
+  const moreLink = moreCount > 0 && contact.id
+    ? `<a class="ocu-phones-more-link" href="/oculah/owners/${escHTML(String(contact.id))}">View all ${phones.length} phones →</a>`
+    : '';
+  const phonesHTML = visiblePhones.length
+    ? visiblePhones.map((p, i) => phoneRow(p, i === bestVisibleIdx)).join('')
     : `<div class="ocu-phones-empty">No phones on record.</div>`;
 
-  // When a contact has many phones we cap the visible height and scroll.
-  // Threshold tuned to the typical owner-card width (8 rows ≈ 320px tall
-  // — that's the page's single tallest reasonable owner block).
-  const manyPhones = phones.length > 8;
+  // With the 4-phone cap the per-card phone area is bounded — drop the
+  // overflow scroll cap (manyPhones gate). Keep the data-many attribute
+  // off; CSS no longer needs to special-case tall owner cards.
+  const manyPhones = false;
 
   const profileHref = contact.id ? `/oculah/owners/${escHTML(String(contact.id))}` : '';
   const profileLink = profileHref
@@ -189,6 +216,7 @@ function ownerCard(opts = {}) {
             <span class="ocu-owner-count-chip">${phones.length}</span>
           </div>
           <div class="ocu-phones-grid">${phonesHTML}</div>
+          ${moreLink}
         </div>
 
         <div class="ocu-owner-col-actions">

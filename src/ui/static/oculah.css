@@ -1489,12 +1489,12 @@ button.ocu-kpi,
 .ocu-owner-grid {
   display: grid;
   grid-template-columns: 1fr;
-  gap: 16px;
+  gap: 20px;
   margin-top: var(--ocu-space-4);
 }
 .ocu-owner-card {
   /* inherits .ocu-card base */
-  padding: 20px 24px;
+  padding: 24px 28px;
 }
 
 /* 4-column row inside each card.
@@ -1701,18 +1701,37 @@ button.ocu-kpi,
   justify-content: center;
 }
 
-/* PHONES GRID — fills the right (phones) column of the 3-col owner
-   layout. minmax(min(180px, 100%), 1fr) packs 2-3 columns inside the
-   ~600px phones column, and degrades gracefully when the column
-   collapses on narrow viewports.
-   2026-05-01: gap bumped --ocu-space-2 (8px) -> --ocu-space-3 (12px)
-   so adjacent phone cards have visible separation, not a thin line. */
+/* PHONES GRID — fills the right (phones) column of the 4-col owner
+   layout. With the per-card cap of 4 phones (owner-card.js), a 2-col
+   grid renders the best case (4 phones) as a clean 2x2 block. 2-3 phones
+   render as a partial 2-col row. 1 phone takes the full grid width.
+   On narrow viewports the parent column collapses, so the grid still
+   renders 2 columns when there's room, 1 column when not.
+   2026-05-01 follow-up: switched from `auto-fill minmax(180px, 1fr)`
+   (which collapsed to 1 column when the parent track narrowed) to a
+   fixed 2-col grid so phones always render side-by-side instead of
+   stacking vertically. */
 .ocu-phones-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(min(180px, 100%), 1fr));
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: var(--ocu-space-3);
   min-width: 0;
 }
+@media (max-width: 760px) {
+  .ocu-phones-grid { grid-template-columns: 1fr; }
+}
+
+/* "View all N phones →" link below the phones grid when more than the
+   per-card cap (4) exist. Sits flush-left under the grid. */
+.ocu-phones-more-link {
+  display: inline-block;
+  margin-top: var(--ocu-space-2);
+  font-size: 12.5px;
+  font-weight: 500;
+  color: var(--ocu-accent);
+  text-decoration: none;
+}
+.ocu-phones-more-link:hover { text-decoration: underline; }
 .ocu-phones-grid > .ocu-phone-row {
   min-width: 0;
 }
