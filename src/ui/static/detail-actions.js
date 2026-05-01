@@ -438,7 +438,90 @@
       }
       return;
     }
+
+    // ── Edit owners dialog: open / close / remove / make-primary ───────────
+    // Add owner via the dialog's form is handled by an explicit submit
+    // listener (see below) — not delegation — so we can use form.elements
+    // directly and call preventDefault cleanly.
+    if (action === 'open-edit-owners') {
+      const dlg = document.getElementById('ocu-edit-owners-dialog');
+      if (dlg && dlg.showModal) dlg.showModal();
+      return;
+    }
+    if (action === 'close-edit-owners') {
+      const dlg = document.getElementById('ocu-edit-owners-dialog');
+      if (dlg && dlg.close) dlg.close();
+      return;
+    }
+    if (action === 'owner-remove') {
+      e.stopPropagation();
+      const propertyId = target.dataset.propertyId;
+      const contactId  = target.dataset.contactId;
+      if (!propertyId || !contactId) return;
+      if (!window.confirm('Remove this owner from the property? Their phones go with them. If they own no other properties they\'ll also be deleted as a contact.')) return;
+      target.disabled = true;
+      target.textContent = 'Removing…';
+      try {
+        await jpost('/records/' + propertyId + '/owner/' + contactId, null, 'DELETE');
+        toast('Owner removed', false);
+        // Full reload — keeps owner_portfolio_counts MV, "first owner"
+        // subqueries, and the Records list owner column all in sync with
+        // the DB. Re-rendering the cards client-side would risk drift.
+        setTimeout(() => window.location.reload(), 300);
+      } catch (err) {
+        target.disabled = false;
+        target.textContent = 'Remove';
+        toast('Failed to remove owner: ' + err.message, true);
+      }
+      return;
+    }
+    if (action === 'owner-make-primary') {
+      e.stopPropagation();
+      const propertyId = target.dataset.propertyId;
+      const contactId  = target.dataset.contactId;
+      if (!propertyId || !contactId) return;
+      target.disabled = true;
+      target.textContent = 'Saving…';
+      try {
+        await jpost('/records/' + propertyId + '/owner/' + contactId + '/primary');
+        toast('Primary owner updated', false);
+        setTimeout(() => window.location.reload(), 300);
+      } catch (err) {
+        target.disabled = false;
+        target.textContent = 'Make primary';
+        toast('Failed to update primary: ' + err.message, true);
+      }
+      return;
+    }
   }, false);
+
+  // ─── Edit owners — Add owner form submit ────────────────────────────────
+  // Wired here (not via delegation) so we can preventDefault and read the
+  // form via .elements without ambiguity. Posts to /records/:id/owner and
+  // reloads on success.
+  document.addEventListener('submit', async function(e) {
+    const form = e.target;
+    if (!form || form.id !== 'ocu-edit-owners-add-form') return;
+    e.preventDefault();
+    const propertyId = form.dataset.propertyId;
+    const data = {};
+    form.querySelectorAll('input, select').forEach(el => {
+      if (el.name) data[el.name] = el.value;
+    });
+    const fn = (data.first_name || '').trim();
+    const ln = (data.last_name  || '').trim();
+    if (!fn && !ln) { toast('Provide at least a first or last name', true); return; }
+    const submitBtn = form.querySelector('button[type="submit"]');
+    if (submitBtn) { submitBtn.disabled = true; submitBtn.textContent = 'Adding…'; }
+    try {
+      await jpost('/records/' + propertyId + '/owner', data);
+      toast('Owner added', false);
+      setTimeout(() => window.location.reload(), 300);
+    } catch (err) {
+      if (submitBtn) { submitBtn.disabled = false; submitBtn.textContent = 'Add owner'; }
+      toast('Failed to add owner: ' + err.message, true);
+    }
+  });
 
   // ─── Property note add (form submit handler exposed globally so the
   //     onsubmit attribute can call it) ────────────────────────────────────

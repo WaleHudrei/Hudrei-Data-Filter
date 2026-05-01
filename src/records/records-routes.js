@@ -742,17 +742,23 @@ router.post('/:id(\\d+)/edit-fields', requireAuth, async (req, res) => {
   }
 });
 
-// ── Add an owner (primary contact) to a property (2026-04-29) ──────────────
-// User chose Option A for the auto-owner feature: do NOT auto-create
-// placeholder rows. Instead, when a property has no primary contact, the
-// detail page renders an inline "Add owner" form posting here.
+// ── Add an owner to a property (2026-04-29, extended 2026-05-01) ──────────
+// Originally only added a PRIMARY contact when none existed (returned 409
+// otherwise). 2026-05-01: extended to also accept secondary (co-owner)
+// adds via the Edit Owners dialog. The first owner on a property is
+// always primary; subsequent adds are secondary by default. The DB has a
+// partial-unique-index `idx_property_contacts_single_primary` ensuring at
+// most one primary per property — relied on for correctness here.
 //
 // Shape: POST /records/:id/owner
 //   body: { first_name, last_name, mailing_address?, mailing_city?,
 //           mailing_state?, mailing_zip?, owner_type? }
-// Creates ONE contact row + ONE property_contacts row (primary_contact=true).
-// Idempotent on (tenant_id, property_id) — if a primary contact already
-// exists, returns 409 so the UI can refresh.
+// Behavior:
+//   - If the property has no primary_contact link, creates one with
+//     primary_contact=true.
+//   - Otherwise creates a NEW contact row + property_contacts link with
+//     primary_contact=false.
+// Returns: { ok: true, contact: {...}, primary: boolean }
 router.post('/:id(\\d+)/owner', requireAuth, async (req, res) => {
   try {
     const propertyId = parseInt(req.params.id, 10);
@@ -762,12 +768,13 @@ router.post('/:id(\\d+)/owner', requireAuth, async (req, res) => {
     const own = await query(`SELECT 1 FROM properties WHERE id = $1 AND tenant_id = $2`, [propertyId, t]);
     if (!own.rowCount) return res.status(404).json({ error: 'Property not found.' });
 
-    // Refuse to overwrite an existing primary contact — caller should refresh.
+    // Decide primary vs secondary based on existing state. If a primary
+    // already exists, this add becomes a co-owner (primary_contact=false).
     const existing = await query(
       `SELECT 1 FROM property_contacts WHERE property_id = $1 AND tenant_id = $2 AND primary_contact = true LIMIT 1`,
       [propertyId, t]
     );
-    if (existing.rowCount) return res.status(409).json({ error: 'This property already has a primary owner. Refresh and edit instead.' });
+    const willBePrimary = !existing.rowCount;
 
     const fn = String(req.body.first_name || '').trim().slice(0, 100);
     const ln = String(req.body.last_name  || '').trim().slice(0, 100);
@@ -814,11 +821,11 @@ router.post('/:id(\\d+)/owner', requireAuth, async (req, res) => {
       const contact = cRes.rows[0];
       await client.query(
         `INSERT INTO property_contacts (tenant_id, property_id, contact_id, primary_contact, role)
-         VALUES ($1, $2, $3, true, 'owner')`,
-        [t, propertyId, contact.id]
+         VALUES ($1, $2, $3, $4, 'owner')`,
+        [t, propertyId, contact.id, willBePrimary]
       );
       await client.query('COMMIT');
-      res.json({ ok: true, contact });
+      res.json({ ok: true, contact, primary: willBePrimary });
     } catch (txErr) {
       await client.query('ROLLBACK');
       throw txErr;
@@ -836,7 +843,13 @@ router.post('/:id(\\d+)/owner', requireAuth, async (req, res) => {
 // the contact row itself stays in case it's linked to other properties; if
 // it's now orphaned (no remaining links) we delete it so the contacts
 // dashboard count doesn't drift upward over time.
+//
+// 2026-05-01: when the deleted link was the primary AND co-owners remain,
+// promote the lowest-id remaining co-owner to primary so the property
+// doesn't end up with N co-owners and no primary (which would drop it
+// from owner_portfolio_counts MV + every "first owner" subquery).
 router.delete('/:id(\\d+)/owner/:contactId(\\d+)', requireAuth, async (req, res) => {
+  const client = await pool.connect();
   try {
     const propertyId = parseInt(req.params.id, 10);
     const contactId  = parseInt(req.params.contactId, 10);
@@ -847,11 +860,40 @@ router.delete('/:id(\\d+)/owner/:contactId(\\d+)', requireAuth, async (req, res)
     const own = await query(`SELECT 1 FROM properties WHERE id = $1 AND tenant_id = $2`, [propertyId, t]);
     if (!own.rowCount) return res.status(404).json({ error: 'Property not found.' });
 
-    const link = await query(
+    await client.query('BEGIN');
+
+    const link = await client.query(
       `DELETE FROM property_contacts WHERE property_id = $1 AND contact_id = $2 AND tenant_id = $3 RETURNING primary_contact`,
       [propertyId, contactId, t]
     );
-    if (!link.rowCount) return res.status(404).json({ error: 'This contact is not linked to this property.' });
+    if (!link.rowCount) {
+      await client.query('ROLLBACK');
+      return res.status(404).json({ error: 'This contact is not linked to this property.' });
+    }
+    const wasPrimary = !!link.rows[0]?.primary_contact;
+
+    // If we removed the primary AND co-owners still exist, promote the
+    // lowest-id co-owner to primary. The partial unique index allows only
+    // one primary per property at a time; we just deleted that row so this
+    // UPDATE is safe. Without this step the property has zero primaries
+    // until manual intervention.
+    let promotedContactId = null;
+    if (wasPrimary) {
+      const promote = await client.query(
+        `UPDATE property_contacts
+            SET primary_contact = true
+          WHERE id = (
+            SELECT id FROM property_contacts
+             WHERE property_id = $1 AND tenant_id = $2
+             ORDER BY id ASC LIMIT 1
+          )
+          RETURNING contact_id`,
+        [propertyId, t]
+      );
+      if (promote.rowCount) promotedContactId = promote.rows[0].contact_id;
+    }
+
+    await client.query('COMMIT');
 
     // Was this contact's only link? If so, clean up the orphan + their phones.
     // ON DELETE CASCADE on phones.contact_id handles the phone rows for us.
@@ -865,10 +907,65 @@ router.delete('/:id(\\d+)/owner/:contactId(\\d+)', requireAuth, async (req, res)
       orphanDeleted = del.rowCount > 0;
     }
 
-    res.json({ ok: true, removed_link: true, orphan_deleted: orphanDeleted, was_primary: !!link.rows[0]?.primary_contact });
+    res.json({
+      ok: true,
+      removed_link: true,
+      orphan_deleted: orphanDeleted,
+      was_primary: wasPrimary,
+      promoted_contact_id: promotedContactId,
+    });
   } catch (e) {
+    try { await client.query('ROLLBACK'); } catch (_) {}
     console.error('[records/:id/owner DELETE]', e);
     res.status(500).json({ error: e.message });
+  } finally {
+    client.release();
+  }
+});
+
+// ── Set primary owner (2026-05-01) ──────────────────────────────────────
+// Re-assigns primary_contact=true to a specific contact for a property,
+// and sets all other links on the same property to false. Two-step UPDATE
+// inside a transaction so the partial-unique-index never sees two rows
+// with primary=true simultaneously: first demote the current primary, then
+// promote the target.
+router.post('/:id(\\d+)/owner/:contactId(\\d+)/primary', requireAuth, async (req, res) => {
+  const client = await pool.connect();
+  try {
+    const propertyId = parseInt(req.params.id, 10);
+    const contactId  = parseInt(req.params.contactId, 10);
+    if (!Number.isFinite(propertyId) || !Number.isFinite(contactId)) {
+      return res.status(400).json({ error: 'Invalid property or contact id.' });
+    }
+    const t = req.tenantId;
+    const own = await query(`SELECT 1 FROM properties WHERE id = $1 AND tenant_id = $2`, [propertyId, t]);
+    if (!own.rowCount) return res.status(404).json({ error: 'Property not found.' });
+
+    await client.query('BEGIN');
+    // Demote current primary first to avoid colliding with the partial-unique index.
+    await client.query(
+      `UPDATE property_contacts SET primary_contact = false
+         WHERE property_id = $1 AND tenant_id = $2 AND primary_contact = true`,
+      [propertyId, t]
+    );
+    const promote = await client.query(
+      `UPDATE property_contacts SET primary_contact = true
+         WHERE property_id = $1 AND tenant_id = $2 AND contact_id = $3
+         RETURNING id`,
+      [propertyId, t, contactId]
+    );
+    if (!promote.rowCount) {
+      await client.query('ROLLBACK');
+      return res.status(404).json({ error: 'This contact is not linked to this property.' });
+    }
+    await client.query('COMMIT');
+    res.json({ ok: true });
+  } catch (e) {
+    try { await client.query('ROLLBACK'); } catch (_) {}
+    console.error('[records/:id/owner/:contactId/primary]', e);
+    res.status(500).json({ error: e.message });
+  } finally {
+    client.release();
   }
 });
 

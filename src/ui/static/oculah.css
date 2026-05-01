@@ -1410,20 +1410,91 @@ button.ocu-kpi,
    owners on wide viewports; that squeezed each into half-width and
    forced the phones column to collapse to a single phone-card column.
    User feedback: "one up and one down, not right and left". */
+/* OWNERS SECTION HEADER (above the owner cards stack).
+   Contains a "Owners · N" title on the left and an "Edit owners" button
+   on the right. Sits between the property summary card and the owner
+   stack. Margin-bottom 0 so the .ocu-owner-grid (which has its own
+   margin-top:--ocu-space-4) provides the gap below. */
+.ocu-owners-section-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-top: var(--ocu-space-5);
+  margin-bottom: 4px;
+  padding: 0 4px;
+}
+.ocu-owners-section-title {
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--ocu-text-1);
+  letter-spacing: -0.005em;
+}
+
+/* EDIT OWNERS DIALOG — list of existing owners with Make-primary +
+   Remove per row, plus an Add-owner form below a divider. */
+.ocu-dialog-edit-owners { width: min(640px, 92vw); }
+.ocu-edit-owners-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.ocu-edit-owner-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 10px 14px;
+  background: var(--ocu-surface);
+  border: 1px solid var(--ocu-border);
+  border-radius: 8px;
+}
+.ocu-edit-owner-info { min-width: 0; }
+.ocu-edit-owner-label {
+  font-size: 11px;
+  color: var(--ocu-text-3);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  font-weight: 600;
+  margin-bottom: 2px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.ocu-edit-owner-name {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--ocu-text-1);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.ocu-edit-owner-actions {
+  display: flex;
+  gap: 6px;
+  flex-shrink: 0;
+}
+.ocu-edit-owners-divider {
+  height: 1px;
+  background: var(--ocu-border);
+  margin: 16px 0;
+}
+
 /* OWNER CARDS — final spec 2026-05-01.
-   Each owner is its own card stacked vertically. 12px gap between cards.
-   Card padding 16px top/bottom 20px left/right. Inside each card a single
+   Each owner is its own card stacked vertically. 16px gap between cards.
+   Card padding 20px top/bottom 24px left/right. Inside each card a single
    horizontal row with FIXED column widths so cards line up across N owners
-   regardless of mailing-address wrap or phone-list length. */
+   regardless of mailing-address wrap or phone-list length.
+   2026-05-01 follow-up: padding bumped 16/20 -> 20/24 and gap 12 -> 16
+   for more visible breathing room per user request. */
 .ocu-owner-grid {
   display: grid;
   grid-template-columns: 1fr;
-  gap: 12px;
+  gap: 16px;
   margin-top: var(--ocu-space-4);
 }
 .ocu-owner-card {
   /* inherits .ocu-card base */
-  padding: 16px 20px;
+  padding: 20px 24px;
 }
 
 /* 4-column row inside each card.
