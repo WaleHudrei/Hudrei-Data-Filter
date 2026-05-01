@@ -245,13 +245,21 @@ function ownerDetail(data = {}) {
     : `<div class="ocu-card" style="padding:6px 14px">${activities.map(activityRow).join('')}</div>`;
 
   // ─── Sidebar (phones + email) ─────────────────────────────────────────
+  // Phones card now carries an "+ Add phone" affordance in its body when
+  // a contact id is known. Click handler is the same `add-phone` listener
+  // detail-actions.js already wires up for the property-detail owner card,
+  // so no separate JS is needed here.
   const bestPhoneIdx = pickBestPhoneIndex(phones);
+  const addPhoneBtn = c.id
+    ? `<button type="button" class="ocu-btn ocu-btn-sm ocu-btn-secondary ocu-owner-profile-add-phone-btn" data-action="add-phone" data-contact-id="${escHTML(String(c.id))}">+ Add phone</button>`
+    : '';
+  const phonesBody = phones.length === 0
+    ? `<div class="ocu-empty-line ocu-text-3" style="margin-bottom:10px">No phones on file</div>${addPhoneBtn}`
+    : `${phones.map((p, i) => phoneRow(p, i === bestPhoneIdx)).join('')}<div class="ocu-owner-profile-phones-actions">${addPhoneBtn}</div>`;
   const phonesCard = card({
     title: 'Phones',
     meta:  phones.length ? `${phones.length} on file${bestPhoneIdx >= 0 ? ' · best highlighted' : ''}` : '',
-    body:  phones.length === 0
-      ? `<div class="ocu-text-3" style="font-size:12px;font-style:italic">No phones on file</div>`
-      : phones.map((p, i) => phoneRow(p, i === bestPhoneIdx)).join(''),
+    body:  phonesBody,
   });
 
   const emailCard = card({

@@ -1588,6 +1588,19 @@ button.ocu-kpi,
   cursor: wait;
 }
 
+/* +Add phone action on the owner-profile (/oculah/owners/:id) Phones
+   sidebar card. Sits below the phone list (or below the empty-state)
+   so it doesn't compete with phone numbers for the user's attention. */
+.ocu-owner-profile-phones-actions {
+  margin-top: var(--ocu-space-3);
+  padding-top: var(--ocu-space-2);
+  border-top: 1px solid var(--ocu-border);
+}
+.ocu-owner-profile-add-phone-btn {
+  width: 100%;
+  justify-content: center;
+}
+
 /* PHONES GRID — fills the right (phones) column of the 3-col owner
    layout. minmax(min(180px, 100%), 1fr) packs 2-3 columns inside the
    ~600px phones column, and degrades gracefully when the column
@@ -1635,6 +1648,10 @@ button.ocu-kpi,
   justify-content: center;
   pointer-events: none; /* clicks pass through; only the drop event matters */
 }
+/* Same display:flex-vs-[hidden] override fight as the combobox-popover.
+   Without this rule, the overlay covers the page on first paint and
+   hides everything below it until the first dragenter/dragleave cycle. */
+.ocu-upload-dragover[hidden] { display: none; }
 .ocu-upload-dragover-inner {
   width: 480px;
   max-width: 80vw;

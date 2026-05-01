@@ -743,6 +743,27 @@ async function ensureNisEventsSchema() {
     `);
     await query(`CREATE INDEX IF NOT EXISTS idx_nis_events_phone ON nis_events(phone_number)`);
   } catch (e) { console.error('nis_events schema warning:', e.message); }
+
+  // Per-upload audit log — drives the /nis page's history table. Stored
+  // separately from nis_events because that table is row-per-(phone,day)
+  // and aggregating it back into "X numbers from filename Y at time Z"
+  // is lossy (no filename column on nis_events). Idempotent.
+  try {
+    await query(`
+      CREATE TABLE IF NOT EXISTS nis_uploads (
+        id              SERIAL PRIMARY KEY,
+        tenant_id       INT NOT NULL,
+        filename        TEXT,
+        total_rows      INT,
+        unique_numbers  INT,
+        inserted        INT,
+        updated         INT,
+        flagged         INT,
+        created_at      TIMESTAMPTZ DEFAULT NOW()
+      )
+    `);
+    await query(`CREATE INDEX IF NOT EXISTS idx_nis_uploads_tenant_created ON nis_uploads(tenant_id, created_at DESC)`);
+  } catch (e) { console.error('nis_uploads schema warning:', e.message); }
   // 2026-04-29 audit follow-up — KNOWN CROSS-TENANT BUG, deferred.
   // The PRIMARY KEY here is (phone_number, event_day), with NO tenant_id in
   // the unique constraint. The Phase-1 migration 02-add-tenant-id-to-all-tables
@@ -772,9 +793,10 @@ async function ensureNisEventsSchema() {
   // CONCURRENTLY pattern would apply if these tables grow large.
 }
 
-async function importNisFile(tenantId, rows) {
+async function importNisFile(tenantId, rows, opts = {}) {
   if (!Number.isInteger(tenantId)) throw new Error('importNisFile: tenantId required');
   await ensureNisEventsSchema();
+  const filename = (opts && typeof opts.filename === 'string') ? opts.filename : null;
   let inserted = 0, updated = 0, flagged = 0, duplicateEvents = 0;
   const BATCH = 500;
   // Reset per-call counter for unparseable-date warnings so each file is
@@ -929,7 +951,45 @@ async function importNisFile(tenantId, rows) {
   );
   flagged = flagRes.rowCount || 0;
 
+  // Audit log — one row per upload. Non-fatal: if this insert fails the
+  // import itself still succeeded, the only consequence is a missing
+  // entry in the /nis history table.
+  try {
+    await query(
+      `INSERT INTO nis_uploads (tenant_id, filename, total_rows, unique_numbers, inserted, updated, flagged)
+       VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+      [tenantId, filename, rows.length, entries.length, inserted, updated, flagged]
+    );
+  } catch (e) { console.warn('[nis] upload-audit insert failed (non-fatal):', e.message); }
+
   return { totalRows: rows.length, uniqueNumbers: entries.length, inserted, updated, flagged };
+}
+
+// History of NIS uploads for /nis page. Newest first; limited so a tenant
+// with thousands of uploads doesn't render an unbounded table. Returns a
+// running cumulative total so the page can show "after this upload, the
+// database held X NIS numbers".
+async function getNisUploadHistory(tenantId, limit = 50) {
+  if (!Number.isInteger(tenantId)) throw new Error('getNisUploadHistory: tenantId required');
+  try {
+    await ensureNisEventsSchema();
+    const r = await query(
+      `SELECT id, filename, total_rows, unique_numbers, inserted, updated, flagged, created_at,
+              SUM(inserted) OVER (
+                ORDER BY created_at, id
+                ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
+              )::int AS running_total
+         FROM nis_uploads
+        WHERE tenant_id = $1
+        ORDER BY created_at DESC, id DESC
+        LIMIT $2`,
+      [tenantId, limit]
+    );
+    return r.rows;
+  } catch (e) {
+    console.warn('[nis] getNisUploadHistory failed:', e.message);
+    return [];
+  }
 }
 
 // ── Get NIS stats ─────────────────────────────────────────────────────────────
@@ -2050,6 +2110,7 @@ module.exports = {
   getContactStats,
   importNisFile,
   getNisStats,
+  getNisUploadHistory,
   importSmarterContactFile,
   normSmsLabel,
   importSmarterContactAccepted,

@@ -802,6 +802,7 @@ module.exports = {
   detectPhoneColumns:        filtration.detectPhoneColumns,
   importNisFile:             filtration.importNisFile,
   getNisStats:               filtration.getNisStats,
+  getNisUploadHistory:       filtration.getNisUploadHistory,
   normalizePhone:            filtration.normalizePhone,
   importSmarterContactFile:  filtration.importSmarterContactFile,
   normSmsLabel:              filtration.normSmsLabel,
