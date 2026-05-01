@@ -154,13 +154,19 @@ function ownerCard(opts = {}) {
     ? `<a class="ocu-owner-profile-link" href="${profileHref}" title="Open ${escHTML(contact.first_name || '')} ${escHTML(contact.last_name || '')}'s profile">View profile <span aria-hidden="true">→</span></a>`
     : '';
 
-  // 3-column layout: identity | mailing | phones. Each block is its own
-  // visual section with a consistent label + body shape so the row reads
-  // as one coordinated row of three peers, not three pieces floating.
+  // 2026-05-01 redesign per user spec: 4-column horizontal layout with
+  // FIXED column widths so cards line up vertically across N owners.
+  //   Col 1 (200px): owner number + PRIMARY + name + View profile
+  //   Col 2 (220px): mailing label + address (or "—")
+  //   Col 3 (1fr) : phones label + count + phone list
+  //   Col 4 (auto): "+ Add phone" button pinned right
+  // align-items:start so all four columns top-align even when mailing
+  // wraps or phone list is long. Caller passes label dynamically (Owner 1,
+  // Owner 2, Owner N+1) so any number of owners renders correctly.
   return `
     <div class="ocu-card ocu-owner-card">
-      <div class="ocu-owner-3col">
-        <div class="ocu-owner-identity">
+      <div class="ocu-owner-row">
+        <div class="ocu-owner-col-identity">
           ${avatar}
           <div class="ocu-owner-titles">
             <div class="ocu-owner-label-row">
@@ -172,18 +178,21 @@ function ownerCard(opts = {}) {
           </div>
         </div>
 
-        <div class="ocu-owner-section ocu-owner-mailing-section">
+        <div class="ocu-owner-col-mailing">
           <div class="ocu-owner-section-label"><span class="ocu-owner-section-icon">${_ICON_PIN}</span>Mailing address</div>
           <div class="ocu-owner-section-value">${mailing || '<span class="ocu-text-3">—</span>'}</div>
         </div>
 
-        <div class="ocu-owner-section ocu-owner-phones-section" data-contact-id="${escHTML(String(contact.id || ''))}"${manyPhones ? ' data-many="true"' : ''}>
+        <div class="ocu-owner-col-phones" data-contact-id="${escHTML(String(contact.id || ''))}"${manyPhones ? ' data-many="true"' : ''}>
           <div class="ocu-owner-section-label">
             <span class="ocu-owner-section-icon">${_ICON_PHN}</span>Phones
             <span class="ocu-owner-count-chip">${phones.length}</span>
-            ${contact.id ? `<button type="button" class="ocu-owner-add-phone-btn" data-action="add-phone" data-contact-id="${escHTML(String(contact.id))}" title="Add a new phone for this contact">+ Add phone</button>` : ''}
           </div>
           <div class="ocu-phones-grid">${phonesHTML}</div>
+        </div>
+
+        <div class="ocu-owner-col-actions">
+          ${contact.id ? `<button type="button" class="ocu-owner-add-phone-btn" data-action="add-phone" data-contact-id="${escHTML(String(contact.id))}" title="Add a new phone for this contact">+ Add phone</button>` : ''}
         </div>
       </div>
     </div>`;

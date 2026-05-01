@@ -1410,53 +1410,55 @@ button.ocu-kpi,
    owners on wide viewports; that squeezed each into half-width and
    forced the phones column to collapse to a single phone-card column.
    User feedback: "one up and one down, not right and left". */
+/* OWNER CARDS — final spec 2026-05-01.
+   Each owner is its own card stacked vertically. 12px gap between cards.
+   Card padding 16px top/bottom 20px left/right. Inside each card a single
+   horizontal row with FIXED column widths so cards line up across N owners
+   regardless of mailing-address wrap or phone-list length. */
 .ocu-owner-grid {
   display: grid;
   grid-template-columns: 1fr;
-  /* 2026-05-01: bump card-to-card gap (was --ocu-space-3 / 12px) — at the
-     thinner spacing the two owner cards looked stacked-on-top-of-each-other
-     and the property summary card above. 18px gives a clean optical
-     separation without feeling sparse. Plus a top margin so the grid sits
-     comfortably below the property summary card rather than abutting it. */
-  gap: 18px;
+  gap: 12px;
   margin-top: var(--ocu-space-4);
 }
 .ocu-owner-card {
-  /* inherits .ocu-card base.
-     2026-05-01: padding bumped 18/20 → 22/24 to add breathing room around
-     the avatar / mailing column / phones grid. The pre-fix card felt
-     cramped vs. the surrounding property card which uses larger padding. */
-  padding: 22px 24px;
-  /* 2026-05-01: position:relative so the +Add phone button can pin to the
-     card's top-right via position:absolute. Pre-fix the button lived in the
-     phones-section-label flex row, so its Y position drifted with the
-     phones-section content height — Owner 1 and Owner 2 ended up with
-     buttons at slightly different Y offsets when the mailing column wrapped
-     to 2 lines vs 1 line. Anchoring to the card guarantees identical
-     positioning across every owner card. */
-  position: relative;
+  /* inherits .ocu-card base */
+  padding: 16px 20px;
 }
 
-/* 3-COLUMN LAYOUT: identity | mailing | phones.
-   2026-05-01 user request: "phones on right, mailing in middle".
-   Identity stays compact at left (~200px), mailing takes a medium
-   middle slot, phones get the largest column for the phone-card grid.
-   On narrow viewports collapses to 1 column, stacked vertically. */
-.ocu-owner-3col {
+/* 4-column row inside each card.
+   Col 1 fixed 200px (identity), Col 2 fixed 220px (mailing), Col 3 1fr
+   (phones — takes remaining width), Col 4 auto (+Add phone button).
+   align-items:start so every column anchors to the top — Col 1 and Col 4
+   never visually drift down when Col 2 wraps to 2 lines or Col 3 has many
+   phones. 24px horizontal gap between columns. */
+.ocu-owner-row {
   display: grid;
-  grid-template-columns: minmax(180px, 220px) minmax(220px, 1.2fr) minmax(280px, 2.4fr);
-  gap: var(--ocu-space-5);
+  grid-template-columns: 200px 220px 1fr auto;
+  gap: 24px;
   align-items: start;
 }
 @media (max-width: 1024px) {
-  .ocu-owner-3col { grid-template-columns: 1fr 1fr; }
-  .ocu-owner-3col > .ocu-owner-phones-section { grid-column: 1 / -1; }
+  .ocu-owner-row {
+    grid-template-columns: 200px 1fr auto;
+  }
+  .ocu-owner-col-mailing { grid-column: 1 / -1; order: 3; padding-top: 8px; border-top: 1px solid var(--ocu-border); margin-top: 4px; }
 }
 @media (max-width: 640px) {
-  .ocu-owner-3col { grid-template-columns: 1fr; }
+  .ocu-owner-row {
+    grid-template-columns: 1fr;
+  }
+  .ocu-owner-col-actions { justify-self: start; }
 }
 
-/* Identity column — avatar + titles + profile link, stacked vertically */
+/* Col 1: identity — avatar + label/name/link stacked vertically next to it */
+.ocu-owner-col-identity {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--ocu-space-3);
+  min-width: 0;
+}
+/* Legacy alias kept so any cached partial server rendering doesn't break */
 .ocu-owner-identity {
   display: flex;
   align-items: flex-start;
@@ -1533,10 +1535,19 @@ button.ocu-kpi,
   color: var(--ocu-accent);
 }
 
-/* (.ocu-owner-body retired 2026-05-01 in favor of the 3-column
-   .ocu-owner-3col layout above. No vertical inter-section dividers —
-   the grid gap provides the separation visually. Sections still need
-   min-width:0 so their inner grids can shrink past content min.) */
+/* Mailing + phones columns share the same min-width:0 + label styling */
+.ocu-owner-col-mailing,
+.ocu-owner-col-phones { min-width: 0; }
+.ocu-owner-col-actions {
+  /* Col 4 — the +Add phone button sits flush to the right edge of the
+     row. justify-self:end isn't needed (auto column already shrinks to
+     content) but a small top offset visually centers the button against
+     the section label rows in cols 2 + 3. */
+  display: flex;
+  align-items: flex-start;
+  padding-top: 2px;
+}
+/* Legacy alias kept for any in-flight HTML still referencing the old class */
 .ocu-owner-section { min-width: 0; }
 .ocu-owner-section-label {
   font-size: 11px;
@@ -1577,20 +1588,11 @@ button.ocu-kpi,
   text-align: center;
 }
 
-/* "+ Add phone" button on the owner card phones section header.
-   2026-05-01 (revised): in-flow with margin-left:auto so it sits at the
-   end of the phones-section-label row. Earlier revision pinned absolute
-   to the card top-right, but with multi-phone owners the phones grid
-   extends to the column's right edge and the absolute button overlapped
-   the phone cards (covering the WRONG/UNKNOWN pills on the first row).
-   In-flow placement naturally clears the phones grid below it.
-   align-items:center on the parent section-label keeps the button vertically
-   centered with the "PHONES" label + count chip. flex-shrink:0 stops it
-   from collapsing on narrow viewports. */
+/* "+ Add phone" button — Col 4 of the 4-col owner row. As an own column
+   it never overlaps the phones grid in Col 3 and never drifts vertically
+   when Col 2 / Col 3 grow taller than expected. */
 .ocu-owner-add-phone-btn {
-  margin-left: auto;
-  flex-shrink: 0;
-  padding: 3px 9px;
+  padding: 4px 10px;
   font-size: 11px;
   font-weight: 600;
   letter-spacing: 0;
@@ -1601,6 +1603,7 @@ button.ocu-kpi,
   color: var(--ocu-text-2);
   cursor: pointer;
   font-family: inherit;
+  white-space: nowrap;
   transition: all 0.12s;
 }
 .ocu-owner-add-phone-btn:hover {
