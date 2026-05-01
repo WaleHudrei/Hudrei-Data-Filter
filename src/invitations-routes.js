@@ -23,6 +23,18 @@ const { isWorkspaceAdmin } = require('./auth/roles');
 const { escHTML } = require('./ui/_helpers');
 const { query }   = require('./db');
 
+// 2026-05-01 gap fix — every state-changing form on these surfaces flows
+// through the global CSRF middleware. Both shells below now embed the
+// meta tag + load the auto-attach script so plain <form method=POST>
+// submissions get an _csrf input injected client-side.
+function _csrfHead() {
+  let token = '';
+  try { token = require('./csrf').currentToken() || ''; } catch (_) {}
+  const safe = String(token).replace(/[^a-zA-Z0-9]/g, '');
+  return `${safe ? `<meta name="csrf-token" content="${safe}">` : ''}
+<script src="/js/csrf-protect.js" defer></script>`;
+}
+
 function _requireAdmin(req, res, next) {
   if (!req.session?.authenticated) return res.redirect('/login');
   if (!isWorkspaceAdmin(req)) return res.status(403).send('Workspace admin only.');
@@ -49,8 +61,8 @@ router.get('/oculah/members', _requireAdmin, async (req, res) => {
       <td>${m.last_login_at ? new Date(m.last_login_at).toLocaleString() : '—'}</td>
       <td style="white-space:nowrap">
         ${m.id !== req.session.userId ? `
-          <form method="POST" action="/oculah/members/${m.id}/role" style="display:inline">
-            <select name="role" onchange="this.form.submit()" style="font-size:12px;padding:4px">
+          <form method="POST" action="/oculah/members/${m.id}/role" style="display:inline" onchange="this.requestSubmit()">
+            <select name="role" style="font-size:12px;padding:4px">
               <option value="tenant_user"  ${m.role==='tenant_user'?'selected':''}>Member</option>
               <option value="tenant_admin" ${m.role==='tenant_admin'?'selected':''}>Admin</option>
             </select>
@@ -81,6 +93,7 @@ router.get('/oculah/members', _requireAdmin, async (req, res) => {
 
     res.send(`<!DOCTYPE html><html><head>
 <meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+${_csrfHead()}
 <title>Members · Oculah</title>
 <style>
   *{box-sizing:border-box;margin:0;padding:0}
@@ -212,6 +225,7 @@ router.post('/oculah/members/invites/:id(\\d+)/revoke', _requireAdmin, async (re
 function _acceptShell(title, body) {
   return `<!DOCTYPE html><html><head>
 <meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+${_csrfHead()}
 <title>${escHTML(title)} · Oculah</title>
 <style>
   *{box-sizing:border-box;margin:0;padding:0}

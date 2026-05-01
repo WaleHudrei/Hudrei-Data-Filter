@@ -14,8 +14,16 @@ const { query } = require('./db');
 const { escHTML } = require('./ui/_helpers');
 
 function _shell(title, body) {
+  // 2026-05-01 gap fix — load CSRF meta + auto-attach script. Without
+  // these, the POST /billing/checkout and POST /billing/portal forms
+  // would 403 against the global CSRF middleware.
+  let _t = '';
+  try { _t = require('./csrf').currentToken() || ''; } catch (_) {}
+  const _safe = String(_t).replace(/[^a-zA-Z0-9]/g, '');
   return `<!DOCTYPE html><html><head>
 <meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+${_safe ? `<meta name="csrf-token" content="${_safe}">` : ''}
+<script src="/js/csrf-protect.js" defer></script>
 <title>${escHTML(title)} · Oculah</title>
 <style>
   *{box-sizing:border-box;margin:0;padding:0}

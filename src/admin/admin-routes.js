@@ -148,11 +148,25 @@ function requireSuperAdmin(req, res, next) {
 // a constant reminder this surface affects ALL tenants.
 function adminShell(title, bodyHtml, opts = {}) {
   const flash = opts.flash ? `<div class="flash ${opts.flashKind === 'error' ? 'flash-err' : 'flash-ok'}">${escHTML(opts.flash)}</div>` : '';
+  // 2026-05-01 gap fix — every /admin POST flows through the global CSRF
+  // middleware (mounted in server.js BEFORE the /admin router). Without
+  // this meta tag + the auto-attach script, every Suspend / Delete / Role
+  // change / Dedup form would 403 with "CSRF token missing or invalid."
+  // Token comes from AsyncLocalStorage populated by csrfMiddleware.
+  const _csrfToken = (() => {
+    try { return require('../csrf').currentToken(); }
+    catch (_) { return ''; }
+  })();
+  const _csrfMeta = _csrfToken
+    ? `<meta name="csrf-token" content="${String(_csrfToken).replace(/[^a-zA-Z0-9]/g, '')}">`
+    : '';
   return `<!DOCTYPE html>
 <html><head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
+${_csrfMeta}
 <title>${escHTML(title)} — Oculah Admin</title>
+<script src="/js/csrf-protect.js" defer></script>
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
 <style>
   /* 2026-05-01 Phase 4 — HQ visual polish.
@@ -624,7 +638,7 @@ router.get('/tenants/:id', async (req, res) => {
                             : r === 'super_admin'  ? 'Super-admin'
                             : escHTML(r);
     const _roleSelect = (uid, currentRole) => `
-      <form class="inline" method="POST" action="/admin/tenants/${id}/users/${uid}/role" onchange="this.submit()">
+      <form class="inline" method="POST" action="/admin/tenants/${id}/users/${uid}/role" onchange="this.requestSubmit()">
         <select name="role" class="role-select">
           <option value="tenant_admin" ${currentRole === 'tenant_admin' ? 'selected' : ''}>Admin</option>
           <option value="tenant_user"  ${currentRole === 'tenant_user'  ? 'selected' : ''}>Member</option>
