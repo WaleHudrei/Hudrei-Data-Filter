@@ -80,4 +80,60 @@ function normalizeDisposition(raw) {
   return 'other';
 }
 
-module.exports = { normalizeDisposition };
+// ─────────────────────────────────────────────────────────────────────────────
+// Bucket sets — single source of truth for "which dispositions count where"
+// (5E follow-up, replaces the two separate const sets that lived inline in
+// filtration.js).
+//
+// CONNECTED_DISPOS — a real human picked up, regardless of outcome. Drives
+// the "Connected" KPI / total_connected on campaigns.
+//
+// REACHED_DISPOS — at least one phone for this contact was answered by a
+// human. Drives "Contacts Reached" on the campaign detail. Currently
+// identical to CONNECTED_DISPOS — kept as a separate set so future rules can
+// diverge (e.g. if "wrong_number" should count as connected but not reached
+// because the wrong person picked up).
+//
+// LEAD_DISPOS — counts toward the Lead bucket / total_transfers / LCV.
+// "Transfer" / "Lead" / "Appointment" all normalize to 'transfer' upstream,
+// so this set has one entry today.
+//
+// Operator-confirmed rules (2026-05-01):
+//   • wrong_number IS a connected call AND a live pickup.
+//   • potential_lead, sold, listed are live pickups.
+//   • transfer / lead / appointment is the only Lead bucket.
+//   • voicemail, not_available, dead_number → NOT live pickups.
+// ─────────────────────────────────────────────────────────────────────────────
+const CONNECTED_DISPOS = new Set([
+  'transfer',
+  'potential_lead',
+  'sold',
+  'listed',
+  'not_interested',
+  'hung_up',
+  'callback',
+  'spanish_speaker',
+  'do_not_call',
+  'completed',
+  'disqualified',
+  'wrong_number',
+]);
+
+const REACHED_DISPOS = new Set([
+  'transfer',
+  'potential_lead',
+  'sold',
+  'listed',
+  'not_interested',
+  'hung_up',
+  'callback',
+  'spanish_speaker',
+  'do_not_call',
+  'completed',
+  'disqualified',
+  'wrong_number',
+]);
+
+const LEAD_DISPOS = new Set(['transfer']);
+
+module.exports = { normalizeDisposition, CONNECTED_DISPOS, REACHED_DISPOS, LEAD_DISPOS };

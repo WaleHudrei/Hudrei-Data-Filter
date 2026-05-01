@@ -3,6 +3,15 @@
 
 const ENTRIES = [
   {
+    date: 'May 1, 2026 (5E follow-up — live-pickup rules consolidated)',
+    title: 'One canonical place defines which dispositions count as Connected, Reached, and Lead',
+    items: [
+      { tag: 'fix', text: 'Wrong number now counts as a Connected call AND a live pickup (Contacts Reached). Previously it counted toward neither, even though answering "wrong number" requires a human picking up.' },
+      { tag: 'fix', text: 'potential_lead, sold, and listed now count toward Contacts Reached. They were already counted as Connected; the omission from Reached was a drift bug between two near-identical inline const sets.' },
+      { tag: 'note', text: 'Bucket sets — CONNECTED_DISPOS, REACHED_DISPOS, LEAD_DISPOS — moved into src/disposition-normalize.js as the single source of truth. recordUpload (Connected tally) and getContactStats (Reached / Lead queries) both import from there now. Future rule changes happen in one place; the two sets can no longer drift apart silently. LEAD_DISPOS contains only "transfer" — Transfer / Lead / Appointment all normalize to that bucket upstream.' },
+    ],
+  },
+  {
     date: 'May 1, 2026 (5G — delete completed campaigns)',
     title: 'Completed campaigns can now be deleted from the detail page',
     items: [

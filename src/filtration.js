@@ -26,6 +26,12 @@ function normalizePhone(raw) { return _normalizePhone(raw); }
 // are tiny so the require cost is negligible.
 const _phintel = require('./phone-intelligence');
 
+// 5E follow-up: bucket sets imported from the canonical normalizer module.
+// Replaces the two near-identical inline const sets that used to live in
+// recordUpload and getContactStats — drift between them was the bug that
+// surfaced in operator review on 2026-05-01.
+const { CONNECTED_DISPOS, REACHED_DISPOS, LEAD_DISPOS } = require('./disposition-normalize');
+
 // ── Detect phone columns from CSV headers ─────────────────────────────────────
 function detectPhoneColumns(headers) {
   const phones = [];
@@ -60,7 +66,7 @@ function detectPhoneColumns(headers) {
 // Same semantics; ~50× faster on typical uploads. (Audit — filtration.js gaps.)
 async function recordUpload(tenantId, campaignId, filename, sourceListName, channel, rows, rawTotal) {
   if (!Number.isInteger(tenantId)) throw new Error('recordUpload: tenantId required');
-  const CONNECTED_DISPOS = new Set(['not_interested','transfer','potential_lead','sold','listed','callback','spanish_speaker','hung_up','completed','disqualified','do_not_call']);
+  // 5E follow-up: CONNECTED_DISPOS is now imported from disposition-normalize.
   const tally = { total:0, kept:0, filtered:0, wrong:0, vm:0, ni:0, dnc:0, transfer:0, mem:0, newNums:0, connected:0 };
 
   // ── Pass 1: tally counts + collect per-phone upsert payload ──────────────
@@ -789,7 +795,9 @@ async function getContactStats(campaignId) {
     LEFT JOIN campaign_contact_phones ccp ON ccp.contact_id = cc.id
     WHERE cc.campaign_id = $1`, [campaignId]);
 
-  const LIVE_PICKUPS = ['not_interested','transfer','callback','hung_up','spanish_speaker','do_not_call','completed','disqualified'];
+  // 5E follow-up: REACHED_DISPOS / LEAD_DISPOS imported from the canonical
+  // disposition-normalize module so this query and recordUpload's connected
+  // tally can never drift again.
   const reached = await query(`
     SELECT COUNT(DISTINCT cc.id) as reached_contacts
     FROM campaign_contacts cc
@@ -797,7 +805,7 @@ async function getContactStats(campaignId) {
     JOIN campaign_numbers cn ON cn.phone_number = ccp.phone_number AND cn.campaign_id = cc.campaign_id
     WHERE cc.campaign_id = $1
       AND cn.last_disposition_normalized = ANY($2::text[])`,
-    [campaignId, LIVE_PICKUPS]);
+    [campaignId, Array.from(REACHED_DISPOS)]);
 
   const leads = await query(`
     SELECT COUNT(DISTINCT cc.id) as lead_contacts
@@ -805,8 +813,8 @@ async function getContactStats(campaignId) {
     JOIN campaign_contact_phones ccp ON ccp.contact_id = cc.id
     JOIN campaign_numbers cn ON cn.phone_number = ccp.phone_number AND cn.campaign_id = cc.campaign_id
     WHERE cc.campaign_id = $1
-      AND cn.last_disposition_normalized = 'transfer'`,
-    [campaignId]);
+      AND cn.last_disposition_normalized = ANY($2::text[])`,
+    [campaignId, Array.from(LEAD_DISPOS)]);
 
   // Raw call-log volume: sum of Readymode's per-phone cumulative dial count
   // across every phone tracked for this campaign. Used by the "Call logs" KPI
