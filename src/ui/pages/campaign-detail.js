@@ -588,15 +588,22 @@ function campaignDetail(data = {}) {
     </style>
 
     <script>
+      // 2026-05-01: rename was broken because cd_startRename tried to
+      // document.getElementById('cd-name').style.display = 'none' but the
+      // campaign name now lives in the topbar (shell topbarTitle), not in
+      // the body — getElementById returned null, threw TypeError, and the
+      // form never opened. Form is below the controls row, so just toggle
+      // its visibility and focus the input.
       function cd_startRename() {
-        document.getElementById('cd-name').style.display = 'none';
         var f = document.getElementById('cd-rename-form');
+        if (!f) return;
         f.style.display = 'flex';
-        f.querySelector('input').focus();
+        var inp = f.querySelector('input[name="name"]');
+        if (inp) { inp.focus(); inp.select(); }
       }
       function cd_cancelRename() {
-        document.getElementById('cd-name').style.display = '';
-        document.getElementById('cd-rename-form').style.display = 'none';
+        var f = document.getElementById('cd-rename-form');
+        if (f) f.style.display = 'none';
       }
       function cd_toggleRm() {
         var f = document.getElementById('cd-rm-form');
