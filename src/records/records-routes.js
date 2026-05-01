@@ -380,15 +380,22 @@ router.post('/contacts/:contactId(\\d+)/phones', requireAuth, async (req, res) =
     );
     const nextIdx = nextIdxRes.rows[0]?.next || 1;
 
+    // Compute the boolean flags in JS so we don't reuse $5 for both the
+    // phone_status text column AND boolean expressions like `$5 = 'wrong'`
+    // — Postgres can't deduce a single type for a parameter used in both
+    // contexts ("inconsistent types deduced for parameter $5").
+    const wrongNumber = phoneStatus === 'wrong';
+    const doNotCall   = phoneStatus === 'do_not_call';
+
     // ON CONFLICT (contact_id, phone_number) DO NOTHING — surfacing the
     // dupe to the user. The UNIQUE constraint already guards integrity;
     // this just gives a clean 409 instead of a noisy 500.
     const ins = await query(
       `INSERT INTO phones (tenant_id, contact_id, phone_number, phone_index, phone_status, phone_type, wrong_number, do_not_call)
-       VALUES ($1, $2, $3, $4, $5, $6, $5 = 'wrong', $5 = 'do_not_call')
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
        ON CONFLICT (contact_id, phone_number) DO NOTHING
        RETURNING id, contact_id, phone_number, phone_index, phone_status, phone_type, wrong_number, do_not_call`,
-      [req.tenantId, contactId, phoneNorm, nextIdx, phoneStatus, phoneType]
+      [req.tenantId, contactId, phoneNorm, nextIdx, phoneStatus, phoneType, wrongNumber, doNotCall]
     );
     if (!ins.rowCount) {
       return res.status(409).json({ error: 'This contact already has that phone number.' });
