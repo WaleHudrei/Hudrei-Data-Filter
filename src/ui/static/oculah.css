@@ -1105,6 +1105,65 @@ button.ocu-kpi,
   color: var(--ocu-danger);
 }
 
+/* Next-pull row on the dashboard's List registry widget. Shown when nothing
+   is overdue (otherwise the alert banner above takes precedence). Reads
+   "Next: Active Liens · GA — due May 13" so ops sees what's coming next
+   without having to open the registry. */
+.ocu-next-pull {
+  margin-top: 14px;
+  padding: 10px 12px;
+  background: var(--ocu-surface);
+  border: 1px solid var(--ocu-border);
+  border-radius: var(--ocu-radius);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12.5px;
+  color: var(--ocu-text-2);
+  flex-wrap: wrap;
+}
+.ocu-next-pull-label {
+  font-size: 10.5px;
+  font-weight: 700;
+  color: var(--ocu-text-3);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+.ocu-next-pull-name {
+  font-weight: 600;
+  color: var(--ocu-text-1);
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.ocu-next-pull-date {
+  font-family: var(--ocu-mono);
+  font-size: 12px;
+  color: var(--ocu-text-3);
+}
+.ocu-next-pull-date.is-overdue {
+  color: var(--ocu-danger);
+  font-weight: 600;
+}
+
+/* Card footnote — used by Settings cards to show "Last run: …" lines
+   beneath their action area. Visually subordinate to the main body but
+   still reads as a discrete status row. */
+.ocu-card-footnote {
+  font-size: 12px;
+  padding: 8px 10px;
+  border-radius: 6px;
+  background: var(--ocu-surface);
+  border: 1px solid var(--ocu-border);
+  color: var(--ocu-text-2);
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
 /* ─── Activity feed ─────────────────────────────────────────────────────── */
 .ocu-activity { display: flex; flex-direction: column; }
 .ocu-activity-row {
@@ -1554,6 +1613,70 @@ button.ocu-kpi,
   color: var(--ocu-text-3);
   padding: 10px 0;
   grid-column: 1 / -1;
+}
+
+/* Recent-activity feed: list-name link rendered after a "→" arrow on
+   each import row, e.g. "Imported 175 records from warm_leads.csv → Tax
+   Delinquent — Stress Q1 2026". Subtle so the row stays readable. */
+.ocu-activity-list-link {
+  color: var(--ocu-accent);
+  text-decoration: none;
+  font-weight: 500;
+}
+.ocu-activity-list-link:hover { text-decoration: underline; }
+
+/* Distress chip — used in the records-table Distress column. A 3px-wide
+   colored bar on the left makes the band scannable at a glance even when
+   the chip is crowded into a dense row. Bands map to the same colors as
+   the dashboard distress-rings widget, so the visual language is shared
+   across pages. */
+.ocu-distress-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 9px 3px 7px;
+  border-radius: 999px;
+  background: var(--ocu-bg);
+  border: 1px solid var(--ocu-border);
+  font-family: var(--ocu-mono);
+  font-weight: 600;
+  font-size: 12px;
+  line-height: 1.1;
+  position: relative;
+  overflow: hidden;
+}
+.ocu-distress-chip-bar {
+  width: 3px;
+  height: 14px;
+  border-radius: 2px;
+  flex-shrink: 0;
+}
+.ocu-distress-chip-score {
+  font-variant-numeric: tabular-nums;
+  color: var(--ocu-text-1);
+}
+.ocu-distress-chip-band {
+  font-family: var(--ocu-display);
+  font-weight: 600;
+  font-size: 10.5px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+.ocu-distress-chip[data-band="cold"]    .ocu-distress-chip-bar  { background: var(--ocu-cold); }
+.ocu-distress-chip[data-band="cold"]    .ocu-distress-chip-band { color: var(--ocu-cold); }
+.ocu-distress-chip[data-band="warm"]    .ocu-distress-chip-bar  { background: var(--ocu-warm); }
+.ocu-distress-chip[data-band="warm"]    .ocu-distress-chip-band { color: var(--ocu-warm); }
+.ocu-distress-chip[data-band="hot"]     .ocu-distress-chip-bar  { background: var(--ocu-hot); }
+.ocu-distress-chip[data-band="hot"]     .ocu-distress-chip-band { color: var(--ocu-hot); }
+.ocu-distress-chip[data-band="burning"] .ocu-distress-chip-bar  { background: var(--ocu-burning); }
+.ocu-distress-chip[data-band="burning"] .ocu-distress-chip-band { color: var(--ocu-burning); }
+.ocu-distress-chip[data-band="burning"] {
+  border-color: rgba(220, 38, 38, 0.25);
+  background: rgba(220, 38, 38, 0.04);
+}
+.ocu-distress-chip[data-band="hot"] {
+  border-color: rgba(217, 119, 6, 0.25);
+  background: rgba(217, 119, 6, 0.04);
 }
 
 /* Distress sort guidance banner — appears on /records when high→low
@@ -3724,6 +3847,34 @@ input[type="date"].ocu-cell-input:focus::-webkit-calendar-picker-indicator {
 .ocu-list-registry-table .ocu-th { padding: 12px 12px; }
 .ocu-list-registry-table tbody tr { transition: background 0.12s; }
 .ocu-list-registry-table tbody tr:hover { background: var(--ocu-surface); }
+/* Incomplete rows get a thin amber left edge so the operator can spot
+   half-set-up entries in a long list at a glance. The "Setup required"
+   pill in the name cell carries the explanation; the edge is a redundant
+   scanning aid. */
+.ocu-list-registry-table tbody tr[data-incomplete="true"] {
+  box-shadow: inset 3px 0 0 #F59E0B;
+}
+
+/* Name cell — input + optional setup badge stacked on small screens, side
+   by side when there's room. */
+.ocu-lr-name-cell {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  min-width: 0;
+}
+.ocu-lr-name-cell .ocu-cell-input {
+  flex: 1 1 160px;
+  min-width: 0;
+}
+.ocu-lr-setup-badge {
+  flex-shrink: 0;
+  font-size: 9.5px;
+  letter-spacing: 0.04em;
+  height: 18px;
+  padding: 0 6px;
+}
 
 /* Actions cell — pull + delete as ghost icon-buttons, right-aligned.
    Replaces the previous inline-style "small primary button + ×" which

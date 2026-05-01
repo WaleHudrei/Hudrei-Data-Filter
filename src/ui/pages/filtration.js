@@ -31,11 +31,13 @@ function filtrationPage(data = {}) {
           <div style="display:flex;gap:24px;flex-wrap:wrap">
             <div>
               <div style="font-size:24px;font-weight:700;color:#0c1116" id="memListsCount">${escHTML(String(listsCount))}</div>
-              <div style="font-size:12px;color:#6b6f7a">Lists tracked</div>
+              <div style="font-size:12px;color:#6b6f7a;font-weight:600">Lists tracked</div>
+              <div style="font-size:11px;color:#9aa0aa;margin-top:1px">Unique list names remembered across imports</div>
             </div>
             <div>
               <div style="font-size:24px;font-weight:700;color:#0c1116" id="memPhonesCount">${escHTML(String(memSize))}</div>
-              <div style="font-size:12px;color:#6b6f7a">Scopes in memory</div>
+              <div style="font-size:12px;color:#6b6f7a;font-weight:600">Scopes in memory</div>
+              <div style="font-size:11px;color:#9aa0aa;margin-top:1px">Campaign × list dedup entries</div>
             </div>
             <div>
               <div style="font-size:13px;font-weight:600;${redisOn ? 'color:#1a7a4a' : 'color:#a05500'};margin-top:6px">

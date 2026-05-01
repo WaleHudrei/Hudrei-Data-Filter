@@ -138,11 +138,22 @@ function settingsPage(data = {}) {
   // Same shape as the distress-matrix card: descriptive paragraph, single
   // primary button right-aligned at the bottom. Form-as-flex so the
   // button sits flush right exactly like "Open distress matrix →".
+  const dedupLastRun = data.dedupLastRunAt
+    ? `<div class="ocu-card-footnote">
+         <span class="ocu-text-3">Last run:</span>
+         <strong>${escHTML(new Date(data.dedupLastRunAt).toLocaleString('en-US', { year:'numeric', month:'short', day:'numeric', hour:'numeric', minute:'2-digit' }))}</strong>
+         ${data.dedupLastMerged != null
+           ? `<span class="ocu-text-3"> · ${data.dedupLastMerged} duplicate${data.dedupLastMerged === 1 ? '' : 's'} merged</span>`
+           : ''}
+       </div>`
+    : `<div class="ocu-card-footnote ocu-text-3">No manual run yet — auto-runs after every bulk import.</div>`;
+
   const dedupCard = `
     <div style="font-size:13px;color:var(--ocu-text-2);line-height:1.6;margin-bottom:16px">
       Find contacts that share a phone number, name, or mailing address and merge them. Auto-runs after every bulk import — use this button to clean up duplicates that pre-date the auto-merge or accumulated from manual edits. Merging keeps the oldest contact and re-homes property links, phones, tags, and call history onto it.
     </div>
-    <form method="POST" action="/oculah/setup/dedup" style="display:flex;justify-content:flex-end">
+    ${dedupLastRun}
+    <form method="POST" action="/oculah/setup/dedup" style="display:flex;justify-content:flex-end;margin-top:12px">
       <button type="submit" class="ocu-btn ocu-btn-primary">Run duplicate cleanup →</button>
     </form>`;
 

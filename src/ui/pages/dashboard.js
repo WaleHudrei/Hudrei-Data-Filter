@@ -87,6 +87,16 @@ function dashboard(data = {}) {
     body: distressBody,
   });
 
+  // Surface "what's next" — a counts-only widget gives no urgency signal
+  // when everything is on schedule, so pin the next-upcoming list with
+  // its due date inline. Falls back to the alert banner if there's
+  // anything actually overdue.
+  const nextPull = r.nextPull;
+  const nextPullDateStr = nextPull && nextPull.dueDate
+    ? new Date(nextPull.dueDate).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })
+    : '';
+  const isPast = nextPull && nextPull.dueDate && new Date(nextPull.dueDate) < new Date();
+
   const registryBody = `
     <div class="ocu-mini-stats">
       <div class="ocu-mini-stat alert">
@@ -110,6 +120,12 @@ function dashboard(data = {}) {
           <line x1="12" y1="17" x2="12.01" y2="17"/>
         </svg>
         <span>${r.overdue} list${r.overdue === 1 ? '' : 's'} overdue for a pull</span>
+      </div>`
+    : nextPull ? `
+      <div class="ocu-next-pull">
+        <span class="ocu-next-pull-label">Next:</span>
+        <span class="ocu-next-pull-name">${escHTML(nextPull.listName || 'Unnamed list')}${nextPull.stateCode ? ` · ${escHTML(nextPull.stateCode)}` : ''}</span>
+        <span class="ocu-next-pull-date${isPast ? ' is-overdue' : ''}">due ${escHTML(nextPullDateStr)}</span>
       </div>` : ''}`;
 
   const registryCard = card({
@@ -127,9 +143,16 @@ function dashboard(data = {}) {
     body: topLists(data.topListsItems || []),
   });
 
+  // Activity card meta surfaces the day's total count alongside the
+  // window label — answers "is there more activity I should know about?"
+  // without forcing a click into /activity.
+  const todayCount = Number(data.activityTodayCount || 0);
+  const activityMeta = todayCount > 0
+    ? `Last 24 hours · <strong>${fmtNum(todayCount)}</strong> total today`
+    : 'Last 24 hours';
   const activityCard = card({
     title: 'Recent activity',
-    meta: 'Last 24 hours',
+    metaHTML: activityMeta,
     link: { href: '/activity', label: 'View all →' },
     body: activityFeed(data.activity || []),
   });

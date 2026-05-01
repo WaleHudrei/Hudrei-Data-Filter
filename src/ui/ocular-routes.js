@@ -139,6 +139,7 @@ async function _renderMainDashboard(req, res) {
       distressRes,
       activeListsRes,
       registryRes,
+      nextPullRes,
       topListsRes,
       historicalLeadsRes,
       leadCountRes,
@@ -201,6 +202,19 @@ async function _renderMainDashboard(req, res) {
           )::int AS due_week
         FROM list_templates WHERE tenant_id = $1
       `, [t]).catch(() => ({ rows: [{ total: 0, overdue: 0, due_week: 0 }] })),
+      // Next upcoming pull — surfaces "what's next" on the dashboard
+      // registry widget so ops sees urgency without opening List Registry.
+      query(`
+        SELECT list_name, state_code,
+               (last_pull_date + (frequency_days || ' days')::interval)::date AS next_pull
+          FROM list_templates
+         WHERE tenant_id = $1
+           AND action = 'pull'
+           AND last_pull_date IS NOT NULL
+           AND frequency_days IS NOT NULL
+         ORDER BY (last_pull_date + (frequency_days || ' days')::interval) ASC
+         LIMIT 1
+      `, [t]).catch(() => ({ rows: [] })),
       // 2026-04-29 dash-audit fix #2: pl.tenant_id was missing from the
       // LEFT JOIN, so on a multi-tenant deploy any property_lists row
       // sharing a list_id (impossible with the current composite UNIQUE,
@@ -292,20 +306,39 @@ async function _renderMainDashboard(req, res) {
     // property-import writes created_at (column-name drift documented in the
     // ensureJobsTable() comment).
     const recentImportsRes = await query(`
-      SELECT total_rows::int AS n, filename,
-             COALESCE(started_at, created_at) AS created_at
-        FROM bulk_import_jobs
-       WHERE tenant_id = $1
-         AND status IN ('complete','completed')
-       ORDER BY COALESCE(started_at, created_at) DESC
+      SELECT j.total_rows::int AS n, j.filename, j.list_id,
+             COALESCE(j.started_at, j.created_at) AS created_at,
+             l.list_name
+        FROM bulk_import_jobs j
+        LEFT JOIN lists l ON l.id = j.list_id AND l.tenant_id = j.tenant_id
+       WHERE j.tenant_id = $1
+         AND j.status IN ('complete','completed')
+       ORDER BY COALESCE(j.started_at, j.created_at) DESC
        LIMIT 3
     `, [t]).catch(() => ({ rows: [] }));
 
-    const activity = recentImportsRes.rows.map(row => ({
-      dot: 'success',
-      html: `Imported <span class="actor">${row.n.toLocaleString()} records</span> from ${escapeHTML(row.filename || 'CSV')}`,
-      time: fmtTimeAgo(row.created_at),
-    }));
+    // Total imports completed today — surfaced as a meta badge on the
+    // recent-activity card so users see "16 total today" inline and
+    // know there's more without having to open /activity.
+    const todayCountRes = await query(`
+      SELECT COUNT(*)::int AS n
+        FROM bulk_import_jobs
+       WHERE tenant_id = $1
+         AND status IN ('complete','completed')
+         AND COALESCE(started_at, created_at) >= CURRENT_DATE
+    `, [t]).catch(() => ({ rows: [{ n: 0 }] }));
+    const activityTodayCount = todayCountRes.rows[0]?.n || 0;
+
+    const activity = recentImportsRes.rows.map(row => {
+      const listChip = row.list_name
+        ? ` → <a class="ocu-activity-list-link" href="/oculah/records?list_id=${row.list_id}">${escapeHTML(row.list_name)}</a>`
+        : '';
+      return {
+        dot: 'success',
+        html: `Imported <span class="actor">${row.n.toLocaleString()} records</span> from ${escapeHTML(row.filename || 'CSV')}${listChip}`,
+        time: fmtTimeAgo(row.created_at),
+      };
+    });
 
     // Pad with a synthetic entry if there's nothing else
     if (activity.length === 0) {
@@ -344,9 +377,17 @@ async function _renderMainDashboard(req, res) {
         overdue: reg.overdue,
         dueWeek: reg.due_week,
         total: reg.total,
+        nextPull: nextPullRes && nextPullRes.rows && nextPullRes.rows[0]
+          ? {
+              listName: nextPullRes.rows[0].list_name || '',
+              stateCode: nextPullRes.rows[0].state_code || '',
+              dueDate: nextPullRes.rows[0].next_pull,
+            }
+          : null,
       },
       topListsItems: topListsRes.rows,
       activity,
+      activityTodayCount,
       user,
       lastUpdatedAt: new Date(),
     }));
@@ -2104,6 +2145,25 @@ router.get('/setup', requireAuth, async (req, res) => {
       }
     } catch (_) { /* defaults applied above */ }
 
+    // Last manual dedup run — written by POST /setup/dedup. updated_at is
+    // the timestamp; value is the merged count (string-stored). Auto-runs
+    // after each bulk import don't write here, so this card shows only
+    // explicit operator-triggered runs from this Settings page.
+    let dedupLastRunAt = null;
+    let dedupLastMerged = null;
+    try {
+      const r = await query(
+        `SELECT value, updated_at FROM app_settings
+          WHERE tenant_id = $1 AND key = 'dedup_last_run' LIMIT 1`,
+        [req.tenantId]
+      );
+      if (r.rows.length) {
+        dedupLastRunAt  = r.rows[0].updated_at;
+        const v = parseInt(r.rows[0].value, 10);
+        dedupLastMerged = Number.isFinite(v) ? v : null;
+      }
+    } catch (_) { /* table may not exist yet on a fresh deploy */ }
+
     res.send(settingsPage({
       user: await getUser(req),
       lastUpdatedAt: updatedAt,
@@ -2111,6 +2171,8 @@ router.get('/setup', requireAuth, async (req, res) => {
       userEmail,
       highEquityThreshold: highEq,
       lowEquityThreshold:  lowEq,
+      dedupLastRunAt,
+      dedupLastMerged,
       flash: {
         msg:   req.query.msg   ? String(req.query.msg).slice(0, 500)   : '',
         err:   req.query.err   ? String(req.query.err).slice(0, 500)   : '',
@@ -2208,6 +2270,22 @@ router.post('/setup/dedup', requireAuth, async (req, res) => {
     const phoneStats = await dedupByPhone('confirm',       { tenantId: req.tenantId });
     const nameStats  = await dedupByNameAddress('confirm', { tenantId: req.tenantId });
     const totalMerged = phoneStats.losersMerged + nameStats.losersMerged;
+
+    // Persist the run so the Settings page can show "Last run: …" without
+    // having to mine logs. Stored in app_settings as a single key — the
+    // table's updated_at column doubles as our timestamp.
+    try {
+      const { ensureSettingsSchema } = require('../settings');
+      await ensureSettingsSchema();
+      await query(
+        `INSERT INTO app_settings (tenant_id, key, value, updated_at)
+              VALUES ($1, 'dedup_last_run', $2, NOW())
+         ON CONFLICT (tenant_id, key) DO UPDATE
+            SET value = EXCLUDED.value, updated_at = NOW()`,
+        [req.tenantId, String(totalMerged)]
+      );
+    } catch (e) { console.warn('[setup/dedup] persist last-run failed (non-fatal):', e.message); }
+
     const msg = totalMerged > 0
       ? `Merged ${totalMerged} duplicate contact(s): ${phoneStats.losersMerged} via shared phone, ${nameStats.losersMerged} via name+address.`
       : 'No duplicate contacts found — your data is clean.';

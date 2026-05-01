@@ -64,6 +64,19 @@ function selectCell(field, currentValue, options, rowId) {
   return `<select class="ocu-cell-input" data-field="${field}" onchange="lr_save(${rowId}, '${field}', this.value)">${opts}</select>`;
 }
 
+// A row is "incomplete" when a tier, source, or frequency is missing.
+// Visually flag these so they don't read as intentionally-sparse entries —
+// users were creating Pause-state stubs and abandoning them, leaving the
+// registry looking broken. The tooltip lists exactly which fields are
+// missing so the operator knows what to fill.
+function setupRequiredFlags(r) {
+  const missing = [];
+  if (!r.list_tier)              missing.push('tier');
+  if (!r.source)                 missing.push('source');
+  if (r.frequency_days == null)  missing.push('frequency');
+  return missing;
+}
+
 function rowHTML(r) {
   const over = isOverdue(r.last_pull_date, r.frequency_days);
   const soon = isDueSoon(r.last_pull_date, r.frequency_days);
@@ -73,14 +86,21 @@ function rowHTML(r) {
                   : soon ? 'color:#c07a1a;font-weight:600'
                   : 'color:var(--ocu-text-2)';
   const lastDate = r.last_pull_date ? new Date(r.last_pull_date).toISOString().slice(0, 10) : '';
+  const missing = setupRequiredFlags(r);
+  const setupBadge = missing.length
+    ? `<span class="ocu-pill ocu-pill-warn ocu-lr-setup-badge" title="Missing: ${escHTML(missing.join(', '))}">Setup required</span>`
+    : '';
 
-  return `<tr data-id="${r.id}">
+  return `<tr data-id="${r.id}"${missing.length ? ' data-incomplete="true"' : ''}>
     <td class="ocu-td">${selectCell('action', r.action, Object.entries(ACTION_LABELS), r.id)}</td>
     <td class="ocu-td">${selectCell('state_code', r.state_code, STATES.map(s => [s, s || '—']), r.id)}</td>
     <td class="ocu-td">
-      <input class="ocu-cell-input" type="text" value="${escHTML(r.list_name)}"
-             onblur="lr_save(${r.id}, 'list_name', this.value)"
-             onkeydown="if(event.key==='Enter')this.blur()" />
+      <div class="ocu-lr-name-cell">
+        <input class="ocu-cell-input" type="text" value="${escHTML(r.list_name)}"
+               onblur="lr_save(${r.id}, 'list_name', this.value)"
+               onkeydown="if(event.key==='Enter')this.blur()" />
+        ${setupBadge}
+      </div>
     </td>
     <td class="ocu-td">${selectCell('list_tier', r.list_tier, Object.entries(TIER_LABELS), r.id)}</td>
     <td class="ocu-td">${selectCell('source', r.source, [...VALID_SOURCES.map(s => [s, s || '—']), ['Other', 'Other']], r.id)}</td>

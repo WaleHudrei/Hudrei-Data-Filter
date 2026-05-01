@@ -20,18 +20,22 @@ const OWNER_TYPE_STYLES = {
   Trust:   { bg: '#F3E8FF', fg: '#6D28D9' },
 };
 
+// Distress chip — score + colored band indicator. Bands are tied to the
+// scoring thresholds in scoring/distress.js (cold <30, warm <55, hot <75,
+// burning ≥75). The chip's left edge is a 3px-wide colored bar so users
+// scanning a 25-row table can spot Burning/Hot rows at a glance even when
+// the values themselves are crowded.
 function distressCell(score) {
-  if (score == null) return `<span style="color:var(--ocu-text-3)">—</span>`;
+  if (score == null) return `<span class="ocu-text-3">—</span>`;
   const s = Number(score) || 0;
-  let color = '#9CA3AF', label = 'Cold';
-  if (s >= 80)      { color = '#DC2626'; label = 'Burning'; }
-  else if (s >= 60) { color = '#EA580C'; label = 'Hot'; }
-  else if (s >= 40) { color = '#D97706'; label = 'Warm'; }
-  // Distress shown as a colored dot + score, rather than a heavy pill — reads
-  // like a thermometer reading instead of a chunky tag.
-  return `<span style="display:inline-flex;align-items:center;gap:6px;font-family:var(--ocu-mono);font-weight:600;color:${color}" title="${label}">
-    <span style="width:8px;height:8px;border-radius:50%;background:${color};box-shadow:0 0 0 3px ${color}22"></span>
-    ${s}
+  let band = 'cold', label = 'Cold';
+  if (s >= 75)      { band = 'burning'; label = 'Burning'; }
+  else if (s >= 55) { band = 'hot';     label = 'Hot'; }
+  else if (s >= 30) { band = 'warm';    label = 'Warm'; }
+  return `<span class="ocu-distress-chip" data-band="${band}" title="${label} (${s})">
+    <span class="ocu-distress-chip-bar"></span>
+    <span class="ocu-distress-chip-score">${s}</span>
+    <span class="ocu-distress-chip-band">${label}</span>
   </span>`;
 }
 

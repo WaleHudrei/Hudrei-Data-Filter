@@ -15,7 +15,14 @@ function safeHref(h) {
 }
 
 function card(opts = {}) {
-  const { title = '', meta = '', link = null, body = '' } = opts;
+  const { title = '', meta = '', metaHTML = '', link = null, body = '' } = opts;
+
+  // metaHTML is an opt-in escape hatch for cards that want inline markup
+  // in the meta line (e.g., a <strong> count). Plain `meta` is escHTML'd
+  // as before; only pass metaHTML when you control the content.
+  const metaSlot = metaHTML
+    ? `<div class="ocu-card-meta">${metaHTML}</div>`
+    : meta ? `<div class="ocu-card-meta">${escHTML(meta)}</div>` : '';
 
   let header = '';
   if (title || link) {
@@ -23,7 +30,7 @@ function card(opts = {}) {
       <div class="ocu-card-header">
         <div>
           ${title ? `<div class="ocu-card-title">${escHTML(title)}</div>` : ''}
-          ${meta ? `<div class="ocu-card-meta">${escHTML(meta)}</div>` : ''}
+          ${metaSlot}
         </div>
         ${link ? `<a class="ocu-card-link" href="${escHTML(safeHref(link.href))}">${escHTML(link.label || '')}</a>` : ''}
       </div>`;
