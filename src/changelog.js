@@ -3,6 +3,13 @@
 
 const ENTRIES = [
   {
+    date: 'May 1, 2026 (5A.1 — accepted-by-dialer per row)',
+    title: 'Per-row Accepted by Dialer + DNC columns flow through master-list import',
+    items: [
+      { tag: 'feat', text: 'Backend foundation for the multi-dialer import work. Two new columns on campaign_contacts: accepted (BOOLEAN, nullable — null means "no mapping was supplied") and dnc (BOOLEAN default false). importContactList() now consumes optional accepted/dnc mappings from customMapping and parses Yes/No-style cells via the new parseYesNo helper, which understands "Yes/No", "Y/N", "1/0", "true/false", "Lead Accepted", "rejected", "skipped", and similar Readymode/CallTools/Batch dialer phrasing. Auto-detect picks up an "Accepted by Dialer" / "Accepted" / "Lead Accepted" header on any incoming master list. ON CONFLICT preserves prior accepted state when the new upload omits a value; dnc OR-merges so once-flagged-always-flagged. The existing single-step file picker continues to work unchanged — no UI surface yet (next push, 5A.2, makes the mapping required via a wizard step before import).' },
+    ],
+  },
+  {
     date: 'May 1, 2026 (rename — accepted by dialer)',
     title: '"Accepted by Readymode" → "Accepted by Dialer"',
     items: [

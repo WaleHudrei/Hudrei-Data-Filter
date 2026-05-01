@@ -181,6 +181,13 @@ async function initCampaignSchema() {
     `ALTER TABLE campaign_contact_phones ADD COLUMN IF NOT EXISTS wrong_number_flagged_at TIMESTAMPTZ`,
     `ALTER TABLE campaign_contact_phones ADD COLUMN IF NOT EXISTS correct_flagged_at TIMESTAMPTZ`,
     `ALTER TABLE campaign_contacts ADD COLUMN IF NOT EXISTS marketing_result VARCHAR(50)`,
+    // 2026-05-01 multi-dialer support (5A.1). Per-row "Accepted by Dialer"
+    // signal driven by the operator's column mapping at import time. NULL
+    // means "no mapping was supplied" (pre-5A imports); TRUE/FALSE come from
+    // parsing Yes/No values in the mapped source column. dnc is the
+    // optional Do-Not-Call flag.
+    `ALTER TABLE campaign_contacts ADD COLUMN IF NOT EXISTS accepted BOOLEAN`,
+    `ALTER TABLE campaign_contacts ADD COLUMN IF NOT EXISTS dnc BOOLEAN DEFAULT false`,
     // Per-campaign filter thresholds (Task 2). Defaults make existing campaigns
     // behave like before: voicemails/hangups are NOT auto-filtered out at clean-
     // export time unless the user lowers the threshold. exclude_* defaults match
@@ -500,6 +507,25 @@ async function updateCampaignName(tenantId, id, rawName) {
 
 // ── Contact list management ───────────────────────────────────────────────────
 
+// Parse a "Yes/No"-style cell into a tri-state. Returns true / false / null.
+// null means "value didn't look like a clear answer" — we leave the column
+// at its DB default rather than guess. Handles common dialer-export variants:
+// "Yes", "yes", "Y", "1", "TRUE", "Lead Accepted", "accepted",
+// "No", "n", "0", "rejected", "not accepted", "skipped", etc.
+// 2026-05-01: introduced for 5A.1 (Accepted-by-Dialer mapping).
+function parseYesNo(raw) {
+  if (raw === true || raw === false) return raw;
+  if (raw == null) return null;
+  const s = String(raw).trim().toLowerCase();
+  if (!s) return null;
+  if (['yes', 'y', 'true', 't', '1', 'accepted', 'lead accepted'].includes(s)) return true;
+  if (['no', 'n', 'false', 'f', '0', 'rejected', 'not accepted', 'skipped', 'unaccepted'].includes(s)) return false;
+  // Heuristic fallback for free-text status messages.
+  if (s.includes('not accepted') || s.includes('rejected') || s.includes('skipped')) return false;
+  if (s.includes('accepted')) return true;
+  return null;
+}
+
 // Detect phone columns from CSV headers.
 // Kept local (not imported from filtration.js) so this module can stay
 // self-contained for the importContactList flow below.
@@ -563,19 +589,26 @@ async function importContactList(tenantId, campaignId, rows, headers, customMapp
     pcity:    find(['property city']),
     pstate:   find(['property state']),
     pzip:     find(['property zip', 'property zip code']),
+    // 2026-05-01 (5A.1): per-row dialer-acceptance signal. Auto-detect tries
+    // common Readymode/CallTools/Batch column names. If absent, the operator
+    // will be forced to map one explicitly in the 5A.2 wizard.
+    accepted: find(['accepted by dialer', 'accepted', 'lead accepted', 'accepted_lead']),
+    dnc:      find(['dnc', 'do not call']),
   };
   const COL = customMapping ? {
-    fname:   customMapping.fname   || autoDetect.fname,
-    lname:   customMapping.lname   || autoDetect.lname,
-    maddr:   customMapping.maddr   || autoDetect.maddr,
-    mcity:   customMapping.mcity   || autoDetect.mcity,
-    mstate:  customMapping.mstate  || autoDetect.mstate,
-    mzip:    customMapping.mzip    || autoDetect.mzip,
-    mcounty: customMapping.mcounty || autoDetect.mcounty,
-    paddr:   customMapping.paddr   || autoDetect.paddr,
-    pcity:   customMapping.pcity   || autoDetect.pcity,
-    pstate:  customMapping.pstate  || autoDetect.pstate,
-    pzip:    customMapping.pzip    || autoDetect.pzip,
+    fname:    customMapping.fname    || autoDetect.fname,
+    lname:    customMapping.lname    || autoDetect.lname,
+    maddr:    customMapping.maddr    || autoDetect.maddr,
+    mcity:    customMapping.mcity    || autoDetect.mcity,
+    mstate:   customMapping.mstate   || autoDetect.mstate,
+    mzip:     customMapping.mzip     || autoDetect.mzip,
+    mcounty:  customMapping.mcounty  || autoDetect.mcounty,
+    paddr:    customMapping.paddr    || autoDetect.paddr,
+    pcity:    customMapping.pcity    || autoDetect.pcity,
+    pstate:   customMapping.pstate   || autoDetect.pstate,
+    pzip:     customMapping.pzip     || autoDetect.pzip,
+    accepted: customMapping.accepted || autoDetect.accepted,
+    dnc:      customMapping.dnc      || autoDetect.dnc,
   } : autoDetect;
 
   const phoneCols = detectPhoneColumns(headers);
@@ -610,8 +643,8 @@ async function importContactList(tenantId, campaignId, rows, headers, customMapp
     for (let j = 0; j < batch.length; j++) {
       const r = batch[j];
       const idx = i + j;
-      // 14 cols including tenant_id
-      vals.push(`($${p},$${p+1},$${p+2},$${p+3},$${p+4},$${p+5},$${p+6},$${p+7},$${p+8},$${p+9},$${p+10},$${p+11},$${p+12},$${p+13})`);
+      // 16 cols including tenant_id (added accepted, dnc — 5A.1).
+      vals.push(`($${p},$${p+1},$${p+2},$${p+3},$${p+4},$${p+5},$${p+6},$${p+7},$${p+8},$${p+9},$${p+10},$${p+11},$${p+12},$${p+13},$${p+14},$${p+15})`);
       // 2026-04-20 audit fix #1: route property_state + mailing_state through
       // normalizeState() so the records filter's UPPER(TRIM(property_state))
       // = UPPER(TRIM(p.state_code)) comparison actually matches. Before this,
@@ -625,22 +658,32 @@ async function importContactList(tenantId, campaignId, rows, headers, customMapp
       const rawPstate = String(r[COL.pstate] || '').trim();
       const mstate = normalizeState(rawMstate) || rawMstate;
       const pstate = normalizeState(rawPstate) || rawPstate;
+      // 2026-05-01 (5A.1): mapped Accepted-by-Dialer + DNC. Tri-state Yes/No
+      // parse — null when no column was mapped or value is unparseable.
+      // dnc defaults to false if no column is mapped (most lists don't
+      // ship a DNC flag and false is the safe default for inclusion).
+      const acceptedVal = COL.accepted ? parseYesNo(r[COL.accepted]) : null;
+      const rawDnc      = COL.dnc      ? parseYesNo(r[COL.dnc])      : null;
+      const dncVal      = rawDnc === true ? true : false;
       params.push(
         campaignId,
         r[COL.fname]||'', r[COL.lname]||'',
         r[COL.maddr]||'', r[COL.mcity]||'', mstate, r[COL.mzip]||'', r[COL.mcounty]||'',
         r[COL.paddr]||'', r[COL.pcity]||'', pstate, r[COL.pzip]||'',
         idx,
-        tenantId
+        tenantId,
+        acceptedVal,
+        dncVal
       );
-      p += 14;
+      p += 16;
     }
 
     const contactRes = await query(
       `INSERT INTO campaign_contacts
          (campaign_id, first_name, last_name, mailing_address, mailing_city,
           mailing_state, mailing_zip, mailing_county, property_address,
-          property_city, property_state, property_zip, row_index, tenant_id)
+          property_city, property_state, property_zip, row_index, tenant_id,
+          accepted, dnc)
        VALUES ${vals.join(',')}
        ON CONFLICT (campaign_id, row_index) DO UPDATE SET
          first_name       = COALESCE(NULLIF(EXCLUDED.first_name,''),       campaign_contacts.first_name),
@@ -654,6 +697,8 @@ async function importContactList(tenantId, campaignId, rows, headers, customMapp
          property_city    = COALESCE(NULLIF(EXCLUDED.property_city,''),    campaign_contacts.property_city),
          property_state   = COALESCE(NULLIF(EXCLUDED.property_state,''),   campaign_contacts.property_state),
          property_zip     = COALESCE(NULLIF(EXCLUDED.property_zip,''),     campaign_contacts.property_zip),
+         accepted         = COALESCE(EXCLUDED.accepted,                    campaign_contacts.accepted),
+         dnc              = (EXCLUDED.dnc OR campaign_contacts.dnc),
          updated_at       = NOW()
        RETURNING id, row_index`,
       params
