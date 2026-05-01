@@ -200,11 +200,24 @@ async function sendPasswordChangedEmail(to, name) {
   return send({ to, subject: `Your ${BRAND} password was changed`, htmlBody: html, textBody: text });
 }
 
+// 2026-05-01 Phase 4 — workspace invite email
+async function sendInviteEmail(to, inviterName, workspaceName, token) {
+  const link = `${baseUrl()}/invite/${encodeURIComponent(token)}`;
+  const subject = `${inviterName || 'Someone'} invited you to ${workspaceName || 'Oculah'}`;
+  const html = `<p>You've been invited to join the <strong>${workspaceName || 'Oculah'}</strong> workspace on ${BRAND}.</p>
+    <p>Click below to accept and create your account. The link expires in 7 days.</p>
+    <p><a href="${link}" style="display:inline-block;padding:11px 18px;background:#1a1a1a;color:#fff;border-radius:8px;text-decoration:none;font-weight:600">Accept invitation</a></p>
+    <p>Or paste this URL: <code>${link}</code></p>`;
+  const text = `Accept your invitation to ${workspaceName || 'Oculah'}: ${link}`;
+  return send({ to, subject, htmlBody: html, textBody: text });
+}
+
 module.exports = {
   send,
   sendVerifyEmail,
   sendPasswordResetEmail,
   sendPasswordChangedEmail,
   sendSignupExistingAccountEmail,
+  sendInviteEmail,
   baseUrl,
 };

@@ -190,6 +190,17 @@ app.use((req, res, next) => {
 // handles multipart/form-data independently. The only routes that send
 // non-trivial JSON bodies (e.g. /import/property/commit) post a mapping
 // object + a few flags, well under 1MB.
+// 2026-05-01 Phase 3 — Stripe webhook needs the RAW body to verify the
+// signature, so it MUST be mounted BEFORE express.json() which would
+// consume + JSON.parse the request body. The raw-body middleware here
+// only fires for the exact webhook path; everything else flows through
+// express.json/urlencoded normally.
+const _billingRoutes = require('./billing-routes');
+app.post('/billing/webhook',
+  express.raw({ type: 'application/json', limit: '1mb' }),
+  _billingRoutes.webhookHandler
+);
+
 app.use(express.json({ limit: '1mb' }));
 app.use(express.urlencoded({ extended: true, limit: '1mb' }));
 
@@ -335,6 +346,32 @@ app.use((req, res, next) => {
   // return value; the AsyncLocalStorage context flows through next()'s
   // synchronous call and into all the async work that follows it.
   runWithTenant(req.session.tenantId, () => next());
+});
+
+// 2026-05-01 Phase 3 — Stripe billing access gate. Authenticated tenant
+// requests whose subscription_status is past_due / canceled / null (and
+// not legacy-grandfathered) get redirected to /billing/upgrade. Trialing
+// + active pass through. Super-admin sessions and unauthenticated paths
+// bypass entirely. Billing routes themselves bypass so users can always
+// reach /billing to fix payment. /logout bypasses so the dead-end state
+// is exit-able.
+const _billing = require('./billing');
+const _BILLING_BYPASS = ['/billing', '/logout', '/login'];
+app.use(async (req, res, next) => {
+  if (!req.session?.authenticated || !req.session?.tenantId) return next();
+  if (req.session.superAdmin === true) return next();
+  if (_BILLING_BYPASS.some(p => req.path === p || req.path.startsWith(p + '/'))) return next();
+  try {
+    const ok = await _billing.hasActiveAccess(req.session.tenantId);
+    if (ok) return next();
+    if (req.headers.accept && req.headers.accept.includes('application/json')) {
+      return res.status(402).json({ error: 'Subscription required', billingUrl: '/billing/upgrade' });
+    }
+    res.redirect('/billing/upgrade?msg=' + encodeURIComponent('Trial ended — please continue with a paid plan to keep using Oculah.'));
+  } catch (e) {
+    console.error('[billing-gate]', e.message);
+    next();   // fail-open on error so a billing-table hiccup doesn't lock everyone out
+  }
 });
 
 // 2026-04-29 audit fix H2: proactive 503 when the pg pool is saturated.
@@ -800,6 +837,15 @@ app.use('/ocular', ocularRoutes);
 // SUPER_ADMIN_EMAIL — only the operator whose email matches that env var
 // reaches any handler. Mounted last so /admin doesn't collide with anything.
 app.use('/admin', adminRoutes);
+
+// 2026-05-01 Phase 3 — billing UI routes (the webhook is mounted earlier
+// with raw body parsing). _billingRoutes was loaded near the top.
+app.use(_billingRoutes.router);
+
+// 2026-05-01 Phase 4 — workspace member management (admin-only) +
+// public invite-accept flow. Both live in the same router to keep the
+// invitations module's helpers in one place.
+app.use(require('./invitations-routes'));
 
 // 2026-05-01 Phase 2 finalization — Sentry error handler. MUST mount
 // after all routes so it sees errors propagated by next(err) from any

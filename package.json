@@ -22,7 +22,8 @@
     "nodemailer": "^6.9.13",
     "papaparse": "^5.4.1",
     "pg": "^8.11.3",
-    "postmark": "^4.0.7"
+    "postmark": "^4.0.7",
+    "stripe": "^22.1.0"
   },
   "engines": {
     "node": ">=18.0.0"

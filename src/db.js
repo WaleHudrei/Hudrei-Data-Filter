@@ -912,6 +912,54 @@ async function initSchema() {
     }
   }
 
+  // ── 2026-05-01 Phase 3 — Stripe billing schema additions ────────────────
+  // Eight columns added to `tenants`. All nullable so existing rows
+  // (HudREI etc.) keep working unchanged. Phase 2 signup sets
+  // subscription_status='trialing' + trial_ends_at on new tenants;
+  // existing tenants get NULL until they pass through Stripe Checkout.
+  await query(`
+    ALTER TABLE tenants ADD COLUMN IF NOT EXISTS stripe_customer_id     TEXT UNIQUE;
+    ALTER TABLE tenants ADD COLUMN IF NOT EXISTS stripe_subscription_id TEXT UNIQUE;
+    ALTER TABLE tenants ADD COLUMN IF NOT EXISTS subscription_status    TEXT;
+    ALTER TABLE tenants ADD COLUMN IF NOT EXISTS trial_ends_at          TIMESTAMPTZ;
+    ALTER TABLE tenants ADD COLUMN IF NOT EXISTS current_period_end     TIMESTAMPTZ;
+    ALTER TABLE tenants ADD COLUMN IF NOT EXISTS plan                   TEXT;
+    ALTER TABLE tenants ADD COLUMN IF NOT EXISTS seat_count             INT NOT NULL DEFAULT 1;
+    ALTER TABLE tenants ADD COLUMN IF NOT EXISTS cancel_at_period_end   BOOLEAN NOT NULL DEFAULT FALSE;
+  `).catch((e) => { console.warn('[schema] tenants stripe cols:', e.message); });
+
+  // ── 2026-05-01 Phase 4 — invitations + activity log ────────────────────
+  await query(`
+    CREATE TABLE IF NOT EXISTS invitations (
+      id          SERIAL PRIMARY KEY,
+      tenant_id   INT NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+      email       TEXT NOT NULL,
+      role        TEXT NOT NULL DEFAULT 'tenant_user'
+                    CHECK (role IN ('tenant_user', 'tenant_admin')),
+      token       TEXT UNIQUE NOT NULL,
+      invited_by  INT NOT NULL REFERENCES users(id),
+      expires_at  TIMESTAMPTZ NOT NULL,
+      accepted_at TIMESTAMPTZ,
+      revoked_at  TIMESTAMPTZ,
+      created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+    CREATE INDEX IF NOT EXISTS invitations_tenant_idx ON invitations(tenant_id);
+    CREATE INDEX IF NOT EXISTS invitations_email_idx ON invitations(LOWER(email));
+
+    CREATE TABLE IF NOT EXISTS activity_log (
+      id            BIGSERIAL PRIMARY KEY,
+      tenant_id     INT NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+      user_id       INT REFERENCES users(id) ON DELETE SET NULL,
+      action        TEXT NOT NULL,
+      resource_type TEXT,
+      resource_id   TEXT,
+      metadata      JSONB,
+      ip            TEXT,
+      created_at    TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+    CREATE INDEX IF NOT EXISTS activity_log_tenant_idx ON activity_log(tenant_id, created_at DESC);
+  `).catch((e) => { console.warn('[schema] phase4 tables:', e.message); });
+
   // ── 2026-05-01 Phase 1 closure — Row-Level Security policies ─────────────
   // Saas-conversion-plan Decision 1's documented tradeoff: shared-DB
   // multi-tenancy means a forgotten WHERE tenant_id = $X leaks data.
@@ -940,6 +988,7 @@ async function initSchema() {
     'nis_numbers', 'app_settings',
     'email_verification_tokens', 'password_reset_tokens',
     'phone_intelligence',
+    'invitations', 'activity_log',
   ];
   for (const t of RLS_TABLES) {
     try {

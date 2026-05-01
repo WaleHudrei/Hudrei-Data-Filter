@@ -443,8 +443,16 @@ router.post('/signup', _signupRateLimit, async (req, res) => {
     // Create tenant + user atomically. If anything between the two queries
     // throws, we'd leak an empty tenant; acceptable in v1 (we can clean up
     // empty tenants later if it becomes a problem).
+    // 2026-05-01 Phase 3 — start every new tenant on a 14-day trial. The
+    // trial_ends_at + subscription_status fields are added in db.js Phase
+    // 3 schema migration. The billing access gate (server.js) lets
+    // 'trialing' through; once trial expires the next request bounces to
+    // /billing/upgrade. Existing tenants with NULL subscription_status
+    // are grandfathered in (HudREI etc.).
     const t = await query(
-      `INSERT INTO tenants (name, slug, status) VALUES ($1, $2, 'active') RETURNING id`,
+      `INSERT INTO tenants (name, slug, status, subscription_status, trial_ends_at)
+       VALUES ($1, $2, 'active', 'trialing', NOW() + INTERVAL '14 days')
+       RETURNING id`,
       [workspace, slug]
     );
     const tenantId = t.rows[0].id;
