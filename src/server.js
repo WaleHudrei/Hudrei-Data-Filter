@@ -259,6 +259,22 @@ app.get('/health', (req, res) => {
   res.json({ ok: true, ts: Date.now() });
 });
 
+// 2026-05-01 Phase 2 finalization — CSRF protection. Mounted after session
+// (so req.session exists) and BEFORE tenant-status / RLS / routes. On
+// state-changing methods (POST/PUT/PATCH/DELETE) it requires either an
+// `x-csrf-token` header (fetch / XHR path) or an `_csrf` form field
+// matching the session-stored token. Public auth endpoints (/login,
+// /signup, /forgot-password, /reset-password, /hq/login, /health) are
+// exempt — they pre-date a session. Multipart uploads are exempt because
+// SameSite=lax on the session cookie covers them at the transport level.
+//
+// The matching client-side patch lives at /js/csrf-protect.js (loaded by
+// the Ocular shell) — it auto-attaches the header to every fetch() and
+// auto-injects a hidden _csrf input into every POST form. So the legacy
+// Loki UI's ~200 forms didn't have to be modified individually.
+const { csrfMiddleware } = require('./csrf');
+app.use(csrfMiddleware);
+
 // 2026-05-01 Phase 2 finalization — global tenant-status gate. Runs after
 // static so /oculah-static/* + /public/* don't pay the check, but BEFORE
 // every router (auth, ocular, records, owners, lists, imports, admin, hq).

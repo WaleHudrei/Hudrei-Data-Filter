@@ -122,11 +122,24 @@ function shell(opts = {}) {
   `;
   }).join('');
 
+  // 2026-05-01 Phase 2 finalization — CSRF token + auto-attach script.
+  // Token comes from AsyncLocalStorage populated by csrfMiddleware on every
+  // request. Empty string when no session (landing pages, etc.) — the
+  // client-side script is a no-op in that case.
+  const _csrfToken = (() => {
+    try { return require('../../csrf').currentToken(); }
+    catch (_) { return ''; }
+  })();
+  const _csrfMeta = _csrfToken
+    ? `<meta name="csrf-token" content="${String(_csrfToken).replace(/[^a-zA-Z0-9]/g, '')}">`
+    : '';
+
   return `<!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  ${_csrfMeta}
   <title>${escHTML(title)} · Oculah</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -135,6 +148,7 @@ function shell(opts = {}) {
        400-700 weight range we use across the design tokens. -->
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="/oculah-static/oculah.css?v=70">
+  <script src="/js/csrf-protect.js" defer></script>
   ${extraHead}
 </head>
 <body class="ocu">
