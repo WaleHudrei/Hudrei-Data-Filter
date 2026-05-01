@@ -102,6 +102,25 @@ function recordsList(data = {}) {
   const filterChips = buildFilterChips(filters, querystring);
   const actionBar = bulkActionBar();
 
+  // Distress-sort guidance banner. The user reported "high → low doesn't
+  // change the order" — diagnosis was that 70%+ of visible records had
+  // distress_score = 0 (because their list names don't match any of the
+  // distress keyword regexes), so the high→low sort fell through to the
+  // p.id DESC tiebreaker and looked visually identical to default. The
+  // server flags this case via distressSurfaceUnscored.
+  const distressBanner = data.distressSurfaceUnscored
+    ? `<div class="ocu-distress-hint" role="status">
+        <div class="ocu-distress-hint-text">
+          <strong>${data.distressUnscoredCount}/${data.distressVisibleCount} records on this page have a distress score of 0.</strong>
+          That's why "High → Low" looks the same as default order. Either the lists they're on don't match a distress keyword, or scores need to be recomputed.
+        </div>
+        <div class="ocu-distress-hint-actions">
+          <a href="/records/_distress" class="ocu-btn ocu-btn-secondary">Recompute distress</a>
+          <a href="/oculah/setup/distress" class="ocu-btn ocu-btn-ghost">Add custom signal →</a>
+        </div>
+      </div>`
+    : '';
+
   // Top-bar layout: filters bar full-width on top, then chips, then table.
   // Title + count live in the shell topbar; "Recompute distress" moved into
   // the filter bar (records-filters.js); "Merge duplicates" moved to HQ.
@@ -131,6 +150,7 @@ function recordsList(data = {}) {
     })}
 
     ${filterChips}
+    ${distressBanner}
 
     <div class="ocu-records-main-fullwidth">
       ${recordsTable({ rows, sortBy, sortDir, querystring: tableQs })}

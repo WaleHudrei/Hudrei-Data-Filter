@@ -1419,6 +1419,37 @@
   grid-column: 1 / -1;
 }
 
+/* Distress sort guidance banner — appears on /records when high→low
+   sort is active and most visible rows have score=0/NULL, explaining
+   why the order looks like default and offering one-click Recompute. */
+.ocu-distress-hint {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 14px;
+  padding: 14px 18px;
+  margin-bottom: 14px;
+  background: linear-gradient(180deg, #FFFBEB 0%, #FEF3C7 100%);
+  border: 1px solid #FBBF24;
+  border-radius: 10px;
+  color: #78350F;
+  font-size: 13px;
+  line-height: 1.5;
+}
+.ocu-distress-hint-text { flex: 1; min-width: 280px; }
+.ocu-distress-hint-text strong {
+  color: #78350F;
+  font-weight: 700;
+  display: block;
+  margin-bottom: 2px;
+}
+.ocu-distress-hint-actions {
+  display: flex;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
 /* PHONE ROW — compact card, wraps inner pills cleanly. */
 .ocu-phone-row {
   background: var(--ocu-bg);

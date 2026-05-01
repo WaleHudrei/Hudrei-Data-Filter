@@ -840,12 +840,30 @@ router.get('/records', requireAuth, async (req, res) => {
     // Pass through the original querystring (for chip-x removal links etc.)
     const querystring = req.url.includes('?') ? req.url.split('?')[1] : '';
 
+    // Distress-sort guidance: when the user picks "high → low" and most of
+    // the visible page is tied at score=0/NULL (which happens whenever the
+    // matching lists have generic names that don't trip the keyword regex),
+    // the sort silently looks identical to default p.id DESC. Surface a
+    // soft banner inviting them to Recompute, OR explaining custom signals.
+    let unscoredOnPage = 0;
+    if (sortBy === 'distress_score' && rowsRes.rows.length > 0) {
+      for (const r of rowsRes.rows) {
+        if (r.distress_score == null || r.distress_score === 0) unscoredOnPage++;
+      }
+    }
+    const distressSurfaceUnscored = sortBy === 'distress_score'
+      && rowsRes.rows.length > 0
+      && unscoredOnPage / rowsRes.rows.length >= 0.7;
+
     res.send(recordsList({
       rows: rowsRes.rows,
       total, page, limit,
       kpiCounts,
       sortBy, sortDir: sortDirLc,
       querystring,
+      distressSurfaceUnscored,
+      distressUnscoredCount: unscoredOnPage,
+      distressVisibleCount: rowsRes.rows.length,
       filters: {
         q, city, zip, county, pipeline, phones, min_distress, list_id, stateList,
         owner_type, occupancy, min_year, max_year, min_equity, max_equity,
