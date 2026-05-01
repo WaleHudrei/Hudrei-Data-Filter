@@ -43,6 +43,28 @@ function isValidEmail(e) {
   return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(e);
 }
 
+// 2026-05-01 Phase 4 — admin-action audit trail. Logs against the TARGET
+// tenant (not the operator's own tenant — operators don't have one) so
+// each tenant's activity feed shows operator actions taken on their data.
+const _activityLog = require('../activity-log');
+function _logAdmin(req, action, tenantId, opts = {}) {
+  // Synthesize a fake req with the target tenantId so the helper writes
+  // the row scoped to the affected tenant. The operator's identity is
+  // captured in metadata.acting_admin.
+  const operatorId = (req && req.session && req.session.userId) || null;
+  const operatorEmail = (req && req.session && (req.session.email || req.session.superAdminEmail)) || null;
+  const fakeReq = {
+    session: { tenantId, userId: null },
+    ip: req && (req.ip || req.headers['x-forwarded-for']) || null,
+    headers: req && req.headers || {},
+  };
+  const md = Object.assign(
+    { acting_admin_user_id: operatorId, acting_admin_email: operatorEmail, source: 'admin' },
+    opts.metadata || {}
+  );
+  return _activityLog.log(fakeReq, action, { ...opts, metadata: md });
+}
+
 function slugify(name) {
   return String(name || 'workspace')
     .toLowerCase()
@@ -371,6 +393,7 @@ router.post('/tenants/new', async (req, res) => {
 
     await provisionTenantSettings(tenantId);
 
+    _logAdmin(req, 'admin.tenant_created', tenantId, { resource_type: 'tenant', resource_id: String(tenantId), metadata: { workspace, slug, primary_email: emailAddr } });
     res.redirect('/admin/tenants/' + tenantId + '?ok=' + encodeURIComponent('Tenant created.'));
   } catch (e) {
     console.error('[admin POST /tenants/new]', e);
@@ -515,6 +538,7 @@ router.post('/tenants/:id/dedup', async (req, res) => {
     const msg = total > 0
       ? `Merged ${total} duplicate contact(s): ${phoneStats.losersMerged} via shared phone, ${nameStats.losersMerged} via name+address.`
       : 'No duplicate contacts found — tenant data is clean.';
+    _logAdmin(req, 'admin.dedup_run', id, { resource_type: 'tenant', resource_id: String(id), metadata: { merged_total: total, by_phone: phoneStats.losersMerged, by_name_addr: nameStats.losersMerged } });
     res.redirect('/admin/tenants/' + id + '?ok=' + encodeURIComponent(msg));
   } catch (e) {
     console.error('[admin POST /tenants/:id/dedup]', e);
@@ -537,6 +561,7 @@ router.post('/tenants/:id/status', async (req, res) => {
     const msg = next === 'suspended' ? 'Tenant suspended. Users can no longer sign in.'
               : next === 'active'    ? 'Tenant reactivated.'
               :                        'Tenant canceled.';
+    _logAdmin(req, 'admin.tenant_status_changed', id, { resource_type: 'tenant', resource_id: String(id), metadata: { new_status: next } });
     res.redirect('/admin/tenants/' + id + '?ok=' + encodeURIComponent(msg));
   } catch (e) {
     console.error('[admin POST /tenants/:id/status]', e);
@@ -565,6 +590,13 @@ router.post('/tenants/:id/delete', async (req, res) => {
       return res.redirect('/admin/tenants/' + id + '?err=' + encodeURIComponent('Slug confirmation did not match. Aborted.'));
     }
 
+    // 2026-05-01: log BEFORE the delete because the cascade nukes the
+    // activity_log row alongside the tenant. So this entry will only
+    // exist on a separate audit surface (server logs / future
+    // platform-level audit log) — but the helper is best-effort and
+    // we'd rather log on the tenant's row than nowhere.
+    _logAdmin(req, 'admin.tenant_deleted', id, { resource_type: 'tenant', resource_id: String(id), metadata: { slug: t.rows[0].slug } });
+    console.warn(`[ADMIN_AUDIT] tenant deleted id=${id} slug=${t.rows[0].slug} by_user=${req.session.userId} ip=${req.ip}`);
     // ON DELETE CASCADE on every tenant_id FK does the heavy lifting.
     await query(`DELETE FROM tenants WHERE id = $1`, [id]);
     res.redirect('/admin?ok=' + encodeURIComponent('Tenant deleted.'));
@@ -590,6 +622,7 @@ router.post('/tenants/:id/users/:uid/status', async (req, res) => {
   }
   try {
     await query(`UPDATE users SET status = $1 WHERE id = $2 AND tenant_id = $3`, [next, uid, id]);
+    _logAdmin(req, 'admin.user_status_changed', id, { resource_type: 'user', resource_id: String(uid), metadata: { new_status: next } });
     res.redirect('/admin/tenants/' + id + '?ok=' + encodeURIComponent(next === 'disabled' ? 'User disabled.' : 'User re-enabled.'));
   } catch (e) {
     console.error('[admin POST /tenants/:id/users/:uid/status]', e);
@@ -608,6 +641,7 @@ router.post('/tenants/:id/users/:uid/delete', async (req, res) => {
     return res.redirect('/admin/tenants/' + id + '?err=' + encodeURIComponent("Refusing to delete your own user account."));
   }
   try {
+    _logAdmin(req, 'admin.user_deleted', id, { resource_type: 'user', resource_id: String(uid) });
     await query(`DELETE FROM users WHERE id = $1 AND tenant_id = $2`, [uid, id]);
     res.redirect('/admin/tenants/' + id + '?ok=' + encodeURIComponent('User deleted.'));
   } catch (e) {

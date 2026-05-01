@@ -22,6 +22,10 @@ const errorMonitor = require('./error-monitor');
 errorMonitor.init();
 const backup = require('./backup');
 
+// 2026-05-01 Phase 4 — activity_log helper. log(req, 'event', { ... })
+// is best-effort and never fails the request.
+const _activity = require('./activity-log');
+
 const app = express();
 // 2026-04-18 audit fix #21: previously multer accepted any file up to 50MB
 // with no type check. Client-side had `.endsWith('.csv')` but a hostile or
@@ -1725,6 +1729,7 @@ app.post('/settings/security/delete-code', requireAuth, async (req, res) => {
   if (!result.ok) {
     return res.redirect('/settings/security?err=' + encodeURIComponent(result.error));
   }
+  _activity.log(req, 'settings.delete_code_changed', { resource_type: 'app_settings' });
   res.redirect('/settings/security?msg=' + encodeURIComponent('Delete code updated successfully.'));
 });
 
@@ -1740,6 +1745,7 @@ app.post('/nis/upload', requireAuth, upload.single('nisfile'), async (req, res) 
     // had filename=null, defeating the /nis history page.
     const result = await campaigns.importNisFile(req.tenantId, parsed.data, { filename: req.file.originalname });
     const msg = `Processed ${result.totalRows} rows — ${result.uniqueNumbers} unique NIS numbers (${result.inserted} new, ${result.updated} updated). Flagged ${result.flagged} phones across all campaigns.`;
+    _activity.log(req, 'nis.uploaded', { resource_type: 'nis_upload', metadata: { filename: req.file.originalname, totalRows: result.totalRows, inserted: result.inserted, updated: result.updated, flagged: result.flagged } });
     res.redirect('/nis?msg=' + encodeURIComponent(msg));
   } catch(e) {
     const ref = errRefId();
@@ -1946,6 +1952,7 @@ app.post('/campaigns/:id/reset', requireAuth, async (req, res) => {
     await saveMemory(memory);
     console.log('[reset] Campaign', campId, '— cleared', cleared, 'Redis keys');
 
+    _activity.log(req, 'campaign.reset', { resource_type: 'campaign', resource_id: String(campId), metadata: { redis_keys_cleared: cleared } });
     res.redirect('/campaigns/' + campId);
   } catch(e) {
     console.error('Reset campaign error:', e.message);
@@ -1966,6 +1973,7 @@ app.post('/campaigns/:id/delete', requireAuth, async (req, res) => {
     if (campRes.rows[0].status !== 'completed') return res.redirect('/campaigns/' + id);
     // Cascade delete — uploads, numbers, contacts, phones all cascade via FK
     await dbQ('DELETE FROM campaigns WHERE id=$1 AND tenant_id=$2', [id, req.tenantId]);
+    _activity.log(req, 'campaign.deleted', { resource_type: 'campaign', resource_id: String(id) });
     res.redirect('/campaigns');
   } catch(e) {
     console.error('Delete campaign error:', e.message);

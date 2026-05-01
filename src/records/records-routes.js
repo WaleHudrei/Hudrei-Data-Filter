@@ -7,6 +7,9 @@ const { normalizeState, VALID_STATES } = require('../import/state');
 const { lookupStateByZip } = require('../import/zip-to-state');
 const { inferOwnerType, normalizeOwnerType, VALID_OWNER_TYPES } = require('../owner-type');
 const { normalizePhone } = require('../phone-normalize');
+// 2026-05-01 Phase 4 — audit-log helper. Best-effort writes; never fails
+// the request. Wired at every destructive / audit-worthy mutation route.
+const _activity = require('../activity-log');
 
 function requireAuth(req, res, next) {
   if (!req.session || !req.session.authenticated) return res.redirect('/login');
@@ -452,6 +455,7 @@ router.post('/phones/:phoneId(\\d+)/edit', requireAuth, async (req, res) => {
         [phoneNorm, phoneId, req.tenantId]
       );
       if (!r.rowCount) return res.status(404).json({ error: 'Phone not found.' });
+      _activity.log(req, 'phone.edited', { resource_type: 'phone', resource_id: String(phoneId), metadata: { phone_number: phoneNorm } });
       res.json({ ok: true, phone: r.rows[0] });
     } catch (e) {
       // Postgres unique-violation code 23505 -> "this contact already has
@@ -480,6 +484,7 @@ router.post('/phones/:phoneId(\\d+)/delete', requireAuth, async (req, res) => {
       [phoneId, req.tenantId]
     );
     if (!r.rowCount) return res.status(404).json({ error: 'Phone not found.' });
+    _activity.log(req, 'phone.deleted', { resource_type: 'phone', resource_id: String(phoneId), metadata: { contact_id: r.rows[0].contact_id } });
     res.json({ ok: true, phone_id: r.rows[0].id, contact_id: r.rows[0].contact_id });
   } catch (e) {
     console.error('[phones/:id/delete POST]', e);
@@ -894,6 +899,7 @@ router.post('/:id(\\d+)/edit-fields', requireAuth, async (req, res) => {
       `UPDATE properties SET ${sets.join(', ')} WHERE id = $${idx} AND tenant_id = $${idx + 1}`,
       params
     );
+    _activity.log(req, 'record.edited', { resource_type: 'property', resource_id: String(propertyId), metadata: { fieldsChanged: sets.length - 1 } });
     res.json({ ok: true, updated: sets.length - 1 });
   } catch (e) {
     console.error('[records/:id/edit-fields]', e);
@@ -1002,6 +1008,7 @@ router.post('/:id(\\d+)/owner', requireAuth, async (req, res) => {
         [t, propertyId, contact.id, willBePrimary]
       );
       await client.query('COMMIT');
+      _activity.log(req, 'owner.added', { resource_type: 'property', resource_id: String(propertyId), metadata: { contact_id: contact.id, primary: willBePrimary } });
       res.json({ ok: true, contact, primary: willBePrimary });
     } catch (txErr) {
       await client.query('ROLLBACK');
@@ -1084,6 +1091,7 @@ router.delete('/:id(\\d+)/owner/:contactId(\\d+)', requireAuth, async (req, res)
       orphanDeleted = del.rowCount > 0;
     }
 
+    _activity.log(req, 'owner.removed', { resource_type: 'property', resource_id: String(propertyId), metadata: { contact_id: contactId, was_primary: wasPrimary, orphan_deleted: orphanDeleted } });
     res.json({
       ok: true,
       removed_link: true,
@@ -1136,6 +1144,7 @@ router.post('/:id(\\d+)/owner/:contactId(\\d+)/primary', requireAuth, async (req
       return res.status(404).json({ error: 'This contact is not linked to this property.' });
     }
     await client.query('COMMIT');
+    _activity.log(req, 'owner.primary_changed', { resource_type: 'property', resource_id: String(propertyId), metadata: { contact_id: contactId } });
     res.json({ ok: true });
   } catch (e) {
     try { await client.query('ROLLBACK'); } catch (_) {}
@@ -1246,6 +1255,7 @@ router.post('/:id(\\d+)/owner/:contactId(\\d+)/edit', requireAuth, async (req, r
       [contactId, fn, ln, ownerType, mAddr, mCity, mState, mZip, t, e0, e1, e2]
     );
     if (!upd.rowCount) return res.status(404).json({ error: 'Owner not found.' });
+    _activity.log(req, 'owner.edited', { resource_type: 'property', resource_id: String(propertyId), metadata: { contact_id: contactId } });
     res.json({ ok: true, contact: upd.rows[0] });
   } catch (e) {
     console.error('[records/:id/owner/:contactId/edit]', e);
@@ -3903,6 +3913,7 @@ router.post('/delete', requireAuth, async (req, res) => {
     }
 
     console.log(`[records/delete] Deleted ${result.rowCount} properties`);
+    _activity.log(req, 'records.bulk_deleted', { resource_type: 'property', metadata: { count: result.rowCount } });
     res.json({ ok: true, deleted: result.rowCount });
   } catch (e) {
     console.error('[records/delete]', e);
@@ -3941,6 +3952,7 @@ router.post('/:id(\\d+)/delete', requireAuth, async (req, res) => {
       console.error('[records/:id/delete] MV refresh failed (non-fatal):', e.message);
     }
     console.log(`[records/delete] Deleted single property #${id}`);
+    _activity.log(req, 'record.deleted', { resource_type: 'property', resource_id: String(id) });
     res.json({ ok: true });
   } catch (e) {
     console.error('[records/:id/delete]', e);
@@ -4247,6 +4259,7 @@ router.post('/bulk-tag', requireAuth, async (req, res) => {
       return res.status(400).json({ error: 'Invalid mode. Use "add" or "remove".' });
     }
 
+    _activity.log(req, 'records.bulk_tagged', { resource_type: 'property', metadata: { mode, propertyCount: propertyIds.length, tagsCount: (tagNames || tagIds || []).length } });
     res.json({ ok: true, affected, propertyCount: propertyIds.length });
   } catch (e) {
     console.error('[bulk-tag]', e);
@@ -4584,6 +4597,7 @@ router.post('/remove-from-list', requireAuth, async (req, res) => {
     );
 
     console.log(`[records/remove-from-list] Removed ${result.rowCount} property-list links from list "${listCheck.rows[0].list_name}" (id=${listIdInt})`);
+    _activity.log(req, 'records.removed_from_list', { resource_type: 'list', resource_id: String(listCheck.rows[0].id || ''), metadata: { listName: listCheck.rows[0].list_name, removed: result.rowCount } });
     res.json({ ok: true, removed: result.rowCount, listName: listCheck.rows[0].list_name });
   } catch (e) {
     console.error('[records/remove-from-list]', e);
