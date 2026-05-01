@@ -1413,11 +1413,20 @@ button.ocu-kpi,
 .ocu-owner-grid {
   display: grid;
   grid-template-columns: 1fr;
-  gap: var(--ocu-space-3);
+  /* 2026-05-01: bump card-to-card gap (was --ocu-space-3 / 12px) — at the
+     thinner spacing the two owner cards looked stacked-on-top-of-each-other
+     and the property summary card above. 18px gives a clean optical
+     separation without feeling sparse. Plus a top margin so the grid sits
+     comfortably below the property summary card rather than abutting it. */
+  gap: 18px;
+  margin-top: var(--ocu-space-4);
 }
 .ocu-owner-card {
-  /* inherits .ocu-card base */
-  padding: 18px 20px;
+  /* inherits .ocu-card base.
+     2026-05-01: padding bumped 18/20 → 22/24 to add breathing room around
+     the avatar / mailing column / phones grid. The pre-fix card felt
+     cramped vs. the surrounding property card which uses larger padding. */
+  padding: 22px 24px;
   /* 2026-05-01: position:relative so the +Add phone button can pin to the
      card's top-right via position:absolute. Pre-fix the button lived in the
      phones-section-label flex row, so its Y position drifted with the
@@ -1580,8 +1589,11 @@ button.ocu-kpi,
    the section labels. */
 .ocu-owner-add-phone-btn {
   position: absolute;
-  top: 14px;
-  right: 18px;
+  /* Tracks the card's 22/24 padding so the button sits a small inset away
+     from the top-right inner edge. Bump in lockstep if the card padding
+     changes. */
+  top: 18px;
+  right: 22px;
   padding: 3px 9px;
   font-size: 11px;
   font-weight: 600;
