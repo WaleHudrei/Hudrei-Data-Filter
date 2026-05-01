@@ -153,67 +153,209 @@ function adminShell(title, bodyHtml, opts = {}) {
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>${escHTML(title)} — Oculah Admin</title>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
 <style>
+  /* 2026-05-01 Phase 4 — HQ visual polish.
+     Goal: feel like a control plane, not a bargain admin theme.
+     Tokens follow the Ocular palette but darker / higher-contrast.
+     The dark theme is intentional — visually distinct from the
+     tenant-facing app so operators always know which surface they're on. */
+  :root{
+    --hq-bg:           #0a0c10;
+    --hq-bg-2:         #11141b;
+    --hq-card:         #161a23;
+    --hq-card-2:       #1a1f2c;
+    --hq-border:       #232a3a;
+    --hq-border-2:     #2d364a;
+    --hq-text:         #e4e7ed;
+    --hq-text-2:       #aeb4c0;
+    --hq-text-3:       #6e7585;
+    --hq-accent:       #5b8def;
+    --hq-accent-soft:  rgba(91,141,239,.15);
+    --hq-success:      #34d399;
+    --hq-success-soft: rgba(52,211,153,.15);
+    --hq-warn:         #fbbf24;
+    --hq-warn-soft:    rgba(251,191,36,.15);
+    --hq-danger:       #f87171;
+    --hq-danger-soft:  rgba(248,113,113,.15);
+    --hq-violet:       #a78bfa;
+    --hq-violet-soft:  rgba(167,139,250,.15);
+    --hq-radius:       12px;
+    --hq-radius-sm:    8px;
+    --hq-shadow:       0 1px 0 rgba(255,255,255,0.03) inset, 0 1px 3px rgba(0,0,0,0.3);
+  }
   *{box-sizing:border-box;margin:0;padding:0}
-  body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;background:#0f1115;color:#e4e6eb;line-height:1.5;min-height:100vh}
-  a{color:#9ec5ff;text-decoration:none}
-  a:hover{text-decoration:underline}
-  code{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;background:#1c1f26;padding:1px 6px;border-radius:4px;font-size:12px}
-  .topbar{background:#000;border-bottom:1px solid #1c1f26;padding:14px 28px;display:flex;align-items:center;justify-content:space-between}
-  .topbar .brand{font-weight:700;letter-spacing:.5px}
-  .topbar .brand .tag{background:#7a1a1a;color:#fff;font-size:11px;padding:2px 8px;border-radius:4px;margin-left:10px;letter-spacing:1px;text-transform:uppercase}
-  .topbar nav a{color:#aab1bd;font-size:13px;margin-left:20px}
-  .topbar nav a.active{color:#fff;font-weight:600}
-  .topbar .who{font-size:12px;color:#8b919c}
-  main{max-width:1100px;margin:32px auto;padding:0 28px 80px}
-  h1{font-size:26px;font-weight:700;margin-bottom:6px;letter-spacing:-.4px}
-  .lede{color:#8b919c;font-size:14px;margin-bottom:24px}
-  .card{background:#161922;border:1px solid #232733;border-radius:10px;padding:22px}
-  .card + .card{margin-top:16px}
-  .row{display:flex;justify-content:space-between;align-items:center;gap:12px;margin-bottom:18px}
+  body{
+    font-family:'Inter',-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;
+    background:var(--hq-bg);color:var(--hq-text);line-height:1.55;min-height:100vh;
+    -webkit-font-smoothing:antialiased;-moz-osx-font-smoothing:grayscale;
+    font-feature-settings:'cv02','cv03','cv04','cv11';
+  }
+  a{color:var(--hq-accent);text-decoration:none}
+  a:hover{color:#7ba2f4}
+  code{font-family:'JetBrains Mono',ui-monospace,SFMono-Regular,Menlo,monospace;background:var(--hq-bg-2);padding:2px 7px;border-radius:5px;font-size:12px;color:var(--hq-text-2);border:1px solid var(--hq-border)}
+
+  /* Top bar */
+  .topbar{
+    background:linear-gradient(180deg,#000 0%,#070a0f 100%);
+    border-bottom:1px solid var(--hq-border);
+    padding:0 32px;display:flex;align-items:center;justify-content:space-between;
+    height:60px;position:sticky;top:0;z-index:50;
+    backdrop-filter:saturate(180%) blur(8px);
+  }
+  .topbar .brand{font-weight:700;font-size:16px;letter-spacing:-.2px;display:flex;align-items:center;gap:10px}
+  .topbar .brand .tag{
+    background:linear-gradient(135deg,#7a1a1a,#9a2a2a);color:#fff;font-size:10px;
+    padding:3px 8px;border-radius:5px;letter-spacing:1.2px;text-transform:uppercase;font-weight:700;
+    box-shadow:0 1px 0 rgba(255,255,255,.1) inset;
+  }
+  .topbar nav{display:flex;gap:4px;align-items:center}
+  .topbar nav a{
+    color:var(--hq-text-2);font-size:13px;padding:8px 14px;border-radius:7px;font-weight:500;
+    transition:background .12s,color .12s;
+  }
+  .topbar nav a:hover{background:var(--hq-card);color:var(--hq-text)}
+  .topbar nav a.active{color:#fff;background:var(--hq-card)}
+
+  /* Main container */
+  main{max-width:1240px;margin:36px auto;padding:0 32px 96px}
+
+  /* Headings */
+  h1{font-size:28px;font-weight:700;margin-bottom:6px;letter-spacing:-.5px;line-height:1.2}
+  h2{font-size:16px;font-weight:600;margin-bottom:4px;letter-spacing:-.2px}
+  .lede{color:var(--hq-text-2);font-size:14px;margin-bottom:28px}
+  .lede code{font-size:12px}
+
+  /* Breadcrumbs */
+  .breadcrumbs{font-size:13px;color:var(--hq-text-3);margin-bottom:14px;display:flex;align-items:center;gap:8px}
+  .breadcrumbs a{color:var(--hq-text-2);transition:color .12s}
+  .breadcrumbs a:hover{color:var(--hq-text)}
+  .breadcrumbs::before{content:'';width:0;height:0}
+
+  /* Layout helpers */
+  .row{display:flex;justify-content:space-between;align-items:center;gap:14px;margin-bottom:24px;flex-wrap:wrap}
   .row h1{margin:0}
-  table{width:100%;border-collapse:collapse;font-size:14px}
-  th,td{text-align:left;padding:12px 14px;border-bottom:1px solid #232733}
-  th{font-weight:600;font-size:12px;text-transform:uppercase;letter-spacing:.5px;color:#8b919c;background:#11141b}
-  tr:hover td{background:#1a1e29}
-  .pill{display:inline-block;font-size:11px;padding:2px 8px;border-radius:999px;text-transform:uppercase;letter-spacing:.5px;font-weight:600}
-  .pill-active{background:#0e3b22;color:#7ee2a8}
-  .pill-suspended{background:#3b2a0e;color:#e2c47e}
-  .pill-canceled{background:#3b0e0e;color:#e27e7e}
-  .pill-disabled{background:#2a2a2a;color:#aaa}
-  .pill-invited{background:#0e2a3b;color:#7ec3e2}
-  .btn{display:inline-block;padding:9px 14px;border-radius:7px;border:1px solid #2d3344;background:#1c2030;color:#e4e6eb;font-size:13px;font-weight:500;cursor:pointer;font-family:inherit;text-decoration:none}
-  .btn:hover{background:#252a3d;text-decoration:none}
-  .btn-primary{background:#1f4a87;border-color:#2c5fb5;color:#fff}
-  .btn-primary:hover{background:#2c5fb5}
-  .btn-warn{background:#5a3a0e;border-color:#7a4d12;color:#ffd897}
-  .btn-warn:hover{background:#7a4d12}
-  .btn-danger{background:#5a1414;border-color:#7a1a1a;color:#ffb0b0}
-  .btn-danger:hover{background:#7a1a1a}
-  .btn-sm{padding:5px 10px;font-size:12px}
-  form.inline{display:inline}
-  /* 2026-05-01 Phase 4 — role dropdown in the HQ user table */
-  .role-select{padding:5px 10px;border-radius:7px;border:1px solid #2d3344;background:#0f1115;color:#e4e6eb;font-size:12px;font-family:inherit;cursor:pointer}
-  .role-select:hover{border-color:#4a7fc1}
-  .role-select:focus{outline:none;border-color:#4a7fc1}
-  label{display:block;font-size:12px;color:#aab1bd;margin-bottom:6px;font-weight:500;text-transform:uppercase;letter-spacing:.4px}
-  input[type=text],input[type=email],input[type=password]{width:100%;padding:10px 12px;border-radius:7px;border:1px solid #2d3344;background:#0f1115;color:#e4e6eb;font-size:14px;font-family:inherit}
-  input:focus{outline:none;border-color:#4a7fc1}
-  .field{margin-bottom:16px}
-  .hint{font-size:12px;color:#6b7280;margin-top:5px}
-  .flash{padding:11px 14px;border-radius:7px;margin-bottom:18px;font-size:13px}
-  .flash-ok{background:#0e2e1d;border:1px solid #1e6e3e;color:#9ee6b8}
-  .flash-err{background:#2e0e0e;border:1px solid #6e1e1e;color:#e69e9e}
-  .empty{padding:40px;text-align:center;color:#6b7280;font-size:14px}
-  .meta-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:14px;margin-bottom:18px}
-  .meta-grid .stat{background:#11141b;border:1px solid #232733;border-radius:8px;padding:14px}
-  .meta-grid .stat .lbl{font-size:11px;color:#8b919c;text-transform:uppercase;letter-spacing:.5px;margin-bottom:4px}
-  .meta-grid .stat .val{font-size:20px;font-weight:700}
-  .danger-zone{border:1px solid #5a1414;background:#1a0d0d}
-  .danger-zone h2{color:#ffb0b0;font-size:14px;text-transform:uppercase;letter-spacing:.5px;margin-bottom:6px}
-  .danger-zone p{font-size:13px;color:#aab1bd;margin-bottom:14px}
-  .breadcrumbs{font-size:13px;color:#8b919c;margin-bottom:8px}
-  .breadcrumbs a{color:#aab1bd}
+
+  /* Cards */
+  .card{
+    background:var(--hq-card);border:1px solid var(--hq-border);border-radius:var(--hq-radius);
+    padding:24px;box-shadow:var(--hq-shadow);
+  }
+  .card + .card{margin-top:16px}
+  .card-table{padding:0;overflow:hidden}
+
+  /* KPI strip */
+  .meta-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:14px;margin-bottom:22px}
+  .meta-grid .stat{
+    background:var(--hq-card);border:1px solid var(--hq-border);border-radius:var(--hq-radius);
+    padding:18px 20px;transition:border-color .15s,transform .15s;
+  }
+  .meta-grid .stat:hover{border-color:var(--hq-border-2)}
+  .meta-grid .stat .lbl{
+    font-size:11px;color:var(--hq-text-3);text-transform:uppercase;
+    letter-spacing:.08em;margin-bottom:8px;font-weight:600;
+  }
+  .meta-grid .stat .val{font-size:24px;font-weight:700;letter-spacing:-.5px;line-height:1.2}
+  .meta-grid .stat .stat-sub{font-size:13px;font-weight:500;color:var(--hq-text-3);margin-left:6px}
+  @media (max-width:840px){.meta-grid{grid-template-columns:repeat(2,1fr)}}
+
+  /* Table */
+  table{width:100%;border-collapse:collapse;font-size:13.5px}
+  th,td{text-align:left;padding:14px 18px;border-bottom:1px solid var(--hq-border)}
+  th{
+    font-weight:600;font-size:11px;text-transform:uppercase;letter-spacing:.07em;
+    color:var(--hq-text-3);background:var(--hq-bg-2);position:sticky;top:0;
+  }
+  tbody tr{transition:background .12s}
+  tbody tr:hover td{background:var(--hq-card-2)}
+  tbody tr:last-child td{border-bottom:none}
+  td .t-name{display:block;color:var(--hq-text)}
+  td .t-slug{font-size:12px;color:var(--hq-text-3);font-family:'JetBrains Mono',monospace;margin-top:3px}
+  td .t-num{font-size:14px;font-weight:600}
+  td .t-sub{font-size:11.5px;color:var(--hq-text-3);margin-left:6px}
+
+  /* Pills */
+  .pill{
+    display:inline-flex;align-items:center;font-size:10.5px;padding:3px 9px;
+    border-radius:999px;text-transform:uppercase;letter-spacing:.06em;font-weight:700;
+    border:1px solid transparent;line-height:1.5;
+  }
+  .pill-active{background:var(--hq-success-soft);color:var(--hq-success);border-color:rgba(52,211,153,.3)}
+  .pill-suspended{background:var(--hq-warn-soft);color:var(--hq-warn);border-color:rgba(251,191,36,.3)}
+  .pill-canceled{background:var(--hq-danger-soft);color:var(--hq-danger);border-color:rgba(248,113,113,.3)}
+  .pill-disabled{background:rgba(255,255,255,.06);color:var(--hq-text-3)}
+  .pill-invited{background:rgba(91,141,239,.12);color:var(--hq-accent);border-color:rgba(91,141,239,.3)}
+  .pill-role-admin{background:var(--hq-violet-soft);color:var(--hq-violet);border-color:rgba(167,139,250,.3)}
+  .pill-role-member{background:rgba(255,255,255,.04);color:var(--hq-text-2);border-color:var(--hq-border)}
+  .pill-role-other{background:rgba(255,255,255,.04);color:var(--hq-text-3);border-color:var(--hq-border)}
+
+  /* Buttons */
+  .btn{
+    display:inline-flex;align-items:center;justify-content:center;gap:6px;
+    padding:9px 16px;border-radius:8px;border:1px solid var(--hq-border-2);
+    background:var(--hq-card-2);color:var(--hq-text);
+    font-size:13px;font-weight:500;cursor:pointer;font-family:inherit;
+    text-decoration:none;transition:background .12s,border-color .12s,color .12s,transform .05s;
+    white-space:nowrap;line-height:1;
+  }
+  .btn:hover{background:#222837;border-color:#39435c;text-decoration:none;color:#fff}
+  .btn:active{transform:translateY(1px)}
+  .btn-primary{
+    background:linear-gradient(180deg,#3b6ed8,#2c5fb5);border-color:#2c5fb5;color:#fff;
+    box-shadow:0 1px 0 rgba(255,255,255,.15) inset;
+  }
+  .btn-primary:hover{background:linear-gradient(180deg,#4a7ce0,#3565bf);color:#fff}
+  .btn-warn{background:linear-gradient(180deg,#7a4d12,#5a3a0e);border-color:#7a4d12;color:#ffd897}
+  .btn-warn:hover{background:#8a5816;color:#ffd897}
+  .btn-danger{background:linear-gradient(180deg,#7a1a1a,#5a1414);border-color:#7a1a1a;color:#ffb0b0}
+  .btn-danger:hover{background:#8a1f1f}
+  .btn-sm{padding:6px 12px;font-size:12px}
+  form.inline{display:inline-flex;gap:6px;align-items:center}
+
+  /* Role dropdown */
+  .role-select{
+    padding:6px 28px 6px 11px;border-radius:7px;border:1px solid var(--hq-border-2);
+    background:var(--hq-card-2);color:var(--hq-text);font-size:12px;font-family:inherit;
+    font-weight:500;cursor:pointer;-webkit-appearance:none;-moz-appearance:none;appearance:none;
+    background-image:url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%23aeb4c0' stroke-width='2.5' stroke-linecap='round' stroke-linejoin='round'><polyline points='6 9 12 15 18 9'/></svg>");
+    background-repeat:no-repeat;background-position:right 8px center;
+    transition:border-color .12s,background-color .12s;
+  }
+  .role-select:hover{border-color:var(--hq-accent);background-color:#222837}
+  .role-select:focus{outline:none;border-color:var(--hq-accent);box-shadow:0 0 0 3px var(--hq-accent-soft)}
+
+  /* Forms */
+  label{
+    display:block;font-size:11px;color:var(--hq-text-3);margin-bottom:7px;
+    font-weight:600;text-transform:uppercase;letter-spacing:.07em;
+  }
+  input[type=text],input[type=email],input[type=password],textarea,select{
+    width:100%;padding:11px 13px;border-radius:8px;border:1px solid var(--hq-border-2);
+    background:var(--hq-bg-2);color:var(--hq-text);font-size:14px;font-family:inherit;
+    transition:border-color .12s,box-shadow .12s,background-color .12s;
+  }
+  input:focus,textarea:focus,select:focus{
+    outline:none;border-color:var(--hq-accent);box-shadow:0 0 0 3px var(--hq-accent-soft);
+    background:var(--hq-card);
+  }
+  .field{margin-bottom:18px}
+  .hint{font-size:12px;color:var(--hq-text-3);margin-top:6px}
+
+  /* Flash */
+  .flash{
+    padding:13px 16px;border-radius:var(--hq-radius-sm);margin-bottom:18px;
+    font-size:13px;border:1px solid transparent;font-weight:500;
+  }
+  .flash-ok{background:var(--hq-success-soft);border-color:rgba(52,211,153,.3);color:var(--hq-success)}
+  .flash-err{background:var(--hq-danger-soft);border-color:rgba(248,113,113,.3);color:var(--hq-danger)}
+
+  /* Empty state */
+  .empty{padding:64px 32px;text-align:center;color:var(--hq-text-3);font-size:14px}
+
+  /* Danger zone */
+  .danger-zone{border:1px solid rgba(248,113,113,.3);background:linear-gradient(180deg,rgba(248,113,113,.05),rgba(248,113,113,.02))}
+  .danger-zone h2{color:var(--hq-danger);font-size:13px;text-transform:uppercase;letter-spacing:.07em;margin-bottom:8px;font-weight:700}
+  .danger-zone p{font-size:13px;color:var(--hq-text-2);margin-bottom:14px}
 </style>
 </head><body>
 <header class="topbar">
@@ -246,32 +388,61 @@ router.get('/', async (req, res) => {
   try {
     const r = await query(`
       SELECT t.id, t.name, t.slug, t.status, t.created_at,
-             COALESCE(uc.user_count, 0) AS user_count,
-             u.email AS primary_email,
-             u.last_login_at
+             COALESCE(uc.user_count, 0)  AS user_count,
+             COALESCE(ac.admin_count, 0) AS admin_count,
+             u.email         AS primary_email,
+             u.role          AS primary_role,
+             u.last_login_at AS primary_last_login
         FROM tenants t
         LEFT JOIN (
           SELECT tenant_id, COUNT(*) AS user_count
             FROM users
            GROUP BY tenant_id
         ) uc ON uc.tenant_id = t.id
+        LEFT JOIN (
+          SELECT tenant_id, COUNT(*) AS admin_count
+            FROM users
+           WHERE role = 'tenant_admin'
+           GROUP BY tenant_id
+        ) ac ON ac.tenant_id = t.id
         LEFT JOIN LATERAL (
-          SELECT email, last_login_at
+          -- 2026-05-01: prefer the tenant's actual admin (lowest-id active
+          -- admin) over the lowest-id user overall, so the "Primary email"
+          -- column reflects who actually runs the workspace.
+          SELECT email, role, last_login_at
             FROM users
            WHERE tenant_id = t.id
-           ORDER BY id ASC
+           ORDER BY (role = 'tenant_admin' AND status = 'active') DESC, id ASC
            LIMIT 1
         ) u ON TRUE
         ORDER BY t.created_at DESC, t.id DESC
     `);
+    const _roleLabel = (rl) => rl === 'tenant_admin' ? 'Admin'
+                              : rl === 'tenant_user' ? 'Member'
+                              : rl === 'super_admin' ? 'Super-admin'
+                              : (rl ? escHTML(rl) : '—');
+    const _rolePill = (rl) => {
+      const label = _roleLabel(rl);
+      const cls = rl === 'tenant_admin' ? 'pill-role-admin'
+                : rl === 'tenant_user'  ? 'pill-role-member'
+                : 'pill-role-other';
+      return `<span class="pill ${cls}">${label}</span>`;
+    };
     const rows = r.rows.map(t => `
       <tr>
-        <td><a href="/admin/tenants/${t.id}"><strong>${escHTML(t.name)}</strong></a><div style="font-size:12px;color:#8b919c">${escHTML(t.slug)}</div></td>
+        <td>
+          <a href="/admin/tenants/${t.id}" class="t-name"><strong>${escHTML(t.name)}</strong></a>
+          <div class="t-slug">${escHTML(t.slug)}</div>
+        </td>
         <td>${escHTML(t.primary_email || '—')}</td>
-        <td>${t.user_count}</td>
+        <td>${_rolePill(t.primary_role)}</td>
+        <td>
+          <span class="t-num">${t.user_count}</span>
+          <span class="t-sub">${t.admin_count} admin${t.admin_count === 1 ? '' : 's'}</span>
+        </td>
         <td><span class="pill pill-${escHTML(t.status)}">${escHTML(t.status)}</span></td>
         <td>${escHTML(fmtDate(t.created_at))}</td>
-        <td>${escHTML(fmtDateTime(t.last_login_at))}</td>
+        <td>${escHTML(fmtDateTime(t.primary_last_login))}</td>
         <td style="text-align:right">
           <a class="btn btn-sm" href="/admin/tenants/${t.id}">Manage</a>
         </td>
@@ -284,6 +455,7 @@ router.get('/', async (req, res) => {
       active: r.rows.filter(t => t.status === 'active').length,
       suspended: r.rows.filter(t => t.status === 'suspended').length,
       users: r.rows.reduce((a, t) => a + Number(t.user_count || 0), 0),
+      admins: r.rows.reduce((a, t) => a + Number(t.admin_count || 0), 0),
     };
 
     res.send(adminShell('Tenants', `
@@ -298,13 +470,20 @@ router.get('/', async (req, res) => {
         <div class="stat"><div class="lbl">Tenants</div><div class="val">${stats.total}</div></div>
         <div class="stat"><div class="lbl">Active</div><div class="val">${stats.active}</div></div>
         <div class="stat"><div class="lbl">Suspended</div><div class="val">${stats.suspended}</div></div>
-        <div class="stat"><div class="lbl">Total users</div><div class="val">${stats.users}</div></div>
+        <div class="stat"><div class="lbl">Total users</div><div class="val">${stats.users}<span class="stat-sub"> · ${stats.admins} admin${stats.admins === 1 ? '' : 's'}</span></div></div>
       </div>
-      <div class="card" style="padding:0;overflow:hidden">
+      <div class="card card-table">
         ${r.rows.length ? `
         <table>
           <thead><tr>
-            <th>Workspace</th><th>Primary email</th><th>Users</th><th>Status</th><th>Created</th><th>Last login</th><th></th>
+            <th>Workspace</th>
+            <th>Primary email</th>
+            <th>Role</th>
+            <th>Users</th>
+            <th>Status</th>
+            <th>Created</th>
+            <th>Last login</th>
+            <th></th>
           </tr></thead>
           <tbody>${rows}</tbody>
         </table>` : empty}
