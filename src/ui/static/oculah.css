@@ -1428,18 +1428,21 @@ button.ocu-kpi,
   background: var(--ocu-surface);
 }
 
-/* BODY: 2-column grid — mailing | phones. Phones cell gets the
-   majority of the width since it usually has more content. The
-   minmax(0, …) on phones lets it shrink past content min-width so
-   the inner phones-grid can compact into multiple columns. */
+/* BODY: stacked rows — mailing on top, phones below at full card width.
+   2026-05-01 redesign: previously a 2-column (mailing | phones) grid
+   which read as "two disconnected blocks floating in space" because
+   the section heights never matched (1-line mailing vs N-row phones
+   grid) and the visual gestalt was messy. Stacking them gives the
+   phones grid the full card width — at typical property-detail card
+   sizes (~1000px) that fits 4-5 phone columns instead of 2. */
 .ocu-owner-body {
-  display: grid;
-  grid-template-columns: minmax(220px, 0.9fr) minmax(0, 2fr);
-  gap: 24px;
-  align-items: start;
+  display: flex;
+  flex-direction: column;
+  gap: var(--ocu-space-4);
 }
-@media (max-width: 760px) {
-  .ocu-owner-body { grid-template-columns: 1fr; gap: 16px; }
+.ocu-owner-section + .ocu-owner-section {
+  padding-top: var(--ocu-space-4);
+  border-top: 1px solid var(--ocu-border);
 }
 .ocu-owner-section { min-width: 0; }
 .ocu-owner-section-label {
@@ -1451,7 +1454,10 @@ button.ocu-kpi,
   display: flex;
   align-items: center;
   gap: 7px;
-  margin-bottom: 9px;
+  margin-bottom: var(--ocu-space-3);
+  /* Section label spans the full row so the +Add phone button on the
+     right gets pushed to the end via margin-left:auto on the button. */
+  width: 100%;
 }
 .ocu-owner-section-icon {
   display: inline-flex;
@@ -1506,18 +1512,16 @@ button.ocu-kpi,
   cursor: wait;
 }
 
-/* PHONES GRID — responsive, scales gracefully from 1 to 100+ phones.
-   - 1 phone: full width
-   - 2-3 phones: 2 columns
-   - 4+ phones: 2-3 columns depending on container width
-   - 8+ phones (data-many="true"): cap at 320px tall with scroll
-   minmax(0, 1fr) lets columns shrink below their content min-width,
-   so the inner phone-row content can wrap rather than forcing a
-   single 1-column layout when content is wider than the floor. */
+/* PHONES GRID — full-width row inside the owner card body. With the
+   2-col body retired (mailing now sits ABOVE phones), the grid gets
+   the entire card width and naturally fits 3-5 columns at typical
+   property-detail viewport sizes. Threshold tuned so a 1-phone
+   contact still gets a sensibly-sized card (~280px) instead of
+   stretching to 1000px. */
 .ocu-phones-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(min(170px, 100%), 1fr));
-  gap: 8px;
+  grid-template-columns: repeat(auto-fill, minmax(min(220px, 100%), 1fr));
+  gap: var(--ocu-space-2);
   min-width: 0;
 }
 .ocu-phones-grid > .ocu-phone-row {
@@ -1574,21 +1578,28 @@ button.ocu-kpi,
   flex-shrink: 0;
 }
 
-/* PHONE ROW — compact card, wraps inner pills cleanly. */
+/* PHONE ROW — compact card; reads as a self-contained unit at typical
+   grid widths (~220-280px). Border slightly stronger than the page
+   default so the card has presence against the surrounding card-bg. */
 .ocu-phone-row {
   background: var(--ocu-bg);
-  border: 1px solid var(--ocu-border);
-  border-radius: 8px;
-  padding: 8px 10px;
+  border: 1px solid var(--ocu-border-strong);
+  border-radius: var(--ocu-radius);
+  padding: var(--ocu-space-2) var(--ocu-space-3);
   min-width: 0;
-  transition: border-color 0.12s, background 0.12s;
+  transition: border-color 0.12s, box-shadow 0.12s;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
 }
 .ocu-phone-row:hover {
-  border-color: var(--ocu-border-strong);
+  border-color: var(--ocu-text-3);
+  box-shadow: var(--ocu-shadow-sm);
 }
 .ocu-phone-row.is-best {
   background: #FEFCE8;
-  border-color: #FDE68A;
+  border-color: #FCD34D;
+  box-shadow: 0 0 0 1px #FCD34D;
 }
 .ocu-phone-line {
   display: flex;
@@ -2945,37 +2956,72 @@ button.ocu-kpi,
   accent-color: var(--ocu-accent);
 }
 
-/* Filter detail expanders (tags include/exclude) */
+/* Filter detail expanders (tags include/exclude, phone tags include/exclude).
+   2026-05-01: previously the <summary> doubled as both the small uppercase
+   filter-label AND the dropdown trigger, which crammed the label against
+   the border and made the box look like a broken input. Now the label
+   sits ABOVE the dropdown like every other filter; the <summary> is a
+   proper field-styled trigger showing the current selection count. */
 .ocu-filter-details {
   display: flex;
   flex-direction: column;
-  gap: 6px;
-  border: 1px solid var(--ocu-border);
-  border-radius: 6px;
-  padding: 8px 10px;
+  border: 1px solid var(--ocu-border-strong);
+  border-radius: var(--ocu-field-radius, 7px);
+  background: var(--ocu-bg);
+  overflow: hidden;
 }
-.ocu-filter-details[open] { padding-bottom: 10px; }
-.ocu-filter-details summary {
+.ocu-filter-details-trigger {
   list-style: none;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  height: var(--ocu-field-h);
+  padding: 0 var(--ocu-field-px);
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--ocu-text-1);
+  /* No uppercase / letter-spacing — those belong to the small label
+     above, not to the trigger reading the active selection. */
 }
-.ocu-filter-details summary::-webkit-details-marker { display: none; }
-.ocu-filter-details summary::after {
-  content: '▾';
-  float: right;
-  color: var(--ocu-text-3);
-  font-size: 10px;
+.ocu-filter-details-trigger::-webkit-details-marker { display: none; }
+.ocu-filter-details-trigger::after {
+  content: '';
+  width: 14px; height: 14px;
+  margin-left: var(--ocu-space-2);
+  background: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='14' height='14' viewBox='0 0 24 24' fill='none' stroke='%236B7280' stroke-width='2.5' stroke-linecap='round' stroke-linejoin='round'><polyline points='6 9 12 15 18 9'/></svg>") no-repeat center;
+  transition: transform 0.15s;
 }
-.ocu-filter-details[open] summary::after { content: '▴'; }
+.ocu-filter-details[open] .ocu-filter-details-trigger::after { transform: rotate(180deg); }
+.ocu-filter-details[open] .ocu-filter-details-trigger {
+  border-bottom: 1px solid var(--ocu-border);
+}
+.ocu-filter-details:focus-within {
+  border-color: var(--ocu-accent);
+  box-shadow: 0 0 0 3px var(--ocu-accent-soft);
+}
 .ocu-check-list {
   display: flex;
   flex-direction: column;
-  gap: 4px;
-  max-height: 180px;
+  gap: 6px;
+  max-height: 200px;
   overflow-y: auto;
-  margin-top: 8px;
-  font-size: 12px;
+  padding: var(--ocu-space-2) var(--ocu-space-3);
+  font-size: 13px;
 }
-.ocu-check-list .ocu-check { font-family: var(--ocu-display); }
+.ocu-check-list .ocu-check {
+  font-family: var(--ocu-display);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  cursor: pointer;
+  padding: 4px 0;
+}
+.ocu-check-list .ocu-check input[type="checkbox"] {
+  width: 14px; height: 14px;
+  accent-color: var(--ocu-accent);
+}
+.ocu-check-list .ocu-check:hover { color: var(--ocu-text-1); }
 
 /* Min/max pair input — equity, year built */
 .ocu-filter-pair {

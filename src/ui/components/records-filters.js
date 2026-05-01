@@ -336,24 +336,36 @@ function recordsFilters(opts = {}) {
           </div>
 
           ${allTags.length > 0 ? `
-          <details class="ocu-filter ocu-filter-details">
-            <summary class="ocu-filter-label">Tags include (${tagInc.length || 'any'})</summary>
-            <div class="ocu-check-list">${tagIncludeChecks}</div>
-          </details>
-          <details class="ocu-filter ocu-filter-details">
-            <summary class="ocu-filter-label">Tags exclude (${tagExc.length || 'none'})</summary>
-            <div class="ocu-check-list">${tagExcludeChecks}</div>
-          </details>` : ''}
+          <div class="ocu-filter">
+            <label class="ocu-filter-label">Tags include</label>
+            <details class="ocu-filter-details">
+              <summary class="ocu-filter-details-trigger">${tagInc.length ? `${tagInc.length} selected` : 'Any tag'}</summary>
+              <div class="ocu-check-list">${tagIncludeChecks}</div>
+            </details>
+          </div>
+          <div class="ocu-filter">
+            <label class="ocu-filter-label">Tags exclude</label>
+            <details class="ocu-filter-details">
+              <summary class="ocu-filter-details-trigger">${tagExc.length ? `${tagExc.length} selected` : 'None'}</summary>
+              <div class="ocu-check-list">${tagExcludeChecks}</div>
+            </details>
+          </div>` : ''}
 
           ${allPhoneTags.length > 0 ? `
-          <details class="ocu-filter ocu-filter-details">
-            <summary class="ocu-filter-label">Phone tags include (${phoneTagInc.length || 'any'})</summary>
-            <div class="ocu-check-list">${phoneTagIncludeChecks}</div>
-          </details>
-          <details class="ocu-filter ocu-filter-details">
-            <summary class="ocu-filter-label">Phone tags exclude (${phoneTagExc.length || 'none'})</summary>
-            <div class="ocu-check-list">${phoneTagExcludeChecks}</div>
-          </details>` : ''}
+          <div class="ocu-filter">
+            <label class="ocu-filter-label">Phone tags include</label>
+            <details class="ocu-filter-details">
+              <summary class="ocu-filter-details-trigger">${phoneTagInc.length ? `${phoneTagInc.length} selected` : 'Any phone tag'}</summary>
+              <div class="ocu-check-list">${phoneTagIncludeChecks}</div>
+            </details>
+          </div>
+          <div class="ocu-filter">
+            <label class="ocu-filter-label">Phone tags exclude</label>
+            <details class="ocu-filter-details">
+              <summary class="ocu-filter-details-trigger">${phoneTagExc.length ? `${phoneTagExc.length} selected` : 'None'}</summary>
+              <div class="ocu-check-list">${phoneTagExcludeChecks}</div>
+            </details>
+          </div>` : ''}
 
         </div>
 
