@@ -193,6 +193,17 @@ async function initCampaignSchema() {
     // Operator feedback after the wizard rolled out — adding to round out
     // the property address group.
     `ALTER TABLE campaign_contacts ADD COLUMN IF NOT EXISTS property_county VARCHAR(100)`,
+    // 2026-05-01 (5A.2 follow-up): widen state columns from VARCHAR(10) to
+    // VARCHAR(50). When normalizeState() can't canonicalize a value (because
+    // the operator mapped to the wrong column, or the CSV has a verbose
+    // state like "Indiana" which we'd rather store as "IN" but can fall back
+    // on the raw value), the raw string used to overflow VARCHAR(10) and
+    // crash the whole import. Widening + the defensive .slice(0, 50) at
+    // write time stops one bad row from killing 5,000 good ones.
+    `ALTER TABLE campaign_contacts ALTER COLUMN mailing_state TYPE VARCHAR(50)`,
+    `ALTER TABLE campaign_contacts ALTER COLUMN property_state TYPE VARCHAR(50)`,
+    `ALTER TABLE campaign_contacts ALTER COLUMN mailing_zip    TYPE VARCHAR(50)`,
+    `ALTER TABLE campaign_contacts ALTER COLUMN property_zip   TYPE VARCHAR(50)`,
     // Per-campaign filter thresholds (Task 2). Defaults make existing campaigns
     // behave like before: voicemails/hangups are NOT auto-filtered out at clean-
     // export time unless the user lowers the threshold. exclude_* defaults match
@@ -684,8 +695,13 @@ async function importContactList(tenantId, campaignId, rows, headers, customMapp
       // the raw trimmed value so the row isn't lost, just flagged).
       const rawMstate = String(r[COL.mstate] || '').trim();
       const rawPstate = String(r[COL.pstate] || '').trim();
-      const mstate = normalizeState(rawMstate) || rawMstate;
-      const pstate = normalizeState(rawPstate) || rawPstate;
+      // 2026-05-01 (5A.2 follow-up): bound the raw fallback to varchar(50).
+      // If the operator mismaps the state column to something verbose, the
+      // raw value used to overflow varchar(10) and 500 params crashed in one
+      // shot. Slice + the column widening keep the import alive even when
+      // the mapping is imperfect.
+      const mstate = normalizeState(rawMstate) || rawMstate.slice(0, 50);
+      const pstate = normalizeState(rawPstate) || rawPstate.slice(0, 50);
       // 2026-05-01 (5A.1): mapped Accepted-by-Dialer + DNC. Tri-state Yes/No
       // parse — null when no column was mapped or value is unparseable.
       // dnc defaults to false if no column is mapped (most lists don't
@@ -693,16 +709,23 @@ async function importContactList(tenantId, campaignId, rows, headers, customMapp
       const acceptedVal = COL.accepted ? parseYesNo(r[COL.accepted]) : null;
       const rawDnc      = COL.dnc      ? parseYesNo(r[COL.dnc])      : null;
       const dncVal      = rawDnc === true ? true : false;
+      // 2026-05-01 (5A.2 follow-up): defensive truncation on every varchar
+      // column. We can't predict the operator's mapping accuracy. Names get
+      // 100, addresses 255, city/county 100, zip 50 (widened to match the
+      // state-column widening above so a mistyped zip doesn't crash either).
+      const trim100 = (v) => String(v || '').slice(0, 100);
+      const trim255 = (v) => String(v || '').slice(0, 255);
+      const trim50  = (v) => String(v || '').slice(0, 50);
       params.push(
         campaignId,
-        r[COL.fname]||'', r[COL.lname]||'',
-        r[COL.maddr]||'', r[COL.mcity]||'', mstate, r[COL.mzip]||'', r[COL.mcounty]||'',
-        r[COL.paddr]||'', r[COL.pcity]||'', pstate, r[COL.pzip]||'',
+        trim100(r[COL.fname]),  trim100(r[COL.lname]),
+        trim255(r[COL.maddr]),  trim100(r[COL.mcity]),  mstate, trim50(r[COL.mzip]),  trim100(r[COL.mcounty]),
+        trim255(r[COL.paddr]),  trim100(r[COL.pcity]),  pstate, trim50(r[COL.pzip]),
         idx,
         tenantId,
         acceptedVal,
         dncVal,
-        r[COL.pcounty]||''
+        trim100(r[COL.pcounty])
       );
       p += 17;
     }

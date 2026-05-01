@@ -3,6 +3,13 @@
 
 const ENTRIES = [
   {
+    date: 'May 1, 2026 (5A.2 follow-up #2 — varchar overflow)',
+    title: 'Master-list import no longer crashes when one row has a too-long value',
+    items: [
+      { tag: 'fix', text: 'Imports were dying with "value too long for type character varying(10)" because mailing_state and property_state were VARCHAR(10) but the import\'s fallback path stored the raw column value when normalizeState() couldn\'t canonicalize it. One mismapped row → 500 good rows lost. Two-part fix: (1) widen mailing_state, property_state, mailing_zip, property_zip to VARCHAR(50) via idempotent ALTER COLUMN TYPE in initCampaignSchema; (2) defensive .slice() on every varchar param at write time so values that exceed the column max get truncated rather than erroring. Operator can still see the truncated value in the row and re-map if it looks wrong.' },
+    ],
+  },
+  {
     date: 'May 1, 2026 (5A.2 follow-up — wizard polish)',
     title: 'Mapping wizard: smart auto-detect, mailing optional, property county added',
     items: [
