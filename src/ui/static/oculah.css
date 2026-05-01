@@ -1418,6 +1418,14 @@ button.ocu-kpi,
 .ocu-owner-card {
   /* inherits .ocu-card base */
   padding: 18px 20px;
+  /* 2026-05-01: position:relative so the +Add phone button can pin to the
+     card's top-right via position:absolute. Pre-fix the button lived in the
+     phones-section-label flex row, so its Y position drifted with the
+     phones-section content height — Owner 1 and Owner 2 ended up with
+     buttons at slightly different Y offsets when the mailing column wrapped
+     to 2 lines vs 1 line. Anchoring to the card guarantees identical
+     positioning across every owner card. */
+  position: relative;
 }
 
 /* 3-COLUMN LAYOUT: identity | mailing | phones.
@@ -1531,8 +1539,8 @@ button.ocu-kpi,
   align-items: center;
   gap: 7px;
   margin-bottom: var(--ocu-space-3);
-  /* Section label spans the full row so the +Add phone button on the
-     right gets pushed to the end via margin-left:auto on the button. */
+  /* 2026-05-01: +Add phone button is now absolutely pinned to the
+     card top-right; this row just lays out icon + label + count chip. */
   width: 100%;
 }
 .ocu-owner-section-icon {
@@ -1561,9 +1569,19 @@ button.ocu-kpi,
 }
 
 /* "+ Add phone" button on the owner card phones section header.
-   Pushed right via margin-left:auto so it sits at the end of the row. */
+   2026-05-01: pinned absolute to the card's top-right corner so every
+   owner card has its button at the SAME Y-offset, regardless of how
+   tall the mailing column or identity column happens to be. Pre-fix the
+   button lived inside the section-label flex row, so its position drifted
+   with the content above it — Owner 1 (with PRIMARY tag + 2-line address)
+   and Owner 2 (no PRIMARY tag, "—" address) showed visibly different
+   button positions. Top:14px / right:18px sits inside the card padding
+   (18px 20px) with a slight optical lift so the button visually clears
+   the section labels. */
 .ocu-owner-add-phone-btn {
-  margin-left: auto;
+  position: absolute;
+  top: 14px;
+  right: 18px;
   padding: 3px 9px;
   font-size: 11px;
   font-weight: 600;
@@ -1576,6 +1594,7 @@ button.ocu-kpi,
   cursor: pointer;
   font-family: inherit;
   transition: all 0.12s;
+  z-index: 1;
 }
 .ocu-owner-add-phone-btn:hover {
   border-style: solid;
@@ -1916,8 +1935,13 @@ button.ocu-kpi,
 .ocu-cd-rule-row {
   display: flex; align-items: center; gap: var(--ocu-space-2);
 }
-.ocu-cd-rule-row label { flex: 1; color: var(--ocu-text-1); }
-.ocu-cd-rule-num { width: 72px; text-align: center; }
+.ocu-cd-rule-row label { flex: 1; min-width: 0; color: var(--ocu-text-1); }
+/* 2026-05-01: bump specificity (input.ocu-cd-rule-num) and lock flex-basis so
+   the global `.ocu-input { width: 100% }` (declared later in the cascade)
+   can't expand the threshold field. Pre-fix the input swallowed the row,
+   collapsing the label flex child to min-content — which wrapped the label
+   text one character per line. */
+input.ocu-cd-rule-num { flex: 0 0 72px; width: 72px; text-align: center; }
 .ocu-cd-rule-checks {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
