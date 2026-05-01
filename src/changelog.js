@@ -3,6 +3,13 @@
 
 const ENTRIES = [
   {
+    date: 'May 1, 2026 (5C — required dialer/platform on campaign creation)',
+    title: 'New campaigns must specify the dialer/SMS platform they run on',
+    items: [
+      { tag: 'feat', text: 'The "New campaign" form now has a required Dialer / Platform dropdown that adapts to the active channel. Cold-call campaigns choose from ReadyMode, CallTools, Batch Dialer (or "+ Add custom…"); SMS campaigns choose from Smarter Contact, Launch Control (or "+ Add custom…"). Custom values are saved per-tenant in the new tenant_dialer_options table so the next campaign sees them in the dropdown. createCampaign() refuses to insert without a platform — the legacy /campaigns/new form (no platform input) will error until updated, but the Oculah path is the canonical one. Campaign detail header shows the chosen platform as a read-only pill next to the channel control.' },
+    ],
+  },
+  {
     date: 'May 1, 2026 (5A.2 follow-up #3 — auto-populate accepted count)',
     title: '"Accepted by Dialer" KPI auto-populates from import',
     items: [

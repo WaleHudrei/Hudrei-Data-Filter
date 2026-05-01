@@ -1144,10 +1144,14 @@ router.get('/campaigns/new', requireAuth, async (req, res) => {
     const campaigns = require('../campaigns');
     const { campaignNewPage } = require('./pages/campaign-new');
     await campaigns.initCampaignSchema();
-    const listTypes = await campaigns.getListTypes(req.tenantId);
+    const [listTypes, coldDialers, smsPlatforms] = await Promise.all([
+      campaigns.getListTypes(req.tenantId),
+      campaigns.getDialerOptions(req.tenantId, 'cold_call'),
+      campaigns.getDialerOptions(req.tenantId, 'sms'),
+    ]);
     res.send(campaignNewPage({
       user: await getUser(req),
-      listTypes,
+      listTypes, coldDialers, smsPlatforms,
       error: req.query.error || null,
     }));
   } catch (e) {
@@ -1170,6 +1174,17 @@ router.post('/campaigns/new', requireAuth, async (req, res) => {
       await campaigns.addListType(req.tenantId, customType);
     }
     delete body.custom_list_type;
+    // 5C: handle "+ Add custom…" platform selection. If chosen, the actual
+    // value lives in custom_platform; persist to tenant_dialer_options.
+    const customPlatform = String(req.body.custom_platform || '').trim();
+    if (body.platform === '__new__' || customPlatform) {
+      if (!customPlatform) {
+        return res.redirect('/oculah/campaigns/new?error=' + encodeURIComponent('Enter a custom dialer/platform name or pick one from the dropdown'));
+      }
+      body.platform = customPlatform;
+      await campaigns.addDialerOption(req.tenantId, body.active_channel || 'cold_call', customPlatform);
+    }
+    delete body.custom_platform;
     await campaigns.createCampaign({ ...body, tenantId: req.tenantId });
     res.redirect('/oculah/campaigns');
   } catch (e) {

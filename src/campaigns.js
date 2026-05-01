@@ -157,6 +157,18 @@ async function initCampaignSchema() {
       created_at TIMESTAMPTZ DEFAULT NOW()
     );
 
+    -- 5C: tenant-scoped dialer/platform options. Channel is 'cold_call' or
+    -- 'sms'. Built-in defaults are hard-coded in code; this table stores
+    -- only customs added via "Add custom…" on the campaign-new form.
+    CREATE TABLE IF NOT EXISTS tenant_dialer_options (
+      id SERIAL PRIMARY KEY,
+      tenant_id INT NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+      channel VARCHAR(20) NOT NULL,
+      name VARCHAR(100) NOT NULL,
+      created_at TIMESTAMPTZ DEFAULT NOW(),
+      UNIQUE(tenant_id, channel, name)
+    );
+
     CREATE TABLE IF NOT EXISTS nis_numbers (
       tenant_id INT NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
       phone_number VARCHAR(20) PRIMARY KEY,
@@ -204,6 +216,10 @@ async function initCampaignSchema() {
     `ALTER TABLE campaign_contacts ALTER COLUMN property_state TYPE VARCHAR(50)`,
     `ALTER TABLE campaign_contacts ALTER COLUMN mailing_zip    TYPE VARCHAR(50)`,
     `ALTER TABLE campaign_contacts ALTER COLUMN property_zip   TYPE VARCHAR(50)`,
+    // 2026-05-01 (5C): per-campaign dialer/platform. Required for new
+    // campaigns at the form layer; nullable at the column level so legacy
+    // rows survive without backfill.
+    `ALTER TABLE campaigns ADD COLUMN IF NOT EXISTS platform TEXT`,
     // Per-campaign filter thresholds (Task 2). Defaults make existing campaigns
     // behave like before: voicemails/hangups are NOT auto-filtered out at clean-
     // export time unless the user lowers the threshold. exclude_* defaults match
@@ -417,15 +433,58 @@ async function getCampaign(tenantId, id) {
   return { ...c.rows[0], uploads: uploads.rows, disposition_breakdown: disposition_breakdown.rows };
 }
 
-async function createCampaign({ tenantId, name, list_type, market_name, state_code, notes, created_by, start_date, active_channel }) {
+// 2026-05-01 (5C): default dialer/platform options per channel. Operator
+// can add tenant-scoped customs via tenant_dialer_options.
+const BUILTIN_DIALER_OPTIONS = {
+  cold_call: ['ReadyMode', 'CallTools', 'Batch Dialer'],
+  sms:       ['Smarter Contact', 'Launch Control'],
+};
+
+async function getDialerOptions(tenantId, channel) {
+  if (!Number.isInteger(tenantId)) throw new Error('getDialerOptions: tenantId required');
+  const ch = channel === 'sms' ? 'sms' : 'cold_call';
+  const builtins = BUILTIN_DIALER_OPTIONS[ch] || [];
+  const r = await query(
+    `SELECT name FROM tenant_dialer_options WHERE tenant_id = $1 AND channel = $2 ORDER BY name`,
+    [tenantId, ch]
+  ).catch(() => ({ rows: [] }));
+  const customs = r.rows.map(x => x.name);
+  // De-dupe (an operator might add a custom that matches a builtin label).
+  const seen = new Set();
+  return [...builtins, ...customs].filter(n => {
+    const k = n.toLowerCase();
+    if (seen.has(k)) return false;
+    seen.add(k); return true;
+  });
+}
+
+async function addDialerOption(tenantId, channel, rawName) {
+  if (!Number.isInteger(tenantId)) throw new Error('addDialerOption: tenantId required');
+  const ch = channel === 'sms' ? 'sms' : 'cold_call';
+  const name = String(rawName || '').trim().slice(0, 100);
+  if (!name) return;
+  if ((BUILTIN_DIALER_OPTIONS[ch] || []).some(b => b.toLowerCase() === name.toLowerCase())) return;
+  await query(
+    `INSERT INTO tenant_dialer_options (tenant_id, channel, name)
+     VALUES ($1, $2, $3) ON CONFLICT (tenant_id, channel, name) DO NOTHING`,
+    [tenantId, ch, name]
+  ).catch(() => {});
+}
+
+async function createCampaign({ tenantId, name, list_type, market_name, state_code, notes, created_by, start_date, active_channel, platform }) {
   if (!Number.isInteger(tenantId)) throw new Error('createCampaign: tenantId required');
+  // 2026-05-01 (5C): platform is required at creation time. Channel sets
+  // the universe of valid options (cold-call dialers vs SMS platforms).
+  const platformVal = String(platform || '').trim();
+  if (!platformVal) throw new Error('Platform is required — pick a dialer or SMS platform.');
+  if (platformVal.length > 100) throw new Error('Platform name too long (max 100 characters).');
   const channel = active_channel === 'sms' ? 'sms' : 'cold_call';
   const cold_call_status = channel === 'cold_call' ? 'active' : 'dormant';
   const sms_status = channel === 'sms' ? 'active' : 'dormant';
   const res = await query(
-    `INSERT INTO campaigns (tenant_id, name, list_type, market_name, state_code, notes, created_by, start_date, active_channel, cold_call_status, sms_status)
-     VALUES ($11,$1,$2,$3,$4,$5,$6,$7,$8,$9,$10) RETURNING *`,
-    [name, list_type, market_name, state_code?.toUpperCase(), notes||'', created_by||'team', start_date||null, channel, cold_call_status, sms_status, tenantId]
+    `INSERT INTO campaigns (tenant_id, name, list_type, market_name, state_code, notes, created_by, start_date, active_channel, cold_call_status, sms_status, platform)
+     VALUES ($12,$1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) RETURNING *`,
+    [name, list_type, market_name, state_code?.toUpperCase(), notes||'', created_by||'team', start_date||null, channel, cold_call_status, sms_status, platformVal, tenantId]
   );
   return res.rows[0];
 }
@@ -952,6 +1011,7 @@ async function addListType(tenantId, name) {
 
 module.exports = {
   initCampaignSchema, getCampaigns, getCampaign, createCampaign,
+  getDialerOptions, addDialerOption,
   updateCampaignStatus, updateCampaignChannel, updateCampaignName,
   updateCampaignFilters,
   closeCampaign, cloneCampaign,

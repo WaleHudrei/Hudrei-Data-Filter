@@ -408,6 +408,14 @@ function campaignDetail(data = {}) {
       </select>
     </form>`;
 
+  // 5C: platform pill — read-only on the detail header. Falls back to a
+  // dimmed em-dash for legacy campaigns created before platform was required.
+  const platformPill = `
+    <div style="display:flex;gap:6px;align-items:center">
+      <span class="ocu-text-3" style="font-size:11px">Platform:</span>
+      <span class="ocu-pill" style="font-size:11px">${c.platform ? escHTML(c.platform) : '—'}</span>
+    </div>`;
+
   const statusControl = `
     <form method="POST" action="/oculah/campaigns/${c.id}/status" style="display:flex;gap:6px;align-items:center">
       <span class="ocu-text-3" style="font-size:11px">Status:</span>
@@ -545,6 +553,7 @@ function campaignDetail(data = {}) {
       </div>
       <div style="display:flex;gap:10px;align-items:center">
         ${channelControl}
+        ${platformPill}
         ${statusControl}
       </div>
     </div>
