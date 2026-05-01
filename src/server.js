@@ -12,6 +12,16 @@ const Redis = require('ioredis');
 const { normalizeState } = require('./import/state');
 const { normalizePhone } = require('./phone-normalize');
 
+// 2026-05-01 Phase 2 finalization — observability. Both modules are
+// env-gated: errorMonitor activates only when SENTRY_DSN is set; backup
+// activates only when BACKUP_S3_BUCKET is set. Without those env vars,
+// init/scheduleBackups are no-ops and no AWS/Sentry SDK code runs.
+// Initialized as early as possible so errors during the rest of the boot
+// path get captured.
+const errorMonitor = require('./error-monitor');
+errorMonitor.init();
+const backup = require('./backup');
+
 const app = express();
 // 2026-04-18 audit fix #21: previously multer accepted any file up to 50MB
 // with no type check. Client-side had `.endsWith('.csv')` but a hostile or
@@ -136,6 +146,12 @@ app.set('trust proxy', true);
 // compression on tiny responses where overhead exceeds savings.
 const compression = require('compression');
 app.use(compression({ threshold: 1024 }));
+
+// 2026-05-01 Phase 2 finalization — Sentry request scope. Attaches
+// tenant_id + user_id tags to any error reported during this request,
+// so errors group by tenant in the Sentry dashboard. No-op when
+// SENTRY_DSN isn't set; cheap (one boolean check) when it is.
+app.use(errorMonitor.requestHandler());
 
 // 2026-04-29 audit fix L7 + L8: minimal security-headers middleware.
 // Equivalent to a stripped-down `helmet()` — picked the headers that matter
@@ -747,6 +763,12 @@ app.use('/ocular', ocularRoutes);
 // reaches any handler. Mounted last so /admin doesn't collide with anything.
 app.use('/admin', adminRoutes);
 
+// 2026-05-01 Phase 2 finalization — Sentry error handler. MUST mount
+// after all routes so it sees errors propagated by next(err) from any
+// route. Forwards err on to whatever handler comes after (or Express's
+// default), so this only side-effect-reports — never swallows.
+app.use(errorMonitor.errorHandler());
+
 
 
 
@@ -865,6 +887,11 @@ app.listen(PORT, async ()=>{
   } catch (e) {
     console.error('HudREI settings provisioning warning:', e.message);
   }
+
+  // 2026-05-01 Phase 2 finalization — kick off the weekly backup scheduler.
+  // No-op when BACKUP_S3_BUCKET isn't set; logs the disabled state once so
+  // operators know what env to set when they're ready to enable.
+  backup.scheduleBackups();
 
   // Phase 2c: founding-user backfill. The seed user (wale@hudrei.com, id=1)
   // was created in Phase 1 with NULL password_hash because login still used
