@@ -188,6 +188,11 @@ async function initCampaignSchema() {
     // optional Do-Not-Call flag.
     `ALTER TABLE campaign_contacts ADD COLUMN IF NOT EXISTS accepted BOOLEAN`,
     `ALTER TABLE campaign_contacts ADD COLUMN IF NOT EXISTS dnc BOOLEAN DEFAULT false`,
+    // 2026-05-01 (5A.2 follow-up): property_county was missing — we tracked
+    // mailing_county but not the county where the actual property sits.
+    // Operator feedback after the wizard rolled out — adding to round out
+    // the property address group.
+    `ALTER TABLE campaign_contacts ADD COLUMN IF NOT EXISTS property_county VARCHAR(100)`,
     // Per-campaign filter thresholds (Task 2). Defaults make existing campaigns
     // behave like before: voicemails/hangups are NOT auto-filtered out at clean-
     // export time unless the user lowers the threshold. exclude_* defaults match
@@ -568,32 +573,44 @@ async function importContactList(tenantId, campaignId, rows, headers, customMapp
   if (!Number.isInteger(tenantId)) throw new Error('importContactList: tenantId required');
   if (!rows.length) return { total: 0 };
 
-  const h = headers.map(x => x.toLowerCase().trim());
-  const find = (opts) => {
-    for (const o of opts) {
-      const i = h.findIndex(x => x.includes(o.toLowerCase()));
+  // 2026-05-01 (5A.2 follow-up): token-based matcher. Splits on underscores,
+  // hyphens, hash, and whitespace so headers like "primary_mailing_address",
+  // "Primary Mailing Address", and "primary-mailing-address" all match the
+  // same needle. Match wins when EVERY needle token is present in the header
+  // tokens (order doesn't matter). For ambiguous fields like "county" we
+  // require a discriminator token ("mailing" vs "property") so a header like
+  // "associated_property_address_county" doesn't get grabbed as mailing
+  // county — that was the bug auto-detect had pre-tokenization.
+  const tokenize = (s) => String(s || '').toLowerCase().split(/[\s_\-#]+/).filter(Boolean);
+  const headerTokens = headers.map(tokenize);
+  const find = (needles) => {
+    for (const needle of needles) {
+      const needleTokens = Array.isArray(needle) ? needle.map(t => t.toLowerCase()) : tokenize(needle);
+      const i = headerTokens.findIndex(ht => needleTokens.every(t => ht.includes(t)));
       if (i > -1) return headers[i];
     }
     return null;
   };
 
   const autoDetect = {
-    fname:    find(['first name', 'firstname']),
-    lname:    find(['last name', 'lastname']),
-    maddr:    find(['mailing address', 'mailing addr', 'owner street']),
-    mcity:    find(['mailing city', 'owner city']),
-    mstate:   find(['mailing state', 'owner state']),
-    mzip:     find(['mailing zip', 'mailing zip5', 'owner zip']),
-    mcounty:  find(['mailing county', 'county']),
-    paddr:    find(['property address', 'property street']),
-    pcity:    find(['property city']),
-    pstate:   find(['property state']),
-    pzip:     find(['property zip', 'property zip code']),
-    // 2026-05-01 (5A.1): per-row dialer-acceptance signal. Auto-detect tries
-    // common Readymode/CallTools/Batch column names. If absent, the operator
-    // will be forced to map one explicitly in the 5A.2 wizard.
-    accepted: find(['accepted by dialer', 'accepted', 'lead accepted', 'accepted_lead']),
-    dnc:      find(['dnc', 'do not call']),
+    fname:    find([['first', 'name'], ['firstname'], ['fname']]),
+    lname:    find([['last', 'name'], ['lastname'], ['lname']]),
+    // Mailing — every needle requires the "mailing" or "owner" discriminator.
+    maddr:    find([['mailing', 'address'], ['mailing', 'addr'], ['owner', 'street'], ['owner', 'address']]),
+    mcity:    find([['mailing', 'city'], ['owner', 'city']]),
+    mstate:   find([['mailing', 'state'], ['owner', 'state']]),
+    mzip:     find([['mailing', 'zip'], ['owner', 'zip']]),
+    mcounty:  find([['mailing', 'county'], ['owner', 'county']]),
+    // Property — every needle requires "property" / "subject" / "associated"
+    // (Readymode export uses the latter prefix).
+    paddr:    find([['property', 'address'], ['property', 'street'], ['subject', 'address'], ['associated', 'property', 'address']]),
+    pcity:    find([['property', 'city'], ['subject', 'city'], ['associated', 'property', 'city']]),
+    pstate:   find([['property', 'state'], ['subject', 'state'], ['associated', 'property', 'state']]),
+    pzip:     find([['property', 'zip'], ['subject', 'zip'], ['associated', 'property', 'zip']]),
+    pcounty:  find([['property', 'county'], ['subject', 'county'], ['associated', 'property', 'county']]),
+    // 2026-05-01 (5A.1): per-row dialer-acceptance signal.
+    accepted: find([['accepted', 'dialer'], ['lead', 'accepted'], ['accepted', 'lead'], ['accepted']]),
+    dnc:      find([['dnc'], ['do', 'not', 'call']]),
   };
   const COL = customMapping ? {
     fname:    customMapping.fname    || autoDetect.fname,
@@ -607,6 +624,7 @@ async function importContactList(tenantId, campaignId, rows, headers, customMapp
     pcity:    customMapping.pcity    || autoDetect.pcity,
     pstate:   customMapping.pstate   || autoDetect.pstate,
     pzip:     customMapping.pzip     || autoDetect.pzip,
+    pcounty:  customMapping.pcounty  || autoDetect.pcounty,
     accepted: customMapping.accepted || autoDetect.accepted,
     dnc:      customMapping.dnc      || autoDetect.dnc,
   } : autoDetect;
@@ -652,8 +670,9 @@ async function importContactList(tenantId, campaignId, rows, headers, customMapp
     for (let j = 0; j < batch.length; j++) {
       const r = batch[j];
       const idx = i + j;
-      // 16 cols including tenant_id (added accepted, dnc — 5A.1).
-      vals.push(`($${p},$${p+1},$${p+2},$${p+3},$${p+4},$${p+5},$${p+6},$${p+7},$${p+8},$${p+9},$${p+10},$${p+11},$${p+12},$${p+13},$${p+14},$${p+15})`);
+      // 17 cols including tenant_id (5A.1 added accepted+dnc; 5A.2 follow-up
+      // added property_county).
+      vals.push(`($${p},$${p+1},$${p+2},$${p+3},$${p+4},$${p+5},$${p+6},$${p+7},$${p+8},$${p+9},$${p+10},$${p+11},$${p+12},$${p+13},$${p+14},$${p+15},$${p+16})`);
       // 2026-04-20 audit fix #1: route property_state + mailing_state through
       // normalizeState() so the records filter's UPPER(TRIM(property_state))
       // = UPPER(TRIM(p.state_code)) comparison actually matches. Before this,
@@ -682,9 +701,10 @@ async function importContactList(tenantId, campaignId, rows, headers, customMapp
         idx,
         tenantId,
         acceptedVal,
-        dncVal
+        dncVal,
+        r[COL.pcounty]||''
       );
-      p += 16;
+      p += 17;
     }
 
     const contactRes = await query(
@@ -692,7 +712,7 @@ async function importContactList(tenantId, campaignId, rows, headers, customMapp
          (campaign_id, first_name, last_name, mailing_address, mailing_city,
           mailing_state, mailing_zip, mailing_county, property_address,
           property_city, property_state, property_zip, row_index, tenant_id,
-          accepted, dnc)
+          accepted, dnc, property_county)
        VALUES ${vals.join(',')}
        ON CONFLICT (campaign_id, row_index) DO UPDATE SET
          first_name       = COALESCE(NULLIF(EXCLUDED.first_name,''),       campaign_contacts.first_name),
@@ -706,6 +726,7 @@ async function importContactList(tenantId, campaignId, rows, headers, customMapp
          property_city    = COALESCE(NULLIF(EXCLUDED.property_city,''),    campaign_contacts.property_city),
          property_state   = COALESCE(NULLIF(EXCLUDED.property_state,''),   campaign_contacts.property_state),
          property_zip     = COALESCE(NULLIF(EXCLUDED.property_zip,''),     campaign_contacts.property_zip),
+         property_county  = COALESCE(NULLIF(EXCLUDED.property_county,''),  campaign_contacts.property_county),
          accepted         = COALESCE(EXCLUDED.accepted,                    campaign_contacts.accepted),
          dnc              = (EXCLUDED.dnc OR campaign_contacts.dnc),
          updated_at       = NOW()

@@ -83,20 +83,21 @@ function contactsMapPage(opts) {
         </div>
 
         <div class="ocu-card" style="padding:16px;margin-bottom:18px">
-          <h3 style="font-size:14px;font-weight:600;margin:0 0 8px">Mailing address</h3>
-          ${_row('Mailing address',  'maddr',   headers, autoMap.maddr   || '', null, { required: true })}
-          ${_row('Mailing city',     'mcity',   headers, autoMap.mcity   || '', null, { required: true })}
-          ${_row('Mailing state',    'mstate',  headers, autoMap.mstate  || '', null, { required: true })}
-          ${_row('Mailing zip',      'mzip',    headers, autoMap.mzip    || '', null, { required: true })}
-          ${_row('Mailing county',   'mcounty', headers, autoMap.mcounty || '', null, { required: true })}
+          <h3 style="font-size:14px;font-weight:600;margin:0 0 8px">Mailing address <span style="font-weight:400;color:var(--ocu-text-3);font-size:12px">(optional)</span></h3>
+          ${_row('Mailing address',  'maddr',   headers, autoMap.maddr   || '')}
+          ${_row('Mailing city',     'mcity',   headers, autoMap.mcity   || '')}
+          ${_row('Mailing state',    'mstate',  headers, autoMap.mstate  || '')}
+          ${_row('Mailing zip',      'mzip',    headers, autoMap.mzip    || '')}
+          ${_row('Mailing county',   'mcounty', headers, autoMap.mcounty || '')}
         </div>
 
         <div class="ocu-card" style="padding:16px;margin-bottom:18px">
           <h3 style="font-size:14px;font-weight:600;margin:0 0 8px">Property address</h3>
-          ${_row('Property address', 'paddr',  headers, autoMap.paddr  || '', null, { required: true })}
-          ${_row('Property city',    'pcity',  headers, autoMap.pcity  || '', null, { required: true })}
-          ${_row('Property state',   'pstate', headers, autoMap.pstate || '', null, { required: true })}
-          ${_row('Property zip',     'pzip',   headers, autoMap.pzip   || '', null, { required: true })}
+          ${_row('Property address', 'paddr',   headers, autoMap.paddr   || '', null, { required: true })}
+          ${_row('Property city',    'pcity',   headers, autoMap.pcity   || '', null, { required: true })}
+          ${_row('Property state',   'pstate',  headers, autoMap.pstate  || '', null, { required: true })}
+          ${_row('Property zip',     'pzip',    headers, autoMap.pzip    || '', null, { required: true })}
+          ${_row('Property county',  'pcounty', headers, autoMap.pcounty || '', null)}
         </div>
 
         <div class="ocu-card" style="padding:16px;margin-bottom:18px">

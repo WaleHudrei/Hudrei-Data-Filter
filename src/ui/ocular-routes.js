@@ -1386,14 +1386,20 @@ router.post('/campaigns/:id(\\d+)/contacts/parse',
       if (!rows.length) {
         return res.redirect('/oculah/campaigns/' + id + '?err=' + encodeURIComponent('CSV had 0 data rows.'));
       }
-      // Auto-detect: reuse the same heuristics importContactList uses so the
-      // mapping page comes pre-filled. Pattern matchers are intentionally
-      // duplicated here (small, kept simple) rather than imported — the
-      // canonical detection runs server-side at commit time anyway.
-      const h = headers.map(x => x.toLowerCase().trim());
-      const find = (opts) => {
-        for (const o of opts) {
-          const i = h.findIndex(x => x.includes(o.toLowerCase()));
+      // Auto-detect: token-based matcher. Splits headers on _, -, #, space
+      // so "primary_mailing_address" / "Primary Mailing Address" / etc all
+      // tokenize the same way. A needle wins when every needle token is
+      // present in the header tokens — that requirement keeps ambiguous
+      // fields like "county" from grabbing property-county headers when
+      // we're searching for mailing-county. Mirrors the matcher in
+      // campaigns.importContactList; both must agree so the wizard's
+      // suggested mapping survives commit-time fallback.
+      const tokenize = (s) => String(s || '').toLowerCase().split(/[\s_\-#]+/).filter(Boolean);
+      const headerTokens = headers.map(tokenize);
+      const find = (needles) => {
+        for (const needle of needles) {
+          const needleTokens = Array.isArray(needle) ? needle.map(t => t.toLowerCase()) : tokenize(needle);
+          const i = headerTokens.findIndex(ht => needleTokens.every(t => ht.includes(t)));
           if (i > -1) return headers[i];
         }
         return null;
@@ -1409,19 +1415,20 @@ router.post('/campaigns/:id(\\d+)/contacts/parse',
       }).slice(0, 10);
 
       const autoMap = {
-        fname:    find(['first name', 'firstname']),
-        lname:    find(['last name', 'lastname']),
-        maddr:    find(['mailing address', 'mailing addr', 'owner street']),
-        mcity:    find(['mailing city', 'owner city']),
-        mstate:   find(['mailing state', 'owner state']),
-        mzip:     find(['mailing zip', 'mailing zip5', 'owner zip']),
-        mcounty:  find(['mailing county', 'county']),
-        paddr:    find(['property address', 'property street']),
-        pcity:    find(['property city']),
-        pstate:   find(['property state']),
-        pzip:     find(['property zip', 'property zip code']),
-        accepted: find(['accepted by dialer', 'accepted', 'lead accepted', 'accepted_lead']),
-        dnc:      find(['dnc', 'do not call']),
+        fname:    find([['first', 'name'], ['firstname'], ['fname']]),
+        lname:    find([['last', 'name'], ['lastname'], ['lname']]),
+        maddr:    find([['mailing', 'address'], ['mailing', 'addr'], ['owner', 'street'], ['owner', 'address']]),
+        mcity:    find([['mailing', 'city'], ['owner', 'city']]),
+        mstate:   find([['mailing', 'state'], ['owner', 'state']]),
+        mzip:     find([['mailing', 'zip'], ['owner', 'zip']]),
+        mcounty:  find([['mailing', 'county'], ['owner', 'county']]),
+        paddr:    find([['property', 'address'], ['property', 'street'], ['subject', 'address'], ['associated', 'property', 'address']]),
+        pcity:    find([['property', 'city'], ['subject', 'city'], ['associated', 'property', 'city']]),
+        pstate:   find([['property', 'state'], ['subject', 'state'], ['associated', 'property', 'state']]),
+        pzip:     find([['property', 'zip'], ['subject', 'zip'], ['associated', 'property', 'zip']]),
+        pcounty:  find([['property', 'county'], ['subject', 'county'], ['associated', 'property', 'county']]),
+        accepted: find([['accepted', 'dialer'], ['lead', 'accepted'], ['accepted', 'lead'], ['accepted']]),
+        dnc:      find([['dnc'], ['do', 'not', 'call']]),
         phones:   detectedPhones,
       };
 
@@ -1477,7 +1484,10 @@ router.post('/campaigns/:id(\\d+)/contacts/commit', requireAuth, async (req, res
     if (!stash) {
       return res.redirect('/oculah/campaigns/' + id + '?err=' + encodeURIComponent('Upload session expired — pick the CSV again.'));
     }
-    const REQUIRED = ['fname','lname','maddr','mcity','mstate','mzip','mcounty','paddr','pcity','pstate','pzip','accepted','phone1'];
+    // 2026-05-01 (5A.2 follow-up): mailing fields are now optional per
+    // operator feedback — many lists ship without them. Only owner names,
+    // property address, phone 1, and accepted are required.
+    const REQUIRED = ['fname','lname','paddr','pcity','pstate','pzip','accepted','phone1'];
     for (const f of REQUIRED) {
       if (!req.body[f] || !String(req.body[f]).trim()) {
         return res.redirect('/oculah/campaigns/' + id + '/contacts/map?err=' + encodeURIComponent(`Missing required mapping: ${f}`));
@@ -1493,17 +1503,18 @@ router.post('/campaigns/:id(\\d+)/contacts/commit', requireAuth, async (req, res
     const customMapping = {
       fname:    req.body.fname,
       lname:    req.body.lname,
-      maddr:    req.body.maddr,
-      mcity:    req.body.mcity,
-      mstate:   req.body.mstate,
-      mzip:     req.body.mzip,
-      mcounty:  req.body.mcounty,
+      maddr:    req.body.maddr   || null,
+      mcity:    req.body.mcity   || null,
+      mstate:   req.body.mstate  || null,
+      mzip:     req.body.mzip    || null,
+      mcounty:  req.body.mcounty || null,
       paddr:    req.body.paddr,
       pcity:    req.body.pcity,
       pstate:   req.body.pstate,
       pzip:     req.body.pzip,
+      pcounty:  req.body.pcounty || null,
       accepted: req.body.accepted,
-      dnc:      req.body.dnc || null,
+      dnc:      req.body.dnc     || null,
       phones,
     };
     const campaigns = require('../campaigns');

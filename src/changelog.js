@@ -3,6 +3,15 @@
 
 const ENTRIES = [
   {
+    date: 'May 1, 2026 (5A.2 follow-up — wizard polish)',
+    title: 'Mapping wizard: smart auto-detect, mailing optional, property county added',
+    items: [
+      { tag: 'fix', text: 'Auto-detect on the master-list mapping wizard now uses a token-based matcher (splits on _ - # space) so headers like "primary_mailing_address" / "Primary Mailing Address" / "primary-mailing-address" all match the same canonical field. Pre-fix, find() did a flat .includes() on the lowercased header, which (a) missed underscored names entirely and (b) confused "associated_property_address_county" for Mailing county because "county" appeared in both. Mailing/property are now disambiguated by required discriminator tokens — mailing matchers require "mailing" or "owner"; property matchers require "property", "subject", or "associated".' },
+      { tag: 'feat', text: 'Property county field added — schema column property_county on campaign_contacts, auto-detected from "associated_property_address_county" / "property county" / "subject county" headers, threaded through importContactList\'s INSERT/ON CONFLICT, and rendered in the Property address section of the wizard.' },
+      { tag: 'fix', text: 'Mailing address fields are now OPTIONAL on the mapping wizard. Many master lists ship without separate mailing data and the import shouldn\'t block. Required mappings reduced to: First name, Last name, Property address/city/state/zip, Phone 1, Accepted by Dialer.' },
+    ],
+  },
+  {
     date: 'May 1, 2026 (5A.2 — master-list import wizard)',
     title: 'Master-list import is a two-step flow now: upload → map → import',
     items: [
