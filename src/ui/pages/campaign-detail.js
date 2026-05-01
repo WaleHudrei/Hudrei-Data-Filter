@@ -118,7 +118,10 @@ function _ratioCard(label, value, hint, tone) {
 // in one place so a label tweak doesn't require chasing duplicate calcs.
 function _campaignMetrics(c) {
   const counts = c.contact_counts || {};
-  const callLogs       = Number(c.total_unique_numbers || 0);
+  // Call logs = raw dial attempts (sum of per-phone cumulative_count from
+  // Readymode), not unique phones. total_unique_numbers is the unique-phone
+  // counter and powers TOTAL PHONES separately.
+  const callLogs       = Number(counts.total_call_logs || 0);
   const connected      = Number(c.total_connected      || 0);
   const transfers      = Number(c.total_transfers      || 0);
   const wrongNums      = Number(c.total_wrong_numbers  || 0);

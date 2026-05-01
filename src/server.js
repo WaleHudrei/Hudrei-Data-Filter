@@ -245,6 +245,7 @@ app.use((req, res, next) => {
 app.locals.processCSV = processCSV;
 app.locals.loadMemory = loadMemory;
 app.locals.saveMemory = saveMemory;
+app.locals.saveRunToDB = saveRunToDB;
 
 // mount upload routes
 app.use('/upload', uploadRoutes);

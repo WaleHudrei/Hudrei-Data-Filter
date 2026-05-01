@@ -716,10 +716,21 @@ async function getContactStats(campaignId) {
       AND cn.last_disposition_normalized = 'transfer'`,
     [campaignId]);
 
+  // Raw call-log volume: sum of Readymode's per-phone cumulative dial count
+  // across every phone tracked for this campaign. Used by the "Call logs" KPI
+  // — distinct from total_unique_numbers (one row per phone). Re-uploading the
+  // same export does not double-count because cumulative_count is overwritten,
+  // not added.
+  const callLogs = await query(
+    `SELECT COALESCE(SUM(cumulative_count), 0)::bigint AS total_call_logs
+       FROM campaign_numbers WHERE campaign_id = $1`,
+    [campaignId]);
+
   return {
     ...res.rows[0],
     reached_contacts: parseInt(reached.rows[0]?.reached_contacts || 0),
-    lead_contacts:    parseInt(leads.rows[0]?.lead_contacts || 0)
+    lead_contacts:    parseInt(leads.rows[0]?.lead_contacts || 0),
+    total_call_logs:  parseInt(callLogs.rows[0]?.total_call_logs || 0),
   };
 }
 

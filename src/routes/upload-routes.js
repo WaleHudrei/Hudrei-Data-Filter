@@ -4,6 +4,7 @@ const Papa = require('papaparse');
 const router = express.Router();
 const uploadUI = require('../ui/upload');
 const { bufferToCsvText } = require('../csv-utils');
+const campaigns = require('../campaigns');
 
 // 2026-04-18 audit fix #43: this second multer instance (separate from the one
 // in server.js) was missing the fileFilter from fix #21. Non-CSV uploads would
@@ -83,12 +84,48 @@ router.post('/filter/process', requireAuth, async (req, res) => {
     const scopeId = campaignId
       || `legacy-upload:${filename || 'unnamed'}:${Date.now()}`;
 
-    const { processCSV, loadMemory, saveMemory } = req.app.locals;
+    const { processCSV, loadMemory, saveMemory, saveRunToDB } = req.app.locals;
     const memory = await loadMemory();
     const csvText = Papa.unparse(rows);
     const result = processCSV(csvText, memory, scopeId);
     await saveMemory(result.memory);
     req.session.lastResult = { cleanRows: result.cleanRows, filteredRows: result.filteredRows };
+
+    // Persist to the campaign and global filtration log when a real campaign
+    // was selected. Without this, /oculah/filtration ran but campaign KPIs
+    // (call logs, connected, upload_count, etc.) never moved — the legacy
+    // /process route did this; this newer Ocular path was read-only.
+    const realCampaignId = campaignId && !String(scopeId).startsWith('legacy-upload:')
+      ? campaignId : null;
+    if (realCampaignId) {
+      const allRows = [...result.cleanRows, ...result.filteredRows];
+      try {
+        const runId = await saveRunToDB(
+          req.tenantId,
+          filename || 'upload.csv',
+          { totalRows: result.totalRows,
+            listsCount: Object.keys(result.listsSeen).length,
+            kept: result.cleanRows.length,
+            filtered: result.filteredRows.length,
+            memCaught: result.memCaught },
+          result.listsSeen,
+          allRows
+        );
+        if (runId) console.log('[oculah/filtration] saved run', runId);
+      } catch (e) { console.error('[oculah/filtration] saveRunToDB:', e.message); }
+      try {
+        await campaigns.initCampaignSchema();
+        await campaigns.recordUpload(
+          req.tenantId, realCampaignId,
+          filename || 'upload.csv',
+          Object.keys(result.listsSeen)[0] || 'upload',
+          'cold_call',
+          allRows, result.totalRows
+        );
+        try { await campaigns.applyFiltrationToContacts(realCampaignId, allRows); }
+        catch (e) { console.error('[oculah/filtration] applyFiltration:', e.message); }
+      } catch (e) { console.error('[oculah/filtration] recordUpload:', e.message); }
+    }
 
     const FIELD_MAP = {
       'Call Log Date':    'Call Log Date',
