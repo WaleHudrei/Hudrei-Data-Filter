@@ -131,18 +131,21 @@ function fingerprintHeaders(columns) {
 /**
  * Idempotent schema for mapping_templates. Called before every read/write.
  *
- * Note: the `fingerprint` UNIQUE constraint is single-column for now —
- * matches the existing prod schema (the Phase 1 migration added tenant_id
- * but did not swap the unique constraint to (tenant_id, fingerprint)).
- * Phase 2 should swap to a composite unique so two tenants can share a
- * fingerprint. For Phase 1 with one tenant, single-column UNIQUE is fine.
+ * 2026-05-01 Phase 1 closure: composite UNIQUE(tenant_id, fingerprint) so
+ * two tenants can independently save mappings keyed off the same CSV
+ * header fingerprint. Pre-fix the single-column UNIQUE meant the second
+ * tenant to import a CSV with header shape X would collide on the first
+ * tenant's saved template — flagged in saas-conversion-status known-gaps
+ * #2. The migration drops the legacy single-column constraint (auto-named
+ * mapping_templates_fingerprint_key) and adds the composite. Idempotent so
+ * re-runs after a successful migration are no-ops.
  */
 async function ensureMappingSchema() {
   await query(`
     CREATE TABLE IF NOT EXISTS mapping_templates (
       id SERIAL PRIMARY KEY,
       tenant_id INT NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
-      fingerprint VARCHAR(32) NOT NULL UNIQUE,
+      fingerprint VARCHAR(32) NOT NULL,
       name TEXT,
       headers JSONB NOT NULL,
       mapping JSONB NOT NULL,
@@ -151,7 +154,31 @@ async function ensureMappingSchema() {
       last_used_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     )
   `);
-  await query(`CREATE INDEX IF NOT EXISTS idx_mapping_templates_fp ON mapping_templates(fingerprint)`);
+  // Drop the legacy single-column UNIQUE if it exists, then add the
+  // composite. Wrapped in try/catch so a partial state from an earlier
+  // failed run doesn't block boot.
+  try {
+    await query(`ALTER TABLE mapping_templates DROP CONSTRAINT IF EXISTS mapping_templates_fingerprint_key`);
+  } catch (e) { /* best-effort */ }
+  try {
+    await query(`
+      DO $$ BEGIN
+        IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'mapping_templates_tenant_fingerprint_unique') THEN
+          ALTER TABLE mapping_templates
+            ADD CONSTRAINT mapping_templates_tenant_fingerprint_unique
+            UNIQUE (tenant_id, fingerprint);
+        END IF;
+      END $$
+    `);
+  } catch (e) {
+    // Most likely cause: existing rows violate the new uniqueness. Log so
+    // the operator sees it; the next request will hit the same path and
+    // surface the same error rather than silently regress.
+    if (!e.message.includes('already exists')) {
+      console.error('[mapping_templates] composite UNIQUE rebuild:', e.message);
+    }
+  }
+  await query(`CREATE INDEX IF NOT EXISTS idx_mapping_templates_tenant_fp ON mapping_templates(tenant_id, fingerprint)`);
 }
 
 /**
@@ -264,13 +291,14 @@ async function upsertMapping(tenantId, fingerprint, columns, mapping) {
   if (!fingerprint) return null;
   await ensureMappingSchema();
   const name = autoNameFromHeaders(columns);
-  // ON CONFLICT (fingerprint) is single-column — see ensureMappingSchema note.
-  // Safe for Phase 1 (one tenant). When the unique becomes composite, switch
-  // this to ON CONFLICT (tenant_id, fingerprint).
+  // 2026-05-01 Phase 1 closure: composite ON CONFLICT (tenant_id, fingerprint)
+  // matches the new composite UNIQUE constraint. Pre-fix the single-column
+  // ON CONFLICT meant tenant B re-saving a fingerprint already-saved by
+  // tenant A would clobber tenant A's mapping.
   const r = await query(`
     INSERT INTO mapping_templates (tenant_id, fingerprint, name, headers, mapping, use_count, last_used_at)
     VALUES ($1, $2, $3, $4::jsonb, $5::jsonb, 1, NOW())
-    ON CONFLICT (fingerprint) DO UPDATE SET
+    ON CONFLICT (tenant_id, fingerprint) DO UPDATE SET
       mapping      = EXCLUDED.mapping,
       headers      = EXCLUDED.headers,
       use_count    = mapping_templates.use_count + 1,

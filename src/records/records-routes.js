@@ -2595,12 +2595,14 @@ router.post('/_state_cleanup/fix', requireAuth, async (req, res) => {
 router.get('/_distress', requireAuth, async (req, res) => {
   try {
     await distress.ensureDistressSchema();
-    const dist = await distress.getScoreDistribution();
-    const conv = await distress.getConversionByBand();
+    // 2026-05-01 Phase 1 closure: every distress aggregator is now
+    // tenant-scoped — pass req.tenantId to all 5.
+    const dist = await distress.getScoreDistribution(req.tenantId);
+    const conv = await distress.getConversionByBand(req.tenantId);
     // 3 new audit datasets
-    const closedHistory = await distress.getClosedDealScoreHistory();
-    const coverage = await distress.getSignalCoverage();
-    const convRates = await distress.getConversionRateByBand();
+    const closedHistory = await distress.getClosedDealScoreHistory(req.tenantId);
+    const coverage = await distress.getSignalCoverage(req.tenantId);
+    const convRates = await distress.getConversionRateByBand(req.tenantId);
 
     const total = parseInt(dist.total || 0);
     const scored = total - parseInt(dist.unscored || 0);

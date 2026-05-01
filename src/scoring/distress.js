@@ -593,14 +593,25 @@ async function scoreAllProperties(progressCb, tenantId) {
 }
 
 // ── Full per-property rescore including breakdown (for smaller batches) ────
-async function scoreAllPropertiesWithBreakdown(progressCb, limit) {
+// 2026-05-01 Phase 1 closure: tenantId is now required. Pre-fix the function
+// pulled `SELECT id FROM properties ORDER BY id` with no tenant filter, so
+// any caller would rescore EVERY tenant's rows on every invocation — flagged
+// in both my adversarial audit and the saas-conversion-status known-gaps
+// list.
+async function scoreAllPropertiesWithBreakdown(progressCb, limit, tenantId) {
+  if (!Number.isInteger(tenantId)) {
+    throw new Error('scoreAllPropertiesWithBreakdown: tenantId required (int)');
+  }
   await ensureDistressSchema();
   // Cap user-provided limit defensively at 250k and drop any non-integer.
   // Parameterized rather than interpolated to eliminate any injection vector.
   let lim = parseInt(limit, 10);
   if (isNaN(lim) || lim < 1) lim = 250_000;
   if (lim > 250_000) lim = 250_000;
-  const idsRes = await query(`SELECT id FROM properties ORDER BY id ASC LIMIT $1`, [lim]);
+  const idsRes = await query(
+    `SELECT id FROM properties WHERE tenant_id = $2 ORDER BY id ASC LIMIT $1`,
+    [lim, tenantId]
+  );
   const ids = idsRes.rows.map(r => r.id);
   let done = 0;
   for (const id of ids) {
@@ -643,7 +654,13 @@ async function logOutcomeChange(propertyId, outcomeType, oldValue, newValue) {
 }
 
 // ── Distribution stats for the audit page ──────────────────────────────────
-async function getScoreDistribution() {
+// 2026-05-01 Phase 1 closure: tenantId is now required on all five distress
+// audit aggregators. Pre-fix every query was unscoped — the /records/_distress
+// page would have shown cross-tenant counts AND scanned every tenant's
+// properties on every request. Flagged in saas-conversion-status known-gaps
+// list and in my adversarial audit Section 4.
+async function getScoreDistribution(tenantId) {
+  if (!Number.isInteger(tenantId)) throw new Error('getScoreDistribution: tenantId required (int)');
   await ensureDistressSchema();
   const r = await query(`
     SELECT
@@ -654,12 +671,14 @@ async function getScoreDistribution() {
       COUNT(*) FILTER (WHERE distress_band = 'burning')                 AS burning,
       COUNT(*)                                                          AS total
     FROM properties
-  `);
+   WHERE tenant_id = $1
+  `, [tenantId]);
   return r.rows[0] || {};
 }
 
 // ── Outcome conversion stats by band (the learning loop) ───────────────────
-async function getConversionByBand() {
+async function getConversionByBand(tenantId) {
+  if (!Number.isInteger(tenantId)) throw new Error('getConversionByBand: tenantId required (int)');
   await ensureDistressSchema();
   const r = await query(`
     SELECT band_at_event AS band,
@@ -667,16 +686,17 @@ async function getConversionByBand() {
            new_value,
            COUNT(*) AS count
       FROM distress_outcome_log
-     WHERE band_at_event IS NOT NULL
+     WHERE band_at_event IS NOT NULL AND tenant_id = $1
      GROUP BY band_at_event, outcome_type, new_value
      ORDER BY band_at_event, outcome_type, new_value
-  `);
+  `, [tenantId]);
   return r.rows;
 }
 
 // ── AUDIT 1: Score history of closed/contracted deals ─────────────────────
 // "When you closed deals, what was their score path? Did the system catch them?"
-async function getClosedDealScoreHistory() {
+async function getClosedDealScoreHistory(tenantId) {
+  if (!Number.isInteger(tenantId)) throw new Error('getClosedDealScoreHistory: tenantId required (int)');
   await ensureDistressSchema();
   // Find properties currently in 'closed' or 'contract' stage,
   // then attach their full score history.
@@ -685,6 +705,7 @@ async function getClosedDealScoreHistory() {
       SELECT id, street, city, state_code, pipeline_stage, distress_score, distress_band, updated_at
         FROM properties
        WHERE pipeline_stage IN ('closed','contract','lead')
+         AND tenant_id = $1
        ORDER BY
          CASE pipeline_stage WHEN 'closed' THEN 1 WHEN 'contract' THEN 2 WHEN 'lead' THEN 3 END,
          updated_at DESC
@@ -698,16 +719,18 @@ async function getClosedDealScoreHistory() {
             ) ORDER BY dsl.logged_at)
               FROM distress_score_log dsl
              WHERE dsl.property_id = cp.id
+               AND dsl.tenant_id  = $1
            ) AS score_history
       FROM closed_props cp
-  `);
+  `, [tenantId]);
   return r.rows;
 }
 
 // ── AUDIT 2: Signal coverage report ───────────────────────────────────────
 // "What % of records have each scoring input populated? Tells you where data
 // gaps are silently muting the score."
-async function getSignalCoverage() {
+async function getSignalCoverage(tenantId) {
+  if (!Number.isInteger(tenantId)) throw new Error('getSignalCoverage: tenantId required (int)');
   await ensureDistressSchema();
   const r = await query(`
     SELECT
@@ -717,21 +740,24 @@ async function getSignalCoverage() {
       COUNT(*) FILTER (WHERE marketing_result IS NOT NULL AND marketing_result <> '') AS has_marketing,
       COUNT(*) FILTER (WHERE pipeline_stage IS NOT NULL AND pipeline_stage <> 'prospect') AS has_pipeline
     FROM properties
-  `);
+   WHERE tenant_id = $1
+  `, [tenantId]);
   // Mailing state lives on contacts (joined via property_contacts)
   const mailing = await query(`
     SELECT COUNT(DISTINCT pc.property_id) AS has_mailing_state
       FROM property_contacts pc
-      JOIN contacts c ON c.id = pc.contact_id
+      JOIN contacts c ON c.id = pc.contact_id AND c.tenant_id = pc.tenant_id
      WHERE pc.primary_contact = true
+       AND pc.tenant_id = $1
        AND c.mailing_state IS NOT NULL
        AND c.mailing_state <> ''
-  `);
+  `, [tenantId]);
   // List membership at all
   const onLists = await query(`
     SELECT COUNT(DISTINCT property_id) AS has_any_list
       FROM property_lists
-  `);
+     WHERE tenant_id = $1
+  `, [tenantId]);
   const base = r.rows[0] || {};
   return {
     total: parseInt(base.total || 0),
@@ -747,7 +773,8 @@ async function getSignalCoverage() {
 // ── AUDIT 3: Conversion rate by band over time ────────────────────────────
 // "How well does the score predict outcomes? If Burning closes more often
 // than Cold, the score is working. If they're equal, weights need tuning."
-async function getConversionRateByBand() {
+async function getConversionRateByBand(tenantId) {
+  if (!Number.isInteger(tenantId)) throw new Error('getConversionRateByBand: tenantId required (int)');
   await ensureDistressSchema();
   // Count current pipeline state of properties grouped by their CURRENT band
   const r = await query(`
@@ -758,11 +785,12 @@ async function getConversionRateByBand() {
            COUNT(*) FILTER (WHERE pipeline_stage = 'closed')   AS closed
       FROM properties
      WHERE distress_band IS NOT NULL
+       AND tenant_id = $1
      GROUP BY distress_band
      ORDER BY CASE distress_band
        WHEN 'burning' THEN 1 WHEN 'hot' THEN 2 WHEN 'warm' THEN 3 WHEN 'cold' THEN 4
      END
-  `);
+  `, [tenantId]);
   return r.rows.map(row => {
     const total = parseInt(row.total || 0);
     const leads = parseInt(row.leads || 0);

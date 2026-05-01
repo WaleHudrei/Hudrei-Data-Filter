@@ -5,8 +5,29 @@
 // own delete_code. The app_settings PK is now (tenant_id, key).
 
 const { query } = require('./db');
+const crypto = require('crypto');
 
+// HudREI's seeded delete code — kept as the LEGACY default for the
+// pre-existing tenant_id=1 row that was provisioned before signup existed.
+// New tenants get a randomly-generated code instead (see
+// generateRandomDeleteCode + provisionTenantSettings).
 const DEFAULT_DELETE_CODE = 'HudREI2026';
+
+/**
+ * Generate a fresh random delete code for a new tenant. 12 alphanumeric
+ * characters drawn uniformly from a 62-char alphabet via crypto.randomInt
+ * — ~71 bits of entropy, plenty for a confirm-action gate. Excludes 0/O/1/l
+ * so the code is dictatable without ambiguity if the operator reads it from
+ * the screen to a teammate.
+ */
+function generateRandomDeleteCode() {
+  const ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789';
+  let s = '';
+  for (let i = 0; i < 12; i++) {
+    s += ALPHABET[crypto.randomInt(ALPHABET.length)];
+  }
+  return s;
+}
 
 // Module-level idempotency flag — ensureSettingsSchema only pays DDL cost
 // once per process, not every time verifyDeleteCode runs. (Audit issue #16.)
@@ -33,14 +54,27 @@ async function ensureSettingsSchema() {
 /**
  * Seeds default settings rows for one tenant. Idempotent — safe to call on
  * boot and at tenant signup. Currently only seeds delete_code.
+ *
+ * 2026-05-01 Phase 2 closure: every NEW tenant gets a random delete_code,
+ * not the shared `HudREI2026` default. Plan open question #4 favored random
+ * for security; the only reason it stayed default was friction during the
+ * pre-public-launch period. Now: random by default, with the legacy
+ * `HudREI2026` value preserved on tenant_id=1 (HudREI itself) so the
+ * existing operator's saved code still works.
+ *
+ * Tenant 1 explicitly gets the legacy value to preserve continuity. Every
+ * other tenant gets a fresh 12-char alphanumeric. The ON CONFLICT DO NOTHING
+ * means a re-run never overwrites an existing row — so this is safe to call
+ * on boot AND at signup.
  */
 async function provisionTenantSettings(tenantId) {
   if (!Number.isInteger(tenantId)) throw new Error('provisionTenantSettings: tenantId required');
   await ensureSettingsSchema();
+  const seed = (tenantId === 1) ? DEFAULT_DELETE_CODE : generateRandomDeleteCode();
   await query(
     `INSERT INTO app_settings (tenant_id, key, value) VALUES ($1, 'delete_code', $2)
      ON CONFLICT (tenant_id, key) DO NOTHING`,
-    [tenantId, DEFAULT_DELETE_CODE]
+    [tenantId, seed]
   );
 }
 
@@ -143,10 +177,12 @@ async function getDeleteCodeUpdatedAt(tenantId) {
 
 module.exports = {
   DEFAULT_DELETE_CODE,
+  generateRandomDeleteCode,
   ensureSettingsSchema,
   provisionTenantSettings,
   verifyDeleteCode,
   updateDeleteCode,
   getDeleteCodeUpdatedAt,
   isUsingDefaultCode,
+  getDeleteCode,
 };
