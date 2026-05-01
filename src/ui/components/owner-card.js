@@ -154,22 +154,25 @@ function ownerCard(opts = {}) {
     ? `<a class="ocu-owner-profile-link" href="${profileHref}" title="Open ${escHTML(contact.first_name || '')} ${escHTML(contact.last_name || '')}'s profile">View profile <span aria-hidden="true">→</span></a>`
     : '';
 
+  // 3-column layout: identity | mailing | phones. Each block is its own
+  // visual section with a consistent label + body shape so the row reads
+  // as one coordinated row of three peers, not three pieces floating.
   return `
     <div class="ocu-card ocu-owner-card">
-      <div class="ocu-owner-header">
-        ${avatar}
-        <div class="ocu-owner-titles">
-          <div class="ocu-owner-label-row">
-            <span class="ocu-owner-label">${escHTML(label)}</span>
-            ${isPrimary ? '<span class="ocu-owner-primary-tag">Primary</span>' : ''}
+      <div class="ocu-owner-3col">
+        <div class="ocu-owner-identity">
+          ${avatar}
+          <div class="ocu-owner-titles">
+            <div class="ocu-owner-label-row">
+              <span class="ocu-owner-label">${escHTML(label)}</span>
+              ${isPrimary ? '<span class="ocu-owner-primary-tag">Primary</span>' : ''}
+            </div>
+            <div class="ocu-owner-name">${fullName}</div>
+            ${profileLink}
           </div>
-          <div class="ocu-owner-name">${fullName}</div>
         </div>
-        ${profileLink}
-      </div>
 
-      <div class="ocu-owner-body">
-        <div class="ocu-owner-section">
+        <div class="ocu-owner-section ocu-owner-mailing-section">
           <div class="ocu-owner-section-label"><span class="ocu-owner-section-icon">${_ICON_PIN}</span>Mailing address</div>
           <div class="ocu-owner-section-value">${mailing || '<span class="ocu-text-3">—</span>'}</div>
         </div>

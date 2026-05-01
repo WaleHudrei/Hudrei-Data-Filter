@@ -1355,33 +1355,56 @@ button.ocu-kpi,
   padding: 18px 20px;
 }
 
-/* HEADER: avatar + label/name on left, "View profile →" on right */
-.ocu-owner-header {
+/* 3-COLUMN LAYOUT: identity | mailing | phones.
+   2026-05-01 user request: "phones on right, mailing in middle".
+   Identity stays compact at left (~200px), mailing takes a medium
+   middle slot, phones get the largest column for the phone-card grid.
+   On narrow viewports collapses to 1 column, stacked vertically. */
+.ocu-owner-3col {
+  display: grid;
+  grid-template-columns: minmax(180px, 220px) minmax(220px, 1.2fr) minmax(280px, 2.4fr);
+  gap: var(--ocu-space-5);
+  align-items: start;
+}
+@media (max-width: 1024px) {
+  .ocu-owner-3col { grid-template-columns: 1fr 1fr; }
+  .ocu-owner-3col > .ocu-owner-phones-section { grid-column: 1 / -1; }
+}
+@media (max-width: 640px) {
+  .ocu-owner-3col { grid-template-columns: 1fr; }
+}
+
+/* Identity column — avatar + titles + profile link, stacked vertically */
+.ocu-owner-identity {
   display: flex;
-  align-items: center;
-  gap: 14px;
-  padding-bottom: 14px;
-  margin-bottom: 14px;
-  border-bottom: 1px solid var(--ocu-border);
+  align-items: flex-start;
+  gap: var(--ocu-space-3);
+  min-width: 0;
 }
 .ocu-owner-avatar {
-  width: 42px;
-  height: 42px;
+  width: 40px;
+  height: 40px;
   display: inline-flex;
   align-items: center;
   justify-content: center;
   border-radius: 50%;
   font-weight: 600;
-  font-size: 14px;
+  font-size: 13px;
   letter-spacing: -0.01em;
   flex-shrink: 0;
 }
-.ocu-owner-titles { flex: 1; min-width: 0; }
+.ocu-owner-titles {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
 .ocu-owner-label-row {
   display: flex;
   align-items: center;
-  gap: 8px;
-  margin-bottom: 2px;
+  gap: var(--ocu-space-2);
+  flex-wrap: wrap;
 }
 .ocu-owner-label {
   font-size: 11px;
@@ -1410,40 +1433,28 @@ button.ocu-kpi,
   overflow: hidden;
   text-overflow: ellipsis;
 }
+/* "View profile →" — sits below the name in the identity column.
+   Inline link rather than a chip-style button (the chip felt heavy
+   for a tertiary action that's already adjacent to a primary name). */
 .ocu-owner-profile-link {
-  font-size: 12px;
+  display: inline-block;
+  align-self: flex-start;
+  margin-top: 6px;
+  font-size: 12.5px;
   font-weight: 500;
   color: var(--ocu-text-3);
   text-decoration: none;
   white-space: nowrap;
-  flex-shrink: 0;
-  padding: 5px 10px;
-  border-radius: 6px;
-  border: 1px solid transparent;
-  transition: all 0.12s;
+  transition: color 0.12s;
 }
 .ocu-owner-profile-link:hover {
   color: var(--ocu-accent);
-  border-color: var(--ocu-border);
-  background: var(--ocu-surface);
 }
 
-/* BODY: stacked rows — mailing on top, phones below at full card width.
-   2026-05-01 redesign: previously a 2-column (mailing | phones) grid
-   which read as "two disconnected blocks floating in space" because
-   the section heights never matched (1-line mailing vs N-row phones
-   grid) and the visual gestalt was messy. Stacking them gives the
-   phones grid the full card width — at typical property-detail card
-   sizes (~1000px) that fits 4-5 phone columns instead of 2. */
-.ocu-owner-body {
-  display: flex;
-  flex-direction: column;
-  gap: var(--ocu-space-4);
-}
-.ocu-owner-section + .ocu-owner-section {
-  padding-top: var(--ocu-space-4);
-  border-top: 1px solid var(--ocu-border);
-}
+/* (.ocu-owner-body retired 2026-05-01 in favor of the 3-column
+   .ocu-owner-3col layout above. No vertical inter-section dividers —
+   the grid gap provides the separation visually. Sections still need
+   min-width:0 so their inner grids can shrink past content min.) */
 .ocu-owner-section { min-width: 0; }
 .ocu-owner-section-label {
   font-size: 11px;
@@ -1512,15 +1523,13 @@ button.ocu-kpi,
   cursor: wait;
 }
 
-/* PHONES GRID — full-width row inside the owner card body. With the
-   2-col body retired (mailing now sits ABOVE phones), the grid gets
-   the entire card width and naturally fits 3-5 columns at typical
-   property-detail viewport sizes. Threshold tuned so a 1-phone
-   contact still gets a sensibly-sized card (~280px) instead of
-   stretching to 1000px. */
+/* PHONES GRID — fills the right (phones) column of the 3-col owner
+   layout. minmax(min(180px, 100%), 1fr) packs 2-3 columns inside the
+   ~600px phones column, and degrades gracefully when the column
+   collapses on narrow viewports. */
 .ocu-phones-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(min(220px, 100%), 1fr));
+  grid-template-columns: repeat(auto-fill, minmax(min(180px, 100%), 1fr));
   gap: var(--ocu-space-2);
   min-width: 0;
 }
