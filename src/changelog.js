@@ -3,6 +3,13 @@
 
 const ENTRIES = [
   {
+    date: 'May 1, 2026 (dashboard lead-count delta)',
+    title: 'Dashboard "leads vs last week" delta now actually computes',
+    items: [
+      { tag: 'fix', text: 'The lead-count delta on the main dashboard was always blank because the SQL that picks the snapshot closest to 7 days ago wrapped the date subtraction in EXTRACT(EPOCH FROM …). Postgres returns an integer (day count) when subtracting two dates, not an interval, so EXTRACT raised "function pg_catalog.extract(unknown, integer) does not exist" on every dashboard load — silently swallowed by the route\'s .catch fallback. Drop the EXTRACT wrapper; ABS on the raw day count is what the query wanted.' },
+    ],
+  },
+  {
     date: 'May 1, 2026 (campaign filtration KPI fixes)',
     title: 'Filtrations from /oculah/filtration now move the campaign\'s KPIs, and "Call logs" counts dial attempts',
     items: [

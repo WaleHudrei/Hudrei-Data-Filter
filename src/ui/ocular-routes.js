@@ -240,7 +240,7 @@ async function _renderMainDashboard(req, res) {
          WHERE tenant_id = $1
            AND snapshot_date BETWEEN (CURRENT_DATE - INTERVAL '10 days')::date
                                  AND (CURRENT_DATE - INTERVAL '4 days')::date
-         ORDER BY ABS(EXTRACT(EPOCH FROM (snapshot_date - (CURRENT_DATE - INTERVAL '7 days')::date)))
+         ORDER BY ABS(snapshot_date - (CURRENT_DATE - INTERVAL '7 days')::date)
          LIMIT 1
       `, [t]).catch(() => ({ rows: [] })),
       // Lead count: canonical definition is SUM(campaigns.total_transfers).
