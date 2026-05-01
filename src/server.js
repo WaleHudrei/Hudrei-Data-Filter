@@ -1206,13 +1206,37 @@ async function saveRunToDB(tenantId, filename, stats, listsSeen, allRows) {
 
 // ── Campaign Routes ───────────────────────────────────────────────────────────
 
+// 2026-05-01 audit fix: cross-tenant write protection. Every campaign mutation
+// route below verifies that req.params.id belongs to the caller's tenant
+// before doing any work. Returns true if owned, sends a redirect/404 and
+// returns false otherwise. The historic shape of these handlers was to UPDATE
+// WHERE id=$1 with no tenant filter, so any authed user could mutate any
+// other tenant's campaigns by guessing the SERIAL id.
+async function _requireOwnedCampaign(req, res, opts) {
+  const { query: dbQ } = require('./db');
+  const id = parseInt(req.params.id, 10);
+  if (!Number.isFinite(id) || id <= 0) {
+    if (opts && opts.json) res.status(400).json({ error: 'Bad campaign id' });
+    else res.redirect('/oculah/campaigns');
+    return false;
+  }
+  const r = await dbQ('SELECT 1 FROM campaigns WHERE id=$1 AND tenant_id=$2', [id, req.tenantId]);
+  if (!r.rows.length) {
+    if (opts && opts.json) res.status(404).json({ error: 'Campaign not found' });
+    else res.redirect('/oculah/campaigns');
+    return false;
+  }
+  return true;
+}
+
 // Update manual count
 app.post('/campaigns/:id/count', requireAuth, async (req, res) => {
   try {
+    if (!(await _requireOwnedCampaign(req, res))) return;
     const count = parseInt(req.body.manual_count) || 0;
     await campaigns.initCampaignSchema();
     const { query: dbQ } = require('./db');
-    await dbQ('UPDATE campaigns SET manual_count=$1, updated_at=NOW() WHERE id=$2', [count, req.params.id]);
+    await dbQ('UPDATE campaigns SET manual_count=$1, updated_at=NOW() WHERE id=$2 AND tenant_id=$3', [count, req.params.id, req.tenantId]);
     res.redirect('/oculah/campaigns/' + req.params.id);
   } catch(e) { res.redirect('/oculah/campaigns/' + req.params.id); }
 });
@@ -1312,6 +1336,7 @@ app.get('/api/campaigns', requireAuth, async (req, res) => {
 app.post('/campaigns/:id/upload', requireAuth, upload.single('csvfile'), async (req, res) => {
   try {
     if (!req.file) return res.status(400).json({ error: 'No file.' });
+    if (!(await _requireOwnedCampaign(req, res, { json: true }))) return;
     const memory = await loadMemory();
     const result = processCSV(bufferToCsvText(req.file.buffer), memory, req.params.id);
     await saveMemory(result.memory);
@@ -1319,6 +1344,14 @@ app.post('/campaigns/:id/upload', requireAuth, upload.single('csvfile'), async (
     const allRows = [...result.cleanRows, ...result.filteredRows];
     const sourceList = allRows[0]?.['List Name (REISift Campaign)'] || req.file.originalname;
     await campaigns.recordUpload(req.tenantId, req.params.id, req.file.originalname, sourceList, req.body.channel || 'cold_call', allRows, result.totalRows);
+    // 2026-05-01 audit fix QW#4: propagate wrong_number/filtered/nis flags
+    // from cold-call dispositions to campaign_contact_phones. Pre-fix the
+    // /process route did this but the campaign-detail upload UI (which posts
+    // here) didn't, so flags from this surface never reached the master
+    // contact list. Errors are non-fatal — the upload itself already
+    // committed to filtration_results / campaign_numbers.
+    try { await campaigns.applyFiltrationToContacts(req.params.id, allRows); }
+    catch (e) { console.error('[campaigns/upload] applyFiltrationToContacts:', e.message); }
     const newMemSize = Object.keys(result.memory).length;
     const newListCount = new Set(Object.keys(result.memory).map(k => k.split('||')[0])).size;
     res.json({
