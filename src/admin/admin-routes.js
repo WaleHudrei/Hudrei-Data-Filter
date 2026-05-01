@@ -192,6 +192,10 @@ function adminShell(title, bodyHtml, opts = {}) {
   .btn-danger:hover{background:#7a1a1a}
   .btn-sm{padding:5px 10px;font-size:12px}
   form.inline{display:inline}
+  /* 2026-05-01 Phase 4 — role dropdown in the HQ user table */
+  .role-select{padding:5px 10px;border-radius:7px;border:1px solid #2d3344;background:#0f1115;color:#e4e6eb;font-size:12px;font-family:inherit;cursor:pointer}
+  .role-select:hover{border-color:#4a7fc1}
+  .role-select:focus{outline:none;border-color:#4a7fc1}
   label{display:block;font-size:12px;color:#aab1bd;margin-bottom:6px;font-weight:500;text-transform:uppercase;letter-spacing:.4px}
   input[type=text],input[type=email],input[type=password]{width:100%;padding:10px 12px;border-radius:7px;border:1px solid #2d3344;background:#0f1115;color:#e4e6eb;font-size:14px;font-family:inherit}
   input:focus{outline:none;border-color:#4a7fc1}
@@ -430,10 +434,27 @@ router.get('/tenants/:id', async (req, res) => {
     `, [id]).catch(() => ({ rows: [{ properties: '?', contacts: '?', lists: '?', campaigns: '?' }] }));
     const c = counts.rows[0];
 
+    // 2026-05-01 Phase 4 — readable role labels + per-user role dropdown.
+    // The Role column used to render the raw enum value (`tenant_admin`).
+    // Now shows a dropdown that double-serves as label + change control.
+    // POSTing a different value hits /admin/tenants/:id/users/:uid/role.
+    // Same pattern as the workspace-level /oculah/members page so the two
+    // surfaces stay consistent.
+    const _roleLabel = (r) => r === 'tenant_admin' ? 'Admin'
+                            : r === 'tenant_user'  ? 'Member'
+                            : r === 'super_admin'  ? 'Super-admin'
+                            : escHTML(r);
+    const _roleSelect = (uid, currentRole) => `
+      <form class="inline" method="POST" action="/admin/tenants/${id}/users/${uid}/role" onchange="this.submit()">
+        <select name="role" class="role-select">
+          <option value="tenant_admin" ${currentRole === 'tenant_admin' ? 'selected' : ''}>Admin</option>
+          <option value="tenant_user"  ${currentRole === 'tenant_user'  ? 'selected' : ''}>Member</option>
+        </select>
+      </form>`;
     const userRows = u.rows.map(usr => `
       <tr>
         <td><strong>${escHTML(usr.email)}</strong>${usr.email_verified_at ? '' : ' <span class="pill pill-invited">unverified</span>'}<div style="font-size:12px;color:#8b919c">${escHTML(usr.name || '—')}</div></td>
-        <td>${escHTML(usr.role)}</td>
+        <td>${usr.role === 'super_admin' ? `<span class="pill">${_roleLabel(usr.role)}</span>` : _roleSelect(usr.id, usr.role)}</td>
         <td><span class="pill pill-${escHTML(usr.status)}">${escHTML(usr.status)}</span></td>
         <td>${escHTML(fmtDateTime(usr.last_login_at))}</td>
         <td>${escHTML(fmtDate(usr.created_at))}</td>
@@ -626,6 +647,48 @@ router.post('/tenants/:id/users/:uid/status', async (req, res) => {
     res.redirect('/admin/tenants/' + id + '?ok=' + encodeURIComponent(next === 'disabled' ? 'User disabled.' : 'User re-enabled.'));
   } catch (e) {
     console.error('[admin POST /tenants/:id/users/:uid/status]', e);
+    res.redirect('/admin/tenants/' + id + '?err=' + encodeURIComponent(e.message));
+  }
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 2026-05-01 Phase 4 — POST /admin/tenants/:id/users/:uid/role
+// Promote/demote a user. Allowed roles from this surface: tenant_admin /
+// tenant_user. Refuses to demote the last active admin (would orphan the
+// tenant — no one could manage it from inside the workspace).
+// ─────────────────────────────────────────────────────────────────────────────
+router.post('/tenants/:id/users/:uid/role', async (req, res) => {
+  const id  = parseInt(req.params.id, 10);
+  const uid = parseInt(req.params.uid, 10);
+  const next = String(req.body.role || '').trim();
+  if (!Number.isFinite(id) || !Number.isFinite(uid)) return res.redirect('/admin');
+  if (!['tenant_admin', 'tenant_user'].includes(next)) {
+    return res.redirect('/admin/tenants/' + id + '?err=' + encodeURIComponent('Invalid role.'));
+  }
+  try {
+    // Refuse to demote the last active admin.
+    const target = await query(`SELECT role, status FROM users WHERE id = $1 AND tenant_id = $2`, [uid, id]);
+    if (!target.rows.length) {
+      return res.redirect('/admin/tenants/' + id + '?err=' + encodeURIComponent('User not found.'));
+    }
+    if (target.rows[0].role === 'tenant_admin' && next !== 'tenant_admin') {
+      const adminCount = await query(
+        `SELECT COUNT(*)::int AS n FROM users
+          WHERE tenant_id = $1 AND role = 'tenant_admin' AND status = 'active'`,
+        [id]
+      );
+      if (adminCount.rows[0].n <= 1) {
+        return res.redirect('/admin/tenants/' + id + '?err=' + encodeURIComponent('Cannot demote the last active admin.'));
+      }
+    }
+    if (target.rows[0].role === next) {
+      return res.redirect('/admin/tenants/' + id + '?ok=' + encodeURIComponent('Role unchanged.'));
+    }
+    await query(`UPDATE users SET role = $1 WHERE id = $2 AND tenant_id = $3`, [next, uid, id]);
+    _logAdmin(req, 'admin.user_role_changed', id, { resource_type: 'user', resource_id: String(uid), metadata: { from: target.rows[0].role, to: next } });
+    res.redirect('/admin/tenants/' + id + '?ok=' + encodeURIComponent(next === 'tenant_admin' ? 'User promoted to Admin.' : 'User changed to Member.'));
+  } catch (e) {
+    console.error('[admin POST /tenants/:id/users/:uid/role]', e);
     res.redirect('/admin/tenants/' + id + '?err=' + encodeURIComponent(e.message));
   }
 });
