@@ -1549,6 +1549,10 @@ app.post('/campaigns/:id/sync-wrong-numbers', requireAuth, async (req, res) => {
   try {
     if (!(await _requireOwnedCampaign(req, res))) return;
     const { query: dbQ } = require('./db');
+    // RETURNING the affected phones so we can mirror the wrong-number flag
+    // into phone_intelligence (Spec Section 3 Layer 1). Pre-fix the bulk
+    // back-fill updated only ccp.wrong_number; the global Layer 1 store
+    // never saw these historical confirmations and stayed stale.
     const result = await dbQ(
       `UPDATE campaign_contact_phones ccp
        SET wrong_number = true, updated_at = NOW()
@@ -1559,10 +1563,25 @@ app.post('/campaigns/:id/sync-wrong-numbers', requireAuth, async (req, res) => {
          AND ccp.tenant_id = $2
          AND cn.tenant_id = $2
          AND cn.last_disposition_normalized = 'wrong_number'
-         AND ccp.wrong_number = false`,
+         AND ccp.wrong_number = false
+       RETURNING ccp.phone_number`,
       [req.params.id, req.tenantId]
     );
     console.log('[sync-wrong-numbers] flagged', result.rowCount, 'phones for campaign', req.params.id);
+
+    // Mirror to phone_intelligence. Best-effort — if it fails, the
+    // per-row flag still committed and the operator's UI is correct;
+    // only the global aggregate is stale.
+    if (result.rowCount > 0) {
+      try {
+        const _phintel = require('./phone-intelligence');
+        const items = result.rows.map(r => ({ phone: r.phone_number }));
+        await _phintel.setLayerFlag(req.tenantId, items, 'wrong');
+      } catch (e) {
+        console.error('[sync-wrong-numbers] phone_intelligence sync (non-fatal):', e.message);
+      }
+    }
+
     res.redirect('/oculah/campaigns/' + req.params.id);
   } catch(e) {
     console.error('[sync-wrong-numbers] error:', e.message);

@@ -326,6 +326,11 @@ router.post('/phones/:phoneId(\\d+)/status', requireAuth, async (req, res) => {
     if (!phoneId || !allowed.includes(newStatus)) return res.status(400).json({ error: 'Invalid phone_status. Use correct / wrong / do_not_call / unknown.' });
     // wrong_number column is the legacy boolean — keep it in sync so the
     // existing /export "clean phones only" filter stays consistent.
+    // 2026-05-01: RETURNING extended with phone_number + contact_id so the
+    // matching phone_intelligence layer-1 flag can be set in the same hop.
+    // Pre-fix the global Layer 1 store would drift from the per-row flag
+    // any time the operator manually flipped status via the UI — only the
+    // filtration paths kept it in sync.
     const r = await query(
       `UPDATE phones
          SET phone_status = NULLIF($1,''),
@@ -333,11 +338,38 @@ router.post('/phones/:phoneId(\\d+)/status', requireAuth, async (req, res) => {
              do_not_call  = ($1 = 'do_not_call' OR do_not_call),
              updated_at   = NOW()
        WHERE id = $2 AND tenant_id = $3
-       RETURNING id, phone_status, wrong_number, do_not_call`,
+       RETURNING id, contact_id, phone_number, phone_status, wrong_number, do_not_call`,
       [newStatus, phoneId, req.tenantId]
     );
     if (!r.rowCount) return res.status(404).json({ error: 'Phone not found' });
-    res.json({ ok: true, phone: r.rows[0] });
+    const updated = r.rows[0];
+
+    // Mirror the manual flip into phone_intelligence so the global Layer 1
+    // store stays consistent with the operator's confirmed-truth on this
+    // phone. Fetch the contact's name for last_owner_name. Best-effort —
+    // a phintel hiccup must not undo the per-row flip that already
+    // committed.
+    if (newStatus === 'wrong' || newStatus === 'correct') {
+      try {
+        const _phintel = require('../phone-intelligence');
+        const cRes = await query(
+          `SELECT first_name, last_name FROM contacts WHERE id = $1 AND tenant_id = $2`,
+          [updated.contact_id, req.tenantId]
+        );
+        const ownerName = cRes.rowCount
+          ? ((cRes.rows[0].first_name || '') + ' ' + (cRes.rows[0].last_name || '')).trim() || null
+          : null;
+        await _phintel.setLayerFlag(
+          req.tenantId,
+          [{ phone: updated.phone_number, ownerName }],
+          newStatus === 'wrong' ? 'wrong' : 'correct'
+        );
+      } catch (e) {
+        console.error('[phones/:id/status] phone_intelligence sync (non-fatal):', e.message);
+      }
+    }
+
+    res.json({ ok: true, phone: updated });
   } catch (e) {
     console.error('[phones/:id/status POST]', e);
     res.status(500).json({ error: e.message });
