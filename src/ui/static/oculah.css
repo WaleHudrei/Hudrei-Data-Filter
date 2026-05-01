@@ -1639,49 +1639,52 @@ button.ocu-kpi,
    floating card pinned to the viewport center, so the four upload-type
    cards behind it stay visible and usable. pointer-events:none lets the
    drag itself pass through to the document drop handler. */
-.ocu-upload-dragover {
-  position: fixed;
-  top: 50%;
-  left: 50%;
-  transform: translate(-50%, -50%);
-  z-index: 80;
-  pointer-events: none;
-  width: 420px;
-  max-width: calc(100vw - 32px);
-  padding: var(--ocu-space-6) var(--ocu-space-5);
-  background: var(--ocu-bg);
-  border: 2px dashed var(--ocu-accent);
-  border-radius: 14px;
-  text-align: center;
-  box-shadow: 0 16px 48px rgba(11, 18, 32, 0.18);
-}
-/* [hidden] override — class above sets dimensions, [hidden] must still
-   make the card vanish when no drag is in progress. */
-.ocu-upload-dragover[hidden] { display: none; }
-/* Inner wrapper kept for the icon-tile layout but no longer needs its
-   own card chrome (the parent now IS the card). */
-.ocu-upload-dragover-inner {
+/* Persistent drop zone at the top of the upload chooser. Always
+   visible — sits above the four upload-type cards and reads as a
+   slim "drop a file here" banner. The whole document is the drag
+   target; this card just lights up on dragenter via the .is-dragover
+   modifier so the user has visual feedback that the drop will land. */
+.ocu-upload-dropzone {
   display: flex;
-  flex-direction: column;
   align-items: center;
-  gap: var(--ocu-space-2);
+  gap: var(--ocu-space-3);
+  padding: var(--ocu-space-3) var(--ocu-space-5);
+  margin-bottom: var(--ocu-space-4);
+  background: var(--ocu-card-bg);
+  border: 1.5px dashed var(--ocu-border-strong);
+  border-radius: var(--ocu-card-radius);
+  transition: background 0.15s, border-color 0.15s, box-shadow 0.15s;
 }
-.ocu-upload-dragover-icon {
-  display: inline-flex;
-  width: 48px; height: 48px;
-  align-items: center; justify-content: center;
-  border-radius: 50%;
+.ocu-upload-dropzone.is-dragover {
   background: var(--ocu-accent-soft);
-  color: var(--ocu-accent);
-  margin-bottom: var(--ocu-space-2);
+  border-color: var(--ocu-accent);
+  border-style: solid;
+  box-shadow: 0 0 0 3px var(--ocu-accent-soft);
 }
-.ocu-upload-dragover-icon svg { width: 28px; height: 28px; }
-.ocu-upload-dragover-title {
-  font-size: 16px;
-  font-weight: 700;
+.ocu-upload-dropzone-icon {
+  display: inline-flex;
+  width: 44px;
+  height: 44px;
+  align-items: center;
+  justify-content: center;
+  border-radius: 10px;
+  background: var(--ocu-bg);
+  border: 1px solid var(--ocu-border);
+  color: var(--ocu-text-2);
+  flex-shrink: 0;
+}
+.ocu-upload-dropzone.is-dragover .ocu-upload-dropzone-icon {
+  background: var(--ocu-bg);
+  border-color: var(--ocu-accent);
+  color: var(--ocu-accent);
+}
+.ocu-upload-dropzone-text { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.ocu-upload-dropzone-title {
+  font-size: 14px;
+  font-weight: 600;
   color: var(--ocu-text-1);
 }
-.ocu-upload-dragover-desc {
+.ocu-upload-dropzone-desc {
   font-size: 12.5px;
   color: var(--ocu-text-3);
 }

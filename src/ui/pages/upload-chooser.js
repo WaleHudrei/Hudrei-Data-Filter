@@ -59,21 +59,22 @@ function uploadChooser(data = {}) {
       <a href="/oculah/activity" class="ocu-btn ocu-btn-secondary">View activity →</a>
     </div>
 
-    <div class="ocu-upload-grid">${cards}</div>
-
-    <!-- Page-wide drag overlay. Activates when a file is dragged onto the
-         page; on drop, auto-routes to the right uploader based on the
-         filename + size heuristics. The user re-drops on the destination
-         page (file objects can't be carried across navigation). -->
-    <div id="ocu-upload-dragover" class="ocu-upload-dragover" hidden>
-      <div class="ocu-upload-dragover-inner">
-        <div class="ocu-upload-dragover-icon" aria-hidden="true">
-          <svg width="44" height="44" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
-        </div>
-        <div class="ocu-upload-dragover-title">Drop your file</div>
-        <div class="ocu-upload-dragover-desc">We'll detect the type and route you to the right uploader.</div>
+    <!-- Persistent drop card at the top of the page. Always visible so
+         users see "you can drop a file here" without having to start
+         dragging first. The whole document is also a drag target — the
+         card just lights up via the .is-dragover modifier when a file
+         is being dragged anywhere on the page. -->
+    <div id="ocu-upload-dropzone" class="ocu-upload-dropzone">
+      <div class="ocu-upload-dropzone-icon" aria-hidden="true">
+        <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
+      </div>
+      <div class="ocu-upload-dropzone-text">
+        <div class="ocu-upload-dropzone-title">Drop a file anywhere on this page</div>
+        <div class="ocu-upload-dropzone-desc">We'll detect the type and route you to the right uploader. Or pick one below.</div>
       </div>
     </div>
+
+    <div class="ocu-upload-grid">${cards}</div>
 
     <!-- Auto-route confirmation. After a drop we sniff the file and show
          the suggested route here; user can confirm or pick a different
@@ -98,10 +99,10 @@ function uploadChooser(data = {}) {
 
     <script>
       (function() {
-        var overlay = document.getElementById('ocu-upload-dragover');
-        var dialog  = document.getElementById('ocu-upload-route-dialog');
-        var msg     = document.getElementById('ocu-upload-route-msg');
-        if (!overlay || !dialog || !msg) return;
+        var dropzone = document.getElementById('ocu-upload-dropzone');
+        var dialog   = document.getElementById('ocu-upload-route-dialog');
+        var msg      = document.getElementById('ocu-upload-route-msg');
+        if (!dropzone || !dialog || !msg) return;
 
         // Filename-based routing heuristics. Order matters: NIS check
         // before bulk because a "reisift_nis_export.csv" should go to
@@ -137,7 +138,7 @@ function uploadChooser(data = {}) {
         document.addEventListener('dragenter', function(e) {
           if (!isFileDrag(e)) return;
           dragDepth++;
-          overlay.hidden = false;
+          dropzone.classList.add('is-dragover');
         });
         document.addEventListener('dragover', function(e) {
           if (!isFileDrag(e)) return;
@@ -146,13 +147,13 @@ function uploadChooser(data = {}) {
         document.addEventListener('dragleave', function(e) {
           if (!isFileDrag(e)) return;
           dragDepth = Math.max(0, dragDepth - 1);
-          if (dragDepth === 0) overlay.hidden = true;
+          if (dragDepth === 0) dropzone.classList.remove('is-dragover');
         });
         document.addEventListener('drop', function(e) {
           if (!isFileDrag(e)) return;
           e.preventDefault();
           dragDepth = 0;
-          overlay.hidden = true;
+          dropzone.classList.remove('is-dragover');
 
           var f = e.dataTransfer.files && e.dataTransfer.files[0];
           if (!f) return;
