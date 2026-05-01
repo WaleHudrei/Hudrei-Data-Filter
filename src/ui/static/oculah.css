@@ -1888,6 +1888,14 @@ button.ocu-kpi,
   gap: var(--ocu-space-3);
   min-width: 0;
 }
+/* 2026-05-01 fix: explicit [hidden] override. The display:grid declaration
+   above wins over the user-agent default `[hidden] { display: none }` on
+   specificity (class beats attribute selector at equal specificity, and
+   the UA rule has the same shape). Result before this fix: clicking the
+   "+N more" toggle added the hidden attribute but the second-half phones
+   stayed visible — toggle looked broken. Add an explicit selector so
+   [hidden] wins. */
+.ocu-phones-grid[hidden] { display: none; }
 @media (max-width: 760px) {
   .ocu-phones-grid { grid-template-columns: 1fr; }
 }

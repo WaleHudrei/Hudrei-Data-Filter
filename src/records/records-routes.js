@@ -477,6 +477,22 @@ router.post('/contacts/:contactId(\\d+)/phones', requireAuth, async (req, res) =
     );
     if (!own.rowCount) return res.status(404).json({ error: 'Contact not found.' });
 
+    // 2026-05-01: enforce the 4-phone-per-owner cap. The owner card UI
+    // assumes at most 4 (2 visible + 2 in the expand toggle); allowing
+    // unbounded adds breaks the visual contract and was caught by the
+    // user immediately. Server-side gate so direct POSTs (curl, scripts,
+    // a stale tab that bypasses the disabled button) can't bypass it.
+    const PHONE_CAP_PER_OWNER = 4;
+    const cnt = await query(
+      `SELECT COUNT(*)::int AS n FROM phones WHERE contact_id = $1 AND tenant_id = $2`,
+      [contactId, req.tenantId]
+    );
+    if ((cnt.rows[0]?.n || 0) >= PHONE_CAP_PER_OWNER) {
+      return res.status(409).json({
+        error: `This owner already has the maximum of ${PHONE_CAP_PER_OWNER} phones. Remove one before adding another.`,
+      });
+    }
+
     const allowedType   = ['mobile', 'landline', 'voip', 'unknown'];
     const allowedStatus = ['correct', 'wrong', 'do_not_call', 'unknown'];
     const phoneType   = allowedType.includes(String(req.body.phone_type   || '').toLowerCase())

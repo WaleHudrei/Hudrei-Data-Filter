@@ -203,8 +203,14 @@ function ownerCard(opts = {}) {
   const expandToggle = hiddenGroup.length
     ? `<button type="button" class="ocu-phones-expand" data-action="phones-toggle" aria-expanded="false" title="Show ${hiddenGroup.length} more phone${hiddenGroup.length === 1 ? '' : 's'}"><span class="ocu-phones-expand-text">+${hiddenGroup.length} more</span><span class="ocu-phones-expand-icon" aria-hidden="true"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"/></svg></span></button>`
     : '';
+  // 2026-05-01: per-owner phone cap is 4. When the owner is at the cap,
+  // the +Add phone button visually disables and the title explains why.
+  // The server enforces the same limit (POST /records/contacts/:id/phones)
+  // so a stale tab that bypasses this can still get the toast error.
+  const PHONE_CAP_PER_OWNER = 4;
+  const atCap = phones.length >= PHONE_CAP_PER_OWNER;
   const addPhoneBtn = contact.id
-    ? `<button type="button" class="ocu-owner-add-phone-btn" data-action="add-phone" data-contact-id="${escHTML(String(contact.id))}" title="Add a new phone for this contact">+ Add phone</button>`
+    ? `<button type="button" class="ocu-owner-add-phone-btn" data-action="add-phone" data-contact-id="${escHTML(String(contact.id))}"${atCap ? ' disabled' : ''} title="${atCap ? `Limit of ${PHONE_CAP_PER_OWNER} phones reached — remove one to add another` : 'Add a new phone for this contact'}">+ Add phone</button>`
     : '';
 
   return `
