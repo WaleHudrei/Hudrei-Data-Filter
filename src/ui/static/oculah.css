@@ -1634,51 +1634,55 @@ button.ocu-kpi,
   grid-column: 1 / -1;
 }
 
-/* Upload landing page — full-page drag overlay. Activates whenever a
-   file is dragged onto the document; on drop we sniff the filename and
-   suggest the right uploader via the route-confirm dialog below. */
+/* Upload landing page — centered drag prompt. Shown only while a file is
+   being dragged over the page. NOT a full-page backdrop: just a small
+   floating card pinned to the viewport center, so the four upload-type
+   cards behind it stay visible and usable. pointer-events:none lets the
+   drag itself pass through to the document drop handler. */
 .ocu-upload-dragover {
   position: fixed;
-  inset: 0;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
   z-index: 80;
-  background: rgba(8, 145, 178, 0.10);
-  backdrop-filter: blur(2px);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  pointer-events: none; /* clicks pass through; only the drop event matters */
-}
-/* Same display:flex-vs-[hidden] override fight as the combobox-popover.
-   Without this rule, the overlay covers the page on first paint and
-   hides everything below it until the first dragenter/dragleave cycle. */
-.ocu-upload-dragover[hidden] { display: none; }
-.ocu-upload-dragover-inner {
-  width: 480px;
-  max-width: 80vw;
-  padding: var(--ocu-space-8) var(--ocu-space-6);
+  pointer-events: none;
+  width: 420px;
+  max-width: calc(100vw - 32px);
+  padding: var(--ocu-space-6) var(--ocu-space-5);
   background: var(--ocu-bg);
-  border: 3px dashed var(--ocu-accent);
+  border: 2px dashed var(--ocu-accent);
   border-radius: 14px;
   text-align: center;
   box-shadow: 0 16px 48px rgba(11, 18, 32, 0.18);
 }
+/* [hidden] override — class above sets dimensions, [hidden] must still
+   make the card vanish when no drag is in progress. */
+.ocu-upload-dragover[hidden] { display: none; }
+/* Inner wrapper kept for the icon-tile layout but no longer needs its
+   own card chrome (the parent now IS the card). */
+.ocu-upload-dragover-inner {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--ocu-space-2);
+}
 .ocu-upload-dragover-icon {
   display: inline-flex;
-  width: 64px; height: 64px;
+  width: 48px; height: 48px;
   align-items: center; justify-content: center;
   border-radius: 50%;
   background: var(--ocu-accent-soft);
   color: var(--ocu-accent);
-  margin-bottom: var(--ocu-space-3);
+  margin-bottom: var(--ocu-space-2);
 }
+.ocu-upload-dragover-icon svg { width: 28px; height: 28px; }
 .ocu-upload-dragover-title {
-  font-size: 18px;
+  font-size: 16px;
   font-weight: 700;
   color: var(--ocu-text-1);
-  margin-bottom: 4px;
 }
 .ocu-upload-dragover-desc {
-  font-size: 13px;
+  font-size: 12.5px;
   color: var(--ocu-text-3);
 }
 

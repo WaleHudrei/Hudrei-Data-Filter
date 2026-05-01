@@ -1401,9 +1401,8 @@ app.get('/nis', requireAuth, async (req, res) => {
   const { getUser } = require('./get-user');
   await campaigns.initCampaignSchema();
   const stats = await campaigns.getNisStats(req.tenantId);
-  const history = await campaigns.getNisUploadHistory(req.tenantId, 50);
   const user = await getUser(req);
-  res.send(nisPage(stats, req.query.msg, user, history));
+  res.send(nisPage(stats, req.query.msg, user));
 });
 
 // Changelog page — admin-only. Regular workspace members (tenant_user) can't
