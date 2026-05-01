@@ -121,7 +121,11 @@ function contactsMapPage(opts) {
       ${sampleHtml}
     </div>`;
 
-  return shell(`Map columns · ${campaign.name || 'campaign'}`, body, 'campaigns');
+  return shell({
+    title: `Map columns · ${campaign.name || 'campaign'}`,
+    body,
+    activePage: 'campaigns',
+  });
 }
 
 module.exports = { contactsMapPage };
