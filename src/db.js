@@ -253,12 +253,17 @@ async function initSchema() {
       state_code CHAR(2) NOT NULL,
       state_name VARCHAR(100) NOT NULL,
       active BOOLEAN DEFAULT true,
-      created_at TIMESTAMPTZ DEFAULT NOW()
-      -- 2026-04-29 audit fix M4: removed UNIQUE(state_code). The composite
-      -- (tenant_id, state_code) constraint is added below by the
-      -- tenantUniqueRebuild block (idempotent DROP+ADD); the inline single-
-      -- column UNIQUE was misleading dead syntax that the rebuild then
-      -- immediately replaced. See saas-phase1-migration/04.
+      created_at TIMESTAMPTZ DEFAULT NOW(),
+      -- 2026-05-02 fresh-prod fix: inline composite UNIQUE so the markets
+      -- seed below can ON CONFLICT against it on first boot. Pre-fix the
+      -- constraint was only added later by the tenantUniqueRebuild block,
+      -- meaning the seed crashed on every brand-new DB with "no unique or
+      -- exclusion constraint matching the ON CONFLICT specification."
+      -- Existing DBs (staging) are unaffected: the rebuild block's
+      -- IF NOT EXISTS guard short-circuits because this constraint now
+      -- exists. The legacy auto-named markets_state_code_key from older
+      -- DBs is still dropped by the rebuild block.
+      CONSTRAINT markets_tenant_state_unique UNIQUE (tenant_id, state_code)
     );
 
     CREATE TABLE IF NOT EXISTS properties (
@@ -476,23 +481,39 @@ async function initSchema() {
   // loser's columns were silently absent. Single source of truth now.
 
   // ── Seed all 50 state markets (+ DC) for tenant_id=1 (HudREI) ──────────────
-  // 2026-04-28 audit fix S-2 / L-1: the ON CONFLICT key is now
-  // (tenant_id, state_code), matching the composite UNIQUE rebuilt by
-  // saas-phase1-migration/04-rebuild-tenant-unique-constraints.sql. Each
-  // tenant gets its own row per state_code; no cross-tenant collisions.
-  await query(`INSERT INTO markets (tenant_id,name,state_code,state_name) VALUES
-    (1,'AL','AL','Alabama'),(1,'AK','AK','Alaska'),(1,'AZ','AZ','Arizona'),(1,'AR','AR','Arkansas'),(1,'CA','CA','California'),
-    (1,'CO','CO','Colorado'),(1,'CT','CT','Connecticut'),(1,'DE','DE','Delaware'),(1,'FL','FL','Florida'),(1,'GA','GA','Georgia'),
-    (1,'HI','HI','Hawaii'),(1,'ID','ID','Idaho'),(1,'IL','IL','Illinois'),(1,'IN','IN','Indiana'),(1,'IA','IA','Iowa'),
-    (1,'KS','KS','Kansas'),(1,'KY','KY','Kentucky'),(1,'LA','LA','Louisiana'),(1,'ME','ME','Maine'),(1,'MD','MD','Maryland'),
-    (1,'MA','MA','Massachusetts'),(1,'MI','MI','Michigan'),(1,'MN','MN','Minnesota'),(1,'MS','MS','Mississippi'),(1,'MO','MO','Missouri'),
-    (1,'MT','MT','Montana'),(1,'NE','NE','Nebraska'),(1,'NV','NV','Nevada'),(1,'NH','NH','New Hampshire'),(1,'NJ','NJ','New Jersey'),
-    (1,'NM','NM','New Mexico'),(1,'NY','NY','New York'),(1,'NC','NC','North Carolina'),(1,'ND','ND','North Dakota'),(1,'OH','OH','Ohio'),
-    (1,'OK','OK','Oklahoma'),(1,'OR','OR','Oregon'),(1,'PA','PA','Pennsylvania'),(1,'RI','RI','Rhode Island'),(1,'SC','SC','South Carolina'),
-    (1,'SD','SD','South Dakota'),(1,'TN','TN','Tennessee'),(1,'TX','TX','Texas'),(1,'UT','UT','Utah'),(1,'VT','VT','Vermont'),
-    (1,'VA','VA','Virginia'),(1,'WA','WA','Washington'),(1,'WV','WV','West Virginia'),(1,'WI','WI','Wisconsin'),(1,'WY','WY','Wyoming'),
-    (1,'DC','DC','District of Columbia')
-    ON CONFLICT (tenant_id, state_code) DO UPDATE SET name=EXCLUDED.name, state_name=EXCLUDED.state_name`);
+  // 2026-04-28 audit fix S-2 / L-1: the ON CONFLICT key is (tenant_id,
+  // state_code), matching the composite UNIQUE on markets.
+  // 2026-05-02 fresh-prod fix: SELECT ... WHERE EXISTS instead of literal
+  // VALUES so the seed silently no-ops on a brand-new prod DB where
+  // tenant_id=1 doesn't exist yet. Pre-fix the FK violation would crash
+  // initSchema. Once an operator signs up the first tenant (assigned
+  // id=1 via SERIAL), the next boot picks up and seeds the markets.
+  // Wrapped in try/catch as belt-and-braces so any other ON CONFLICT
+  // weirdness on legacy DBs doesn't take the whole boot down.
+  try {
+    await query(`
+      INSERT INTO markets (tenant_id, name, state_code, state_name)
+      SELECT 1, m.code, m.code, m.name
+        FROM (VALUES
+          ('AL','Alabama'),('AK','Alaska'),('AZ','Arizona'),('AR','Arkansas'),('CA','California'),
+          ('CO','Colorado'),('CT','Connecticut'),('DE','Delaware'),('FL','Florida'),('GA','Georgia'),
+          ('HI','Hawaii'),('ID','Idaho'),('IL','Illinois'),('IN','Indiana'),('IA','Iowa'),
+          ('KS','Kansas'),('KY','Kentucky'),('LA','Louisiana'),('ME','Maine'),('MD','Maryland'),
+          ('MA','Massachusetts'),('MI','Michigan'),('MN','Minnesota'),('MS','Mississippi'),('MO','Missouri'),
+          ('MT','Montana'),('NE','Nebraska'),('NV','Nevada'),('NH','New Hampshire'),('NJ','New Jersey'),
+          ('NM','New Mexico'),('NY','New York'),('NC','North Carolina'),('ND','North Dakota'),('OH','Ohio'),
+          ('OK','Oklahoma'),('OR','Oregon'),('PA','Pennsylvania'),('RI','Rhode Island'),('SC','South Carolina'),
+          ('SD','South Dakota'),('TN','Tennessee'),('TX','Texas'),('UT','Utah'),('VT','Vermont'),
+          ('VA','Virginia'),('WA','Washington'),('WV','West Virginia'),('WI','Wisconsin'),('WY','Wyoming'),
+          ('DC','District of Columbia')
+        ) AS m(code, name)
+       WHERE EXISTS (SELECT 1 FROM tenants WHERE id = 1)
+      ON CONFLICT (tenant_id, state_code) DO UPDATE
+         SET name = EXCLUDED.name, state_name = EXCLUDED.state_name
+    `);
+  } catch (e) {
+    console.warn('[schema] markets seed (non-fatal):', e.message);
+  }
 
   // ── Column migrations ───────────────────────────────────────────────────────
   const migrations = [
