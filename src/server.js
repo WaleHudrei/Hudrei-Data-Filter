@@ -360,7 +360,7 @@ app.use((req, res, next) => {
 // reach /billing to fix payment. /logout bypasses so the dead-end state
 // is exit-able.
 const _billing = require('./billing');
-const _BILLING_BYPASS = ['/billing', '/logout', '/login'];
+const _BILLING_BYPASS = ['/billing', '/logout', '/login', '/signup'];
 app.use(async (req, res, next) => {
   if (!req.session?.authenticated || !req.session?.tenantId) return next();
   if (req.session.superAdmin === true) return next();
@@ -368,8 +368,12 @@ app.use(async (req, res, next) => {
   try {
     const ok = await _billing.hasActiveAccess(req.session.tenantId);
     if (ok) return next();
+    const target = await _billing.accessRedirectPath(req.session.tenantId);
     if (req.headers.accept && req.headers.accept.includes('application/json')) {
-      return res.status(402).json({ error: 'Subscription required', billingUrl: '/billing/upgrade' });
+      return res.status(402).json({ error: 'Subscription required', billingUrl: target });
+    }
+    if (target === '/signup/plan') {
+      return res.redirect('/signup/plan');
     }
     res.redirect('/billing/upgrade?msg=' + encodeURIComponent('Trial ended — please continue with a paid plan to keep using Oculah.'));
   } catch (e) {

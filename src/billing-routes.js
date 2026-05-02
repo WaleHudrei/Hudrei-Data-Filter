@@ -129,7 +129,7 @@ router.get('/billing', async (req, res) => {
         <div class="row">
           <div style="flex:1">
             <strong>Plan.</strong> $299/month for up to 5 users, $99/month per additional user.
-            20% off when billed annually. 14-day free trial.
+            20% off when billed annually. 7-day free trial.
           </div>
           <div style="display:flex;gap:8px;flex-wrap:wrap">
             ${upgradeBtn}

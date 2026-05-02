@@ -376,6 +376,7 @@ ${_csrfMeta}
   <div class="brand">Oculah <span class="tag">HQ</span></div>
   <nav>
     <a href="/admin">Tenants</a>
+    <a href="/admin/promos">Promo codes</a>
     <a href="/hq/logout">Sign out</a>
   </nav>
 </header>
@@ -903,6 +904,142 @@ router.post('/tenants/:id/users/:uid/delete', async (req, res) => {
   } catch (e) {
     console.error('[admin POST /tenants/:id/users/:uid/delete]', e);
     res.redirect('/admin/tenants/' + id + '?err=' + encodeURIComponent(e.message));
+  }
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Phase 3b — promo codes (single-use, bypass card on signup)
+// ─────────────────────────────────────────────────────────────────────────────
+function _promoStatus(row) {
+  if (row.redeemed_at) return `<span class="pill pill-suspended">Redeemed</span>`;
+  if (row.expires_at && new Date(row.expires_at) <= new Date()) return `<span class="pill pill-suspended">Expired</span>`;
+  if (!row.active) return `<span class="pill pill-suspended">Inactive</span>`;
+  return `<span class="pill pill-active">Available</span>`;
+}
+
+router.get('/promos', async (req, res) => {
+  try {
+    const r = await query(`
+      SELECT p.id, p.code, p.description, p.expires_at, p.active, p.redeemed_at,
+             p.redeemed_by_email, p.created_by_admin, p.created_at,
+             t.name AS tenant_name, t.id AS tenant_id
+        FROM trial_promo_codes p
+        LEFT JOIN tenants t ON t.id = p.redeemed_by_tenant_id
+        ORDER BY p.created_at DESC
+        LIMIT 500
+    `);
+    const rows = r.rows.map(p => `
+      <tr>
+        <td><code style="font-family:monospace;font-weight:600">${escHTML(p.code)}</code>
+            <div class="t-sub">${escHTML(p.description || '')}</div></td>
+        <td>${_promoStatus(p)}</td>
+        <td>${p.redeemed_by_email
+              ? `<a href="/admin/tenants/${p.tenant_id}">${escHTML(p.tenant_name || '—')}</a><div class="t-sub">${escHTML(p.redeemed_by_email)}</div>`
+              : '—'}</td>
+        <td>${escHTML(fmtDate(p.expires_at))}</td>
+        <td>${escHTML(fmtDate(p.created_at))}</td>
+        <td>${escHTML(p.created_by_admin || '—')}</td>
+        <td style="text-align:right">
+          ${(p.active && !p.redeemed_at) ? `
+            <form method="POST" action="/admin/promos/${p.id}/deactivate" style="display:inline">
+              <button class="btn btn-sm" type="submit">Deactivate</button>
+            </form>` : ''}
+        </td>
+      </tr>
+    `).join('');
+    const empty = r.rows.length ? '' : `<div class="empty">No promo codes yet.</div>`;
+    res.send(adminShell('Promo codes', `
+      <div class="row">
+        <div>
+          <h1>Promo codes</h1>
+          <div class="lede">Single-use codes that bypass card collection and start a 7-day free trial.</div>
+        </div>
+        <a class="btn btn-primary" href="/admin/promos/new">+ New code</a>
+      </div>
+      <div class="card card-table">
+        ${r.rows.length ? `
+        <table>
+          <thead><tr>
+            <th>Code</th>
+            <th>Status</th>
+            <th>Redeemed by</th>
+            <th>Expires</th>
+            <th>Created</th>
+            <th>Created by</th>
+            <th></th>
+          </tr></thead>
+          <tbody>${rows}</tbody>
+        </table>` : empty}
+      </div>
+    `));
+  } catch (e) {
+    console.error('[admin GET /promos]', e);
+    res.status(500).send(adminShell('Error', `<div class="card"><h1>Something went wrong</h1><p class="lede">${escHTML(e.message)}</p></div>`));
+  }
+});
+
+router.get('/promos/new', (req, res) => {
+  const err = req.query.err ? `<div class="flash flash-error">${escHTML(req.query.err)}</div>` : '';
+  res.send(adminShell('New promo code', `
+    ${err}
+    <div class="card">
+      <h1>New promo code</h1>
+      <form method="POST" action="/admin/promos/new">
+        <div class="field">
+          <label>Code</label>
+          <input type="text" name="code" required maxlength="60" autocomplete="off"
+                 placeholder="e.g. FOUNDERS2026" style="text-transform:uppercase;font-family:monospace">
+          <div class="hint">Letters, numbers, hyphens. Stored uppercase.</div>
+        </div>
+        <div class="field">
+          <label>Description (internal)</label>
+          <input type="text" name="description" maxlength="200" placeholder="What's this code for?">
+        </div>
+        <div class="field">
+          <label>Expires (optional)</label>
+          <input type="date" name="expires_at">
+          <div class="hint">Leave blank for no expiry.</div>
+        </div>
+        <button class="btn btn-primary" type="submit">Create code</button>
+        <a href="/admin/promos" style="margin-left:12px">Cancel</a>
+      </form>
+    </div>
+  `));
+});
+
+router.post('/promos/new', async (req, res) => {
+  const code = String(req.body.code || '').trim().toUpperCase();
+  const description = String(req.body.description || '').trim().slice(0, 200) || null;
+  const expRaw = String(req.body.expires_at || '').trim();
+  if (!code || !/^[A-Z0-9-]{3,60}$/.test(code)) {
+    return res.redirect('/admin/promos/new?err=' + encodeURIComponent('Code must be 3-60 chars: A-Z, 0-9, hyphen.'));
+  }
+  const expiresAt = expRaw ? expRaw : null;
+  try {
+    const operator = (req.session && (req.session.superAdminUsername || req.superAdminEmail)) || 'hq';
+    const r = await query(`
+      INSERT INTO trial_promo_codes (code, description, expires_at, created_by_admin)
+      VALUES ($1, $2, $3::date, $4)
+      RETURNING id`, [code, description, expiresAt, operator]);
+    res.redirect('/admin/promos?ok=' + encodeURIComponent('Code ' + code + ' created (id ' + r.rows[0].id + ').'));
+  } catch (e) {
+    if (String(e.message).includes('duplicate')) {
+      return res.redirect('/admin/promos/new?err=' + encodeURIComponent('That code already exists.'));
+    }
+    console.error('[admin POST /promos/new]', e);
+    res.redirect('/admin/promos/new?err=' + encodeURIComponent(e.message));
+  }
+});
+
+router.post('/promos/:id/deactivate', async (req, res) => {
+  const id = parseInt(req.params.id, 10);
+  if (!Number.isFinite(id)) return res.redirect('/admin/promos');
+  try {
+    await query(`UPDATE trial_promo_codes SET active = FALSE WHERE id = $1 AND redeemed_at IS NULL`, [id]);
+    res.redirect('/admin/promos?ok=' + encodeURIComponent('Code deactivated.'));
+  } catch (e) {
+    console.error('[admin POST /promos/:id/deactivate]', e);
+    res.redirect('/admin/promos?err=' + encodeURIComponent(e.message));
   }
 });
 

@@ -69,6 +69,8 @@ const EXEMPT_PATHS = new Set([
   '/login',
   '/signup',
   '/signup/resend',
+  '/signup/plan/checkout',
+  '/signup/plan/promo',
   '/forgot-password',
   '/reset-password',
   '/verify-email',         // GET, but defensive

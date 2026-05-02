@@ -75,6 +75,9 @@ async function createCheckoutSession(tenantId, email, name, seatCount = 1) {
   if (extra > 0 && priceExtra) items.push({ price: priceExtra, quantity: extra });
 
   const baseUrl = process.env.APP_BASE_URL || 'http://localhost:3000';
+  // 2026-05-02 Phase 3b — pass trial_period_days=7 so Stripe runs the
+  // 7-day trial natively (no charge until day 8). Stripe webhook then
+  // syncs trial_ends_at + subscription_status='trialing' back to us.
   const session = await stripe.checkout.sessions.create({
     mode: 'subscription',
     customer: customerId,
@@ -83,7 +86,10 @@ async function createCheckoutSession(tenantId, email, name, seatCount = 1) {
     success_url: `${baseUrl}/billing?msg=Subscription+active`,
     cancel_url:  `${baseUrl}/billing/upgrade?msg=Cancelled`,
     metadata: { tenant_id: String(tenantId) },
-    subscription_data: { metadata: { tenant_id: String(tenantId) } },
+    subscription_data: {
+      trial_period_days: 7,
+      metadata: { tenant_id: String(tenantId) },
+    },
   });
   return session.url;
 }
@@ -153,15 +159,19 @@ async function applyWebhookEvent(event) {
       const periodEnd = sub && sub.current_period_end
         ? new Date(sub.current_period_end * 1000).toISOString()
         : null;
+      const trialEnd = sub && sub.trial_end
+        ? new Date(sub.trial_end * 1000).toISOString()
+        : null;
       await query(`
         UPDATE tenants SET
           stripe_subscription_id = COALESCE($2, stripe_subscription_id),
           subscription_status    = COALESCE($3, subscription_status),
           cancel_at_period_end   = COALESCE($4, cancel_at_period_end),
           current_period_end     = COALESCE($5::timestamptz, current_period_end),
+          trial_ends_at          = COALESCE($6::timestamptz, trial_ends_at),
           updated_at = NOW()
         WHERE id = $1
-      `, [tenantId, subId, status, cancel, periodEnd]);
+      `, [tenantId, subId, status, cancel, periodEnd, trialEnd]);
       return { ok: true, tenantId, status };
     }
     case 'customer.subscription.deleted': {
@@ -217,7 +227,20 @@ async function hasActiveAccess(tenantId) {
     if (!t.trial_ends_at) return true;
     return new Date(t.trial_ends_at) > new Date();
   }
+  // 'pending_plan' / 'past_due' / 'canceled' → no access.
   return false;
+}
+
+/**
+ * Returns the redirect path for a tenant without active access:
+ *   pending_plan → /signup/plan (Stripe Checkout vs. promo)
+ *   anything else → /billing/upgrade
+ */
+async function accessRedirectPath(tenantId) {
+  const r = await query(`SELECT subscription_status FROM tenants WHERE id = $1`, [tenantId]);
+  const s = r.rows[0]?.subscription_status;
+  if (s === 'pending_plan') return '/signup/plan';
+  return '/billing/upgrade';
 }
 
 module.exports = {
@@ -228,4 +251,5 @@ module.exports = {
   verifyWebhook,
   applyWebhookEvent,
   hasActiveAccess,
+  accessRedirectPath,
 };

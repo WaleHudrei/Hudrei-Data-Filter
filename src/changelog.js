@@ -3,6 +3,16 @@
 
 const ENTRIES = [
   {
+    date: 'May 2, 2026 (Phase 3b — plan picker, 7-day trial, promo codes)',
+    title: 'Signup now ends at a plan picker: card-on-file Stripe Checkout OR a single-use promo code',
+    items: [
+      { tag: 'feat', text: 'New /signup/plan page after email verification. Two paths: "Add card → start 7-day trial" routes to Stripe Checkout with trial_period_days=7 (no charge until day 8), OR "Have a promo code?" redeems a single-use HQ code and starts a 7-day card-free trial. Existing tenants (NULL subscription_status) remain grandfathered.' },
+      { tag: 'feat', text: 'New /admin/promos pages in HQ console — list all codes with status (Available / Redeemed / Expired / Inactive), create with optional expiry date, deactivate unredeemed codes. Each code is single-use and stored uppercase; redemption sets active=FALSE and records the redeeming tenant + email.' },
+      { tag: 'fix', text: 'Trial length changed from 14 days to 7 days everywhere — signup INSERT, billing page copy, Stripe Checkout subscription_data.trial_period_days. Stripe webhook now also syncs trial_end → tenants.trial_ends_at on customer.subscription.* events.' },
+      { tag: 'note', text: 'Signup INSERT now uses subscription_status="pending_plan" (new value) instead of immediately starting trial. Billing access gate routes pending_plan tenants to /signup/plan; trialing/active/past_due/canceled keep their existing destinations. /signup/* added to billing-gate bypass so the plan picker is reachable. CSRF exemption added for /signup/plan/checkout and /signup/plan/promo (consistent with the rest of the signup flow).' },
+    ],
+  },
+  {
     date: 'May 1, 2026 (5E follow-up — live-pickup rules consolidated)',
     title: 'One canonical place defines which dispositions count as Connected, Reached, and Lead',
     items: [

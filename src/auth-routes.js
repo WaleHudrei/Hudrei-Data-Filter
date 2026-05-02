@@ -367,7 +367,7 @@ router.get('/signup', (req, res) => {
   const w    = escHTML(req.query.workspace || '');
   res.send(authShell('Create your account', `
     <h1>Create your account</h1>
-    <p class="lede">Free while we're in early access. No credit card.</p>
+    <p class="lede">Start your 7-day free trial of Pro.</p>
     ${err}
     <form method="POST" action="/signup" novalidate>
       <div class="field">
@@ -443,15 +443,14 @@ router.post('/signup', _signupRateLimit, async (req, res) => {
     // Create tenant + user atomically. If anything between the two queries
     // throws, we'd leak an empty tenant; acceptable in v1 (we can clean up
     // empty tenants later if it becomes a problem).
-    // 2026-05-01 Phase 3 — start every new tenant on a 14-day trial. The
-    // trial_ends_at + subscription_status fields are added in db.js Phase
-    // 3 schema migration. The billing access gate (server.js) lets
-    // 'trialing' through; once trial expires the next request bounces to
-    // /billing/upgrade. Existing tenants with NULL subscription_status
-    // are grandfathered in (HudREI etc.).
+    // 2026-05-02 Phase 3b — new signups land in 'pending_plan' state.
+    // Trial doesn't start until the user picks a path on /signup/plan
+    // (Stripe Checkout with card → 7-day Stripe trial, OR promo code →
+    // 7-day card-free trial). Existing tenants with NULL subscription_status
+    // remain grandfathered.
     const t = await query(
       `INSERT INTO tenants (name, slug, status, subscription_status, trial_ends_at)
-       VALUES ($1, $2, 'active', 'trialing', NOW() + INTERVAL '14 days')
+       VALUES ($1, $2, 'active', 'pending_plan', NULL)
        RETURNING id`,
       [workspace, slug]
     );
@@ -580,6 +579,16 @@ router.get('/verify-email', async (req, res) => {
     req.session.role          = u.role;
     delete req.session.pendingUserId;
 
+    // 2026-05-02 Phase 3b — fresh-from-signup tenants are in 'pending_plan'.
+    // Bounce them to /signup/plan to pick Stripe Checkout vs. promo code.
+    // Existing users (legacy NULL or already-set status) flow to dashboard.
+    try {
+      const tr = await query(`SELECT subscription_status FROM tenants WHERE id = $1`, [u.tenant_id]);
+      if (tr.rows[0]?.subscription_status === 'pending_plan') {
+        return res.redirect('/signup/plan');
+      }
+    } catch (_) { /* fall through */ }
+
     res.redirect('/oculah/dashboard?welcome=1');
   } catch (e) {
     console.error('[verify-email GET]', e);
@@ -588,6 +597,125 @@ router.get('/verify-email', async (req, res) => {
       <div class="error">We couldn't verify your email. Try the link again, or sign in to request a fresh one.</div>
       <div class="alt"><a href="/login">Sign in</a></div>
     `));
+  }
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Phase 3b — plan picker (Stripe Checkout vs. single-use promo code)
+// ─────────────────────────────────────────────────────────────────────────────
+
+// Auth gate for the plan picker. Tenant must be authenticated AND in
+// 'pending_plan' state. Anyone already past that point goes to the dashboard.
+async function _requirePendingPlan(req, res, next) {
+  if (!req.session?.authenticated || !req.session?.tenantId) return res.redirect('/login');
+  try {
+    const r = await query(`SELECT subscription_status FROM tenants WHERE id = $1`, [req.session.tenantId]);
+    const status = r.rows[0]?.subscription_status;
+    if (status !== 'pending_plan') {
+      // Already chose a path — drop to dashboard or billing.
+      return res.redirect('/oculah/dashboard');
+    }
+    next();
+  } catch (e) {
+    console.error('[signup/plan gate]', e);
+    res.redirect('/login');
+  }
+}
+
+router.get('/signup/plan', _requirePendingPlan, (req, res) => {
+  const err = req.query.err ? `<div class="error">${escHTML(req.query.err)}</div>` : '';
+  const billing = require('./billing');
+  const stripeAvailable = billing.isEnabled();
+  const stripeWarn = stripeAvailable ? '' : `<div class="error" style="margin-bottom:14px">Card checkout is not configured on this deployment yet. Use a promo code to start your trial.</div>`;
+  res.send(authShell('Choose your plan', `
+    <h1>Start your 7-day trial</h1>
+    <p class="lede">Pick how you want to start.</p>
+    ${err}
+    ${stripeWarn}
+    <div style="border:1px solid #e0dfd8;border-radius:10px;padding:18px;margin-bottom:14px">
+      <div style="font-weight:600;font-size:15px;margin-bottom:4px">Pro plan</div>
+      <div style="font-size:13px;color:#666;margin-bottom:12px">$299/month for up to 5 users · +$99/seat beyond · 20% off annual</div>
+      <form method="POST" action="/signup/plan/checkout" style="margin:0">
+        <button type="submit" style="width:100%;padding:11px;background:#1a1a1a;color:#fff;border:none;border-radius:8px;font-weight:600;font-size:14px;cursor:pointer"${stripeAvailable ? '' : ' disabled'}>Add card → start 7-day trial</button>
+      </form>
+      <div style="font-size:12px;color:#888;margin-top:8px;text-align:center">No charge for 7 days. Cancel anytime.</div>
+    </div>
+    <div style="border:1px solid #e0dfd8;border-radius:10px;padding:18px">
+      <div style="font-weight:600;font-size:15px;margin-bottom:4px">Have a promo code?</div>
+      <div style="font-size:13px;color:#666;margin-bottom:12px">Skip the card and start a 7-day free trial.</div>
+      <form method="POST" action="/signup/plan/promo" style="display:flex;gap:8px">
+        <input type="text" name="code" required maxlength="60" autocomplete="off" placeholder="ENTER CODE" style="flex:1;padding:10px;border:1px solid #ddd;border-radius:8px;text-transform:uppercase;font-family:monospace;letter-spacing:1px">
+        <button type="submit" style="padding:10px 18px;background:#fff;border:1px solid #1a1a1a;color:#1a1a1a;border-radius:8px;font-weight:600;cursor:pointer">Redeem</button>
+      </form>
+    </div>
+    <div class="alt" style="margin-top:18px"><a href="/logout">Sign out</a></div>
+  `, { width: 480 }));
+});
+
+router.post('/signup/plan/checkout', _requirePendingPlan, async (req, res) => {
+  const billing = require('./billing');
+  if (!billing.isEnabled()) {
+    return res.redirect('/signup/plan?err=' + encodeURIComponent('Card checkout is not configured yet. Use a promo code.'));
+  }
+  try {
+    const u = await query('SELECT email, name FROM users WHERE id = $1', [req.session.userId]);
+    const url = await billing.createCheckoutSession(
+      req.session.tenantId, u.rows[0]?.email, u.rows[0]?.name, 1
+    );
+    res.redirect(303, url);
+  } catch (e) {
+    console.error('[POST /signup/plan/checkout]', e);
+    res.redirect('/signup/plan?err=' + encodeURIComponent('Could not start checkout: ' + e.message));
+  }
+});
+
+router.post('/signup/plan/promo', _requirePendingPlan, async (req, res) => {
+  const code = String(req.body.code || '').trim().toUpperCase();
+  if (!code) {
+    return res.redirect('/signup/plan?err=' + encodeURIComponent('Enter a promo code.'));
+  }
+  try {
+    // Atomic redeem: only succeed if active, unredeemed, and not expired.
+    const u = await query('SELECT email FROM users WHERE id = $1', [req.session.userId]);
+    const userEmail = u.rows[0]?.email || null;
+    const r = await query(`
+      UPDATE trial_promo_codes
+         SET redeemed_at = NOW(),
+             redeemed_by_tenant_id = $2,
+             redeemed_by_email = $3,
+             active = FALSE
+       WHERE UPPER(code) = $1
+         AND active = TRUE
+         AND redeemed_at IS NULL
+         AND (expires_at IS NULL OR expires_at > NOW())
+       RETURNING id`, [code, req.session.tenantId, userEmail]);
+    if (!r.rows.length) {
+      return res.redirect('/signup/plan?err=' + encodeURIComponent('That code is invalid, expired, or already used.'));
+    }
+    // Start the 7-day card-free trial.
+    await query(`
+      UPDATE tenants
+         SET subscription_status = 'trialing',
+             trial_ends_at = NOW() + INTERVAL '7 days',
+             updated_at = NOW()
+       WHERE id = $1`, [req.session.tenantId]);
+
+    // Activity log (best-effort).
+    try {
+      const al = require('./activity-log');
+      if (al && al.log) {
+        await al.log(req, 'trial.promo.redeemed', {
+          resource_type: 'trial_promo_code',
+          resource_id: String(r.rows[0].id),
+          metadata: { code },
+        });
+      }
+    } catch (_) {}
+
+    res.redirect('/oculah/dashboard?welcome=1');
+  } catch (e) {
+    console.error('[POST /signup/plan/promo]', e);
+    res.redirect('/signup/plan?err=' + encodeURIComponent('Something went wrong. Try again.'));
   }
 });
 

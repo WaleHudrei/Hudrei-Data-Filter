@@ -981,6 +981,26 @@ async function initSchema() {
     CREATE INDEX IF NOT EXISTS activity_log_tenant_idx ON activity_log(tenant_id, created_at DESC);
   `).catch((e) => { console.warn('[schema] phase4 tables:', e.message); });
 
+  // ── 2026-05-02 Phase 3b — single-use promo codes that bypass card on signup ─
+  // HQ-issued codes (one row per code). Each code redeemable exactly once,
+  // produces a 7-day card-free trial. After trial → standard /billing/upgrade
+  // path. trial_promo_redemptions exists for audit + activity log.
+  await query(`
+    CREATE TABLE IF NOT EXISTS trial_promo_codes (
+      id              SERIAL PRIMARY KEY,
+      code            TEXT UNIQUE NOT NULL,
+      description     TEXT,
+      expires_at      TIMESTAMPTZ,
+      active          BOOLEAN NOT NULL DEFAULT TRUE,
+      redeemed_at     TIMESTAMPTZ,
+      redeemed_by_tenant_id INT REFERENCES tenants(id) ON DELETE SET NULL,
+      redeemed_by_email TEXT,
+      created_by_admin TEXT,
+      created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+    CREATE INDEX IF NOT EXISTS trial_promo_codes_code_idx ON trial_promo_codes(UPPER(code));
+  `).catch((e) => { console.warn('[schema] trial_promo_codes:', e.message); });
+
   // ── 2026-05-01 Phase 1 closure — Row-Level Security policies ─────────────
   // Saas-conversion-plan Decision 1's documented tradeoff: shared-DB
   // multi-tenancy means a forgotten WHERE tenant_id = $X leaks data.
