@@ -4,16 +4,10 @@
 // Single funnel for every outbound email (verification, password reset, change-
 // password notifications). Provider order of preference:
 //
-//   1. SMTP (Nodemailer) — when SMTP_HOST is set. Works with any SMTP service:
-//      Gmail (with app password), SendGrid, Mailgun, Squarespace email,
-//      Resend, AWS SES, etc. Most flexible — pair with whichever sender the
-//      operator has credentials for.
-//
-//   2. Postmark — when POSTMARK_SERVER_TOKEN is set and SMTP is not. Original
-//      provider this module shipped with; kept for back-compat.
-//
-//   3. Dev-mode fallback — neither set. Logs the email body to stdout so local
-//      development and first-boot-without-creds don't break.
+//   1. SMTP (Nodemailer) — when SMTP_HOST is set.
+//   2. Resend — when RESEND_API_KEY is set and SMTP is not.
+//   3. Postmark — when POSTMARK_SERVER_TOKEN is set and neither above is set.
+//   4. Dev-mode fallback — none set. Logs to stdout.
 //
 // Env (any provider):
 //   EMAIL_FROM    — verified sender, e.g. "Oculah <noreply@oculah.com>"
@@ -27,15 +21,19 @@
 //   SMTP_PASS     — login password (or app password for Gmail)
 //   SMTP_SECURE   — "true" forces TLS on connect (use with port 465)
 //
+// Resend provider env:
+//   RESEND_API_KEY — Resend API key (re_xxxx)
+//
 // Postmark provider env:
 //   POSTMARK_SERVER_TOKEN — Postmark Server API token
 // ═══════════════════════════════════════════════════════════════════════════════
 
 const BRAND = 'Oculah';
 
-let _provider = null;          // resolved transport: 'smtp' | 'postmark' | 'devmode'
+let _provider = null;          // resolved transport: 'smtp' | 'resend' | 'postmark' | 'devmode'
 let _smtpTransport = null;
 let _postmarkClient = null;
+let _resendApiKey = null;
 
 function _resolveProvider() {
   if (_provider) return _provider;
@@ -57,6 +55,12 @@ function _resolveProvider() {
       console.error('[email] Nodemailer init failed:', e.message);
     }
   }
+  if (process.env.RESEND_API_KEY) {
+    _resendApiKey = process.env.RESEND_API_KEY;
+    _provider = 'resend';
+    console.log('[email] provider: Resend');
+    return _provider;
+  }
   if (process.env.POSTMARK_SERVER_TOKEN) {
     try {
       const postmark = require('postmark');
@@ -69,7 +73,7 @@ function _resolveProvider() {
     }
   }
   _provider = 'devmode';
-  console.log('[email] provider: devmode (logs to stdout — no SMTP_HOST or POSTMARK_SERVER_TOKEN configured)');
+  console.log('[email] provider: devmode (logs to stdout — no email provider configured)');
   return _provider;
 }
 
@@ -100,6 +104,45 @@ async function send({ to, subject, htmlBody, textBody }) {
       return true;
     } catch (e) {
       console.error('[email] SMTP send failed:', to, subject, e.message);
+      return false;
+    }
+  }
+
+  if (provider === 'resend') {
+    try {
+      const https = require('https');
+      const payload = JSON.stringify({
+        from: fromAddress(),
+        to: [to],
+        subject,
+        html: htmlBody,
+        text,
+      });
+      await new Promise((resolve, reject) => {
+        const req = https.request({
+          hostname: 'api.resend.com',
+          path: '/emails',
+          method: 'POST',
+          headers: {
+            'Authorization': `Bearer ${_resendApiKey}`,
+            'Content-Type': 'application/json',
+            'Content-Length': Buffer.byteLength(payload),
+          },
+        }, (res) => {
+          let body = '';
+          res.on('data', d => { body += d; });
+          res.on('end', () => {
+            if (res.statusCode >= 200 && res.statusCode < 300) return resolve();
+            reject(new Error(`HTTP ${res.statusCode}: ${body}`));
+          });
+        });
+        req.on('error', reject);
+        req.write(payload);
+        req.end();
+      });
+      return true;
+    } catch (e) {
+      console.error('[email] Resend send failed:', to, subject, e.message);
       return false;
     }
   }
